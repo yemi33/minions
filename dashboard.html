@@ -308,6 +308,9 @@
         <div class="cmd-field" style="flex:1"><label>Priority</label>
           <select id="wi-priority"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select>
         </div>
+        <div class="cmd-field" style="flex:1"><label>Scope</label>
+          <select id="wi-scope"><option value="">Single agent</option><option value="fan-out">Fan-out (all agents)</option></select>
+        </div>
         <button class="cmd-submit" onclick="submitWorkItem()">Add</button>
       </div>
       <div class="cmd-row">
@@ -1021,7 +1024,8 @@ function renderWorkItems(items) {
     html += '<tr>' +
       '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
       '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
-      '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span></td>' +
+      '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
+        (item.scope === 'fan-out' ? ' <span class="pr-badge building" style="font-size:8px">fan-out</span>' : '') + '</td>' +
       '<td>' + typeBadge(item.type) + '</td>' +
       '<td>' + priBadge(item.priority) + '</td>' +
       '<td>' + statusBadge(item.status || 'pending') + '</td>' +
@@ -1087,6 +1091,7 @@ async function submitWorkItem() {
         project: document.getElementById('wi-project').value,
         type: document.getElementById('wi-type').value,
         priority: document.getElementById('wi-priority').value,
+        scope: document.getElementById('wi-scope').value || undefined,
         description: document.getElementById('wi-desc').value.trim(),
       })
     });

@@ -433,11 +433,13 @@ const server = http.createServer(async (req, res) => {
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W' + String(items.length + 1).padStart(3, '0');
-      items.push({
+      const item = {
         id, title: body.title, type: body.type || 'implement',
         priority: body.priority || 'medium', description: body.description || '',
         status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
-      });
+      };
+      if (body.scope) item.scope = body.scope;
+      items.push(item);
       fs.writeFileSync(wiPath, JSON.stringify(items, null, 2));
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }

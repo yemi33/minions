@@ -1263,10 +1263,9 @@ function discoverCentralWorkItems(config) {
     if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
 
     const workType = item.type || 'implement';
-    const agentId = item.agent || resolveAgent(workType, config);
-    if (!agentId) continue;
+    const isFanOut = item.scope === 'fan-out';
 
-    // Build project context for the agent to decide
+    // Build project context
     const projectList = projects.map(p => {
       let line = `### ${p.name}\n`;
       line += `- **Path:** ${p.localPath}\n`;
@@ -1275,51 +1274,134 @@ function discoverCentralWorkItems(config) {
       return line;
     }).join('\n');
 
-    const agentName = config.agents[agentId]?.name || agentId;
-    const agentRole = config.agents[agentId]?.role || 'Agent';
-
-    let prompt = `# Task: ${item.title}\n\n`;
-    prompt += `**Agent:** ${agentName} (${agentRole})\n`;
-    prompt += `**Priority:** ${item.priority || 'medium'}\n`;
-    prompt += `**Type:** ${workType}\n\n`;
-    if (item.description) prompt += `## Description\n\n${item.description}\n\n`;
-    prompt += `## Available Projects\n\n${projectList}\n\n`;
-    prompt += `## Instructions\n\n`;
-    prompt += `You have access to multiple project repositories. Based on the task above:\n\n`;
-    prompt += `1. **Determine scope** — which project(s) does this task apply to? It may span multiple repos.\n`;
-    prompt += `2. **Navigate** to the correct project directory to do the work.\n`;
-    prompt += `3. **If the task spans multiple repos**, work on each one sequentially:\n`;
-    prompt += `   - Complete changes in the first repo (worktree → commit → push → PR)\n`;
-    prompt += `   - Then move to the next repo and repeat\n`;
-    prompt += `   - Note cross-repo dependencies in your PR descriptions (e.g., "Requires <other-repo> PR #123")\n`;
-    prompt += `   - Each repo has its own ADO config (org, project, repoId) — use the correct one per repo\n`;
-    prompt += `4. Use **git worktrees** for any code changes — NEVER checkout on main\n`;
-    prompt += `5. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
-    prompt += `6. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\`\n`;
-    prompt += `   - If multi-repo: note which repos were touched and why\n`;
-    prompt += `7. Update your status at: \`${SQUAD_DIR}/agents/${agentId}/status.json\`\n`;
-
-    // Append custom prompt if provided
-    if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
-
-    // Append decisions
     const decisions = getDecisions();
-    if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
 
-    newWork.push({
-      type: workType,
-      agent: agentId,
-      agentName,
-      agentRole,
-      task: item.title || item.description?.slice(0, 80) || item.id,
-      prompt,
-      meta: { dispatchKey: key, source: 'central-work-item', item }
-    });
+    if (isFanOut) {
+      // ─── Fan-out: dispatch to ALL idle agents ───────────────────────
+      const idleAgents = Object.entries(config.agents)
+        .filter(([id]) => {
+          const s = getAgentStatus(id);
+          return ['idle', 'done', 'completed'].includes(s.status);
+        })
+        .map(([id, info]) => ({ id, ...info }));
 
-    item.status = 'dispatched';
-    item.dispatched_at = ts();
-    item.dispatched_to = agentId;
-    setCooldown(key);
+      if (idleAgents.length === 0) continue;
+
+      // Assign projects round-robin, or let agents self-select if more agents than projects
+      const assignments = idleAgents.map((agent, i) => {
+        const assignedProject = projects.length > 0 ? projects[i % projects.length] : null;
+        return { agent, assignedProject };
+      });
+
+      for (const { agent, assignedProject } of assignments) {
+        const fanKey = `${key}-${agent.id}`;
+        if (isAlreadyDispatched(fanKey)) continue;
+
+        let prompt = `# Task: ${item.title}\n\n`;
+        prompt += `**Agent:** ${agent.name} (${agent.role})\n`;
+        prompt += `**Priority:** ${item.priority || 'medium'}\n`;
+        prompt += `**Type:** ${workType}\n`;
+        prompt += `**Scope:** Fan-out (multiple agents working on this task in parallel)\n\n`;
+        if (item.description) prompt += `## Description\n\n${item.description}\n\n`;
+
+        // Assignment
+        if (assignedProject && projects.length >= idleAgents.length) {
+          prompt += `## Your Assignment\n\n`;
+          prompt += `You are assigned to **${assignedProject.name}**. Focus your work on this project.\n`;
+          prompt += `- **Path:** ${assignedProject.localPath}\n`;
+          prompt += `- **ADO:** ${assignedProject.adoOrg}/${assignedProject.adoProject}/${assignedProject.repoName}\n`;
+          if (assignedProject.description) prompt += `- **What it is:** ${assignedProject.description}\n`;
+          prompt += `\nOther agents are handling the other projects in parallel. `;
+          prompt += `Focus only on your assigned project.\n\n`;
+        } else {
+          prompt += `## Your Assignment\n\n`;
+          prompt += `Multiple agents are working on this task in parallel. `;
+          prompt += `Your role as **${agent.name} (${agent.role})** is to bring your specific expertise.\n`;
+          if (assignedProject) {
+            prompt += `Start with **${assignedProject.name}** but you may cover other projects too if relevant to your role.\n`;
+          }
+          prompt += `\n`;
+        }
+
+        prompt += `## All Projects\n\n${projectList}\n\n`;
+        prompt += `## Instructions\n\n`;
+        prompt += `1. Focus on your assigned project/area based on your role and expertise\n`;
+        prompt += `2. Navigate to the correct project directory\n`;
+        prompt += `3. Use **git worktrees** for any code changes — NEVER checkout on main\n`;
+        prompt += `4. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
+        prompt += `5. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agent.id}-fanout-${item.id}-${dateStamp()}.md\`\n`;
+        prompt += `   - Title your findings clearly so they can be merged with other agents' work\n`;
+        prompt += `6. Update your status at: \`${SQUAD_DIR}/agents/${agent.id}/status.json\`\n`;
+
+        if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
+        if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
+
+        newWork.push({
+          type: workType,
+          agent: agent.id,
+          agentName: agent.name,
+          agentRole: agent.role,
+          task: `[fan-out] ${item.title} → ${agent.name}${assignedProject ? ' → ' + assignedProject.name : ''}`,
+          prompt,
+          meta: { dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key }
+        });
+      }
+
+      item.status = 'dispatched';
+      item.dispatched_at = ts();
+      item.dispatched_to = idleAgents.map(a => a.id).join(', ');
+      item.scope = 'fan-out';
+      item.fanOutAgents = idleAgents.map(a => a.id);
+      setCooldown(key);
+      log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
+
+    } else {
+      // ─── Normal: single agent dispatch ──────────────────────────────
+      const agentId = item.agent || resolveAgent(workType, config);
+      if (!agentId) continue;
+
+      const agentName = config.agents[agentId]?.name || agentId;
+      const agentRole = config.agents[agentId]?.role || 'Agent';
+
+      let prompt = `# Task: ${item.title}\n\n`;
+      prompt += `**Agent:** ${agentName} (${agentRole})\n`;
+      prompt += `**Priority:** ${item.priority || 'medium'}\n`;
+      prompt += `**Type:** ${workType}\n\n`;
+      if (item.description) prompt += `## Description\n\n${item.description}\n\n`;
+      prompt += `## Available Projects\n\n${projectList}\n\n`;
+      prompt += `## Instructions\n\n`;
+      prompt += `You have access to multiple project repositories. Based on the task above:\n\n`;
+      prompt += `1. **Determine scope** — which project(s) does this task apply to? It may span multiple repos.\n`;
+      prompt += `2. **Navigate** to the correct project directory to do the work.\n`;
+      prompt += `3. **If the task spans multiple repos**, work on each one sequentially:\n`;
+      prompt += `   - Complete changes in the first repo (worktree → commit → push → PR)\n`;
+      prompt += `   - Then move to the next repo and repeat\n`;
+      prompt += `   - Note cross-repo dependencies in your PR descriptions (e.g., "Requires <other-repo> PR #123")\n`;
+      prompt += `   - Each repo has its own ADO config (org, project, repoId) — use the correct one per repo\n`;
+      prompt += `4. Use **git worktrees** for any code changes — NEVER checkout on main\n`;
+      prompt += `5. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
+      prompt += `6. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\`\n`;
+      prompt += `   - If multi-repo: note which repos were touched and why\n`;
+      prompt += `7. Update your status at: \`${SQUAD_DIR}/agents/${agentId}/status.json\`\n`;
+
+      if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
+      if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
+
+      newWork.push({
+        type: workType,
+        agent: agentId,
+        agentName,
+        agentRole,
+        task: item.title || item.description?.slice(0, 80) || item.id,
+        prompt,
+        meta: { dispatchKey: key, source: 'central-work-item', item }
+      });
+
+      item.status = 'dispatched';
+      item.dispatched_at = ts();
+      item.dispatched_to = agentId;
+      setCooldown(key);
+    }
   }
 
   if (newWork.length > 0) safeWrite(centralPath, items);
