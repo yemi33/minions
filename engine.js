@@ -1596,7 +1596,9 @@ function discoverFromWorkItems(config, project) {
       date: dateStamp()
     };
 
-    const prompt = item.prompt || renderPlaybook('work-item', vars) || renderPlaybook(workType, vars) || item.description;
+    // Use type-specific playbook if it exists (e.g., explore.md, review.md), fall back to work-item.md
+    const playbookName = (workType === 'explore' || workType === 'review' || workType === 'analyze') ? workType : 'work-item';
+    const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) continue;
 
     newWork.push({
@@ -1716,7 +1718,8 @@ function discoverCentralWorkItems(config) {
           date: dateStamp()
         };
 
-        const prompt = renderPlaybook('work-item', vars);
+        const playbookName = (workType === 'explore' || workType === 'review' || workType === 'analyze') ? workType : 'work-item';
+        const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) continue;
 
         newWork.push({
@@ -1769,7 +1772,8 @@ function discoverCentralWorkItems(config) {
         date: dateStamp()
       };
 
-      const prompt = renderPlaybook('work-item', vars);
+      const playbookName = (workType === 'explore' || workType === 'review' || workType === 'analyze') ? workType : 'work-item';
+      const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) continue;
 
       newWork.push({
