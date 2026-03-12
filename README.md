@@ -216,6 +216,7 @@ Charters in `agents/{name}/charter.md`. The squad has four self-improvement mech
 2. **Per-agent history** — `agents/{name}/history.md` tracks last 20 tasks, injected into the agent's system prompt
 3. **Review feedback loop** — when a reviewer flags issues, engine creates a targeted feedback file for the PR author
 4. **Quality metrics** — `engine/metrics.json` tracks approval rates, error rates, task counts per agent (visible in dashboard + CLI)
+5. **Runbooks** — agents save reusable workflows to `runbooks/<name>.md`; the index is injected into all prompts so other agents can follow them
 
 See `docs/self-improvement.md` for the full breakdown.
 
@@ -265,6 +266,9 @@ All playbooks use `{{template_variables}}` filled from `config.json` project ent
     archive/             <- Processed inbox files
   engine/
     metrics.json         <- Per-agent quality metrics (auto-generated)
+  runbooks/
+    README.md            <- Runbook format guide
+    <name>.md            <- Agent-created reusable workflows
   docs/
     auto-discovery.md    <- Auto-discovery pipeline docs
     self-improvement.md  <- Self-improvement loop docs

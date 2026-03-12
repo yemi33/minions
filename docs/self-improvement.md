@@ -190,6 +190,77 @@ Metrics are currently informational — displayed in status and dashboard. Plann
              └──────────┘ └──────────┘ └──────────┘
 ```
 
+## 5. Runbooks — Agent-Discovered Workflows
+
+When an agent discovers a repeatable multi-step procedure, it can save it as a **runbook** — a structured, reusable workflow that all agents can follow.
+
+### Flow
+
+```
+Agent discovers repeatable pattern during task
+  → writes runbooks/<name>.md with frontmatter (name, trigger, author, project)
+  → engine detects new runbook files on next tick
+  → builds runbook index (name + trigger + file path)
+  → index injected into every agent's system prompt
+  → future agents see "Available Runbooks" and follow matching ones
+```
+
+### Runbook Format
+
+```markdown
+---
+name: fix-yarn-lock-conflict
+trigger: when merging branches that both modified yarn.lock
+author: dallas
+created: 2026-03-12
+project: OfficeAgent
+---
+
+# Runbook: Fix Yarn Lock Conflicts
+
+## When to Use
+When a git merge or rebase produces conflicts in yarn.lock.
+
+## Steps
+1. Delete yarn.lock
+2. Run `yarn install` to regenerate
+3. Stage the new yarn.lock
+4. Continue the merge/rebase
+
+## Notes
+- Never manually edit yarn.lock
+- Always run `yarn build` after regenerating to verify
+```
+
+### What agents see in their prompt
+
+```
+## Available Runbooks
+
+### fix-yarn-lock-conflict
+**When:** when merging branches that both modified yarn.lock
+**Project:** OfficeAgent
+**File:** ~/.squad/runbooks/fix-yarn-lock-conflict.md
+Read the full runbook file before following the steps.
+```
+
+### How it differs from decisions.md
+
+| | decisions.md | Runbooks |
+|---|---|---|
+| **Format** | Free-form prose, appended by engine | Structured with frontmatter, one file per workflow |
+| **Granularity** | Rules, conventions, findings | Step-by-step procedures |
+| **Authored by** | Engine (consolidation) | Agents directly |
+| **Trigger** | Always injected (all context) | Agent matches trigger to current situation |
+| **Lifespan** | Grows forever (pruned at 50KB) | Permanent, individually editable |
+
+### When agents should create runbooks
+
+- Multi-step procedures they had to figure out (build setup, deployment, migration)
+- Error recovery patterns (how to fix a specific class of failure)
+- Project-specific workflows that aren't documented elsewhere
+- Cross-repo coordination steps
+
 ## Configuration
 
 | Setting | Default | What it controls |

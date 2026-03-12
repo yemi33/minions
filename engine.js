@@ -147,6 +147,46 @@ function getInboxFiles() {
   try { return fs.readdirSync(INBOX_DIR).filter(f => f.endsWith('.md')); } catch { return []; }
 }
 
+// ─── Runbooks ────────────────────────────────────────────────────────────────
+
+const RUNBOOKS_DIR = path.join(SQUAD_DIR, 'runbooks');
+
+function getRunbookIndex() {
+  try {
+    const files = fs.readdirSync(RUNBOOKS_DIR).filter(f => f.endsWith('.md') && f !== 'README.md');
+    if (files.length === 0) return '';
+
+    let index = '## Available Runbooks\n\n';
+    index += 'These are reusable workflows discovered by agents. Follow them when the trigger matches your task.\n\n';
+
+    for (const f of files) {
+      const content = safeRead(path.join(RUNBOOKS_DIR, f));
+      // Parse frontmatter
+      let name = f.replace('.md', '');
+      let trigger = '';
+      let project = 'any';
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const fm = fmMatch[1];
+        const nameMatch = fm.match(/^name:\s*(.+)$/m);
+        const triggerMatch = fm.match(/^trigger:\s*(.+)$/m);
+        const projectMatch = fm.match(/^project:\s*(.+)$/m);
+        if (nameMatch) name = nameMatch[1].trim();
+        if (triggerMatch) trigger = triggerMatch[1].trim();
+        if (projectMatch) project = projectMatch[1].trim();
+      }
+
+      index += `### ${name}\n`;
+      if (trigger) index += `**When:** ${trigger}\n`;
+      if (project !== 'any') index += `**Project:** ${project}\n`;
+      index += `**File:** \`${RUNBOOKS_DIR}/${f}\`\n`;
+      index += `Read the full runbook file before following the steps.\n\n`;
+    }
+
+    return index;
+  } catch { return ''; }
+}
+
 function getPrs(project) {
   if (project) {
     const prPath = project.workSources?.pullRequests?.path;
@@ -247,7 +287,9 @@ function renderPlaybook(type, vars) {
   content += `- What you learned about the codebase\n`;
   content += `- Patterns you discovered or established\n`;
   content += `- Gotchas or warnings for future agents\n`;
-  content += `- Conventions to follow\n`;
+  content += `- Conventions to follow\n\n`;
+  content += `If you discovered a **repeatable workflow** (multi-step procedure that other agents should follow in similar situations), `;
+  content += `save it as a runbook at \`${RUNBOOKS_DIR}/<short-name>.md\` using the format documented in \`${RUNBOOKS_DIR}/README.md\`.\n`;
 
   // Inject project-level variables from config
   const config = getConfig();
@@ -306,7 +348,14 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `2. Use Azure DevOps MCP tools (mcp__azure-ado__*) — NEVER use gh CLI\n`;
   prompt += `3. Use PowerShell for yarn/oagent/gulp commands\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\n`;
-  prompt += `5. Update your status at: ${SQUAD_DIR}/agents/${agentId}/status.json\n\n`;
+  prompt += `5. Update your status at: ${SQUAD_DIR}/agents/${agentId}/status.json\n`;
+  prompt += `6. If you discover a repeatable workflow, save it as a runbook: ${RUNBOOKS_DIR}/<name>.md\n\n`;
+
+  // Runbooks
+  const runbookIndex = getRunbookIndex();
+  if (runbookIndex) {
+    prompt += runbookIndex + '\n';
+  }
 
   // Team decisions
   if (decisions) {
