@@ -493,24 +493,14 @@ function spawnAgent(dispatchItem, config) {
     }
   }
 
-  const binary = claudeConfig.binary || 'claude';
-
-  // Read prompt content — pipe via stdin to avoid shell metacharacter issues
-  const promptContent = fs.readFileSync(promptPath, 'utf8');
-  const systemPromptContent = fs.readFileSync(sysPromptPath, 'utf8');
-
-  // Build args: -p (print mode), system prompt as arg, everything else
-  const cliArgs = ['-p', '--system-prompt', systemPromptContent, ...args];
-
-  const proc = spawn(binary, cliArgs, {
+  // Spawn via wrapper script — avoids shell metacharacter issues entirely
+  // The wrapper reads prompt + system prompt from files, pipes prompt via stdin
+  const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+  const proc = spawn('node', [spawnScript, promptPath, sysPromptPath, ...args], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: childEnv
   });
-
-  // Send prompt via stdin
-  proc.stdin.write(promptContent);
-  proc.stdin.end();
 
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
