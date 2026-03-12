@@ -1144,6 +1144,17 @@ function checkTimeouts(config) {
       completed_at: ts()
     });
   }
+
+  // Reset "done" agents to "idle" after 1 minute (visual cleanup)
+  for (const [agentId] of Object.entries(config.agents || {})) {
+    const status = getAgentStatus(agentId);
+    if (status.status === 'done' && status.completed_at) {
+      const elapsed = Date.now() - new Date(status.completed_at).getTime();
+      if (elapsed > 60000) {
+        setAgentStatus(agentId, { status: 'idle', task: null, started_at: null, completed_at: status.completed_at });
+      }
+    }
+  }
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
