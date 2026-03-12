@@ -288,6 +288,12 @@ function buildSystemPrompt(agentId, config, project) {
     prompt += `## Your Charter\n\n${charter}\n\n`;
   }
 
+  // Agent history (past tasks)
+  const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));
+  if (history && history.trim() !== '# Agent History') {
+    prompt += `## Your Recent History\n\n${history}\n\n`;
+  }
+
   // Project context
   prompt += `## Project: ${project.name || 'Unknown Project'}\n\n`;
   prompt += `- Repo: ${project.repoName || 'Unknown'} (${project.adoOrg || 'Unknown'}/${project.adoProject || 'Unknown'})\n`;
@@ -453,6 +459,12 @@ function spawnAgent(dispatchItem, config) {
     // Check for learnings
     checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
 
+    // Update agent history
+    updateAgentHistory(agentId, dispatchItem, code === 0 ? 'success' : 'error');
+
+    // Update quality metrics
+    updateMetrics(agentId, dispatchItem, code === 0 ? 'success' : 'error');
+
     // Cleanup temp files
     try { fs.unlinkSync(sysPromptPath); } catch {}
     try { fs.unlinkSync(promptPath); } catch {}
@@ -549,10 +561,24 @@ function updatePrAfterReview(agentId, pr, project) {
   target.reviewer = config.agents[agentId]?.name || agentId;
   target.reviewNote = agentStatus.task || '';
 
+  // Update author metrics
+  const authorAgentId = (pr.agent || '').toLowerCase();
+  if (authorAgentId && config.agents?.[authorAgentId]) {
+    const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
+    const metrics = safeJson(metricsPath) || {};
+    if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+    if (target.reviewStatus === 'approved') metrics[authorAgentId].prsApproved++;
+    else if (target.reviewStatus === 'changes-requested') metrics[authorAgentId].prsRejected++;
+    safeWrite(metricsPath, metrics);
+  }
+
   const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
   const prPath = project?.workSources?.pullRequests?.path || '.squad/pull-requests.json';
   safeWrite(path.resolve(root, prPath), prs);
   log('info', `Updated ${pr.id} → ${target.reviewStatus} by ${target.reviewer}`);
+
+  // Create feedback for the PR author so they learn from the review
+  createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
 
 function updatePrAfterFix(pr, project) {
@@ -583,6 +609,105 @@ function checkForLearnings(agentId, agentInfo, taskDesc) {
   log('warn', `${agentInfo?.name || agentId} didn't write learnings — no follow-up queued`);
 }
 
+function updateAgentHistory(agentId, dispatchItem, result) {
+  const historyPath = path.join(AGENTS_DIR, agentId, 'history.md');
+  let history = safeRead(historyPath) || '# Agent History\n\n';
+
+  const entry = `### ${ts()} — ${result}\n` +
+    `- **Task:** ${dispatchItem.task}\n` +
+    `- **Type:** ${dispatchItem.type}\n` +
+    `- **Project:** ${dispatchItem.meta?.project?.name || 'central'}\n` +
+    `- **Branch:** ${dispatchItem.meta?.branch || 'none'}\n` +
+    `- **Dispatch ID:** ${dispatchItem.id}\n\n`;
+
+  // Insert after header
+  const headerEnd = history.indexOf('\n\n');
+  if (headerEnd >= 0) {
+    history = history.slice(0, headerEnd + 2) + entry + history.slice(headerEnd + 2);
+  } else {
+    history += entry;
+  }
+
+  // Keep last 20 entries
+  const entries = history.split('### ').filter(Boolean);
+  const header = entries[0].startsWith('#') ? entries.shift() : '# Agent History\n\n';
+  const trimmed = entries.slice(0, 20);
+  history = header + trimmed.map(e => '### ' + e).join('');
+
+  safeWrite(historyPath, history);
+  log('info', `Updated history for ${agentId}`);
+}
+
+function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
+  if (!pr?.id || !pr?.agent) return;
+
+  const authorAgentId = pr.agent.toLowerCase();
+  if (!config.agents[authorAgentId]) return;
+
+  // Find reviewer's inbox files from today about this PR
+  const today = dateStamp();
+  const inboxFiles = getInboxFiles();
+  const reviewFiles = inboxFiles.filter(f =>
+    f.includes(reviewerAgentId) && f.includes(today)
+  );
+
+  if (reviewFiles.length === 0) return;
+
+  // Read review content
+  const reviewContent = reviewFiles.map(f =>
+    safeRead(path.join(INBOX_DIR, f))
+  ).join('\n\n');
+
+  // Create a feedback file for the author
+  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${pr.id}-${today}.md`;
+  const feedbackPath = path.join(INBOX_DIR, feedbackFile);
+
+  const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
+    `**PR:** ${pr.id} — ${pr.title || ''}\n` +
+    `**Reviewer:** ${config.agents[reviewerAgentId]?.name || reviewerAgentId}\n` +
+    `**Date:** ${today}\n\n` +
+    `## What the reviewer found\n\n${reviewContent}\n\n` +
+    `## Action Required\n\n` +
+    `Read this feedback carefully. When you work on similar tasks in the future, ` +
+    `avoid the patterns flagged here. If you are assigned to fix this PR, ` +
+    `address every point raised above.\n`;
+
+  safeWrite(feedbackPath, content);
+  log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
+}
+
+function updateMetrics(agentId, dispatchItem, result) {
+  const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
+  const metrics = safeJson(metricsPath) || {};
+
+  if (!metrics[agentId]) {
+    metrics[agentId] = {
+      tasksCompleted: 0,
+      tasksErrored: 0,
+      prsCreated: 0,
+      prsApproved: 0,
+      prsRejected: 0,
+      reviewsDone: 0,
+      lastTask: null,
+      lastCompleted: null
+    };
+  }
+
+  const m = metrics[agentId];
+  m.lastTask = dispatchItem.task;
+  m.lastCompleted = ts();
+
+  if (result === 'success') {
+    m.tasksCompleted++;
+    if (dispatchItem.type === 'implement') m.prsCreated++;
+    if (dispatchItem.type === 'review') m.reviewsDone++;
+  } else {
+    m.tasksErrored++;
+  }
+
+  safeWrite(metricsPath, metrics);
+}
+
 // ─── Inbox Consolidation ────────────────────────────────────────────────────
 
 function consolidateInbox(config) {
@@ -597,15 +722,83 @@ function consolidateInbox(config) {
     content: safeRead(path.join(INBOX_DIR, f))
   }));
 
+  // Categorize by type based on filename patterns
+  const categories = {
+    reviews: [],
+    feedback: [],
+    learnings: [],
+    other: []
+  };
+
+  for (const item of items) {
+    const name = item.name.toLowerCase();
+    if (name.includes('review') || name.includes('pr-') || name.includes('pr4')) {
+      categories.reviews.push(item);
+    } else if (name.includes('feedback')) {
+      categories.feedback.push(item);
+    } else if (name.includes('build') || name.includes('explore') || name.includes('m0') || name.includes('m1')) {
+      categories.learnings.push(item);
+    } else {
+      categories.other.push(item);
+    }
+  }
+
   let entry = `\n\n---\n\n### ${dateStamp()}: Consolidated from ${items.length} inbox items\n`;
   entry += `**By:** Engine (auto-consolidation)\n\n`;
 
-  for (const item of items) {
-    entry += `#### From: ${item.name}\n\n${item.content}\n\n`;
+  if (categories.reviews.length > 0) {
+    entry += `#### Review Findings (${categories.reviews.length})\n`;
+    for (const item of categories.reviews) {
+      // Extract first meaningful line as summary
+      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
+      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
+    }
+    entry += '\n';
+  }
+
+  if (categories.feedback.length > 0) {
+    entry += `#### Review Feedback (${categories.feedback.length})\n`;
+    for (const item of categories.feedback) {
+      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
+      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
+    }
+    entry += '\n';
+  }
+
+  if (categories.learnings.length > 0) {
+    entry += `#### Learnings & Conventions (${categories.learnings.length})\n`;
+    for (const item of categories.learnings) {
+      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
+      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
+    }
+    entry += '\n';
+  }
+
+  if (categories.other.length > 0) {
+    entry += `#### Other (${categories.other.length})\n`;
+    for (const item of categories.other) {
+      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
+      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
+    }
+    entry += '\n';
   }
 
   const current = getDecisions();
-  safeWrite(DECISIONS_PATH, current + entry);
+
+  // Prune old consolidations if decisions.md is getting too large (>50KB)
+  let newContent = current + entry;
+  if (newContent.length > 50000) {
+    const sections = newContent.split('\n---\n\n### ');
+    if (sections.length > 10) {
+      // Keep header + last 8 consolidation sections
+      const header = sections[0];
+      const recent = sections.slice(-8);
+      newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
+      log('info', `Pruned decisions.md: removed ${sections.length - 9} old sections`);
+    }
+  }
+
+  safeWrite(DECISIONS_PATH, newContent);
 
   // Archive
   if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
@@ -613,7 +806,7 @@ function consolidateInbox(config) {
     try { fs.renameSync(path.join(INBOX_DIR, f), path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)); } catch {}
   }
 
-  log('info', `Consolidated ${files.length} items into decisions.md`);
+  log('info', `Consolidated ${files.length} items into decisions.md (${Object.entries(categories).map(([k,v]) => `${v.length} ${k}`).join(', ')})`);
 }
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
@@ -1198,6 +1391,18 @@ const commands = {
     console.log('');
     console.log(`Dispatch: ${dispatch.pending.length} pending | ${(dispatch.active || []).length} active | ${(dispatch.completed || []).length} completed`);
     console.log(`Active processes: ${activeProcesses.size}`);
+
+    const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
+    const metrics = safeJson(metricsPath);
+    if (metrics && Object.keys(metrics).length > 0) {
+      console.log('\nMetrics:');
+      console.log(`  ${'Agent'.padEnd(12)} ${'Done'.padEnd(6)} ${'Err'.padEnd(6)} ${'PRs'.padEnd(6)} ${'Approved'.padEnd(10)} ${'Rejected'.padEnd(10)} ${'Reviews'.padEnd(8)}`);
+      console.log('  ' + '-'.repeat(58));
+      for (const [id, m] of Object.entries(metrics)) {
+        const approvalRate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
+        console.log(`  ${id.padEnd(12)} ${String(m.tasksCompleted).padEnd(6)} ${String(m.tasksErrored).padEnd(6)} ${String(m.prsCreated).padEnd(6)} ${String(m.prsApproved + ' (' + approvalRate + ')').padEnd(10)} ${String(m.prsRejected).padEnd(10)} ${String(m.reviewsDone).padEnd(8)}`);
+      }
+    }
     console.log('');
   },
 

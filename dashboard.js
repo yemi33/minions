@@ -255,6 +255,13 @@ function getEngineLog() {
   } catch { return []; }
 }
 
+function getMetrics() {
+  const metricsPath = path.join(SQUAD_DIR, 'engine', 'metrics.json');
+  const data = safeRead(metricsPath);
+  if (!data) return {};
+  try { return JSON.parse(data); } catch { return {}; }
+}
+
 function getStatus() {
   const prdInfo = getPrdInfo();
   return {
@@ -268,6 +275,7 @@ function getStatus() {
     engine: getEngineState(),
     dispatch: getDispatchQueue(),
     engineLog: getEngineLog(),
+    metrics: getMetrics(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     timestamp: new Date().toISOString(),
   };

@@ -386,6 +386,11 @@
   </section>
 
   <section>
+    <h2>Agent Metrics</h2>
+    <div id="metrics-content"><p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p></div>
+  </section>
+
+  <section>
     <h2>Dispatch Queue</h2>
     <div class="dispatch-stats" id="dispatch-stats"></div>
     <div id="dispatch-active"></div>
@@ -911,6 +916,7 @@ async function refresh() {
     renderDispatch(data.dispatch);
     renderEngineLog(data.engineLog || []);
     renderProjects(data.projects || []);
+    renderMetrics(data.metrics || {});
   } catch(e) { console.error('refresh error', e); }
 }
 
@@ -940,6 +946,33 @@ function renderProjects(projects) {
     sel.innerHTML = '<option value="">Auto (agent decides)</option>' +
       projects.map(p => '<option value="' + escHtml(p.name) + '">' + escHtml(p.name) + '</option>').join('');
   }
+}
+
+// -- Metrics --
+function renderMetrics(metrics) {
+  const el = document.getElementById('metrics-content');
+  const agents = Object.entries(metrics);
+  if (agents.length === 0) {
+    el.innerHTML = '<p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p>';
+    return;
+  }
+  let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th></tr></thead><tbody>';
+  for (const [id, m] of agents) {
+    const rate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
+    const rateColor = m.prsCreated > 0 ? (m.prsApproved / m.prsCreated >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+    html += '<tr>' +
+      '<td style="font-weight:600">' + escHtml(id) + '</td>' +
+      '<td style="color:var(--green)">' + (m.tasksCompleted || 0) + '</td>' +
+      '<td style="color:' + (m.tasksErrored > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (m.tasksErrored || 0) + '</td>' +
+      '<td>' + (m.prsCreated || 0) + '</td>' +
+      '<td style="color:var(--green)">' + (m.prsApproved || 0) + '</td>' +
+      '<td style="color:' + (m.prsRejected > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (m.prsRejected || 0) + '</td>' +
+      '<td style="color:' + rateColor + ';font-weight:600">' + rate + '</td>' +
+      '<td>' + (m.reviewsDone || 0) + '</td>' +
+    '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
 // -- Command Center --
