@@ -2426,6 +2426,70 @@ const commands = {
     }
   },
 
+  kill() {
+    console.log('\n=== Kill All Active Work ===\n');
+    const config = getConfig();
+    const dispatch = getDispatch();
+
+    // 1. Kill processes
+    const pidFiles = fs.readdirSync(ENGINE_DIR).filter(f => f.startsWith('pid-'));
+    for (const f of pidFiles) {
+      const pid = safeRead(path.join(ENGINE_DIR, f)).trim();
+      try { process.kill(Number(pid)); console.log(`Killed process ${pid} (${f})`); } catch { console.log(`Process ${pid} already dead`); }
+      fs.unlinkSync(path.join(ENGINE_DIR, f));
+    }
+
+    // 2. Move active dispatches to completed, reset their work items
+    const killed = dispatch.active || [];
+    for (const item of killed) {
+      item.status = 'error';
+      item.error = 'Manually killed';
+      item.completed_at = ts();
+      dispatch.completed.push(item);
+
+      // Reset the source work item to pending
+      if (item.meta) {
+        updateWorkItemStatus(item.meta, 'pending', '');
+        // Undo the 'failed' status that updateWorkItemStatus may set — we want 'pending'
+        const itemId = item.meta.item?.id;
+        if (itemId) {
+          const wiPath = (item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout')
+            ? path.join(SQUAD_DIR, 'work-items.json')
+            : item.meta.project?.localPath
+              ? projectWorkItemsPath({ localPath: item.meta.project.localPath, name: item.meta.project.name, workSources: config.projects?.find(p => p.name === item.meta.project.name)?.workSources })
+              : null;
+          if (wiPath) {
+            const items = safeJson(wiPath) || [];
+            const target = items.find(i => i.id === itemId);
+            if (target) {
+              target.status = 'pending';
+              delete target.dispatched_at;
+              delete target.dispatched_to;
+              delete target.failReason;
+              delete target.failedAt;
+              safeWrite(wiPath, items);
+            }
+          }
+        }
+      }
+
+      console.log(`Killed dispatch: ${item.id} (${item.agent}) — work item reset to pending`);
+    }
+    dispatch.active = [];
+    safeWrite(DISPATCH_PATH, dispatch);
+
+    // 3. Reset all agents to idle
+    for (const [agentId] of Object.entries(config.agents || {})) {
+      const status = getAgentStatus(agentId);
+      if (status.status === 'working' || status.status === 'error') {
+        setAgentStatus(agentId, { status: 'idle', task: null, started_at: null, completed_at: ts() });
+        console.log(`Reset ${agentId} to idle`);
+      }
+    }
+
+    console.log(`\nDone: ${killed.length} dispatches killed, agents reset.`);
+  },
+
   cleanup() {
     const config = getConfig();
     console.log('\n=== Cleanup ===\n');
