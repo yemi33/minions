@@ -136,6 +136,15 @@ function getAgentStatus(agentId) {
 }
 
 function setAgentStatus(agentId, status) {
+  // Sanitize: truncate task field and reject stream-json fragments
+  if (status.task && typeof status.task === 'string') {
+    if (status.task.includes('"session_id"') || status.task.includes('"is_error"') || status.task.includes('"uuid"')) {
+      // Corrupted — extract just the beginning before the JSON garbage
+      const cleanEnd = status.task.search(/[{"\[].*session_id|[{"\[].*is_error|[{"\[].*uuid/);
+      status.task = cleanEnd > 10 ? status.task.slice(0, cleanEnd).trim() : status.task.slice(0, 80);
+    }
+    if (status.task.length > 200) status.task = status.task.slice(0, 200);
+  }
   safeWrite(path.join(AGENTS_DIR, agentId, 'status.json'), status);
 }
 
@@ -835,14 +844,18 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     const fullId = `PR-${prId}`;
     if (prs.some(p => p.id === fullId || String(p.id).includes(prId))) continue;
 
-    // Extract title from output if possible
+    // Extract title from output if possible — reject if it looks like stream-json garbage
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
     if (titleMatch) title = titleMatch[1].trim();
+    // Reject corrupted titles
+    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120) {
+      title = meta?.item?.title || '';
+    }
 
     prs.push({
       id: fullId,
-      title: title || `PR created by ${agentName}`,
+      title: (title || `PR created by ${agentName}`).slice(0, 120),
       agent: agentName,
       branch: meta?.branch || '',
       reviewStatus: 'pending',
