@@ -41,10 +41,25 @@ project: project-name or "any"
 - `author` — which agent created it
 - `project` — which project it applies to, or "any"
 
+## Two Skill Locations
+
+### Squad-wide skills (`~/.squad/skills/`)
+- Shared across all agents and all projects
+- No PR required — agents write directly
+- Best for: cross-project workflows, team conventions, tool patterns
+
+### Project-specific skills (`<project>/.claude/skills/`)
+- Scoped to a single repo, available to anyone working in that repo
+- **Requires a PR** since it modifies the repo (worktree + branch + PR)
+- Best for: repo-specific build steps, test patterns, deployment workflows
+- Automatically available in Claude Code sessions within that project
+
 ## How It Works
 
 1. Agent discovers a repeatable pattern during a task
-2. Agent writes a skill file to `~/.squad/skills/<name>.md`
+2. Agent writes a skill file to the appropriate location:
+   - Squad-wide: `~/.squad/skills/<name>.md` (direct write)
+   - Project-specific: `<project>/.claude/skills/<name>.md` (via PR)
 3. Engine detects new skills and adds them to the index
 4. Index is injected into every agent's system prompt
 5. Future agents see "Available Skills" and follow them when the trigger matches
@@ -53,4 +68,5 @@ project: project-name or "any"
 ## Compatibility
 
 Skills use the same frontmatter format as Claude Code skills (`~/.claude/skills/`).
-You can copy a squad skill to `~/.claude/skills/` to make it available in your own sessions.
+- Squad-wide skills can be copied to `~/.claude/skills/` for personal use
+- Project-specific skills are already in the Claude Code discovery path

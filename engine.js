@@ -195,41 +195,63 @@ const SKILLS_DIR = path.join(SQUAD_DIR, 'skills');
 // Legacy compat: also check runbooks/ for migration period
 const RUNBOOKS_DIR = path.join(SQUAD_DIR, 'runbooks');
 
+function collectSkillFiles() {
+  const skillFiles = [];
+  // Squad-level skills (shared across all agents)
+  for (const dir of [SKILLS_DIR, RUNBOOKS_DIR]) {
+    try {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
+      for (const f of files) skillFiles.push({ file: f, dir, scope: 'squad' });
+    } catch {}
+  }
+  // Project-level skills (<project>/.claude/skills/)
+  const config = getConfig();
+  for (const project of getProjects(config)) {
+    const projectSkillsDir = path.resolve(project.localPath, '.claude', 'skills');
+    try {
+      const files = fs.readdirSync(projectSkillsDir).filter(f => f.endsWith('.md') && f !== 'README.md');
+      for (const f of files) skillFiles.push({ file: f, dir: projectSkillsDir, scope: 'project', projectName: project.name });
+    } catch {}
+  }
+  return skillFiles;
+}
+
+function parseSkillFrontmatter(content, filename) {
+  let name = filename.replace('.md', '');
+  let trigger = '', description = '', project = 'any', author = '', created = '', allowedTools = '';
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fmMatch) {
+    const fm = fmMatch[1];
+    const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
+    name = m('name') || name;
+    trigger = m('trigger');
+    description = m('description');
+    project = m('project') || 'any';
+    author = m('author');
+    created = m('created');
+    allowedTools = m('allowed-tools');
+  }
+  return { name, trigger, description, project, author, created, allowedTools };
+}
+
 function getSkillIndex() {
   try {
-    // Collect skills from skills/ (primary) and runbooks/ (legacy)
-    const skillFiles = [];
-    for (const dir of [SKILLS_DIR, RUNBOOKS_DIR]) {
-      try {
-        const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
-        for (const f of files) skillFiles.push({ file: f, dir });
-      } catch {}
-    }
+    const skillFiles = collectSkillFiles();
     if (skillFiles.length === 0) return '';
 
     let index = '## Available Squad Skills\n\n';
     index += 'These are reusable workflows discovered by agents. Follow them when the trigger matches your task.\n\n';
 
-    for (const { file: f, dir } of skillFiles) {
+    for (const { file: f, dir, scope, projectName } of skillFiles) {
       const content = safeRead(path.join(dir, f));
-      let name = f.replace('.md', '');
-      let trigger = '';
-      let description = '';
-      let project = 'any';
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const fm = fmMatch[1];
-        const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
-        name = m('name') || name;
-        trigger = m('trigger');
-        description = m('description');
-        project = m('project') || 'any';
-      }
+      const meta = parseSkillFrontmatter(content, f);
 
-      index += `### ${name}\n`;
-      if (description) index += `${description}\n`;
-      if (trigger) index += `**When:** ${trigger}\n`;
-      if (project !== 'any') index += `**Project:** ${project}\n`;
+      index += `### ${meta.name}`;
+      if (scope === 'project') index += ` (${projectName})`;
+      index += '\n';
+      if (meta.description) index += `${meta.description}\n`;
+      if (meta.trigger) index += `**When:** ${meta.trigger}\n`;
+      if (meta.project !== 'any') index += `**Project:** ${meta.project}\n`;
       index += `**File:** \`${dir}/${f}\`\n`;
       index += `Read the full skill file before following the steps.\n\n`;
     }
@@ -340,7 +362,10 @@ function renderPlaybook(type, vars) {
   content += `- Gotchas or warnings for future agents\n`;
   content += `- Conventions to follow\n\n`;
   content += `If you discovered a **repeatable workflow** (multi-step procedure that other agents should follow in similar situations), `;
-  content += `save it as a skill at \`${SKILLS_DIR}/<short-name>.md\` using the format documented in \`${SKILLS_DIR}/README.md\`.\n`;
+  content += `save it as a skill. Two locations depending on scope:\n\n`;
+  content += `- **Squad-wide skill** (applies across projects): write to \`${SKILLS_DIR}/<short-name>.md\`\n`;
+  content += `- **Project-specific skill** (applies to one repo): write to \`<project-path>/.claude/skills/<short-name>.md\` — but since this modifies the repo, you MUST create a PR for it (worktree + branch + PR, same as any code change)\n\n`;
+  content += `Use the format documented in \`${SKILLS_DIR}/README.md\`.\n`;
 
   // Inject project-level variables from config
   const config = getConfig();
@@ -400,7 +425,9 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `3. Use PowerShell for yarn/oagent/gulp commands\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\n`;
   prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
-  prompt += `6. If you discover a repeatable workflow, save it as a skill: ${SKILLS_DIR}/<name>.md\n\n`;
+  prompt += `6. If you discover a repeatable workflow, save it as a skill:\n`;
+  prompt += `   - Squad-wide: \`${SKILLS_DIR}/<name>.md\` (no PR needed)\n`;
+  prompt += `   - Project-specific: \`<project>/.claude/skills/<name>.md\` (requires a PR since it modifies the repo)\n\n`;
 
   // Skills (formerly runbooks)
   const skillIndex = getSkillIndex();

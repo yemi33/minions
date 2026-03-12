@@ -282,11 +282,16 @@ function getMetrics() {
 
 function getSkills() {
   const skillsDirs = [
-    { dir: path.join(SQUAD_DIR, 'skills'), source: 'skills' },
-    { dir: path.join(SQUAD_DIR, 'runbooks'), source: 'runbooks' }  // legacy compat
+    { dir: path.join(SQUAD_DIR, 'skills'), source: 'skills', scope: 'squad' },
+    { dir: path.join(SQUAD_DIR, 'runbooks'), source: 'runbooks', scope: 'squad' }  // legacy compat
   ];
+  // Also scan project-level skills
+  for (const p of PROJECTS) {
+    const projectSkillsDir = path.resolve(p.localPath, '.claude', 'skills');
+    skillsDirs.push({ dir: projectSkillsDir, source: 'project:' + p.name, scope: 'project', projectName: p.name });
+  }
   const all = [];
-  for (const { dir, source } of skillsDirs) {
+  for (const { dir, source, scope, projectName } of skillsDirs) {
     try {
       const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
       for (const f of files) {
@@ -302,10 +307,10 @@ function getSkills() {
           trigger = m('trigger');
           author = m('author');
           created = m('created');
-          project = m('project') || 'any';
+          project = m('project') || (scope === 'project' ? projectName : 'any');
           allowedTools = m('allowed-tools');
         }
-        all.push({ name, description, trigger, author, created, project, allowedTools, file: f, source });
+        all.push({ name, description, trigger, author, created, project, allowedTools, file: f, source, scope });
       }
     } catch {}
   }
@@ -667,7 +672,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/skill?file=<name>.md&source=skills|runbooks
+  // GET /api/skill?file=<name>.md&source=skills|runbooks|project:<name>
   if (req.method === 'GET' && req.url.startsWith('/api/skill?')) {
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
@@ -675,8 +680,15 @@ const server = http.createServer(async (req, res) => {
     if (!file || file.includes('..') || file.includes('/') || file.includes('\\')) {
       res.statusCode = 400; res.end('Invalid file'); return;
     }
-    const dir = source === 'runbooks' ? 'runbooks' : 'skills';
-    const content = safeRead(path.join(SQUAD_DIR, dir, file));
+    let skillDir;
+    if (source.startsWith('project:')) {
+      const projName = source.replace('project:', '');
+      const proj = PROJECTS.find(p => p.name === projName);
+      skillDir = proj ? path.resolve(proj.localPath, '.claude', 'skills') : null;
+    } else {
+      skillDir = path.join(SQUAD_DIR, source === 'runbooks' ? 'runbooks' : 'skills');
+    }
+    const content = skillDir ? safeRead(path.join(skillDir, file)) : '';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content || 'Skill not found.');

@@ -1063,7 +1063,7 @@ function renderSkills(skills) {
     skills.map(r =>
       '<div class="inbox-item" onclick="openSkill(\'' + escHtml(r.file) + '\',\'' + escHtml(r.source || 'skills') + '\')" style="border-left-color:var(--green)">' +
         '<div class="inbox-name"><span style="color:var(--green);font-weight:600">' + escHtml(r.name) + '</span>' +
-          '<span style="font-size:10px;color:var(--muted)">' + escHtml(r.project || 'any') + ' · ' + escHtml(r.author || '') + ' · ' + escHtml(r.created || '') + '</span>' +
+          '<span style="font-size:10px;color:var(--muted)">' + (r.scope === 'project' ? '📁 ' : '🔧 ') + escHtml(r.project || 'any') + ' · ' + escHtml(r.author || '') + ' · ' + escHtml(r.created || '') + '</span>' +
         '</div>' +
         (r.description ? '<div class="inbox-preview" style="color:var(--text)">' + escHtml(r.description) + '</div>' : '') +
         (r.trigger ? '<div class="inbox-preview" style="color:var(--muted);font-size:11px"><strong>When:</strong> ' + escHtml(r.trigger) + '</div>' : '') +
