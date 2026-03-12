@@ -70,6 +70,10 @@ const proc = spawn(process.execPath, [claudeBin, ...cliArgs], {
 
 fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\n`);
 
+// Write PID file for parent engine to verify spawn
+const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
+fs.writeFileSync(pidFile, String(proc.pid || ''));
+
 // Send prompt via stdin
 proc.stdin.write(prompt);
 proc.stdin.end();

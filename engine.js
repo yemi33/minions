@@ -586,14 +586,33 @@ function spawnAgent(dispatchItem, config) {
     });
   });
 
-  // Debug: check if spawn succeeded
+  // Track process — even if PID isn't available yet (async on Windows)
+  activeProcesses.set(id, { proc, agentId, startedAt });
+
+  // Log PID and persist to registry
   if (proc.pid) {
     log('info', `Agent process started: PID ${proc.pid}`);
   } else {
-    log('error', `Agent spawn returned no PID — process may have failed to start. Script: ${spawnScript}`);
+    log('warn', `Agent spawn returned no PID initially — will verify via PID file`);
   }
 
-  activeProcesses.set(id, { proc, agentId, startedAt });
+  // Verify spawn after 5 seconds via PID file written by spawn-agent.js
+  setTimeout(() => {
+    const pidFile = promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
+    try {
+      const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
+      if (pidStr) {
+        log('info', `Agent ${agentId} verified via PID file: ${pidStr}`);
+      }
+      try { fs.unlinkSync(pidFile); } catch {}
+    } catch {
+      // No PID file — check if live output exists (spawn-agent.js may have written it)
+      if (!fs.existsSync(liveOutputPath) || fs.statSync(liveOutputPath).size <= 200) {
+        log('error', `Agent ${agentId} (${id}) — no PID file and no output after 5s. Spawn likely failed.`);
+        // Don't mark as error yet — heartbeat will catch it at 5min
+      }
+    }
+  }, 5000);
 
   // Move dispatch item to active
   const dispatch = getDispatch();
@@ -1115,6 +1134,51 @@ function checkTimeouts(config) {
 
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
+
+    // Check if the agent actually completed (result event in live output)
+    let completedViaOutput = false;
+    try {
+      const liveLog = safeRead(liveLogPath);
+      if (liveLog && liveLog.includes('"type":"result"')) {
+        completedViaOutput = true;
+        const isSuccess = liveLog.includes('"subtype":"success"');
+        log('info', `Agent ${item.agent} (${item.id}) completed via output detection (${isSuccess ? 'success' : 'error'})`);
+
+        // Extract output text for the output.log
+        const outputPath = path.join(AGENTS_DIR, item.agent, 'output.log');
+        try {
+          const resultLine = liveLog.split('\n').find(l => l.includes('"type":"result"'));
+          if (resultLine) {
+            const result = JSON.parse(resultLine);
+            safeWrite(outputPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${result.result || '(no text)'}\n`);
+          }
+        } catch {}
+
+        completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');
+        if (item.meta?.item?.id) updateWorkItemStatus(item.meta, isSuccess ? 'done' : 'failed', '');
+        setAgentStatus(item.agent, {
+          status: 'done',
+          task: item.task || '',
+          dispatch_id: item.id,
+          completed_at: ts()
+        });
+
+        // Run post-completion hooks
+        if (isSuccess) {
+          const config = getConfig();
+          syncPrsFromOutput(liveLog, item.agent, item.meta, config);
+          checkForLearnings(item.agent, config.agents?.[item.agent], item.task);
+          updateAgentHistory(item.agent, item, isSuccess ? 'success' : 'error');
+          updateMetrics(item.agent, item, isSuccess ? 'success' : 'error');
+        }
+
+        if (hasProcess) {
+          try { activeProcesses.get(item.id)?.proc.kill('SIGTERM'); } catch {}
+          activeProcesses.delete(item.id);
+        }
+        continue; // Skip orphan/hung detection — we handled it
+      }
+    } catch {}
 
     if (!hasProcess && silentMs > heartbeatTimeout) {
       // No tracked process AND no recent output → orphaned
