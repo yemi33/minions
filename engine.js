@@ -1361,9 +1361,13 @@ function discoverFromWorkItems(config, project) {
       item_id: item.id,
       item_name: item.title || item.id,
       item_priority: item.priority || 'medium',
-      item_complexity: item.complexity || 'medium',
       item_description: item.description || '',
+      work_type: workType,
+      additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
+      scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
       branch_name: branchName,
+      project_path: root,
+      main_branch: project?.mainBranch || 'main',
       worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', branchName),
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
       team_root: SQUAD_DIR,
@@ -1371,10 +1375,11 @@ function discoverFromWorkItems(config, project) {
       project_name: project?.name || 'Unknown Project',
       ado_org: project?.adoOrg || 'Unknown',
       ado_project: project?.adoProject || 'Unknown',
-      repo_name: project?.repoName || 'Unknown'
+      repo_name: project?.repoName || 'Unknown',
+      date: dateStamp()
     };
 
-    const prompt = item.prompt || renderPlaybook(workType, vars) || item.description;
+    const prompt = item.prompt || renderPlaybook('work-item', vars) || renderPlaybook(workType, vars) || item.description;
     if (!prompt) continue;
 
     newWork.push({
@@ -1404,8 +1409,37 @@ function discoverFromWorkItems(config, project) {
 }
 
 /**
+ * Build the multi-project context section for central work items.
+ * Inserted into the playbook via {{scope_section}}.
+ */
+function buildProjectContext(projects, assignedProject, isFanOut, agentName, agentRole) {
+  const projectList = projects.map(p => {
+    let line = `### ${p.name}\n`;
+    line += `- **Path:** ${p.localPath}\n`;
+    line += `- **ADO:** ${p.adoOrg}/${p.adoProject}/${p.repoName} (repo ID: ${p.repositoryId || 'unknown'})\n`;
+    if (p.description) line += `- **What it is:** ${p.description}\n`;
+    return line;
+  }).join('\n');
+
+  let section = '';
+
+  if (isFanOut && assignedProject) {
+    section += `## Scope: Fan-out (parallel multi-agent)\n\n`;
+    section += `You are assigned to **${assignedProject.name}**. Other agents are handling the other projects.\n\n`;
+  } else {
+    section += `## Scope: Multi-project (you decide where to work)\n\n`;
+    section += `Determine which project(s) this task applies to. It may span multiple repos.\n`;
+    section += `If multi-repo, work on each sequentially (worktree + PR per repo).\n`;
+    section += `Note cross-repo dependencies in PR descriptions.\n\n`;
+  }
+
+  section += `## Available Projects\n\n${projectList}`;
+  return section;
+}
+
+/**
  * Scan central ~/.squad/work-items.json for project-agnostic tasks.
- * The agent receives all project context and decides where to work.
+ * Uses the shared work-item.md playbook with multi-project context injected.
  */
 function discoverCentralWorkItems(config) {
   const centralPath = path.join(SQUAD_DIR, 'work-items.json');
@@ -1422,17 +1456,6 @@ function discoverCentralWorkItems(config) {
     const workType = item.type || 'implement';
     const isFanOut = item.scope === 'fan-out';
 
-    // Build project context
-    const projectList = projects.map(p => {
-      let line = `### ${p.name}\n`;
-      line += `- **Path:** ${p.localPath}\n`;
-      line += `- **ADO:** ${p.adoOrg}/${p.adoProject}/${p.repoName}\n`;
-      if (p.description) line += `- **What it is:** ${p.description}\n`;
-      return line;
-    }).join('\n');
-
-    const decisions = getDecisions();
-
     if (isFanOut) {
       // ─── Fan-out: dispatch to ALL idle agents ───────────────────────
       const idleAgents = Object.entries(config.agents)
@@ -1444,55 +1467,40 @@ function discoverCentralWorkItems(config) {
 
       if (idleAgents.length === 0) continue;
 
-      // Assign projects round-robin, or let agents self-select if more agents than projects
-      const assignments = idleAgents.map((agent, i) => {
-        const assignedProject = projects.length > 0 ? projects[i % projects.length] : null;
-        return { agent, assignedProject };
-      });
+      const assignments = idleAgents.map((agent, i) => ({
+        agent,
+        assignedProject: projects.length > 0 ? projects[i % projects.length] : null
+      }));
 
       for (const { agent, assignedProject } of assignments) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
 
-        let prompt = `# Task: ${item.title}\n\n`;
-        prompt += `**Agent:** ${agent.name} (${agent.role})\n`;
-        prompt += `**Priority:** ${item.priority || 'medium'}\n`;
-        prompt += `**Type:** ${workType}\n`;
-        prompt += `**Scope:** Fan-out (multiple agents working on this task in parallel)\n\n`;
-        if (item.description) prompt += `## Description\n\n${item.description}\n\n`;
+        const ap = assignedProject || projects[0];
+        const vars = {
+          agent_id: agent.id,
+          agent_name: agent.name,
+          agent_role: agent.role,
+          item_id: item.id,
+          item_name: item.title || item.id,
+          item_priority: item.priority || 'medium',
+          item_description: item.description || '',
+          work_type: workType,
+          additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
+          scope_section: buildProjectContext(projects, assignedProject, true, agent.name, agent.role),
+          project_path: ap?.localPath || '',
+          main_branch: ap?.mainBranch || 'main',
+          repo_id: ap?.repositoryId || '',
+          project_name: ap?.name || 'Unknown',
+          ado_org: ap?.adoOrg || 'Unknown',
+          ado_project: ap?.adoProject || 'Unknown',
+          repo_name: ap?.repoName || 'Unknown',
+          team_root: SQUAD_DIR,
+          date: dateStamp()
+        };
 
-        // Assignment
-        if (assignedProject && projects.length >= idleAgents.length) {
-          prompt += `## Your Assignment\n\n`;
-          prompt += `You are assigned to **${assignedProject.name}**. Focus your work on this project.\n`;
-          prompt += `- **Path:** ${assignedProject.localPath}\n`;
-          prompt += `- **ADO:** ${assignedProject.adoOrg}/${assignedProject.adoProject}/${assignedProject.repoName}\n`;
-          if (assignedProject.description) prompt += `- **What it is:** ${assignedProject.description}\n`;
-          prompt += `\nOther agents are handling the other projects in parallel. `;
-          prompt += `Focus only on your assigned project.\n\n`;
-        } else {
-          prompt += `## Your Assignment\n\n`;
-          prompt += `Multiple agents are working on this task in parallel. `;
-          prompt += `Your role as **${agent.name} (${agent.role})** is to bring your specific expertise.\n`;
-          if (assignedProject) {
-            prompt += `Start with **${assignedProject.name}** but you may cover other projects too if relevant to your role.\n`;
-          }
-          prompt += `\n`;
-        }
-
-        prompt += `## All Projects\n\n${projectList}\n\n`;
-        prompt += `## Instructions\n\n`;
-        prompt += `1. Focus on your assigned project/area based on your role and expertise\n`;
-        prompt += `2. Navigate to the correct project directory\n`;
-        prompt += `3. Use **git worktrees** for any code changes — NEVER checkout on main\n`;
-        prompt += `4. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
-        prompt += `5. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agent.id}-fanout-${item.id}-${dateStamp()}.md\`\n`;
-        prompt += `   - Title your findings clearly so they can be merged with other agents' work\n`;
-        prompt += `6. Update your status at: \`${SQUAD_DIR}/agents/${agent.id}/status.json\` — include the PR ID if you created one\n`;
-        prompt += `7. If you created a PR, add it to \`<project>/.squad/pull-requests.json\`\n`;
-
-        if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
-        if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
+        const prompt = renderPlaybook('work-item', vars);
+        if (!prompt) continue;
 
         newWork.push({
           type: workType,
@@ -1520,31 +1528,32 @@ function discoverCentralWorkItems(config) {
 
       const agentName = config.agents[agentId]?.name || agentId;
       const agentRole = config.agents[agentId]?.role || 'Agent';
+      const firstProject = projects[0];
 
-      let prompt = `# Task: ${item.title}\n\n`;
-      prompt += `**Agent:** ${agentName} (${agentRole})\n`;
-      prompt += `**Priority:** ${item.priority || 'medium'}\n`;
-      prompt += `**Type:** ${workType}\n\n`;
-      if (item.description) prompt += `## Description\n\n${item.description}\n\n`;
-      prompt += `## Available Projects\n\n${projectList}\n\n`;
-      prompt += `## Instructions\n\n`;
-      prompt += `You have access to multiple project repositories. Based on the task above:\n\n`;
-      prompt += `1. **Determine scope** — which project(s) does this task apply to? It may span multiple repos.\n`;
-      prompt += `2. **Navigate** to the correct project directory to do the work.\n`;
-      prompt += `3. **If the task spans multiple repos**, work on each one sequentially:\n`;
-      prompt += `   - Complete changes in the first repo (worktree → commit → push → PR)\n`;
-      prompt += `   - Then move to the next repo and repeat\n`;
-      prompt += `   - Note cross-repo dependencies in your PR descriptions (e.g., "Requires <other-repo> PR #123")\n`;
-      prompt += `   - Each repo has its own ADO config (org, project, repoId) — use the correct one per repo\n`;
-      prompt += `4. Use **git worktrees** for any code changes — NEVER checkout on main\n`;
-      prompt += `5. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
-      prompt += `6. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\`\n`;
-      prompt += `   - If multi-repo: note which repos were touched and why\n`;
-      prompt += `7. Update your status at: \`${SQUAD_DIR}/agents/${agentId}/status.json\` — include the PR ID if you created one\n`;
-      prompt += `8. If you created a PR, add it to \`<project>/.squad/pull-requests.json\` with: id, title, agent, branch, reviewStatus: "pending", status: "active", created, url\n`;
+      const vars = {
+        agent_id: agentId,
+        agent_name: agentName,
+        agent_role: agentRole,
+        item_id: item.id,
+        item_name: item.title || item.id,
+        item_priority: item.priority || 'medium',
+        item_description: item.description || '',
+        work_type: workType,
+        additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
+        scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
+        project_path: firstProject?.localPath || '',
+        main_branch: firstProject?.mainBranch || 'main',
+        repo_id: firstProject?.repositoryId || '',
+        project_name: firstProject?.name || 'Unknown',
+        ado_org: firstProject?.adoOrg || 'Unknown',
+        ado_project: firstProject?.adoProject || 'Unknown',
+        repo_name: firstProject?.repoName || 'Unknown',
+        team_root: SQUAD_DIR,
+        date: dateStamp()
+      };
 
-      if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
-      if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
+      const prompt = renderPlaybook('work-item', vars);
+      if (!prompt) continue;
 
       newWork.push({
         type: workType,
