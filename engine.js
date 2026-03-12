@@ -1247,6 +1247,8 @@ function discoverWork(config) {
   let allFixes = [], allReviews = [], allImplements = [], allWorkItems = [];
 
   for (const project of projects) {
+    const root = project.localPath ? path.resolve(project.localPath) : null;
+    if (!root || !fs.existsSync(root)) continue;
     const prWork = discoverFromPrs(config, project);
     allFixes.push(...prWork.filter(w => w.type === 'fix'));
     allReviews.push(...prWork.filter(w => w.type === 'review'));
@@ -1333,6 +1335,18 @@ const commands = {
 
     const config = getConfig();
     const interval = config.engine?.tickInterval || 60000;
+
+    // Validate project paths
+    const projects = getProjects(config);
+    for (const p of projects) {
+      const root = p.localPath ? path.resolve(p.localPath) : null;
+      if (!root || !fs.existsSync(root)) {
+        log('warn', `Project "${p.name}" path not found: ${p.localPath} — skipping`);
+        console.log(`  WARNING: ${p.name} path not found: ${p.localPath}`);
+      } else {
+        console.log(`  Project: ${p.name} (${root})`);
+      }
+    }
 
     // Initial tick
     tick();
