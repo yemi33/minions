@@ -4,9 +4,13 @@ engine/log.json
 engine/control.json
 engine/prompt-*.md
 engine/sysprompt-*.md
+engine/metrics.json
 agents/*/status.json
 agents/*/output.log
 identity/now.md
+
+# Machine-specific (synced from ~/.claude.json on engine start)
+mcp-servers.json
 
 # Legacy
 agents/ralph/next-action.json

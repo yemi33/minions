@@ -91,7 +91,7 @@
   "claude": {
     "binary": "claude",
     "outputFormat": "json",
-    "allowedTools": "Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch"
+    "allowedTools": ""
   },
   "agents": {
     "ripley": {

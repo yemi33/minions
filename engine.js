@@ -147,6 +147,39 @@ function getInboxFiles() {
   try { return fs.readdirSync(INBOX_DIR).filter(f => f.endsWith('.md')); } catch { return []; }
 }
 
+// ─── MCP Server Sync ─────────────────────────────────────────────────────────
+
+const MCP_SERVERS_PATH = path.join(SQUAD_DIR, 'mcp-servers.json');
+
+function syncMcpServers() {
+  // Sync MCP servers from ~/.claude.json into squad's mcp-servers.json
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const claudeJsonPath = path.join(home, '.claude.json');
+
+  if (!fs.existsSync(claudeJsonPath)) {
+    console.log('  ~/.claude.json not found — skipping MCP sync');
+    return false;
+  }
+
+  try {
+    const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
+    const servers = claudeJson.mcpServers;
+    if (!servers || Object.keys(servers).length === 0) {
+      console.log('  No MCP servers found in ~/.claude.json');
+      return false;
+    }
+
+    safeWrite(MCP_SERVERS_PATH, { mcpServers: servers });
+    const names = Object.keys(servers);
+    console.log(`  MCP servers synced (${names.length}): ${names.join(', ')}`);
+    log('info', `Synced ${names.length} MCP servers from ~/.claude.json: ${names.join(', ')}`);
+    return true;
+  } catch (e) {
+    console.log(`  MCP sync failed: ${e.message}`);
+    return false;
+  }
+}
+
 // ─── Runbooks ────────────────────────────────────────────────────────────────
 
 const RUNBOOKS_DIR = path.join(SQUAD_DIR, 'runbooks');
@@ -429,6 +462,12 @@ function spawnAgent(dispatchItem, config) {
 
   if (claudeConfig.allowedTools) {
     args.push('--allowedTools', claudeConfig.allowedTools);
+  }
+
+  // MCP servers — pass config file if it exists
+  const mcpConfigPath = claudeConfig.mcpConfig || path.join(SQUAD_DIR, 'mcp-servers.json');
+  if (fs.existsSync(mcpConfigPath)) {
+    args.push('--mcp-config', mcpConfigPath);
   }
 
   log('info', `Spawning agent: ${agentId} (${id}) in ${cwd}`);
@@ -1385,6 +1424,9 @@ const commands = {
     const config = getConfig();
     const interval = config.engine?.tickInterval || 60000;
 
+    // Sync MCP servers from Claude Code
+    syncMcpServers();
+
     // Validate project paths
     const projects = getProjects(config);
     for (const p of projects) {
@@ -1638,6 +1680,10 @@ const commands = {
     }
   },
 
+  'mcp-sync'() {
+    syncMcpServers();
+  },
+
   discover() {
     const config = getConfig();
     console.log('\n=== Work Discovery (dry run) ===\n');
@@ -1682,5 +1728,6 @@ if (!cmd) {
   console.log('  spawn <a> <p>    Manually spawn agent with prompt');
   console.log('  work <title> [o] Add to work-items.json queue');
   console.log('  complete <id>    Mark dispatch as done');
+  console.log('  mcp-sync         Sync MCP servers from ~/.claude.json');
   process.exit(1);
 }
