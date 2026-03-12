@@ -1063,7 +1063,10 @@ function wiRow(item) {
     '<td>' + statusBadge(item.status || 'pending') +
       (item.status === 'failed' ? ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry</button>' : '') +
     '</td>' +
-    '<td><span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span>' +
+    '<td>' +
+      (item.completedAgents && item.completedAgents.length > 0
+        ? '<span class="pr-agent" style="color:var(--green)">' + escHtml(item.completedAgents.join(', ')) + '</span>'
+        : '<span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span>') +
       (item.failReason ? '<span style="display:block;font-size:9px;color:var(--red)" title="' + escHtml(item.failReason) + '">' + escHtml(item.failReason.slice(0, 30)) + '</span>' : '') +
     '</td>' +
     '<td>' + prLink + '</td>' +

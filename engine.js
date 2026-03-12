@@ -698,9 +698,45 @@ function updateWorkItemStatus(meta, status, reason) {
 
   const target = items.find(i => i.id === itemId);
   if (target) {
-    target.status = status;
-    if (reason) target.failReason = reason;
-    target.failedAt = ts();
+    // For fan-out items, track per-agent results instead of overwriting the whole status
+    if (meta.source === 'central-work-item-fanout') {
+      if (!target.agentResults) target.agentResults = {};
+      const agentId = meta.dispatchKey?.split('-')[0] || 'unknown';
+      // Extract agent name from dispatch key: "central-work-W002-dallas" → "dallas"
+      const parts = (meta.dispatchKey || '').split('-');
+      const agent = parts[parts.length - 1] || 'unknown';
+      target.agentResults[agent] = { status, completedAt: ts(), reason: reason || undefined };
+
+      // Fan-out is "done" if ANY agent succeeded, "failed" only if ALL failed
+      const results = Object.values(target.agentResults);
+      const anySuccess = results.some(r => r.status === 'done');
+      const allDone = target.fanOutAgents ? results.length >= target.fanOutAgents.length : false;
+
+      if (anySuccess) {
+        target.status = 'done';
+        delete target.failReason;
+        delete target.failedAt;
+        target.completedAgents = Object.entries(target.agentResults)
+          .filter(([, r]) => r.status === 'done')
+          .map(([a]) => a);
+      } else if (allDone) {
+        target.status = 'failed';
+        target.failReason = 'All fan-out agents failed';
+        target.failedAt = ts();
+      }
+    } else {
+      target.status = status;
+      if (status === 'done') {
+        // Clean up error fields on success
+        delete target.failReason;
+        delete target.failedAt;
+        target.completedAt = ts();
+      } else if (status === 'failed') {
+        if (reason) target.failReason = reason;
+        target.failedAt = ts();
+      }
+    }
+
     safeWrite(wiPath, items);
     log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
   }

@@ -10,7 +10,8 @@
     "createdBy": "dashboard",
     "dispatched_at": "2026-03-12T05:18:01.196Z",
     "dispatched_to": "dallas",
-    "_pr": "PR-4959180"
+    "_pr": "PR-4959092",
+    "completedAt": "2026-03-12T05:18:45.138Z"
   },
   {
     "id": "W002",
@@ -31,7 +32,32 @@
       "rebecca",
       "ralph"
     ],
-    "failReason": "Orphaned — no process, silent for 309s",
-    "failedAt": "2026-03-12T06:14:44.155Z"
+    "completedAt": "2026-03-12T06:06:09.090Z",
+    "agentResults": {
+      "ripley": {
+        "status": "failed",
+        "reason": "Orphaned — process died"
+      },
+      "dallas": {
+        "status": "failed",
+        "reason": "Orphaned — process died"
+      },
+      "lambert": {
+        "status": "failed",
+        "reason": "Never started"
+      },
+      "rebecca": {
+        "status": "done",
+        "completedAt": "2026-03-12T06:14:44.151Z"
+      },
+      "ralph": {
+        "status": "done",
+        "completedAt": "2026-03-12T06:06:09.090Z"
+      }
+    },
+    "completedAgents": [
+      "rebecca",
+      "ralph"
+    ]
   }
 ]
