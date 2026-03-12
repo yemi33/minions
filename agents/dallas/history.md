@@ -1,5 +1,12 @@
 # Agent History
 
+### 2026-03-12T07:18:22.368Z — error
+- **Task:** Build Dallas cowork PR locally and verify it works
+- **Type:** test
+- **Project:** central
+- **Branch:** none
+- **Dispatch ID:** dallas-test-1773298943600
+
 ### 2026-03-12T05:25:52.462Z — success
 - **Task:** add 'cowork' route to bebop
 - **Type:** implement
