@@ -1146,6 +1146,141 @@ function checkTimeouts(config) {
   }
 }
 
+// ─── Cleanup ─────────────────────────────────────────────────────────────────
+
+function runCleanup(config, verbose = false) {
+  const projects = getProjects(config);
+  let cleaned = { tempFiles: 0, liveOutputs: 0, worktrees: 0, zombies: 0 };
+
+  // 1. Clean stale temp prompt/sysprompt files (older than 1 hour)
+  const oneHourAgo = Date.now() - 3600000;
+  try {
+    const engineFiles = fs.readdirSync(ENGINE_DIR);
+    for (const f of engineFiles) {
+      if (f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-')) {
+        const fp = path.join(ENGINE_DIR, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(fp);
+            cleaned.tempFiles++;
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // 2. Clean live-output.log for idle agents (not currently working)
+  for (const [agentId] of Object.entries(config.agents || {})) {
+    const status = getAgentStatus(agentId);
+    if (status.status !== 'working') {
+      const livePath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+      if (fs.existsSync(livePath)) {
+        try {
+          const stat = fs.statSync(livePath);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(livePath);
+            cleaned.liveOutputs++;
+          }
+        } catch {}
+      }
+    }
+  }
+
+  // 3. Clean git worktrees for merged/abandoned PRs
+  for (const project of projects) {
+    const root = project.localPath ? path.resolve(project.localPath) : null;
+    if (!root || !fs.existsSync(root)) continue;
+
+    const worktreeRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+    if (!fs.existsSync(worktreeRoot)) continue;
+
+    // Get PRs for this project
+    const prSrc = project.workSources?.pullRequests || {};
+    const prs = safeJson(path.resolve(root, prSrc.path || '.squad/pull-requests.json')) || [];
+    const mergedBranches = new Set();
+    for (const pr of prs) {
+      if (pr.status === 'merged' || pr.status === 'abandoned' || pr.status === 'completed') {
+        if (pr.branch) mergedBranches.add(pr.branch);
+      }
+    }
+
+    // List worktrees
+    try {
+      const dirs = fs.readdirSync(worktreeRoot);
+      for (const dir of dirs) {
+        const wtPath = path.join(worktreeRoot, dir);
+        if (!fs.statSync(wtPath).isDirectory()) continue;
+
+        // Check if this worktree's branch is merged
+        let shouldClean = false;
+
+        // Match by directory name to branch (worktrees are named after branches)
+        for (const branch of mergedBranches) {
+          const branchSlug = branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
+          if (dir === branchSlug || dir === branch || branch.endsWith(dir)) {
+            shouldClean = true;
+            break;
+          }
+        }
+
+        // Also clean worktrees older than 24 hours with no active dispatch referencing them
+        if (!shouldClean) {
+          try {
+            const stat = fs.statSync(wtPath);
+            const ageMs = Date.now() - stat.mtimeMs;
+            if (ageMs > 86400000) { // 24 hours
+              const dispatch = getDispatch();
+              const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d =>
+                d.meta?.branch && (dir.includes(d.meta.branch) || d.meta.branch.includes(dir))
+              );
+              if (!isReferenced) shouldClean = true;
+            }
+          } catch {}
+        }
+
+        if (shouldClean) {
+          try {
+            execSync(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe' });
+            cleaned.worktrees++;
+            if (verbose) console.log(`  Removed worktree: ${wtPath}`);
+          } catch (e) {
+            if (verbose) console.log(`  Failed to remove worktree ${wtPath}: ${e.message}`);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Kill zombie claude processes not tracked by the engine
+  // List all node processes, check if any are running spawn-agent.js for our squad
+  try {
+    const dispatch = getDispatch();
+    const activePids = new Set();
+    for (const [, info] of activeProcesses.entries()) {
+      if (info.proc?.pid) activePids.add(info.proc.pid);
+    }
+
+    // If no active dispatches but active processes exist in the Map, clean the Map
+    if ((dispatch.active || []).length === 0 && activeProcesses.size > 0) {
+      for (const [id, info] of activeProcesses.entries()) {
+        try { info.proc.kill('SIGTERM'); } catch {}
+        activeProcesses.delete(id);
+        cleaned.zombies++;
+      }
+    }
+  } catch {}
+
+  // 5. Clean spawn-debug.log
+  try { fs.unlinkSync(path.join(ENGINE_DIR, 'spawn-debug.log')); } catch {}
+
+  if (cleaned.tempFiles + cleaned.liveOutputs + cleaned.worktrees + cleaned.zombies > 0) {
+    log('info', `Cleanup: ${cleaned.tempFiles} temp files, ${cleaned.liveOutputs} live outputs, ${cleaned.worktrees} worktrees, ${cleaned.zombies} zombies`);
+  }
+
+  return cleaned;
+}
+
 // ─── Work Discovery ─────────────────────────────────────────────────────────
 
 const dispatchCooldowns = new Map(); // key → timestamp of last dispatch
@@ -1620,17 +1755,25 @@ function discoverWork(config) {
 
 // ─── Main Tick ──────────────────────────────────────────────────────────────
 
+let tickCount = 0;
+
 function tick() {
   const control = getControl();
   if (control.state !== 'running') return;
 
   const config = getConfig();
+  tickCount++;
 
   // 1. Check for timed-out agents
   checkTimeouts(config);
 
   // 2. Consolidate inbox
   consolidateInbox(config);
+
+  // 2.5. Periodic cleanup (every 10 ticks = ~10 minutes)
+  if (tickCount % 10 === 0) {
+    runCleanup(config);
+  }
 
   // 3. Discover new work from sources
   discoverWork(config);
@@ -1937,6 +2080,13 @@ const commands = {
     }
   },
 
+  cleanup() {
+    const config = getConfig();
+    console.log('\n=== Cleanup ===\n');
+    const result = runCleanup(config, true);
+    console.log(`\nDone: ${result.tempFiles} temp files, ${result.liveOutputs} live outputs, ${result.worktrees} worktrees, ${result.zombies} zombies cleaned.`);
+  },
+
   'mcp-sync'() {
     syncMcpServers();
   },
@@ -1985,6 +2135,7 @@ if (!cmd) {
   console.log('  spawn <a> <p>    Manually spawn agent with prompt');
   console.log('  work <title> [o] Add to work-items.json queue');
   console.log('  complete <id>    Mark dispatch as done');
+  console.log('  cleanup           Clean temp files, worktrees, zombies');
   console.log('  mcp-sync         Sync MCP servers from ~/.claude.json');
   process.exit(1);
 }
