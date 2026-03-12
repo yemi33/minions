@@ -545,6 +545,16 @@ function spawnAgent(dispatchItem, config) {
     // Move from active to completed in dispatch
     completeDispatch(id, code === 0 ? 'success' : 'error');
 
+    // Post-completion: update work item status on success
+    if (code === 0 && meta?.item?.id) {
+      updateWorkItemStatus(meta, 'done', '');
+    }
+
+    // Post-completion: scan output for PRs and sync to pull-requests.json
+    if (code === 0) {
+      syncPrsFromOutput(stdout, agentId, meta, config);
+    }
+
     // Post-completion: update PR status if relevant
     if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
     if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project);
@@ -674,6 +684,90 @@ function updateWorkItemStatus(meta, status, reason) {
     target.failedAt = ts();
     safeWrite(wiPath, items);
     log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
+  }
+}
+
+// ─── PR Sync from Output ─────────────────────────────────────────────────────
+
+function syncPrsFromOutput(output, agentId, meta, config) {
+  // Scan agent output for PR URLs and add to the correct project's pull-requests.json
+  // Matches patterns like: pullrequest/4959180, PR #4959180, PR-4959180
+  const prMatches = new Set();
+  const urlPattern = /pullrequest\/(\d+)/g;
+  const idPattern = /PR[# -]*(\d{5,})/gi;
+  let match;
+  while ((match = urlPattern.exec(output)) !== null) prMatches.add(match[1]);
+  while ((match = idPattern.exec(output)) !== null) prMatches.add(match[1]);
+
+  if (prMatches.size === 0) return;
+
+  // Also scan inbox files for this agent today
+  const today = dateStamp();
+  const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
+  for (const f of inboxFiles) {
+    const content = safeRead(path.join(INBOX_DIR, f));
+    while ((match = urlPattern.exec(content)) !== null) prMatches.add(match[1]);
+    while ((match = idPattern.exec(content)) !== null) prMatches.add(match[1]);
+  }
+
+  if (prMatches.size === 0) return;
+
+  // Determine which project to add PRs to
+  const projects = getProjects(config);
+  let targetProject = null;
+  if (meta?.project?.name) {
+    targetProject = projects.find(p => p.name === meta.project.name);
+  }
+  // Try to detect project from PR URL patterns in output
+  if (!targetProject) {
+    for (const p of projects) {
+      if (p.prUrlBase && output.includes(p.prUrlBase.replace(/pullrequest\/$/, ''))) {
+        targetProject = p;
+        break;
+      }
+      if (p.repoName && output.includes(`_git/${p.repoName}`)) {
+        targetProject = p;
+        break;
+      }
+    }
+  }
+  if (!targetProject) targetProject = projects[0];
+  if (!targetProject) return;
+
+  const root = path.resolve(targetProject.localPath);
+  const prSrc = targetProject.workSources?.pullRequests || {};
+  const prPath = path.resolve(root, prSrc.path || '.squad/pull-requests.json');
+  const prs = safeJson(prPath) || [];
+
+  const agentName = config.agents?.[agentId]?.name || agentId;
+  let added = 0;
+
+  for (const prId of prMatches) {
+    const fullId = `PR-${prId}`;
+    if (prs.some(p => p.id === fullId || String(p.id).includes(prId))) continue;
+
+    // Extract title from output if possible
+    let title = meta?.item?.title || '';
+    const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
+    if (titleMatch) title = titleMatch[1].trim();
+
+    prs.push({
+      id: fullId,
+      title: title || `PR created by ${agentName}`,
+      agent: agentName,
+      branch: meta?.branch || '',
+      reviewStatus: 'pending',
+      status: 'active',
+      created: dateStamp(),
+      url: targetProject.prUrlBase ? targetProject.prUrlBase + prId : '',
+      prdItems: meta?.item?.id ? [meta.item.id] : []
+    });
+    added++;
+  }
+
+  if (added > 0) {
+    safeWrite(prPath, prs);
+    log('info', `Synced ${added} PR(s) from ${agentName}'s output to ${targetProject.name}/pull-requests.json`);
   }
 }
 
@@ -1394,7 +1488,8 @@ function discoverCentralWorkItems(config) {
         prompt += `4. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
         prompt += `5. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agent.id}-fanout-${item.id}-${dateStamp()}.md\`\n`;
         prompt += `   - Title your findings clearly so they can be merged with other agents' work\n`;
-        prompt += `6. Update your status at: \`${SQUAD_DIR}/agents/${agent.id}/status.json\`\n`;
+        prompt += `6. Update your status at: \`${SQUAD_DIR}/agents/${agent.id}/status.json\` — include the PR ID if you created one\n`;
+        prompt += `7. If you created a PR, add it to \`<project>/.squad/pull-requests.json\`\n`;
 
         if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
         if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
@@ -1445,7 +1540,8 @@ function discoverCentralWorkItems(config) {
       prompt += `5. Use **Azure DevOps MCP tools** (mcp__azure-ado__*) for PRs — NEVER use gh CLI\n`;
       prompt += `6. Write your findings to: \`${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\`\n`;
       prompt += `   - If multi-repo: note which repos were touched and why\n`;
-      prompt += `7. Update your status at: \`${SQUAD_DIR}/agents/${agentId}/status.json\`\n`;
+      prompt += `7. Update your status at: \`${SQUAD_DIR}/agents/${agentId}/status.json\` — include the PR ID if you created one\n`;
+      prompt += `8. If you created a PR, add it to \`<project>/.squad/pull-requests.json\` with: id, title, agent, branch, reviewStatus: "pending", status: "active", created, url\n`;
 
       if (item.prompt) prompt += `\n## Additional Context\n\n${item.prompt}\n`;
       if (decisions) prompt += `\n\n---\n\n## Team Decisions (MUST READ)\n\n${decisions}`;
