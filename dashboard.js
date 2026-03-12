@@ -492,7 +492,13 @@ const server = http.createServer(async (req, res) => {
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
-      const id = 'W' + String(items.length + 1).padStart(3, '0');
+      // Generate unique ID with project prefix to avoid collisions across sources
+      const prefix = body.project ? body.project.slice(0, 3).toUpperCase() + '-' : '';
+      const maxNum = items.reduce(function(max, i) {
+        const m = (i.id || '').match(/(\d+)$/);
+        return m ? Math.max(max, parseInt(m[1])) : max;
+      }, 0);
+      const id = prefix + 'W' + String(maxNum + 1).padStart(3, '0');
       const item = {
         id, title: body.title, type: body.type || 'implement',
         priority: body.priority || 'medium', description: body.description || '',
