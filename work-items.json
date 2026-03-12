@@ -11,5 +11,27 @@
     "dispatched_at": "2026-03-12T05:18:01.196Z",
     "dispatched_to": "dallas",
     "_pr": "PR-4959180"
+  },
+  {
+    "id": "W002",
+    "title": "explore all the project codebases and create durable artifacts for analyzing the architecture",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-12T05:54:18.284Z",
+    "createdBy": "dashboard",
+    "scope": "fan-out",
+    "dispatched_at": "2026-03-12T05:54:20.468Z",
+    "dispatched_to": "ripley, dallas, lambert, rebecca, ralph",
+    "fanOutAgents": [
+      "ripley",
+      "dallas",
+      "lambert",
+      "rebecca",
+      "ralph"
+    ],
+    "failReason": "Orphaned — no process, silent for 309s",
+    "failedAt": "2026-03-12T06:11:50.355Z"
   }
 ]
