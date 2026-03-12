@@ -317,8 +317,13 @@
         <button class="cmd-submit" onclick="submitWorkItem()">Add</button>
       </div>
       <div class="cmd-row">
-        <div class="cmd-field"><label>Description (optional)</label><textarea id="wi-desc" rows="2" placeholder="Additional details..." oninput="autoDetectWorkItemType()"></textarea></div>
+        <div class="cmd-field" style="flex:3"><label>Description (optional)</label><textarea id="wi-desc" rows="2" placeholder="Additional details..." oninput="autoDetectWorkItemType()"></textarea></div>
+        <div class="cmd-field" style="flex:1"><label>Attach Reference</label>
+          <select id="wi-ref" style="margin-bottom:4px"><option value="">None</option></select>
+          <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;width:100%" onclick="attachReference()">Attach</button>
+        </div>
       </div>
+      <div id="wi-attachments" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px"></div>
       <div class="cmd-toast" id="wi-toast"></div>
     </div>
 
@@ -1001,6 +1006,7 @@ async function refresh() {
     renderAgents(data.agents);
     renderPrdProgress(data.prdProgress);
     renderInbox(data.inbox);
+    populateRefDropdown(data.inbox);
     renderDecisions(data.decisions);
     renderPrd(data.prd);
     renderPrs(data.pullRequests || []);
@@ -1232,18 +1238,84 @@ function detectWorkItemType(text) {
 
 function autoDetectWorkItemType() {
   const sel = document.getElementById('wi-type');
-  if (sel.value !== 'auto') return; // user picked a specific type, don't override
-  // Just update the placeholder hint — actual resolution happens on submit
+  if (sel.value !== 'auto') return;
+}
+
+let wiAttachments = [];
+
+function populateRefDropdown(inbox) {
+  const sel = document.getElementById('wi-ref');
+  if (!sel) return;
+  const opts = ['<option value="">None</option>'];
+  // Inbox items
+  for (const item of (inbox || inboxData || [])) {
+    opts.push('<option value="inbox:' + escHtml(item.name) + '">📥 ' + escHtml(item.name) + '</option>');
+  }
+  // Agent outputs
+  const agents = ['ripley','dallas','lambert','rebecca','ralph'];
+  for (const a of agents) {
+    opts.push('<option value="output:' + a + '">📄 ' + a + '/output.log</option>');
+  }
+  sel.innerHTML = opts.join('');
+}
+
+function attachReference() {
+  const sel = document.getElementById('wi-ref');
+  const val = sel.value;
+  if (!val) return;
+  if (wiAttachments.includes(val)) return;
+  wiAttachments.push(val);
+  renderAttachments();
+  sel.value = '';
+}
+
+function removeAttachment(idx) {
+  wiAttachments.splice(idx, 1);
+  renderAttachments();
+}
+
+function renderAttachments() {
+  const el = document.getElementById('wi-attachments');
+  if (!wiAttachments.length) { el.innerHTML = ''; return; }
+  el.innerHTML = wiAttachments.map((ref, i) => {
+    const label = ref.replace('inbox:', '📥 ').replace('output:', '📄 ');
+    return '<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:10px;color:var(--blue);display:flex;align-items:center;gap:4px">' +
+      escHtml(label) +
+      '<span style="cursor:pointer;color:var(--muted)" onclick="removeAttachment(' + i + ')">x</span>' +
+    '</span>';
+  }).join('');
 }
 
 async function submitWorkItem() {
   const title = document.getElementById('wi-title').value.trim();
   if (!title) return showToast('wi-toast', 'Title is required', false);
-  const desc = document.getElementById('wi-desc').value.trim();
+  let desc = document.getElementById('wi-desc').value.trim();
   let type = document.getElementById('wi-type').value;
   if (type === 'auto') {
     type = detectWorkItemType(title + ' ' + desc);
   }
+
+  // Fetch attached reference content
+  if (wiAttachments.length > 0) {
+    const refContents = [];
+    for (const ref of wiAttachments) {
+      try {
+        if (ref.startsWith('inbox:')) {
+          const name = ref.slice(6);
+          const item = inboxData.find(i => i.name === name);
+          if (item) refContents.push('## Reference: ' + name + '\n\n' + item.content);
+        } else if (ref.startsWith('output:')) {
+          const agent = ref.slice(7);
+          const content = await fetch('/api/agent/' + agent + '/live?tail=32768').then(r => r.text());
+          if (content) refContents.push('## Reference: ' + agent + ' output\n\n' + content.slice(0, 5000));
+        }
+      } catch {}
+    }
+    if (refContents.length > 0) {
+      desc += '\n\n---\n\n# Attached References\n\n' + refContents.join('\n\n---\n\n');
+    }
+  }
+
   try {
     const res = await fetch('/api/work-items', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1262,6 +1334,8 @@ async function submitWorkItem() {
       document.getElementById('wi-title').value = '';
       document.getElementById('wi-desc').value = '';
       document.getElementById('wi-type').value = 'auto';
+      wiAttachments = [];
+      renderAttachments();
     } else {
       showToast('wi-toast', data.error || 'Failed to add', false);
     }
