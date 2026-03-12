@@ -262,6 +262,29 @@ function getMetrics() {
   try { return JSON.parse(data); } catch { return {}; }
 }
 
+function getRunbooks() {
+  const runbooksDir = path.join(SQUAD_DIR, 'runbooks');
+  try {
+    const files = fs.readdirSync(runbooksDir).filter(f => f.endsWith('.md') && f !== 'README.md');
+    return files.map(f => {
+      const content = safeRead(path.join(runbooksDir, f)) || '';
+      let name = f.replace('.md', '');
+      let trigger = '', author = '', created = '', project = 'any';
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const fm = fmMatch[1];
+        const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
+        name = m('name') || name;
+        trigger = m('trigger');
+        author = m('author');
+        created = m('created');
+        project = m('project') || 'any';
+      }
+      return { name, trigger, author, created, project, file: f };
+    });
+  } catch { return []; }
+}
+
 function getWorkItems() {
   const allItems = [];
 
@@ -322,6 +345,7 @@ function getStatus() {
     engineLog: getEngineLog(),
     metrics: getMetrics(),
     workItems: getWorkItems(),
+    runbooks: getRunbooks(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     timestamp: new Date().toISOString(),
   };
@@ -427,6 +451,20 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(prdPath, JSON.stringify(data, null, 2));
       return jsonReply(res, 200, { ok: true, id: body.id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // GET /api/runbook?file=<name>.md
+  if (req.method === 'GET' && req.url.startsWith('/api/runbook?')) {
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const file = params.get('file');
+    if (!file || file.includes('..') || file.includes('/') || file.includes('\\')) {
+      res.statusCode = 400; res.end('Invalid file'); return;
+    }
+    const content = safeRead(path.join(SQUAD_DIR, 'runbooks', file));
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(content || 'Runbook not found.');
+    return;
   }
 
   const agentMatch = req.url.match(/^\/api\/agent\/([\w-]+)$/);
