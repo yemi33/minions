@@ -496,7 +496,7 @@ function spawnAgent(dispatchItem, config) {
   // Spawn via wrapper script — avoids shell metacharacter issues entirely
   // The wrapper reads prompt + system prompt from files, pipes prompt via stdin
   const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-  const proc = spawn('node', [spawnScript, promptPath, sysPromptPath, ...args], {
+  const proc = spawn(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: childEnv
@@ -575,6 +575,13 @@ function spawnAgent(dispatchItem, config) {
       completed_at: ts()
     });
   });
+
+  // Debug: check if spawn succeeded
+  if (proc.pid) {
+    log('info', `Agent process started: PID ${proc.pid}`);
+  } else {
+    log('error', `Agent spawn returned no PID — process may have failed to start. Script: ${spawnScript}`);
+  }
 
   activeProcesses.set(id, { proc, agentId, startedAt });
 

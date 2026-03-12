@@ -4,11 +4,11 @@
  * Reads prompt and system prompt from files, avoiding shell metacharacter issues.
  *
  * Usage: node spawn-agent.js <prompt-file> <sysprompt-file> [claude-args...]
- * Task prompt is piped via stdin. System prompt passed as --system-prompt arg.
  */
 
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
 
@@ -20,20 +20,69 @@ if (!promptFile || !sysPromptFile) {
 const prompt = fs.readFileSync(promptFile, 'utf8');
 const sysPrompt = fs.readFileSync(sysPromptFile, 'utf8');
 
-const args = ['-p', '--system-prompt', sysPrompt, ...extraArgs];
+// Clean CLAUDECODE env vars
+const env = { ...process.env };
+delete env.CLAUDECODE;
+delete env.CLAUDE_CODE_ENTRYPOINT;
+for (const key of Object.keys(env)) {
+  if (key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete env[key];
+}
 
-const proc = spawn('claude', args, {
+// Resolve claude binary — find the actual JS entry point
+let claudeBin;
+const searchPaths = [
+  // npm global install locations
+  path.join(process.env.npm_config_prefix || '', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+  'C:/.tools/.npm-global/node_modules/@anthropic-ai/claude-code/cli.js',
+  path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+];
+for (const p of searchPaths) {
+  if (p && fs.existsSync(p)) { claudeBin = p; break; }
+}
+// Fallback: parse the shell wrapper
+if (!claudeBin) {
+  try {
+    const which = execSync('bash -c "which claude"', { encoding: 'utf8', env }).trim();
+    const wrapper = execSync(`bash -c "cat '${which}'"`, { encoding: 'utf8', env });
+    const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);
+    if (m) {
+      const basedir = path.dirname(which.replace(/^\/c\//, 'C:/').replace(/\//g, path.sep));
+      claudeBin = path.join(basedir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    }
+  } catch {}
+}
+
+// Debug log
+const debugPath = path.join(__dirname, 'spawn-debug.log');
+fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
+
+const cliArgs = ['-p', '--system-prompt', sysPrompt, ...extraArgs];
+
+if (!claudeBin) {
+  fs.appendFileSync(debugPath, 'FATAL: Cannot find claude-code cli.js\n');
+  process.exit(1);
+}
+
+const proc = spawn(process.execPath, [claudeBin, ...cliArgs], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env },
-  shell: true
+  env
 });
 
+fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\n`);
+
+// Send prompt via stdin
 proc.stdin.write(prompt);
 proc.stdin.end();
 
-// Pass through stdout/stderr to parent
+// Pipe stdout/stderr to parent
 proc.stdout.pipe(process.stdout);
 proc.stderr.pipe(process.stderr);
 
-proc.on('close', (code) => process.exit(code || 0));
-proc.on('error', (err) => { console.error(err.message); process.exit(1); });
+proc.on('close', (code) => {
+  fs.appendFileSync(debugPath, `EXIT: code=${code}\n`);
+  process.exit(code || 0);
+});
+proc.on('error', (err) => {
+  fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
+  process.exit(1);
+});
