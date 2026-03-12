@@ -1057,7 +1057,7 @@ function wiRow(item) {
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
-      (item.scope === 'fan-out' ? ' <span class="pr-badge building" style="font-size:8px">fan-out</span>' : '') + '</td>' +
+      (item.scope === 'fan-out' ? ' <span class="pr-badge ' + (item.status === 'done' || item.status === 'failed' ? 'draft' : 'building') + '" style="font-size:8px">fan-out</span>' : '') + '</td>' +
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
