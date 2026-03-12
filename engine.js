@@ -390,7 +390,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `2. Use Azure DevOps MCP tools (mcp__azure-ado__*) — NEVER use gh CLI\n`;
   prompt += `3. Use PowerShell for yarn/oagent/gulp commands\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\n`;
-  prompt += `5. Update your status at: ${SQUAD_DIR}/agents/${agentId}/status.json\n`;
+  prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
   prompt += `6. If you discover a repeatable workflow, save it as a runbook: ${RUNBOOKS_DIR}/<name>.md\n\n`;
 
   // Runbooks

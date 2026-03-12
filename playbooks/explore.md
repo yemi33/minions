@@ -39,17 +39,8 @@ Write your findings to `.squad/decisions/inbox/{{agent_name}}-explore-{{task_id}
 - **Gaps**: anything missing, broken, or unclear
 - **Recommendations**: suggestions for the team
 
-### 5. Update Status
-Write `.squad/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "{{task_description}}",
-  "task_id": "{{task_id}}",
-  "agent": "{{agent_name}}",
-  "completed_at": "<ISO timestamp>"
-}
-```
+### 5. Status
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Rules
 - Do NOT modify any code. This is read-only exploration.

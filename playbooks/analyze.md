@@ -63,16 +63,4 @@ git worktree remove ../worktrees/prd-{{next_version}} --force
 
 ## Signal Completion
 
-Write to `{{team_root}}/.squad/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "PRD v{{next_version}} generated — {{focus_area}}",
-  "task_id": "{{item_id}}",
-  "agent": "{{agent_name}}",
-  "branch": "prd/{{next_version}}",
-  "pr": "<PR-ID>",
-  "completed_at": "<ISO timestamp>",
-  "errors": []
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

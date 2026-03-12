@@ -55,16 +55,4 @@ Use `mcp__azure-ado__repo_create_pull_request_thread`:
 
 ## Signal Completion
 
-Write to `{{team_root}}/.squad/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "Fixed {{pr_id}} review issues",
-  "task_id": "{{pr_id}}",
-  "agent": "{{agent_name}}",
-  "branch": "{{pr_branch}}",
-  "pr": "<PR-ID>",
-  "completed_at": "<ISO timestamp>",
-  "errors": []
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

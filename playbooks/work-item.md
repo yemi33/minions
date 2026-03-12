@@ -58,18 +58,7 @@ Keep branch names lowercase, use hyphens, max 60 chars.
 
 Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
 
-Update your status at: `{{team_root}}/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "{{item_name}}",
-  "task_id": "{{item_id}}",
-  "agent": "{{agent_name}}",
-  "pr": "<PR-ID>",
-  "branch": "<branch>",
-  "completed_at": "<ISO timestamp>"
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Rules
 - NEVER checkout branches in the main working tree — use worktrees

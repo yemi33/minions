@@ -71,19 +71,7 @@ Use `mcp__azure-ado__repo_create_pull_request_thread`:
 
 ## Signal Completion
 
-Write to `{{team_root}}/.squad/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "{{item_id}}: {{item_name}}",
-  "task_id": "{{item_id}}",
-  "agent": "{{agent_name}}",
-  "branch": "{{branch_name}}",
-  "pr": "<PR-ID>",
-  "completed_at": "<ISO timestamp>",
-  "errors": []
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Build and Demo Rule
 
@@ -96,4 +84,4 @@ After building, verify the build succeeded. If the build fails:
 1. Read the error output carefully
 2. Fix the issue
 3. Re-run the build
-4. If it fails 3 times, write status.json with status "error" and the build errors, then stop
+4. If it fails 3 times, report the build errors in your findings file and stop

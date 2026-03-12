@@ -51,16 +51,7 @@ Include:
 - Localhost URL if running a server
 - Screenshots or output snippets if relevant
 
-Update your status at: `{{team_root}}/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "{{item_name}}",
-  "task_id": "{{item_id}}",
-  "agent": "{{agent_name}}",
-  "completed_at": "<ISO timestamp>"
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Cleanup
 

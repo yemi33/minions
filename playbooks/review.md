@@ -52,15 +52,4 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 ## Signal Completion
 
-Write to `{{team_root}}/.squad/agents/{{agent_id}}/status.json`:
-```json
-{
-  "status": "done",
-  "task": "Reviewed {{pr_id}}",
-  "task_id": "{{pr_id}}",
-  "agent": "{{agent_name}}",
-  "verdict": "APPROVE|REQUEST_CHANGES",
-  "completed_at": "<ISO timestamp>",
-  "errors": []
-}
-```
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
