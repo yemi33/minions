@@ -5,12 +5,10 @@
     "type": "implement",
     "priority": "medium",
     "description": "https://office.visualstudio.com/OC/_git/office-bohemia/commit/a33692e67160c194a52fc31609a8a4b739fadd73?refName=refs%2Fheads%2Fmaster <- reference this pr to add a 'cowork' route to bebop webapp. The displayed page can be the main bebop home page for now. this will be the home of our claude cowork compete work",
-    "status": "failed",
+    "status": "dispatched",
     "created": "2026-03-12T04:11:29.406Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-12T04:29:19.774Z",
-    "dispatched_to": "dallas",
-    "failReason": "Agent process died",
-    "failedAt": "2026-03-12T04:39:01.063Z"
+    "dispatched_at": "2026-03-12T04:57:12.260Z",
+    "dispatched_to": "dallas"
   }
 ]
