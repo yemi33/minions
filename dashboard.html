@@ -1001,7 +1001,36 @@ function openRunbook(file) {
 }
 
 // -- Work Items --
+let allWorkItems = [];
+let wiPage = 0;
+const WI_PER_PAGE = 5;
+
+function wiRow(item) {
+  const statusBadge = (s) => {
+    const cls = s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : 'draft';
+    return '<span class="pr-badge ' + cls + '">' + escHtml(s) + '</span>';
+  };
+  const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escHtml(t || 'implement') + '</span>';
+  const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escHtml(p || 'medium') + '</span>';
+  const prLink = item._pr
+    ? '<a class="pr-title" href="#" style="font-size:10px">' + escHtml(item._pr) + '</a>'
+    : '<span style="color:var(--muted)">—</span>';
+  return '<tr>' +
+    '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
+    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
+    '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
+      (item.scope === 'fan-out' ? ' <span class="pr-badge building" style="font-size:8px">fan-out</span>' : '') + '</td>' +
+    '<td>' + typeBadge(item.type) + '</td>' +
+    '<td>' + priBadge(item.priority) + '</td>' +
+    '<td>' + statusBadge(item.status || 'pending') + '</td>' +
+    '<td><span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span></td>' +
+    '<td>' + prLink + '</td>' +
+    '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
+  '</tr>';
+}
+
 function renderWorkItems(items) {
+  allWorkItems = items;
   const el = document.getElementById('work-items-content');
   const countEl = document.getElementById('wi-count');
   countEl.textContent = items.length;
@@ -1009,33 +1038,41 @@ function renderWorkItems(items) {
     el.innerHTML = '<p class="empty">No work items. Add tasks via Command Center above.</p>';
     return;
   }
-  const statusBadge = (s) => {
-    const cls = s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : 'draft';
-    return '<span class="pr-badge ' + cls + '">' + escHtml(s) + '</span>';
-  };
-  const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escHtml(t || 'implement') + '</span>';
-  const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escHtml(p || 'medium') + '</span>';
+
+  const totalPages = Math.ceil(items.length / WI_PER_PAGE);
+  if (wiPage >= totalPages) wiPage = totalPages - 1;
+  const start = wiPage * WI_PER_PAGE;
+  const pageItems = items.slice(start, start + WI_PER_PAGE);
 
   let html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th></tr></thead><tbody>';
-  for (const item of items) {
-    const prLink = item._pr
-      ? '<a class="pr-title" href="#" style="font-size:10px">' + escHtml(item._pr) + '</a>'
-      : '<span style="color:var(--muted)">—</span>';
-    html += '<tr>' +
-      '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
-      '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
-      '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
-        (item.scope === 'fan-out' ? ' <span class="pr-badge building" style="font-size:8px">fan-out</span>' : '') + '</td>' +
-      '<td>' + typeBadge(item.type) + '</td>' +
-      '<td>' + priBadge(item.priority) + '</td>' +
-      '<td>' + statusBadge(item.status || 'pending') + '</td>' +
-      '<td><span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span></td>' +
-      '<td>' + prLink + '</td>' +
-      '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
-    '</tr>';
-  }
+  html += pageItems.map(wiRow).join('');
   html += '</tbody></table>';
+
+  if (items.length > WI_PER_PAGE) {
+    html += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (start+1) + ' to ' + Math.min(start+WI_PER_PAGE, items.length) + ' of ' + items.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (wiPage === 0 ? 'disabled' : '') + '" onclick="wiPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (wiPage >= totalPages-1 ? 'disabled' : '') + '" onclick="wiNext()">Next</button>' +
+        '<button class="pr-pager-btn see-all" onclick="openAllWorkItems()">See all ' + items.length + '</button>' +
+      '</div>' +
+    '</div>';
+  }
+
   el.innerHTML = html;
+}
+
+function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
+function wiNext() { const tp = Math.ceil(allWorkItems.length / WI_PER_PAGE); if (wiPage < tp-1) { wiPage++; renderWorkItems(allWorkItems); } }
+
+function openAllWorkItems() {
+  document.getElementById('modal-title').textContent = 'All Work Items (' + allWorkItems.length + ')';
+  const html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th></tr></thead><tbody>' +
+    allWorkItems.map(wiRow).join('') + '</tbody></table>';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
 }
 
 // -- Metrics --

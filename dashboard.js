@@ -207,6 +207,8 @@ function getPullRequests() {
       }
     } catch {}
   }
+  // Sort by created date descending
+  allPrs.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
   return allPrs;
 }
 
