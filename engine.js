@@ -1162,8 +1162,15 @@ function setCooldown(key) {
 
 function isAlreadyDispatched(key) {
   const dispatch = getDispatch();
-  const all = [...dispatch.pending, ...(dispatch.active || [])];
-  return all.some(d => d.meta?.dispatchKey === key);
+  // Check pending and active
+  const inFlight = [...dispatch.pending, ...(dispatch.active || [])];
+  if (inFlight.some(d => d.meta?.dispatchKey === key)) return true;
+  // Also check recently completed (last hour) to prevent re-dispatch
+  const oneHourAgo = Date.now() - 3600000;
+  const recentCompleted = (dispatch.completed || []).filter(d =>
+    d.completed_at && new Date(d.completed_at).getTime() > oneHourAgo
+  );
+  return recentCompleted.some(d => d.meta?.dispatchKey === key);
 }
 
 /**
