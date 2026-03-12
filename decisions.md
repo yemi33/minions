@@ -36,3 +36,19 @@
 **Why:** Ensures implementations match the designer's intent. Especially relevant for bebop-desktop (prototype UIs) and office-bohemia (Bebop app UX).
 
 ---
+
+
+---
+
+### 2026-03-12: Consolidated from 5 inbox items
+**By:** Engine (auto-consolidation)
+
+#### Review Findings (2)
+- **feedback-dallas-from-ripley-PR-4959180-2026-03-12.md**: **PR:** PR-4959180 — Add cowork route to bebop webapp
+- **feedback-ralph-from-ripley-PR-4959180-2026-03-12.md**: **PR:** PR-4959180 — 2026-03-12.md\nripley-2026-03-12.md","is_error":false}]},"parent_tool_use_id":null,"session_id":"0b4bb381-c0ff-4e6f-b959-ea06ce9d
+
+#### Other (3)
+- **dallas-2026-03-12.md**: - **office-bohemia** (OC/office-bohemia)
+- **ralph-fanout-W002-2026-03-12.md**: **Date:** 2026-03-12
+- **ripley-2026-03-12.md**: 1. **Bebop route pattern**: New routes in Bebop follow a thin-route pattern under `apps/bebop/src/routes/`. Layout routes are prefixed with `_mainLayo
+
