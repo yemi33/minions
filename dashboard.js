@@ -336,10 +336,11 @@ function getWorkItems() {
     }
   }
 
-  // Cross-reference with dispatch completed to find PRs created
-  // Cross-reference with all PRs to find links (match by prdItems containing work item ID)
+  // Cross-reference with all PRs to find links — only for implement/fix types (not explore/review)
   const allPrs = getPullRequests();
+  const prRelevantTypes = ['implement', 'fix', 'test', ''];
   for (const item of allItems) {
+    if (!prRelevantTypes.includes(item.type || '')) continue;
     // Check if item already has _pr from the JSON
     if (item._pr && !item._prUrl) {
       const prId = String(item._pr).replace('PR-', '');
