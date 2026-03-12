@@ -213,6 +213,20 @@ When an agent finishes:
 
 On engine start, MCP servers are auto-synced from `~/.claude.json` to `mcp-servers.json`. Agents inherit all MCP servers and skills configured in the user's Claude Code instance. Manually refresh with `node engine.js mcp-sync`.
 
+## Node.js Upgrade Caution
+
+The engine and all spawned agents use the Node binary that started the engine (`process.execPath`). This means:
+
+- **After upgrading Node, restart the engine.** The running engine keeps using the old binary. Agents spawned after an upgrade may fail if the old binary was deleted.
+- **All agents inherit the engine's Node version.** There is no per-agent Node resolution — `process.execPath` flows from engine → `spawn-agent.js` → `claude` CLI.
+- **No bash intermediary.** Node spawns Node directly to avoid Windows/bash path translation issues. Do not reintroduce a bash wrapper in the spawn chain.
+
+```powershell
+# After upgrading Node:
+node $env:USERPROFILE\.squad\engine.js stop
+node $env:USERPROFILE\.squad\engine.js
+```
+
 ## Health Monitoring
 
 ### Heartbeat Check (every tick)
