@@ -589,14 +589,18 @@ function renderPrdProgress(prog) {
   const statusIcon = (s) => s === 'complete' ? 'OK' : s === 'pr-created' ? 'PR' : s === 'in-progress' ? 'WIP' : s === 'planned' ? 'PLAN' : '---';
 
   const items = '<div class="prd-items-list">' +
-    (prog.items || []).map(i =>
-      '<div class="prd-item-row">' +
+    (prog.items || []).map(i => {
+      const prLinks = (i.prs || []).map(pr =>
+        '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>'
+      ).join(' ');
+      return '<div class="prd-item-row">' +
         '<span>' + statusIcon(i.status) + '</span>' +
         '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
         '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
+        (prLinks ? '<span>' + prLinks + '</span>' : '') +
         '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
-      '</div>'
-    ).join('') +
+      '</div>';
+    }).join('') +
   '</div>';
 
   el.innerHTML = bar + legend + items;
@@ -1009,16 +1013,20 @@ function renderWorkItems(items) {
   const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escHtml(t || 'implement') + '</span>';
   const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escHtml(p || 'medium') + '</span>';
 
-  let html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>Created</th></tr></thead><tbody>';
+  let html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th></tr></thead><tbody>';
   for (const item of items) {
+    const prLink = item._pr
+      ? '<a class="pr-title" href="#" style="font-size:10px">' + escHtml(item._pr) + '</a>'
+      : '<span style="color:var(--muted)">—</span>';
     html += '<tr>' +
       '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
-      '<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
+      '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
       '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span></td>' +
       '<td>' + typeBadge(item.type) + '</td>' +
       '<td>' + priBadge(item.priority) + '</td>' +
       '<td>' + statusBadge(item.status || 'pending') + '</td>' +
       '<td><span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span></td>' +
+      '<td>' + prLink + '</td>' +
       '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
     '</tr>';
   }

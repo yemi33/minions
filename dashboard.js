@@ -131,9 +131,23 @@ function getPrdInfo() {
     const total = items.length;
     const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
+    // Build PRD item → PR lookup from all project PRs
+    const allPrs = getPullRequests();
+    const prdToPr = {};
+    for (const pr of allPrs) {
+      for (const itemId of (pr.prdItems || [])) {
+        if (!prdToPr[itemId]) prdToPr[itemId] = [];
+        prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
+      }
+    }
+
     const progress = {
       total, complete, prCreated, inProgress, planned, missing, donePercent,
-      items: items.map(i => ({ id: i.id, name: i.name || i.title, priority: i.priority, complexity: i.estimated_complexity || i.size, status: i.status || 'missing' })),
+      items: items.map(i => ({
+        id: i.id, name: i.name || i.title, priority: i.priority,
+        complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
+        prs: prdToPr[i.id] || []
+      })),
     };
 
     const status = {
@@ -315,6 +329,25 @@ function getWorkItems() {
           allItems.push(item);
         }
       } catch {}
+    }
+  }
+
+  // Cross-reference with dispatch completed to find PRs created
+  const dispatch = getDispatchQueue();
+  const completed = dispatch.completed || [];
+  for (const item of allItems) {
+    const match = completed.find(d => d.meta?.item?.id === item.id && d.meta?.source?.includes('work-item'));
+    if (match) {
+      // Check agent status for PR info
+      if (match.agent) {
+        const statusFile = safeRead(path.join(SQUAD_DIR, 'agents', match.agent, 'status.json'));
+        if (statusFile) {
+          try {
+            const s = JSON.parse(statusFile);
+            if (s.pr) item._pr = s.pr;
+          } catch {}
+        }
+      }
     }
   }
 
