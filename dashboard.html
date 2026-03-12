@@ -654,19 +654,60 @@ function renderInbox(inbox) {
   count.textContent = inbox.length;
   if (!inbox.length) { list.innerHTML = '<p class="empty">No messages yet.</p>'; return; }
   list.innerHTML = inbox.map((item, i) => `
-    <div class="inbox-item" onclick="openModal(${i})">
-      <div class="inbox-name"><span>${escHtml(item.name)}</span><span>${item.age}</span></div>
-      <div class="inbox-preview">${escHtml(item.content.slice(0,200))}</div>
+    <div class="inbox-item">
+      <div class="inbox-name" onclick="openModal(${i})" style="cursor:pointer">
+        <span>${escHtml(item.name)}</span><span>${item.age}</span>
+      </div>
+      <div class="inbox-preview" onclick="openModal(${i})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
+      <div style="display:flex;gap:6px;margin-top:6px">
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();persistInboxItem('${escHtml(item.name)}')">Persist as Decision</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();openInboxInExplorer('${escHtml(item.name)}')">Open in Explorer</button>
+      </div>
     </div>
   `).join('');
+}
+
+async function persistInboxItem(name) {
+  try {
+    const res = await fetch('/api/inbox/persist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      refresh();
+    } else {
+      alert('Failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function openInboxInExplorer(name) {
+  try {
+    await fetch('/api/inbox/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+  } catch {}
 }
 
 function renderDecisions(decisions) {
   const el = document.getElementById('decisions-list');
   if (!decisions.length) { el.innerHTML = '<p class="empty">No decisions yet.</p>'; return; }
   el.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px">' +
-    decisions.map(d => '<div style="font-size:12px;color:var(--text);padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px">' + escHtml(d) + '</div>').join('') +
+    decisions.map(d => '<div style="font-size:12px;color:var(--text);padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:pointer" onclick="openDecisionsFile()">' + escHtml(d) + '</div>').join('') +
   '</div>';
+}
+
+async function openDecisionsFile() {
+  try {
+    const content = await fetch('/api/decisions-full').then(r => r.text());
+    document.getElementById('modal-title').textContent = 'decisions.md';
+    document.getElementById('modal-body').textContent = content;
+    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    document.getElementById('modal').classList.add('open');
+  } catch {}
 }
 
 function renderPrd(prd) {

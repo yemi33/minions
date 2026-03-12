@@ -568,6 +568,73 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/decisions — return full decisions.md content
+  if (req.method === 'GET' && req.url === '/api/decisions-full') {
+    const content = safeRead(path.join(SQUAD_DIR, 'decisions.md'));
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(content || 'No decisions file found.');
+    return;
+  }
+
+  // POST /api/inbox/persist — promote an inbox item to active decision
+  if (req.method === 'POST' && req.url === '/api/inbox/persist') {
+    try {
+      const body = await readBody(req);
+      const { name } = body;
+      if (!name) return jsonReply(res, 400, { error: 'name required' });
+
+      const inboxPath = path.join(SQUAD_DIR, 'decisions', 'inbox', name);
+      const content = safeRead(inboxPath);
+      if (!content) return jsonReply(res, 404, { error: 'inbox item not found' });
+
+      // Extract a title from the first heading or first line
+      const titleMatch = content.match(/^#+ (.+)$/m);
+      const title = titleMatch ? titleMatch[1].trim() : name.replace('.md', '');
+
+      // Append to decisions.md as a new active decision
+      const decPath = path.join(SQUAD_DIR, 'decisions.md');
+      let decisions = safeRead(decPath) || '# Squad Decisions\n\n## Active Decisions\n';
+      const today = new Date().toISOString().slice(0, 10);
+      const entry = `\n### ${today}: ${title}\n**By:** Persisted from inbox (${name})\n**What:** ${content.slice(0, 500)}\n\n---\n`;
+
+      const marker = '## Active Decisions';
+      const idx = decisions.indexOf(marker);
+      if (idx !== -1) {
+        const insertAt = idx + marker.length;
+        decisions = decisions.slice(0, insertAt) + '\n' + entry + decisions.slice(insertAt);
+      } else {
+        decisions += '\n' + entry;
+      }
+      fs.writeFileSync(decPath, decisions);
+
+      // Move to archive
+      const archiveDir = path.join(SQUAD_DIR, 'decisions', 'archive');
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      try { fs.renameSync(inboxPath, path.join(archiveDir, `persisted-${name}`)); } catch {}
+
+      return jsonReply(res, 200, { ok: true, title });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/inbox/open — open inbox file in Windows explorer
+  if (req.method === 'POST' && req.url === '/api/inbox/open') {
+    try {
+      const body = await readBody(req);
+      const { name } = body;
+      if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
+        return jsonReply(res, 400, { error: 'invalid name' });
+      }
+      const filePath = path.join(SQUAD_DIR, 'decisions', 'inbox', name);
+      if (!fs.existsSync(filePath)) return jsonReply(res, 404, { error: 'file not found' });
+
+      const { exec } = require('child_process');
+      // Windows: select the file in explorer
+      exec(`explorer /select,"${filePath.replace(/\//g, '\\\\')}"`);
+      return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // GET /api/runbook?file=<name>.md
   if (req.method === 'GET' && req.url.startsWith('/api/runbook?')) {
     const params = new URL(req.url, 'http://localhost').searchParams;
