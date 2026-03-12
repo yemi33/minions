@@ -713,7 +713,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   // Stream-json output contains many numbers that could look like PR IDs, so we
   // only trust the full URL pattern: .../pullrequest/NNNNN
   const prMatches = new Set();
-  const urlPattern = /(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)/g;
+  const urlPattern = /(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+)/g;
   let match;
 
   // First extract the "result" text from stream-json (the agent's final summary)
@@ -732,14 +732,14 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   // Scan the result text (clean agent output) for PR URLs
   const scanText = resultText || '';
-  while ((match = urlPattern.exec(scanText)) !== null) prMatches.add(match[1]);
+  while ((match = urlPattern.exec(scanText)) !== null) prMatches.add(match[1] || match[2]);
 
   // Also scan inbox files for this agent today (these are clean markdown, not stream-json)
   const today = dateStamp();
   const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
   for (const f of inboxFiles) {
     const content = safeRead(path.join(INBOX_DIR, f));
-    while ((match = urlPattern.exec(content)) !== null) prMatches.add(match[1]);
+    while ((match = urlPattern.exec(content)) !== null) prMatches.add(match[1] || match[2]);
   }
 
   if (prMatches.size === 0) return;
