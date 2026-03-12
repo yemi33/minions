@@ -64,7 +64,7 @@ Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-{{item_id}}-
 - NEVER checkout branches in the main working tree — use worktrees
 - Use Azure DevOps MCP tools (`mcp__azure-ado__*`) — NEVER use `gh` CLI
 - Use PowerShell for yarn/oagent/gulp commands if applicable
-- If you discover a repeatable workflow, save it as a runbook at `{{team_root}}/runbooks/<name>.md`
+- If you discover a repeatable workflow, save it as a skill at `{{team_root}}/skills/<name>.md`
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts during push or PR creation:

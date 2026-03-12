@@ -189,40 +189,49 @@ function syncMcpServers() {
   }
 }
 
-// ─── Runbooks ────────────────────────────────────────────────────────────────
+// ─── Skills ──────────────────────────────────────────────────────────────────
 
+const SKILLS_DIR = path.join(SQUAD_DIR, 'skills');
+// Legacy compat: also check runbooks/ for migration period
 const RUNBOOKS_DIR = path.join(SQUAD_DIR, 'runbooks');
 
-function getRunbookIndex() {
+function getSkillIndex() {
   try {
-    const files = fs.readdirSync(RUNBOOKS_DIR).filter(f => f.endsWith('.md') && f !== 'README.md');
-    if (files.length === 0) return '';
+    // Collect skills from skills/ (primary) and runbooks/ (legacy)
+    const skillFiles = [];
+    for (const dir of [SKILLS_DIR, RUNBOOKS_DIR]) {
+      try {
+        const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
+        for (const f of files) skillFiles.push({ file: f, dir });
+      } catch {}
+    }
+    if (skillFiles.length === 0) return '';
 
-    let index = '## Available Runbooks\n\n';
+    let index = '## Available Squad Skills\n\n';
     index += 'These are reusable workflows discovered by agents. Follow them when the trigger matches your task.\n\n';
 
-    for (const f of files) {
-      const content = safeRead(path.join(RUNBOOKS_DIR, f));
-      // Parse frontmatter
+    for (const { file: f, dir } of skillFiles) {
+      const content = safeRead(path.join(dir, f));
       let name = f.replace('.md', '');
       let trigger = '';
+      let description = '';
       let project = 'any';
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         const fm = fmMatch[1];
-        const nameMatch = fm.match(/^name:\s*(.+)$/m);
-        const triggerMatch = fm.match(/^trigger:\s*(.+)$/m);
-        const projectMatch = fm.match(/^project:\s*(.+)$/m);
-        if (nameMatch) name = nameMatch[1].trim();
-        if (triggerMatch) trigger = triggerMatch[1].trim();
-        if (projectMatch) project = projectMatch[1].trim();
+        const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
+        name = m('name') || name;
+        trigger = m('trigger');
+        description = m('description');
+        project = m('project') || 'any';
       }
 
       index += `### ${name}\n`;
+      if (description) index += `${description}\n`;
       if (trigger) index += `**When:** ${trigger}\n`;
       if (project !== 'any') index += `**Project:** ${project}\n`;
-      index += `**File:** \`${RUNBOOKS_DIR}/${f}\`\n`;
-      index += `Read the full runbook file before following the steps.\n\n`;
+      index += `**File:** \`${dir}/${f}\`\n`;
+      index += `Read the full skill file before following the steps.\n\n`;
     }
 
     return index;
@@ -331,7 +340,7 @@ function renderPlaybook(type, vars) {
   content += `- Gotchas or warnings for future agents\n`;
   content += `- Conventions to follow\n\n`;
   content += `If you discovered a **repeatable workflow** (multi-step procedure that other agents should follow in similar situations), `;
-  content += `save it as a runbook at \`${RUNBOOKS_DIR}/<short-name>.md\` using the format documented in \`${RUNBOOKS_DIR}/README.md\`.\n`;
+  content += `save it as a skill at \`${SKILLS_DIR}/<short-name>.md\` using the format documented in \`${SKILLS_DIR}/README.md\`.\n`;
 
   // Inject project-level variables from config
   const config = getConfig();
@@ -391,12 +400,12 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `3. Use PowerShell for yarn/oagent/gulp commands\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\n`;
   prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
-  prompt += `6. If you discover a repeatable workflow, save it as a runbook: ${RUNBOOKS_DIR}/<name>.md\n\n`;
+  prompt += `6. If you discover a repeatable workflow, save it as a skill: ${SKILLS_DIR}/<name>.md\n\n`;
 
-  // Runbooks
-  const runbookIndex = getRunbookIndex();
-  if (runbookIndex) {
-    prompt += runbookIndex + '\n';
+  // Skills (formerly runbooks)
+  const skillIndex = getSkillIndex();
+  if (skillIndex) {
+    prompt += skillIndex + '\n';
   }
 
   // Team decisions

@@ -399,8 +399,8 @@
   </section>
 
   <section>
-    <h2>Runbooks <span class="count" id="runbook-count">0</span></h2>
-    <div id="runbooks-list"><p class="empty">No runbooks yet. Agents create these when they discover repeatable workflows.</p></div>
+    <h2>Squad Skills <span class="count" id="skills-count">0</span></h2>
+    <div id="skills-list"><p class="empty">No skills yet. Agents create these when they discover repeatable workflows.</p></div>
   </section>
 
   <section>
@@ -1018,7 +1018,7 @@ async function refresh() {
     renderProjects(data.projects || []);
     renderMetrics(data.metrics || {});
     renderWorkItems(data.workItems || []);
-    renderRunbooks(data.runbooks || []);
+    renderSkills(data.skills || []);
   } catch(e) { console.error('refresh error', e); }
 }
 
@@ -1050,31 +1050,30 @@ function renderProjects(projects) {
   }
 }
 
-// -- Runbooks --
-function renderRunbooks(runbooks) {
-  const el = document.getElementById('runbooks-list');
-  const countEl = document.getElementById('runbook-count');
-  countEl.textContent = runbooks.length;
-  if (!runbooks.length) {
-    el.innerHTML = '<p class="empty">No runbooks yet. Agents create these when they discover repeatable workflows.</p>';
+// -- Squad Skills --
+function renderSkills(skills) {
+  const el = document.getElementById('skills-list');
+  const countEl = document.getElementById('skills-count');
+  countEl.textContent = skills.length;
+  if (!skills.length) {
+    el.innerHTML = '<p class="empty">No skills yet. Agents create these when they discover repeatable workflows.</p>';
     return;
   }
   el.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px">' +
-    runbooks.map(r =>
-      '<div class="inbox-item" onclick="openRunbook(\'' + escHtml(r.file) + '\')" style="border-left-color:var(--green)">' +
+    skills.map(r =>
+      '<div class="inbox-item" onclick="openSkill(\'' + escHtml(r.file) + '\',\'' + escHtml(r.source || 'skills') + '\')" style="border-left-color:var(--green)">' +
         '<div class="inbox-name"><span style="color:var(--green);font-weight:600">' + escHtml(r.name) + '</span>' +
           '<span style="font-size:10px;color:var(--muted)">' + escHtml(r.project || 'any') + ' · ' + escHtml(r.author || '') + ' · ' + escHtml(r.created || '') + '</span>' +
         '</div>' +
-        (r.trigger ? '<div class="inbox-preview" style="color:var(--text)"><strong>When:</strong> ' + escHtml(r.trigger) + '</div>' : '') +
+        (r.description ? '<div class="inbox-preview" style="color:var(--text)">' + escHtml(r.description) + '</div>' : '') +
+        (r.trigger ? '<div class="inbox-preview" style="color:var(--muted);font-size:11px"><strong>When:</strong> ' + escHtml(r.trigger) + '</div>' : '') +
       '</div>'
     ).join('') +
   '</div>';
 }
 
-let runbookData = [];
-function openRunbook(file) {
-  // Fetch full runbook content
-  fetch('/api/runbook?file=' + encodeURIComponent(file))
+function openSkill(file, source) {
+  fetch('/api/skill?file=' + encodeURIComponent(file) + '&source=' + encodeURIComponent(source || 'skills'))
     .then(r => r.text())
     .then(content => {
       document.getElementById('modal-title').textContent = file;

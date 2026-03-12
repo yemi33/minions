@@ -280,27 +280,36 @@ function getMetrics() {
   try { return JSON.parse(data); } catch { return {}; }
 }
 
-function getRunbooks() {
-  const runbooksDir = path.join(SQUAD_DIR, 'runbooks');
-  try {
-    const files = fs.readdirSync(runbooksDir).filter(f => f.endsWith('.md') && f !== 'README.md');
-    return files.map(f => {
-      const content = safeRead(path.join(runbooksDir, f)) || '';
-      let name = f.replace('.md', '');
-      let trigger = '', author = '', created = '', project = 'any';
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const fm = fmMatch[1];
-        const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
-        name = m('name') || name;
-        trigger = m('trigger');
-        author = m('author');
-        created = m('created');
-        project = m('project') || 'any';
+function getSkills() {
+  const skillsDirs = [
+    { dir: path.join(SQUAD_DIR, 'skills'), source: 'skills' },
+    { dir: path.join(SQUAD_DIR, 'runbooks'), source: 'runbooks' }  // legacy compat
+  ];
+  const all = [];
+  for (const { dir, source } of skillsDirs) {
+    try {
+      const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') && f !== 'README.md');
+      for (const f of files) {
+        const content = safeRead(path.join(dir, f)) || '';
+        let name = f.replace('.md', '');
+        let description = '', trigger = '', author = '', created = '', project = 'any', allowedTools = '';
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (fmMatch) {
+          const fm = fmMatch[1];
+          const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
+          name = m('name') || name;
+          description = m('description');
+          trigger = m('trigger');
+          author = m('author');
+          created = m('created');
+          project = m('project') || 'any';
+          allowedTools = m('allowed-tools');
+        }
+        all.push({ name, description, trigger, author, created, project, allowedTools, file: f, source });
       }
-      return { name, trigger, author, created, project, file: f };
-    });
-  } catch { return []; }
+    } catch {}
+  }
+  return all;
 }
 
 function getWorkItems() {
@@ -402,7 +411,7 @@ function getStatus() {
     engineLog: getEngineLog(),
     metrics: getMetrics(),
     workItems: getWorkItems(),
-    runbooks: getRunbooks(),
+    skills: getSkills(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     timestamp: new Date().toISOString(),
   };
@@ -658,17 +667,19 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/runbook?file=<name>.md
-  if (req.method === 'GET' && req.url.startsWith('/api/runbook?')) {
+  // GET /api/skill?file=<name>.md&source=skills|runbooks
+  if (req.method === 'GET' && req.url.startsWith('/api/skill?')) {
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
+    const source = params.get('source') || 'skills';
     if (!file || file.includes('..') || file.includes('/') || file.includes('\\')) {
       res.statusCode = 400; res.end('Invalid file'); return;
     }
-    const content = safeRead(path.join(SQUAD_DIR, 'runbooks', file));
+    const dir = source === 'runbooks' ? 'runbooks' : 'skills';
+    const content = safeRead(path.join(SQUAD_DIR, dir, file));
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.end(content || 'Runbook not found.');
+    res.end(content || 'Skill not found.');
     return;
   }
 

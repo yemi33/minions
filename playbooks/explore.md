@@ -56,7 +56,7 @@ If the task is purely exploratory (no deliverable requested), skip this step.
 - Do NOT use `gh` CLI or GitHub API. This repo uses Azure DevOps.
 - Do NOT checkout branches in the main working tree — use worktrees.
 - Read `decisions.md` for all team rules before starting.
-- If you discover a repeatable workflow, save it as a runbook at `{{team_root}}/runbooks/<name>.md`
+- If you discover a repeatable workflow, save it as a skill at `{{team_root}}/skills/<name>.md`
 
 ## Team Decisions
 {{decisions_content}}
