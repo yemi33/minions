@@ -455,9 +455,10 @@ function spawnAgent(dispatchItem, config) {
 
   // Build claude CLI args
   const args = [
-    '--output-format', claudeConfig.outputFormat || 'json',
+    '--output-format', claudeConfig.outputFormat || 'stream-json',
     '--max-turns', String(engineConfig.maxTurns || 100),
-    '--verbose'
+    '--verbose',
+    '--permission-mode', claudeConfig.permissionMode || 'bypassPermissions'
   ];
 
   if (claudeConfig.allowedTools) {

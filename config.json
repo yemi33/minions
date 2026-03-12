@@ -90,7 +90,7 @@
   },
   "claude": {
     "binary": "claude",
-    "outputFormat": "json",
+    "outputFormat": "stream-json",
     "allowedTools": ""
   },
   "agents": {
