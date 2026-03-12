@@ -1228,7 +1228,7 @@ function detectWorkItemType(text) {
     { type: 'explore',  words: ['explore', 'investigate', 'understand', 'analyze', 'audit', 'document', 'architecture', 'how does', 'what is', 'look into', 'research', 'survey', 'map out', 'codebase'] },
     { type: 'fix',      words: ['fix', 'bug', 'broken', 'crash', 'error', 'issue', 'patch', 'repair', 'resolve', 'regression', 'failing', 'doesn\'t work', 'not working'] },
     { type: 'review',   words: ['review', 'code review', 'check pr', 'look at pr', 'audit code', 'inspect'] },
-    { type: 'test',     words: ['test', 'write tests', 'add tests', 'unit test', 'e2e test', 'coverage', 'testing'] },
+    { type: 'test',     words: ['test', 'write tests', 'add tests', 'unit test', 'e2e test', 'coverage', 'testing', 'build', 'run locally', 'localhost', 'start the', 'spin up', 'verify', 'check if it works'] },
   ];
   for (const { type, words } of patterns) {
     if (words.some(w => t.includes(w))) return type;
