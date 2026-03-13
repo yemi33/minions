@@ -1256,6 +1256,11 @@ function detectWorkItemType(text) {
 function autoDetectWorkItemType() {
   const sel = document.getElementById('wi-type');
   if (sel.value !== 'auto') return;
+  const title = document.getElementById('wi-title').value;
+  const desc = document.getElementById('wi-desc').value;
+  const detected = detectWorkItemType(title + ' ' + desc);
+  sel.style.color = detected !== 'implement' ? 'var(--blue)' : '';
+  sel.options[0].textContent = 'Auto-detect (' + detected + ')';
 }
 
 let wiAttachments = [];
@@ -1269,7 +1274,7 @@ function populateRefDropdown(inbox) {
     opts.push('<option value="inbox:' + escHtml(item.name) + '">📥 ' + escHtml(item.name) + '</option>');
   }
   // Agent outputs
-  const agents = ['ripley','dallas','lambert','rebecca','ralph'];
+  const agents = agentData.length > 0 ? agentData.map(a => a.id) : [];
   for (const a of agents) {
     opts.push('<option value="output:' + a + '">📄 ' + a + '/output.log</option>');
   }
