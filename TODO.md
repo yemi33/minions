@@ -43,6 +43,31 @@
 - [ ] **Health check endpoint** — `/api/health` returning engine state, project reachability, agent statuses for monitoring
 - [ ] **Graceful shutdown** — on SIGTERM, wait for active agents to finish (with timeout) before exiting
 
+## Failure Recovery & Feedback Loops
+- [ ] **Auto-retry with backoff** — when an agent errors, auto-retry with exponential backoff (1st retry after 5min, 2nd after 15min) instead of requiring manual dashboard retry. Cap at 3 attempts.
+- [ ] **Build failure notification to author** — when build-and-test detects a failure and files a fix work item, also inject the error context into the original implementation agent's next prompt so they learn from the failure
+- [ ] **Error pattern detection** — aggregate failed dispatches by type/project. If 3+ failures share the same error pattern (e.g., same test failing), surface an alert instead of dispatching more agents into the same wall
+- [ ] **Cascading dependency awareness** — if work item A blocks B, and A fails, mark B as `blocked` instead of dispatching it independently. Requires a `depends_on` field in work items (already exists in plan-generated items)
+
+## Post-Merge Lifecycle
+- [ ] **Post-merge hooks** — when `pollPrStatus` detects a PR merged, trigger configurable actions: clean up worktree, update PRD item status to `done`, notify Teams, update metrics
+- [ ] **Worktree cleanup on merge/close** — when a PR is merged or abandoned, auto-remove its worktree (`git worktree remove`). Currently only `runCleanup` catches old worktrees on a timer
+
+## Observability
+- [ ] **Discovery skip logging** — log why items were skipped during discovery (cooldown, already dispatched, no idle agent) so users can diagnose "why isn't my work item being picked up?"
+- [ ] **Dispatch lifecycle timeline** — for each work item, show: created → queued → dispatched (agent, time) → completed/failed (duration, result). Currently only status and timestamps are tracked
+- [ ] **Config validation at startup** — verify all project paths exist, all referenced agents are defined, all playbook files exist, MCP servers are reachable. Fail fast with clear errors instead of silently skipping during operation
+
+## Dashboard
+- [ ] **Work item editing** — edit title, description, type, priority, agent assignment from the dashboard UI (currently requires editing JSON files)
+- [ ] **Bulk operations** — retry/delete/reassign multiple work items at once
+- [ ] **Pending dispatch explanation** — show why each pending item hasn't been dispatched yet (no idle agent? on cooldown? at max concurrency?)
+- [ ] **Work item → PR → review chain view** — trace a work item through its full lifecycle: item → dispatch → PR → review → merge, all linked in the UI
+
+## Work Source
+- [ ] **Task decomposition** — when a large work item is submitted, optionally auto-decompose into subtasks (dispatch an analyst agent to break it down, similar to plan-to-prd but for individual work items)
+- [ ] **Fan-out per-agent timeout** — when `@everyone` dispatches to all agents, set individual deadlines per agent instead of relying only on the global `agentTimeout`
+
 ## Cross-Platform
 - [ ] **macOS/Linux browser launch** — replace Windows `start` command with `open` (macOS) / `xdg-open` (Linux)
 - [ ] **Shell-agnostic playbooks** — remove PowerShell-specific instructions when running on non-Windows
