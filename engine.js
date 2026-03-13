@@ -128,10 +128,24 @@ function safeWrite(p, data) {
   const tmp = p + '.tmp.' + process.pid;
   try {
     fs.writeFileSync(tmp, content);
-    fs.renameSync(tmp, p);
+    // Atomic rename — retry on Windows EPERM (file locking)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        fs.renameSync(tmp, p);
+        return;
+      } catch (e) {
+        if (e.code === 'EPERM' && attempt < 2) {
+          // Brief sync sleep (10ms) then retry
+          const start = Date.now(); while (Date.now() - start < 10) {}
+          continue;
+        }
+        throw e;
+      }
+    }
   } catch (e) {
+    // Fallback: direct write if atomic rename fails entirely
     try { fs.unlinkSync(tmp); } catch {}
-    throw e;
+    try { fs.writeFileSync(p, content); } catch {}
   }
 }
 
@@ -1146,13 +1160,22 @@ function getAdoToken() {
   return null;
 }
 
-async function adoFetch(url, token) {
+async function adoFetch(url, token, _retried = false) {
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
+    // Auth redirect — token likely expired. Invalidate cache and retry once.
+    if (!_retried) {
+      _adoTokenCache = { token: null, expiresAt: 0 };
+      const freshToken = getAdoToken();
+      if (freshToken) {
+        log('info', 'ADO token expired mid-session — refreshed and retrying');
+        return adoFetch(url, freshToken, true);
+      }
+    }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
   }
   return JSON.parse(text);
