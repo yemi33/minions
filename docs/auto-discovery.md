@@ -102,7 +102,18 @@ This means a single work item like "Add telemetry to the document creation pipel
 
 Before the 3 core sources run, the engine materializes indirect sources into work items:
 
-**Specs** (`materializeSpecsAsWorkItems`): When a PR merges that added/modified `.md` files under `docs/` (configurable via `workSources.specs.filePatterns`), the engine reads the doc, extracts title/summary/priority, and creates implementation work items with `createdBy: 'engine:spec-discovery'`. State tracked in `.squad/spec-tracker.json` to avoid re-processing.
+**Specs** (`materializeSpecsAsWorkItems`): When a PR merges that added/modified `.md` files under `docs/` (configurable via `workSources.specs.filePatterns`), the engine reads each doc and checks for `type: spec` in its frontmatter. Only docs with this marker are treated as actionable specs — regular documentation is ignored. For matching docs, it extracts title/summary/priority and creates implementation work items with `createdBy: 'engine:spec-discovery'`. State tracked in `.squad/spec-tracker.json` to avoid re-processing merged PRs.
+
+Example spec frontmatter:
+```markdown
+---
+type: spec
+title: Add user authentication
+priority: high
+---
+# Add user authentication
+...
+```
 
 **Plans** (`materializePlansAsWorkItems`): Scans `~/.squad/plans/*.json` for plan files with `missing`/`planned` items. Creates work items in the target project's queue with `createdBy: 'engine:plan-discovery'`. Deduped via `sourcePlan` + `sourcePlanItem` fields.
 

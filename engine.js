@@ -2442,10 +2442,11 @@ function buildProjectContext(projects, assignedProject, isFanOut, agentName, age
  * "Specs" = any markdown doc merged into the repo that describes work to build.
  * Writes work items as a side-effect; discoverFromWorkItems() picks them up next tick.
  *
- * Config key: workSources.specs (legacy: mergedDesignDocs)
+ * Config key: workSources.specs
+ * Only processes docs with frontmatter `type: spec` — regular docs are ignored.
  */
 function materializeSpecsAsWorkItems(config, project) {
-  const src = project?.workSources?.specs || project?.workSources?.mergedDesignDocs;
+  const src = project?.workSources?.specs;
   if (!src?.enabled) return;
 
   const root = projectRoot(project);
@@ -2542,11 +2543,18 @@ function materializeSpecsAsWorkItems(config, project) {
 
 /**
  * Extract title, summary, and priority from a spec markdown file.
+ * Returns null if the file doesn't have `type: spec` in its frontmatter.
  */
 function extractSpecInfo(filePath, projectRoot_) {
   const fullPath = path.resolve(projectRoot_, filePath);
   const content = safeRead(fullPath);
   if (!content) return null;
+
+  // Require frontmatter with type: spec
+  const fmBlock = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmBlock) return null;
+  const frontmatter = fmBlock[1];
+  if (!/type:\s*spec/i.test(frontmatter)) return null;
 
   let title = '';
   const fmMatch = content.match(/^---\n[\s\S]*?title:\s*(.+)\n[\s\S]*?---/);
