@@ -1,0 +1,24 @@
+# Runtime state (not distributed)
+engine/dispatch.json
+engine/log.json
+engine/control.json
+engine/prompt-*.md
+engine/sysprompt-*.md
+engine/metrics.json
+agents/*/status.json
+agents/*/output.log
+agents/*/live-output.log
+agents/*/history.md
+identity/
+notes/
+decisions/
+plans/
+mcp-servers.json
+config.json
+work-items.json
+CLAUDE.md
+
+# Dev/internal
+.claude/
+.git/
+.gitignore

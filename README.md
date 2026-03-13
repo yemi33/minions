@@ -14,63 +14,65 @@ Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradyga
 ## Installation
 
 ```bash
-# Clone to your home directory
-git clone https://github.com/<your-user>/squad.git ~/.squad
-cd ~/.squad
+# Install globally from npm
+npm install -g @yemi33/squad
+
+# Bootstrap ~/.squad/ with default config and agents
+squad init
+
+# Link your first project (interactive — auto-detects from git remote)
+squad add ~/my-project
 ```
 
-No `npm install` needed — Squad uses only Node.js built-in modules.
+Or try without installing:
+
+```bash
+npx @yemi33/squad init
+```
+
+No dependencies — Squad uses only Node.js built-in modules.
+
+**Alternative: clone directly**
+```bash
+git clone https://github.com/yemi33/squad.git ~/.squad
+node ~/.squad/squad.js init
+```
+
+## Quick Start
+
+```bash
+# 1. Link your projects (interactive — prompts for name, description, repo config)
+squad add ~/repo1
+squad add ~/repo2
+
+# 2. Start the engine (runs in foreground, ticks every 60s)
+squad start
+
+# 3. Open the dashboard (separate terminal)
+squad dash
+# → http://localhost:7331
+```
 
 ## Setup via Claude Code
 
-If you use Claude Code as your daily driver, you can set up Squad by prompting Claude directly from your home directory (`~`). Here are prompts that work:
+If you use Claude Code as your daily driver, you can set up Squad by prompting Claude directly:
 
 **First-time setup:**
 ```
-Clone https://github.com/<your-user>/squad.git to ~/.squad, then run `node ~/.squad/squad.js init`
-to initialize it. After that, link my project at ~/my-project by running
-`node ~/.squad/squad.js add ~/my-project` — answer the interactive prompts using
-what you can auto-detect from the repo.
-```
-
-**Add another project later:**
-```
-Link ~/another-repo to my squad by running `node ~/.squad/squad.js add ~/another-repo`
-```
-
-**Start the engine:**
-```
-Start my squad engine with `node ~/.squad/engine.js` and open the dashboard
-with `node ~/.squad/dashboard.js` in a second terminal
+Install squad with `npm install -g @yemi33/squad`, run `squad init`,
+then link my project at ~/my-project with `squad add ~/my-project` —
+answer the interactive prompts using what you can auto-detect from the repo.
 ```
 
 **Give the squad work:**
 ```
 Add a work item to my squad: "Explore the codebase and document the architecture"
-— run `node ~/.squad/engine.js work "Explore the codebase and document the architecture"`
+— run `squad work "Explore the codebase and document the architecture"`
 ```
 
 **Check status:**
 ```
-Run `node ~/.squad/engine.js status` and tell me what my squad is doing
-```
-
-## Quick Start
-
-```powershell
-# 1. Initialize the squad (creates config.json with default agents)
-node ~/.squad/squad.js init
-
-# 2. Link your projects (interactive — prompts for name, description, repo config)
-node ~/.squad/squad.js add C:\path\to\repo1
-node ~/.squad/squad.js add C:\path\to\repo2
-
-# 3. Start the engine (runs in foreground, ticks every 60s)
-node ~/.squad/engine.js
-
-# 4. Open the dashboard (separate terminal)
-node ~/.squad/dashboard.js
-# → http://localhost:7331
+Run `squad status` and tell me what my squad is doing
 ```
 
 ### What happens on first run
@@ -78,47 +80,34 @@ node ~/.squad/dashboard.js
 1. The engine starts ticking every 60 seconds
 2. It scans each linked project for work: PRs needing review, PRD gaps, queued work items
 3. If it finds work and an agent is idle, it spawns a Claude Code session with the right playbook
-4. You can watch progress on the dashboard or via `node engine.js status`
+4. You can watch progress on the dashboard or via `squad status`
 
 To give the squad its first task, open the dashboard Command Center and add a work item, or use the CLI:
-```powershell
-node ~/.squad/engine.js work "Explore the codebase and document the architecture"
+```bash
+squad work "Explore the codebase and document the architecture"
 ```
 
 ## CLI Reference
 
-### `squad.js` — Project & squad management
-
 | Command | Description |
 |---------|-------------|
-| `node squad.js init` | Initialize squad with default agents and config |
-| `node squad.js add <dir>` | Link a project (auto-detects settings from git, prompts to confirm) |
-| `node squad.js remove <dir>` | Unlink a project |
-| `node squad.js list` | List all linked projects with descriptions |
+| `squad init` | Bootstrap `~/.squad/` with default agents and config |
+| `squad add <dir>` | Link a project (auto-detects settings from git, prompts to confirm) |
+| `squad remove <dir>` | Unlink a project |
+| `squad list` | List all linked projects with descriptions |
+| `squad start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
+| `squad stop` | Stop the engine |
+| `squad status` | Show agents, projects, dispatch queue, quality metrics |
+| `squad pause` / `resume` | Pause/resume dispatching |
+| `squad dispatch` | Force a dispatch cycle |
+| `squad discover` | Dry-run work discovery |
+| `squad work <title> [opts]` | Add to central work queue |
+| `squad spawn <agent> <prompt>` | Manually spawn an agent |
+| `squad plan <file\|text> [proj]` | Run a plan |
+| `squad cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
+| `squad dash` | Start web dashboard (default port 7331) |
 
-### `engine.js` — Engine control
-
-| Command | Description |
-|---------|-------------|
-| `node engine.js` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
-| `node engine.js status` | Show agents, projects, dispatch queue, quality metrics |
-| `node engine.js pause / resume` | Pause/resume dispatching |
-| `node engine.js stop` | Stop the engine |
-| `node engine.js queue` | Show dispatch queue |
-| `node engine.js sources` | Show work sources per project |
-| `node engine.js discover` | Dry-run work discovery |
-| `node engine.js dispatch` | Force a dispatch cycle |
-| `node engine.js spawn <agent> <prompt>` | Manually spawn an agent |
-| `node engine.js work <title> [opts-json]` | Add to central work queue |
-| `node engine.js cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
-| `node engine.js mcp-sync` | Manually refresh MCP servers from ~/.claude.json |
-
-### `dashboard.js` — Web dashboard
-
-```powershell
-node dashboard.js            # Default port 7331
-PORT=8080 node dashboard.js  # Custom port
-```
+You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squad/dashboard.js`, etc.
 
 ## Architecture
 

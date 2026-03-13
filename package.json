@@ -1,0 +1,46 @@
+{
+  "name": "@yemi33/squad",
+  "version": "0.1.0",
+  "description": "Multi-agent AI dev team that runs from ~/.squad/ — five autonomous agents share a single engine, dashboard, and knowledge base",
+  "bin": {
+    "squad": "bin/squad.js"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "claude",
+    "dev-team",
+    "automation",
+    "multi-agent",
+    "cli"
+  ],
+  "author": "yemi33",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yemi33/squad.git"
+  },
+  "homepage": "https://github.com/yemi33/squad#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin/",
+    "agents/*/charter.md",
+    "config.template.json",
+    "dashboard.html",
+    "dashboard.js",
+    "docs/",
+    "engine.js",
+    "engine/spawn-agent.js",
+    "engine/ado-mcp-wrapper.js",
+    "playbooks/",
+    "routing.md",
+    "skills/README.md",
+    "skills/ado-pr-status-fetch.md",
+    "squad.js",
+    "team.md",
+    "README.md",
+    "TODO.md"
+  ]
+}
