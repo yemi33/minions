@@ -470,8 +470,8 @@ function statusColor(s) {
 // -- Agent Detail Panel --
 async function openAgentDetail(id) {
   currentAgentId = id;
-  currentTab = 'thought-process';
   const agent = agentData.find(a => a.id === id);
+  currentTab = (agent?.statusData?.status === 'working') ? 'live' : 'thought-process';
   if (!agent) return;
 
   document.getElementById('detail-agent-name').innerHTML =
@@ -504,8 +504,8 @@ function closeDetail() {
 function renderDetailTabs(detail) {
   const isWorking = detail.statusData?.status === 'working';
   const tabs = [
-    { id: 'thought-process', label: 'Thought Process' },
     ...(isWorking ? [{ id: 'live', label: 'Live Output' }] : []),
+    { id: 'thought-process', label: 'Thought Process' },
     { id: 'charter', label: 'Charter' },
     { id: 'history', label: 'History' },
     { id: 'output', label: 'Output Log' },
