@@ -1817,12 +1817,12 @@ function discoverFromPrs(config, project) {
       setCooldown(key);
     }
 
-    // PRs with build failures → route to author for fix
+    // PRs with build failures → route to any idle agent
     if (pr.status === 'active' && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
-      const agentId = resolveAgent('fix', config, pr.agent);
+      const agentId = resolveAgent('fix', config);
       if (!agentId) continue;
 
       const vars = {
