@@ -8,16 +8,19 @@ The engine runs a tick every 60 seconds (configurable via `config.json` → `eng
 
 ```
 tick()
-  1. checkTimeouts()      Kill stale/hung agents (>30min or >10min timeout)
-  2. consolidateInbox()   Merge learnings into decisions.md (at 5+ inbox files)
-  3. discoverWork()       Scan ALL linked projects for new tasks
-  4. updateSnapshot()     Write identity/now.md
-  5. dispatch             Spawn agents for pending items (up to maxConcurrent)
+  1. checkTimeouts()       Kill stale/hung agents (>heartbeatTimeout)
+  2. consolidateInbox()    Merge learnings into decisions.md (at 5+ inbox files)
+  2.5 runCleanup()         Periodic cleanup (every 10 ticks ≈ 5min)
+  2.6 pollPrBuildStatus()  Poll ADO for CI/build status (every 6 ticks ≈ 3min)
+  2.7 schedulePrSync()     Dispatch agent for full PR status sync (every 20 ticks ≈ 10min)
+  3. discoverWork()        Scan ALL linked projects for new tasks
+  4. updateSnapshot()      Write identity/now.md
+  5. dispatch              Spawn agents for pending items (up to maxConcurrent)
 ```
 
 ## Work Discovery
 
-`discoverWork()` iterates every project in `config.projects[]` and runs three discovery functions per project. Results are prioritized: fixes > reviews > implements > work-items.
+`discoverWork()` iterates every project in `config.projects[]` and runs multiple discovery functions per project. Results are prioritized: fixes > reviews > plan-to-prd > implements > work-items.
 
 ### Source 1: Pull Requests (`discoverFromPrs`)
 
@@ -25,10 +28,14 @@ tick()
 
 | PR State | Action | Dispatch Type |
 |----------|--------|---------------|
-| `reviewStatus: "pending"` or `"waiting"` | Queue a code review | `review` |
-| `reviewStatus: "changes-requested"` | Route back to author for fixes | `fix` |
+| Squad review pending/waiting | Queue a code review | `review` |
+| Squad review `changes-requested` | Route back to author for fixes | `fix` |
+| `buildStatus: "failing"` | Route to any agent for build fix | `fix` |
+| No `buildTested` flag | Queue build & test verification | `test` |
 
 Skips PRs where `status !== "active"`.
+
+**Build & Test auto-dispatch:** When a PR is first created (synced from agent output), it has no `buildTested` field. The engine dispatches a test agent to check out the branch, build, run tests, and if it's a webapp, start a local dev server. If build/tests fail, the agent auto-files a high-priority fix work item. The PR is marked `buildTested: 'dispatched'` to prevent re-dispatch.
 
 ### Source 2: PRD Gap Analysis (`discoverFromPrd`)
 
@@ -86,9 +93,41 @@ Better descriptions → better agent routing. Describe what each repo contains, 
 This means a single work item like "Add telemetry to the document creation pipeline" can result in PRs across multiple repos if the agent determines the change touches shared modules in one repo and the frontend in another.
 
 **Adding central work items:**
-- Dashboard Command Center → set Project dropdown to "Auto (agent decides)"
+- Dashboard Command Center → type your intent (no `#project` = central queue)
 - CLI: `node engine.js work "task title"` (defaults to central queue)
 - Direct edit: `~/.squad/work-items.json`
+
+### Source 5: Merged Design Docs (`discoverFromMergedDesignDocs`)
+
+**Reads:** Design doc files matching `workSources.mergedDesignDocs.filePatterns` (e.g., `docs/design-*.md`)
+
+Tracks design docs that have been merged into the main branch. When a new design doc appears (within `lookbackDays`), the engine creates work items to implement the design. State is tracked in `.squad/design-doc-tracker.json` to avoid re-processing.
+
+### Source 6: Plans (`discoverFromPlans`)
+
+**Reads:** `~/.squad/plans/*.md` (project-agnostic)
+
+Plans generated via `/prd` or plan-to-prd flow. When a plan file exists with unimplemented items, the engine creates implementation work items targeting the plan's specified project.
+
+## ADO Build Status Polling
+
+**Runs:** Every 6 ticks (≈ 3 minutes), independently of work discovery.
+
+The engine directly polls the Azure DevOps REST API for CI/build status on all active PRs. This is a lightweight HTTP call — no agent dispatch needed.
+
+**How it works:**
+1. Gets a bearer token via `azureauth ado token` (cached for 30 minutes)
+2. For each active PR, hits `GET /{project}/_apis/git/repositories/{repoId}/pullrequests/{prNum}/statuses`
+3. Deduplicates statuses by context (keeps latest per pipeline)
+4. Filters to build-related contexts: `codecoverage`, `deploy`, `build`, `ci/`
+5. Derives overall status:
+   - **failing** — any pipeline has `failed`/`error` state
+   - **passing** — all pipelines `succeeded`/`notApplicable`
+   - **running** — pipelines are `pending`/`queued`
+   - **none** — no build pipelines found
+6. Writes `buildStatus` (and `buildFailReason` on failure) back to `pull-requests.json`
+
+This feeds the `discoverFromPrs` build-failure routing — when `buildStatus` flips to `"failing"`, the next discovery tick dispatches a fix agent.
 
 ## Discovery Gates
 
@@ -215,30 +254,62 @@ proc.on('close')
   │
   ├─ Move dispatch item: active → completed
   │
+  ├─ Sync PRs from output (scan for PR URLs → pull-requests.json)
+  │
   ├─ Post-completion hooks:
-  │    review → update PR reviewStatus in pull-requests.json
-  │    fix    → set PR reviewStatus back to "waiting"
+  │    review     → update PR squadReview in pull-requests.json, vote on ADO
+  │    fix        → set PR squadReview back to "waiting"
+  │    build-test → (agent auto-files fix work items on failure)
   │
   ├─ Check for learnings in decisions/inbox/
   │    (warns if agent didn't write findings)
   │
+  ├─ Update agent history and metrics
+  │
   └─ Clean up temp prompt files from engine/
 ```
+
+## Command Center (Dashboard Input)
+
+The dashboard exposes a unified input box at `http://localhost:7331` that parses natural-language intent into structured work items, decisions, or PRD items.
+
+**Syntax:**
+| Token | Effect |
+|-------|--------|
+| `@agent` | Assigns to a specific agent (sets `item.agent`) |
+| `@everyone` | Fan-out to all agents (sets `scope: 'fan-out'`) |
+| `!high` / `!low` | Sets priority (default: medium) |
+| `/decide` | Creates a decision (appended to `decisions.md`) |
+| `/prd` | Creates a PRD item (appended to `prd-gaps.json`) |
+| `#project` | Targets a specific project queue |
+
+Work type is auto-detected from keywords (fix, explore, test, review → implement as fallback). The `@agent` assignment flows through to the engine: `item.agent || resolveAgent(workType, config)`.
 
 ## Data Flow Diagram
 
 ```
+                     Dashboard Command Center
+                     (unified intent input)
+                              │
+                   ┌──────────┼──────────┐
+                   ▼          ▼          ▼
+             work-items   decisions   prd-gaps
+             .json        .md         .json
+
 Per-project sources:              Central engine:              Agents:
 
 work-items.json ──┐
-prd-gaps.json ────┤  discoverWork()   dispatch.json
-pull-requests.json┘  (each tick)      ┌──────────┐
-                          │           │ pending   │
-~/.squad/                 │           │ active    │
-  work-items.json ────────┤           │ completed │
-  (central, auto-route)   ▼           └─────┬────┘
+prd-gaps.json ────┤
+pull-requests.json┤  discoverWork()   dispatch.json
+design-*.md ──────┤  (each tick)      ┌──────────┐
+                  │       │           │ pending   │
+~/.squad/         │       │           │ active    │
+  work-items.json ┤       │           │ completed │
+  plans/*.md ─────┘       ▼           └─────┬────┘
                      addToDispatch()─────────┘
                                             │
+ADO REST API ─── pollPrBuildStatus() ──► pull-requests.json
+(every 3min)      (buildStatus field)       │
                                        spawnAgent()
                                             │
                                ┌────────────┼────────────┐
@@ -249,19 +320,19 @@ pull-requests.json┘  (each tick)      ┌──────────┐
                                             │
                                         on exit:
                                             │
-                               ┌────────────┼────────────┐
-                               ▼            ▼            ▼
-                          output.log   decisions/   pull-requests
-                          (per agent)  inbox/*.md   .json update
-                                            │
-                                  consolidateInbox()
-                                  (at 5+ files)
-                                            │
-                                            ▼
-                                      decisions.md
-                                      (injected into
-                                       all future
-                                       playbooks)
+                        ┌───────────┬───────┼───────┬──────────┐
+                        ▼           ▼       ▼       ▼          ▼
+                   output.log  decisions/  PRs    work-items  localhost
+                   (per agent) inbox/*.md  .json  .json       (if webapp,
+                                    │             (auto-filed  from build
+                          consolidateInbox()       on failure)  & test)
+                          (at 5+ files)
+                                    │
+                                    ▼
+                              decisions.md
+                              (injected into
+                               all future
+                               playbooks)
 ```
 
 ## Timeout & Stale Detection
