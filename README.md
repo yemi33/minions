@@ -2,6 +2,8 @@
 
 A multi-project AI dev team that runs from `~/.squad/`. Five autonomous agents share a single engine, dashboard, knowledge base, and MCP toolchain — working across any number of linked repos with self-improving workflows.
 
+Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradygaster.github.io/squad/).
+
 ## What It Does
 
 - **Auto-discovers work** from PRD gaps, pull requests, and work queues across all linked projects
