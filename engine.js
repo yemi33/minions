@@ -383,6 +383,7 @@ function renderPlaybook(type, vars) {
     pr_create_instructions: getPrCreateInstructions(dispatchProject),
     pr_comment_instructions: getPrCommentInstructions(dispatchProject),
     pr_fetch_instructions: getPrFetchInstructions(dispatchProject),
+    pr_vote_instructions: getPrVoteInstructions(dispatchProject),
     repo_host_label: getRepoHostLabel(dispatchProject),
   };
   const allVars = { ...projectVars, ...vars };
@@ -426,6 +427,15 @@ function getPrFetchInstructions(project) {
     return `Use \`gh pr view\` or the GitHub MCP tools to fetch PR status.`;
   }
   return `Use \`mcp__azure-ado__repo_get_pull_request_by_id\` to fetch PR status.`;
+}
+
+function getPrVoteInstructions(project) {
+  const host = getRepoHost(project);
+  const repoId = project?.repositoryId || '';
+  if (host === 'github') {
+    return `Use \`gh pr review\` to approve or request changes:\n- \`gh pr review <number> --approve\`\n- \`gh pr review <number> --request-changes\``;
+  }
+  return `Use \`mcp__azure-ado__repo_update_pull_request_reviewers\`:\n- repositoryId: \`${repoId}\`\n- Set your reviewer vote on the PR (10=approve, 5=approve-with-suggestions, -10=reject)`;
 }
 
 function getRepoHostLabel(project) {
@@ -1017,14 +1027,19 @@ function updatePrAfterReview(agentId, pr, project) {
 
   const agentStatus = getAgentStatus(agentId);
   const verdict = agentStatus.verdict || 'reviewed';
-  if (verdict.toLowerCase().includes('request') || verdict.toLowerCase().includes('change')) {
-    target.reviewStatus = 'changes-requested';
-  } else {
-    target.reviewStatus = 'approved';
-  }
   const config = getConfig();
-  target.reviewer = config.agents[agentId]?.name || agentId;
-  target.reviewNote = agentStatus.task || '';
+  const reviewerName = config.agents[agentId]?.name || agentId;
+
+  const isChangesRequested = verdict.toLowerCase().includes('request') || verdict.toLowerCase().includes('change');
+  const squadVerdict = isChangesRequested ? 'changes-requested' : 'approved';
+
+  // Store squad review separately from ADO review state
+  target.squadReview = {
+    status: squadVerdict,
+    reviewer: reviewerName,
+    reviewedAt: ts(),
+    note: agentStatus.task || ''
+  };
 
   // Update author metrics
   const authorAgentId = (pr.agent || '').toLowerCase();
@@ -1032,15 +1047,15 @@ function updatePrAfterReview(agentId, pr, project) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
     const metrics = safeJson(metricsPath) || {};
     if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    if (target.reviewStatus === 'approved') metrics[authorAgentId].prsApproved++;
-    else if (target.reviewStatus === 'changes-requested') metrics[authorAgentId].prsRejected++;
+    if (squadVerdict === 'approved') metrics[authorAgentId].prsApproved++;
+    else if (squadVerdict === 'changes-requested') metrics[authorAgentId].prsRejected++;
     safeWrite(metricsPath, metrics);
   }
 
   const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
   const prPath = project?.workSources?.pullRequests?.path || '.squad/pull-requests.json';
   safeWrite(path.resolve(root, prPath), prs);
-  log('info', `Updated ${pr.id} → ${target.reviewStatus} by ${target.reviewer}`);
+  log('info', `Updated ${pr.id} → squad review: ${squadVerdict} by ${reviewerName}`);
 
   // Create feedback for the PR author so they learn from the review
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
@@ -1052,13 +1067,18 @@ function updatePrAfterFix(pr, project) {
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
-  target.reviewStatus = 'waiting';
-  target.reviewNote = 'Fixed, awaiting re-review';
+  // Reset squad review so it gets re-reviewed
+  target.squadReview = {
+    ...target.squadReview,
+    status: 'waiting',
+    note: 'Fixed, awaiting re-review',
+    fixedAt: ts()
+  };
 
   const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
   const prPath = project?.workSources?.pullRequests?.path || '.squad/pull-requests.json';
   safeWrite(path.resolve(root, prPath), prs);
-  log('info', `Updated ${pr.id} → waiting (fix pushed)`);
+  log('info', `Updated ${pr.id} → squad review: waiting (fix pushed)`);
 }
 
 function checkForLearnings(agentId, agentInfo, taskDesc) {
@@ -1912,23 +1932,29 @@ function discoverFromPrs(config, project) {
   for (const pr of prs) {
     if (pr.status !== 'active') continue;
 
-    // PRs needing review
-    if (pr.reviewStatus === 'pending' || pr.reviewStatus === 'waiting') {
+    // PRs needing review — use squad review state (not ADO reviewStatus which pr-sync manages)
+    const squadStatus = pr.squadReview?.status;
+    const needsReview = !squadStatus || squadStatus === 'waiting';
+    if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
 
+      // Extract numeric PR ID from "PR-NNNNN" format
+      const prNumber = (pr.id || '').replace(/^PR-/, '');
       const vars = {
         agent_id: agentId,
         agent_name: config.agents[agentId]?.name || agentId,
         agent_role: config.agents[agentId]?.role || 'Agent',
         pr_id: pr.id,
+        pr_number: prNumber,
         pr_title: pr.title || '',
         pr_branch: pr.branch || '',
         pr_author: pr.agent || '',
         pr_url: pr.url || '',
+        main_branch: project?.mainBranch || 'main',
         team_root: SQUAD_DIR,
         repo_id: project?.repositoryId || config.project?.repositoryId || '',
         project_name: project?.name || 'Unknown Project',
@@ -1953,8 +1979,8 @@ function discoverFromPrs(config, project) {
       setCooldown(key);
     }
 
-    // PRs with changes requested → route back to author for fix
-    if (pr.reviewStatus === 'changes-requested') {
+    // PRs with changes requested (by squad review) → route back to author for fix
+    if (squadStatus === 'changes-requested') {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
 
@@ -1967,7 +1993,7 @@ function discoverFromPrs(config, project) {
         agent_role: config.agents[agentId]?.role || 'Agent',
         pr_id: pr.id,
         pr_branch: pr.branch || '',
-        review_note: pr.reviewNote || 'See PR thread comments',
+        review_note: pr.squadReview?.note || pr.reviewNote || 'See PR thread comments',
         team_root: SQUAD_DIR,
         repo_id: project?.repositoryId || config.project?.repositoryId || '',
         project_name: project?.name || 'Unknown Project',
@@ -2475,7 +2501,8 @@ function schedulePrSync(config) {
     prContext += `- **Active PRs:**\n`;
     for (const pr of active) {
       const prNum = (pr.id || '').replace('PR-', '');
-      prContext += `  - ${pr.id}: "${pr.title}" by ${pr.agent || 'unknown'} | reviewStatus: ${pr.reviewStatus || 'unknown'} | PR number: ${prNum}\n`;
+      const sqReview = pr.squadReview?.status ? `squad: ${pr.squadReview.status}` : 'squad: none';
+      prContext += `  - ${pr.id}: "${pr.title}" by ${pr.agent || 'unknown'} | ADO: ${pr.reviewStatus || 'unknown'} | ${sqReview} | PR number: ${prNum}\n`;
     }
     prContext += '\n';
   }

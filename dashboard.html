@@ -119,6 +119,8 @@
   .pr-badge.build-pass { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .pr-badge.build-fail { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); }
   .pr-badge.no-build { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .error-details-btn { font-size: 9px; padding: 1px 6px; margin-left: 4px; background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); border-radius: 8px; cursor: pointer; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+  .error-details-btn:hover { background: rgba(248,81,73,0.3); }
   .pr-empty { color: var(--muted); font-style: italic; font-size: 12px; padding: 12px 0; }
   .pr-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
   .pr-pager-btns { display: flex; gap: 6px; }
@@ -957,18 +959,46 @@ function renderDispatch(dispatch) {
 
   if (completed.length > 0) {
     completedEl.innerHTML = '<table class="pr-table"><thead><tr><th>ID</th><th>Type</th><th>Agent</th><th>Task</th><th>Result</th><th>Completed</th></tr></thead><tbody>' +
-      completed.map(d =>
-        '<tr>' +
+      completed.map(d => {
+        const isError = d.result === 'error';
+        const agentId = (d.agent || '').toLowerCase();
+        const errorBtn = isError
+          ? ' <button class="error-details-btn" onclick="showErrorDetails(\'' + escHtml(agentId) + '\',' + JSON.stringify(d.reason || 'No reason recorded') + ',' + JSON.stringify((d.task || '').slice(0, 100)) + ')" title="View error details">details</button>'
+          : '';
+        return '<tr>' +
           '<td style="font-family:Consolas;font-size:10px">' + escHtml((d.id || '').slice(0, 20)) + '</td>' +
           '<td><span class="dispatch-type ' + (d.type || '') + '">' + escHtml(d.type || '') + '</span></td>' +
           '<td>' + escHtml(d.agentName || d.agent || '') + '</td>' +
           '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml((d.task || '').slice(0, 60)) + '</td>' +
-          '<td style="color:' + (d.result === 'success' ? 'var(--green)' : 'var(--red)') + '">' + escHtml(d.result || '') + '</td>' +
+          '<td style="color:' + (d.result === 'success' ? 'var(--green)' : 'var(--red)') + '">' + escHtml(d.result || '') + errorBtn + '</td>' +
           '<td class="pr-date">' + shortTime(d.completed_at) + '</td>' +
-        '</tr>'
-      ).join('') + '</tbody></table>';
+        '</tr>';
+      }).join('') + '</tbody></table>';
   } else {
     completedEl.innerHTML = '<p class="empty">No completed dispatches yet.</p>';
+  }
+}
+
+async function showErrorDetails(agentId, reason, task) {
+  document.getElementById('modal-title').textContent = 'Error: ' + task;
+  document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\nLoading agent output...';
+  document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal').classList.add('open');
+
+  try {
+    const output = await fetch('/api/agent/' + agentId + '/output').then(r => r.text());
+    const lines = output.split('\n');
+    const stderrIdx = lines.findIndex(l => l.startsWith('## stderr'));
+    let summary = '';
+    if (stderrIdx >= 0) {
+      const stderr = lines.slice(stderrIdx + 1).join('\n').trim();
+      if (stderr) summary = 'STDERR:\n' + stderr.slice(-2000);
+    }
+    if (!summary) summary = output.slice(-3000);
+    document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\n---\n\n' + summary;
+  } catch {
+    document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\n(Could not load agent output)';
   }
 }
 

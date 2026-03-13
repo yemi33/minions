@@ -13,9 +13,10 @@ Branch: `{{pr_branch}}`
 
 ## How to Review
 
-1. Read the diff:
+1. Fetch latest and read the diff:
    ```bash
-   git diff main...origin/{{pr_branch}}
+   git fetch origin
+   git diff {{main_branch}}...origin/{{pr_branch}}
    ```
 
 2. For each changed file, verify:
@@ -35,12 +36,26 @@ Branch: `{{pr_branch}}`
    - Verdict: **APPROVE**
    - Note any minor non-blocking suggestions
 
-## Post Review
+## Post Review — Comment AND Vote on PR
+
+You MUST do both of the following:
+
+### Step 1: Leave a detailed review comment
 
 {{pr_comment_instructions}}
 - pullRequestId: `{{pr_number}}`
 - content: Your full review with verdict, findings, and sign-off
 - Sign: `Review by Squad ({{agent_name}} — {{agent_role}})`
+
+### Step 2: Set your vote on the PR
+
+{{pr_vote_instructions}}
+- pullRequestId: `{{pr_number}}`
+- If your verdict is **APPROVE**: vote `10` (approved)
+- If your verdict is **REQUEST_CHANGES**: vote `-10` (rejected)
+- If you have minor non-blocking suggestions: vote `5` (approved with suggestions)
+
+This vote is visible to human reviewers in the PR UI and helps them understand the squad's assessment.
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts (e.g., the PR shows conflicts):

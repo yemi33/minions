@@ -680,6 +680,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/agent/:id/output — fetch final output.log for an agent
+  const outputMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/);
+  if (outputMatch && req.method === 'GET') {
+    const agentId = outputMatch[1];
+    const outputPath = path.join(SQUAD_DIR, 'agents', agentId, 'output.log');
+    const content = safeRead(outputPath);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(content || 'No output log found for this agent.');
+    return;
+  }
+
   // GET /api/decisions — return full decisions.md content
   if (req.method === 'GET' && req.url === '/api/decisions-full') {
     const content = safeRead(path.join(SQUAD_DIR, 'decisions.md'));
