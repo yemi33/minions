@@ -8,6 +8,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 const SQUAD_DIR = __dirname;
@@ -625,7 +626,7 @@ const server = http.createServer(async (req, res) => {
       const decPath = path.join(SQUAD_DIR, 'decisions.md');
       let content = safeRead(decPath) || '# Squad Decisions\n\n## Active Decisions\n';
       const today = new Date().toISOString().slice(0, 10);
-      const entry = `\n### ${today}: ${body.title}\n**By:** ${body.author || 'yemishin'}\n**What:** ${body.what}\n${body.why ? '**Why:** ' + body.why + '\n' : ''}\n---\n`;
+      const entry = `\n### ${today}: ${body.title}\n**By:** ${body.author || os.userInfo().username}\n**What:** ${body.what}\n${body.why ? '**Why:** ' + body.why + '\n' : ''}\n---\n`;
       const marker = '## Active Decisions';
       const idx = content.indexOf(marker);
       if (idx !== -1) {

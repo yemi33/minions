@@ -1592,7 +1592,7 @@ async function cmdSubmitDecision(parsed) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       title: parsed.title,
-      author: 'yemishin',
+      author: '',
       what: parsed.title + (parsed.description ? '\n' + parsed.description : ''),
       why: '',
     }),

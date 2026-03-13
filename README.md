@@ -15,7 +15,7 @@ Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradyga
 
 ```bash
 # Clone to your home directory
-git clone https://github.com/yemi33/squad.git ~/.squad
+git clone https://github.com/<your-user>/squad.git ~/.squad
 cd ~/.squad
 ```
 
@@ -27,7 +27,7 @@ If you use Claude Code as your daily driver, you can set up Squad by prompting C
 
 **First-time setup:**
 ```
-Clone https://github.com/yemi33/squad.git to ~/.squad, then run `node ~/.squad/squad.js init`
+Clone https://github.com/<your-user>/squad.git to ~/.squad, then run `node ~/.squad/squad.js init`
 to initialize it. After that, link my project at ~/my-project by running
 `node ~/.squad/squad.js add ~/my-project` — answer the interactive prompts using
 what you can auto-detect from the repo.
