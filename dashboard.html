@@ -25,7 +25,7 @@
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .timestamp { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
-  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 0; max-width: 100vw; overflow: hidden; }
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 0; max-width: 100vw; overflow-x: hidden; }
   section { padding: 20px 24px; border-bottom: 1px solid var(--border); overflow: hidden; min-width: 0; }
   section:nth-child(odd) { border-right: 1px solid var(--border); }
   section h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
@@ -163,7 +163,7 @@
   .empty { color: var(--muted); font-style: italic; font-size: 12px; padding: 8px 0; }
 
   /* Command Center — Unified Input */
-  .cmd-center { grid-column: 1 / -1; }
+  .cmd-center { grid-column: 1 / -1; overflow: visible !important; }
   .cmd-input-wrap {
     position: relative; display: flex; align-items: flex-start; gap: 0;
     background: var(--bg); border: 2px solid var(--border); border-radius: 10px;
@@ -214,8 +214,11 @@
     display: none; position: absolute; bottom: 100%; left: 16px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
     padding: 4px 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-    z-index: 200; max-height: 260px; overflow-y: auto;
+    z-index: 200; max-height: 320px; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
+  .cmd-mention-popup::-webkit-scrollbar { width: 4px; }
+  .cmd-mention-popup::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
   .cmd-mention-popup.visible { display: block; }
   .cmd-mention-item {
     padding: 8px 14px; font-size: 12px; cursor: pointer; display: flex;
@@ -229,8 +232,11 @@
   /* Hints bar */
   .cmd-hints {
     display: flex; gap: 12px; margin-top: 2px; font-size: 10px; color: var(--muted);
-    letter-spacing: 0.2px; padding: 0 4px;
+    letter-spacing: 0.2px; padding: 0 4px; overflow-x: auto; white-space: nowrap;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
+  .cmd-hints::-webkit-scrollbar { height: 3px; }
+  .cmd-hints::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .cmd-hints code { color: var(--blue); font-size: 10px; background: var(--surface2); padding: 1px 5px; border-radius: 3px; }
 
   .cmd-toast {
@@ -963,7 +969,7 @@ function renderDispatch(dispatch) {
         const isError = d.result === 'error';
         const agentId = (d.agent || '').toLowerCase();
         const errorBtn = isError
-          ? ' <button class="error-details-btn" onclick="showErrorDetails(\'' + escHtml(agentId) + '\',' + JSON.stringify(d.reason || 'No reason recorded') + ',' + JSON.stringify((d.task || '').slice(0, 100)) + ')" title="View error details">details</button>'
+          ? ' <button class="error-details-btn" data-agent="' + escHtml(agentId) + '" data-reason="' + escHtml(d.reason || 'No reason recorded') + '" data-task="' + escHtml((d.task || '').slice(0, 100)) + '" onclick="showErrorDetails(this.dataset.agent, this.dataset.reason, this.dataset.task)" title="View error details">details</button>'
           : '';
         return '<tr>' +
           '<td style="font-family:Consolas;font-size:10px">' + escHtml((d.id || '').slice(0, 20)) + '</td>' +
@@ -1407,6 +1413,7 @@ function cmdShowMentions(query) {
     '</div>'
   ).join('');
   popup.classList.add('visible');
+  popup.scrollTop = 0;
 }
 
 function cmdShowProjects(query) {
@@ -1426,6 +1433,7 @@ function cmdShowProjects(query) {
     '</div>'
   ).join('');
   popup.classList.add('visible');
+  popup.scrollTop = 0;
 }
 
 function cmdHidePopup() {
@@ -1488,12 +1496,14 @@ function cmdKeyDown(e) {
       e.preventDefault();
       cmdMentionIdx = Math.min(cmdMentionIdx + 1, items.length - 1);
       items.forEach((el, i) => el.classList.toggle('active', i === cmdMentionIdx));
+      items[cmdMentionIdx]?.scrollIntoView({ block: 'nearest' });
       return;
     }
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       cmdMentionIdx = Math.max(cmdMentionIdx - 1, 0);
       items.forEach((el, i) => el.classList.toggle('active', i === cmdMentionIdx));
+      items[cmdMentionIdx]?.scrollIntoView({ block: 'nearest' });
       return;
     }
     if (e.key === 'Enter' && !e.ctrlKey) {
