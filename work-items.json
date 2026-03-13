@@ -118,14 +118,12 @@
     "type": "test",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "dispatched",
     "created": "2026-03-13T09:30:51.902Z",
     "createdBy": "dashboard",
     "agent": "rebecca",
-    "dispatched_at": "2026-03-13T09:31:06.877Z",
-    "dispatched_to": "rebecca",
-    "failReason": "Hung — no output for 301s",
-    "failedAt": "2026-03-13T09:40:07.037Z"
+    "dispatched_at": "2026-03-13T09:42:07.052Z",
+    "dispatched_to": "rebecca"
   },
   {
     "id": "W009",

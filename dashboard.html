@@ -177,12 +177,12 @@
   }
   .cmd-input-wrap textarea::placeholder { color: var(--muted); }
   .cmd-send-btn {
-    background: var(--blue); color: #fff; border: none; padding: 10px 18px;
+    background: transparent; color: var(--blue); border: 1px solid var(--blue); padding: 10px 18px;
     border-radius: 0 8px 8px 0; font-size: 13px; font-weight: 600; cursor: pointer;
     transition: opacity 0.2s; white-space: nowrap; align-self: stretch; min-height: 48px;
     display: flex; align-items: center; gap: 6px;
   }
-  .cmd-send-btn:hover { opacity: 0.85; }
+  .cmd-send-btn:hover { background: rgba(88,166,255,0.1); }
   .cmd-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .cmd-send-btn kbd { font-size: 10px; opacity: 0.7; font-family: inherit; }
 
