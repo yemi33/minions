@@ -1,0 +1,54 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Check if publishable files changed
+        id: changes
+        run: |
+          # Get files changed in the latest commit
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          # Check if any non-metadata files changed (skip history, decisions, notes, etc.)
+          PUBLISH=false
+          for f in $CHANGED; do
+            case "$f" in
+              *.js|*.html|*.md|package.json|config.template.json|routing.md|team.md|agents/*/charter.md|playbooks/*|skills/*|docs/*|bin/*)
+                PUBLISH=true
+                break
+                ;;
+            esac
+          done
+          echo "should_publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - name: Bump patch version
+        if: steps.changes.outputs.should_publish == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version
+          VERSION=$(node -p "require('./package.json').version")
+          git add package.json
+          git commit -m "chore: bump version to $VERSION [skip ci]"
+          git push
+
+      - name: Publish to npm
+        if: steps.changes.outputs.should_publish == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
