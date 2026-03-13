@@ -21,6 +21,10 @@
 - [ ] **Scheduled tasks** — cron-style recurring work (e.g., "every Monday Lambert regenerates the PRD", "every day Ripley explores recent commits")
 - [ ] **Idle threshold alert** — if all agents are idle for >N minutes, notify via Teams/dashboard
 
+## Ephemeral / Temp Agents
+- [ ] **Temp agent support** — spawn short-lived agents for housekeeping tasks (pr-sync, skill extraction, PRD refresh) without consuming a permanent squad slot. Temp agents get a minimal system prompt, low maxTurns, and are auto-cleaned after completion. This avoids tying up named agents (Ripley, Dallas, etc.) for lightweight ops work.
+- [ ] **Dedicated ops agent** — alternatively, add a permanent 6th "ops" agent with a charter scoped to housekeeping: PR syncing, cleanup, status checks, metric collection. Never assigned feature work.
+
 ## Routing Improvements
 - [ ] **Adaptive routing** — use quality metrics (approval rate, error rate) to adjust routing preferences. Deprioritize underperforming agents for implementation, promote high-performers.
 - [ ] **Auto-escalation** — if an agent errors 3 times in a row, pause their dispatch and alert via dashboard/Teams
