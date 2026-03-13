@@ -32,10 +32,10 @@
           "path": ".squad/work-items.json",
           "cooldownMinutes": 0
         },
-        "mergedDesignDocs": {
+        "specs": {
           "enabled": true,
-          "filePatterns": ["docs/design-*.md", "docs/designs/*.md"],
-          "statePath": ".squad/design-doc-tracker.json",
+          "filePatterns": ["docs/**/*.md"],
+          "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
       }
@@ -61,10 +61,10 @@
           "path": ".squad/work-items.json",
           "cooldownMinutes": 0
         },
-        "mergedDesignDocs": {
+        "specs": {
           "enabled": true,
-          "filePatterns": ["docs/design-*.md", "docs/designs/*.md"],
-          "statePath": ".squad/design-doc-tracker.json",
+          "filePatterns": ["docs/**/*.md"],
+          "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
       }
@@ -89,10 +89,10 @@
           "path": ".squad/work-items.json",
           "cooldownMinutes": 0
         },
-        "mergedDesignDocs": {
+        "specs": {
           "enabled": true,
-          "filePatterns": ["docs/design-*.md", "docs/designs/*.md"],
-          "statePath": ".squad/design-doc-tracker.json",
+          "filePatterns": ["docs/**/*.md"],
+          "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
       }

@@ -2064,7 +2064,7 @@ function discoverFromPrd(config, project) {
  * Plans are project-scoped JSON files written by the plan-to-prd playbook.
  */
 /**
- * Convert plan files into project work items (side-effect, like design docs).
+ * Convert plan files into project work items (side-effect, like specs).
  * Plans write to the target project's work-items.json — picked up by discoverFromWorkItems next tick.
  */
 function materializePlansAsWorkItems(config) {
@@ -2438,20 +2438,21 @@ function buildProjectContext(projects, assignedProject, isFanOut, agentName, age
 }
 
 /**
- * Detect merged PRs containing design docs and create implement work items.
- * This is a two-stage discovery: it creates work items (side effect) that
- * discoverFromWorkItems() picks up on the next tick.
+ * Detect merged PRs containing spec documents and create implement work items.
+ * "Specs" = any markdown doc merged into the repo that describes work to build.
+ * Writes work items as a side-effect; discoverFromWorkItems() picks them up next tick.
+ *
+ * Config key: workSources.specs (legacy: mergedDesignDocs)
  */
-function discoverFromMergedDesignDocs(config, project) {
-  const src = project?.workSources?.mergedDesignDocs;
+function materializeSpecsAsWorkItems(config, project) {
+  const src = project?.workSources?.specs || project?.workSources?.mergedDesignDocs;
   if (!src?.enabled) return;
 
   const root = projectRoot(project);
-  const filePatterns = src.filePatterns || ['docs/design-*.md', 'docs/designs/*.md'];
-  const trackerPath = path.resolve(root, src.statePath || '.squad/design-doc-tracker.json');
+  const filePatterns = src.filePatterns || ['docs/**/*.md'];
+  const trackerPath = path.resolve(root, src.statePath || '.squad/spec-tracker.json');
   const tracker = safeJson(trackerPath) || { processedPrs: {} };
 
-  // Get merged PRs from the project's PR tracker
   const prs = getPrs(project);
   const mergedPrs = prs.filter(pr =>
     (pr.status === 'merged' || pr.status === 'completed') &&
@@ -2460,9 +2461,8 @@ function discoverFromMergedDesignDocs(config, project) {
 
   if (mergedPrs.length === 0) return;
 
-  // For each merged PR, check if it introduced design docs
   const sinceDate = src.lookbackDays ? `${src.lookbackDays} days ago` : '7 days ago';
-  let recentDesignDocs = [];
+  let recentSpecs = [];
   for (const pattern of filePatterns) {
     try {
       const result = execSync(
@@ -2471,80 +2471,67 @@ function discoverFromMergedDesignDocs(config, project) {
       ).trim();
       if (!result) continue;
 
-      // Parse git log output: alternating COMMIT: lines and file paths
       let currentCommit = null;
       for (const line of result.split('\n')) {
         if (line.startsWith('COMMIT:')) {
           const [hash, ...msgParts] = line.replace('COMMIT:', '').split('|');
           currentCommit = { hash: hash.trim(), message: msgParts.join('|').trim() };
         } else if (line.trim() && currentCommit) {
-          recentDesignDocs.push({ file: line.trim(), ...currentCommit });
+          recentSpecs.push({ file: line.trim(), ...currentCommit });
         }
       }
     } catch {}
   }
 
-  if (recentDesignDocs.length === 0) return;
+  if (recentSpecs.length === 0) return;
 
-  // Match design docs to merged PRs (by branch name or commit message overlap)
   const wiPath = projectWorkItemsPath(project);
   const existingItems = safeJson(wiPath) || [];
   let created = 0;
 
   for (const pr of mergedPrs) {
-    // Check if any design doc commit is plausibly from this PR
     const prBranch = (pr.branch || '').toLowerCase();
-    const prTitle = (pr.title || '').toLowerCase();
-    const matchedDocs = recentDesignDocs.filter(doc => {
+    const matchedSpecs = recentSpecs.filter(doc => {
       const msg = doc.message.toLowerCase();
-      // Match by: branch name in commit, PR title overlap, or file path in PR title
-      return (prBranch && msg.includes(prBranch.split('/').pop())) ||
-             (prTitle && (msg.includes('design') || doc.file.toLowerCase().includes('design')));
+      // Match any doc whose commit message references this PR's branch
+      return prBranch && msg.includes(prBranch.split('/').pop());
     });
 
-    if (matchedDocs.length === 0) {
-      // No design doc match — still mark as processed to avoid re-checking
+    if (matchedSpecs.length === 0) {
       tracker.processedPrs[pr.id] = { processedAt: ts(), matched: false };
       continue;
     }
 
-    // Read the design doc to extract info for the work item
-    for (const doc of matchedDocs) {
-      const alreadyCreated = existingItems.some(i =>
-        i.sourceDesignDoc === doc.file || i.sourcePr === pr.id
-      );
-      if (alreadyCreated) continue;
+    for (const doc of matchedSpecs) {
+      if (existingItems.some(i => i.sourceSpec === doc.file || i.sourcePr === pr.id)) continue;
 
-      const info = extractDesignDocInfo(doc.file, root);
+      const info = extractSpecInfo(doc.file, root);
       if (!info) continue;
 
-      // Generate next work item ID with DD prefix
-      const ddItems = existingItems.filter(i => i.id?.startsWith('DD'));
-      const maxNum = ddItems.reduce((max, i) => {
-        const n = parseInt(i.id.replace('DD', ''), 10);
+      const spItems = existingItems.filter(i => i.id?.startsWith('SP'));
+      const maxNum = spItems.reduce((max, i) => {
+        const n = parseInt(i.id.replace('SP', ''), 10);
         return isNaN(n) ? max : Math.max(max, n);
       }, 0);
-      const newId = `DD${String(maxNum + 1).padStart(3, '0')}`;
+      const newId = `SP${String(maxNum + 1).padStart(3, '0')}`;
 
-      const workItem = {
+      existingItems.push({
         id: newId,
         type: 'implement',
         title: `Implement: ${info.title}`,
-        description: `Implementation work derived from merged design doc.\n\n**Design doc:** \`${doc.file}\`\n**Source PR:** ${pr.id} — ${pr.title || ''}\n**PR URL:** ${pr.url || 'N/A'}\n\n## Design Summary\n\n${info.summary}\n\nRead the full design doc at \`${doc.file}\` before starting implementation.`,
+        description: `Implementation work from merged spec.\n\n**Spec:** \`${doc.file}\`\n**Source PR:** ${pr.id} — ${pr.title || ''}\n**PR URL:** ${pr.url || 'N/A'}\n\n## Summary\n\n${info.summary}\n\nRead the full spec at \`${doc.file}\` before starting.`,
         priority: info.priority,
         status: 'queued',
         created: ts(),
-        createdBy: 'engine:design-doc-discovery',
-        sourceDesignDoc: doc.file,
+        createdBy: 'engine:spec-discovery',
+        sourceSpec: doc.file,
         sourcePr: pr.id
-      };
-
-      existingItems.push(workItem);
+      });
       created++;
-      log('info', `Design doc discovery: created ${newId} "${workItem.title}" from PR ${pr.id} in ${project.name}`);
+      log('info', `Spec discovery: created ${newId} "${info.title}" from PR ${pr.id} in ${project.name}`);
     }
 
-    tracker.processedPrs[pr.id] = { processedAt: ts(), matched: true, docs: matchedDocs.map(d => d.file) };
+    tracker.processedPrs[pr.id] = { processedAt: ts(), matched: true, specs: matchedSpecs.map(d => d.file) };
   }
 
   if (created > 0) {
@@ -2554,20 +2541,18 @@ function discoverFromMergedDesignDocs(config, project) {
 }
 
 /**
- * Extract title, summary, and priority from a design doc markdown file.
+ * Extract title, summary, and priority from a spec markdown file.
  */
-function extractDesignDocInfo(filePath, projectRoot_) {
+function extractSpecInfo(filePath, projectRoot_) {
   const fullPath = path.resolve(projectRoot_, filePath);
   const content = safeRead(fullPath);
   if (!content) return null;
 
-  // Title: frontmatter title or first H1
   let title = '';
   const fmMatch = content.match(/^---\n[\s\S]*?title:\s*(.+)\n[\s\S]*?---/);
   const h1Match = content.match(/^#\s+(.+)$/m);
   title = fmMatch?.[1]?.trim() || h1Match?.[1]?.trim() || path.basename(filePath, '.md');
 
-  // Summary: ## Summary section, or first paragraph after title
   let summary = '';
   const summaryMatch = content.match(/##\s*Summary\n\n([\s\S]*?)(?:\n##|\n---|$)/);
   if (summaryMatch) {
@@ -2584,11 +2569,9 @@ function extractDesignDocInfo(filePath, projectRoot_) {
     }
   }
 
-  // Priority from frontmatter
   const priorityMatch = content.match(/priority:\s*(high|medium|low|critical)/i);
   const priority = priorityMatch?.[1]?.toLowerCase() || 'medium';
 
-  // Cap content for the work item description
   return { title, summary: summary.slice(0, 1500), priority };
 }
 
@@ -2761,8 +2744,8 @@ function discoverWork(config) {
     // Source 2: PRD gaps → implements
     allImplements.push(...discoverFromPrd(config, project));
 
-    // Side-effect: design docs → work items (picked up below)
-    discoverFromMergedDesignDocs(config, project);
+    // Side-effect: specs → work items (picked up below)
+    materializeSpecsAsWorkItems(config, project);
 
     // Source 3: Work items (includes auto-filed from plans, design docs, build failures)
     allWorkItems.push(...discoverFromWorkItems(config, project));
@@ -3233,12 +3216,12 @@ const commands = {
           const queued = items.filter(i => i.status === 'queued');
           console.log(`    Items: ${queued.length} queued`);
         }
-        if (name === 'mergedDesignDocs') {
-          const trackerFile = path.resolve(root, src.statePath || '.squad/design-doc-tracker.json');
+        if (name === 'specs' || name === 'mergedDesignDocs') {
+          const trackerFile = path.resolve(root, src.statePath || '.squad/spec-tracker.json');
           const tracker = safeJson(trackerFile) || { processedPrs: {} };
           const processed = Object.keys(tracker.processedPrs).length;
           const matched = Object.values(tracker.processedPrs).filter(p => p.matched).length;
-          console.log(`    Processed: ${processed} merged PRs (${matched} had design docs)`);
+          console.log(`    Processed: ${processed} merged PRs (${matched} had specs)`);
         }
         console.log('');
       }

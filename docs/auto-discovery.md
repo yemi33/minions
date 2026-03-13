@@ -21,7 +21,7 @@ tick()
 
 `discoverWork()` iterates every project in `config.projects[]` and runs three core discovery sources. Results are prioritized: fixes > reviews > implements > work-items.
 
-Before scanning, the engine materializes plans and design docs into project work items (side-effect writes to `work-items.json`), so they're picked up by the work items source below.
+Before scanning, the engine materializes plans and specs into project work items (side-effect writes to `work-items.json`), so they're picked up by the work items source below.
 
 ### Source 1: Pull Requests (`discoverFromPrs`)
 
@@ -98,11 +98,11 @@ This means a single work item like "Add telemetry to the document creation pipel
 - CLI: `node engine.js work "task title"` (defaults to central queue)
 - Direct edit: `~/.squad/work-items.json`
 
-### Materialization: Design Docs and Plans → Work Items
+### Materialization: Specs and Plans → Work Items
 
 Before the 3 core sources run, the engine materializes indirect sources into work items:
 
-**Merged Design Docs** (`discoverFromMergedDesignDocs`): Scans `docs/design-*.md` for newly merged design docs. Creates implementation work items in `{project}/.squad/work-items.json` with `createdBy: 'engine:design-doc-discovery'`. State tracked in `.squad/design-doc-tracker.json`.
+**Specs** (`materializeSpecsAsWorkItems`): When a PR merges that added/modified `.md` files under `docs/` (configurable via `workSources.specs.filePatterns`), the engine reads the doc, extracts title/summary/priority, and creates implementation work items with `createdBy: 'engine:spec-discovery'`. State tracked in `.squad/spec-tracker.json` to avoid re-processing.
 
 **Plans** (`materializePlansAsWorkItems`): Scans `~/.squad/plans/*.json` for plan files with `missing`/`planned` items. Creates work items in the target project's queue with `createdBy: 'engine:plan-discovery'`. Deduped via `sourcePlan` + `sourcePlanItem` fields.
 
@@ -303,7 +303,7 @@ Per-project sources:              Central engine:              Agents:
 work-items.json ──┐
 prd-gaps.json ────┤
 pull-requests.json┤  discoverWork()   dispatch.json
-design-*.md ──────┤  (each tick)      ┌──────────┐
+docs/**/*.md (specs)┤  (each tick)      ┌──────────┐
                   │       │           │ pending   │
 ~/.squad/         │       │           │ active    │
   work-items.json ┤       │           │ completed │
