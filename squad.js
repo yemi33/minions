@@ -3,9 +3,9 @@
  * Squad Init — Link a project to the central squad
  *
  * Usage:
- *   node init.js <project-dir>           Add a project interactively
- *   node init.js <project-dir> --remove  Remove a project
- *   node init.js --list                  List linked projects
+ *   node squad.js <project-dir>           Add a project interactively
+ *   node squad.js <project-dir> --remove  Remove a project
+ *   node squad.js --list                  List linked projects
  *
  * This adds the project to ~/.squad/config.json's projects array.
  * The squad engine and dashboard run centrally from ~/.squad/.
@@ -148,7 +148,7 @@ function listProjects() {
   const projects = config.projects || [];
   console.log(`\n  Squad Projects (${projects.length})\n`);
   if (projects.length === 0) {
-    console.log('  No projects linked. Run: node init.js <project-dir>\n');
+    console.log('  No projects linked. Run: node squad.js <project-dir>\n');
     return;
   }
   for (const p of projects) {

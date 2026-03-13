@@ -12,7 +12,7 @@ Roster defined in `config.json`. See individual charters for details.
 
 ## Project Context
 
-Project details (name, stack, repo host, etc.) are configured per-project in `config.json` and each project's `.squad/` folder. Run `node init.js --list` to see linked projects.
+Project details (name, stack, repo host, etc.) are configured per-project in `config.json` and each project's `.squad/` folder. Run `node squad.js list` to see linked projects.
 
 ## Rules
 

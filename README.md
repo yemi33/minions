@@ -4,47 +4,63 @@ A multi-project AI dev team that runs from `~/.squad/`. Five autonomous agents s
 
 Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradygaster.github.io/squad/).
 
-## What It Does
+## Prerequisites
 
-- **Auto-discovers work** from PRD gaps, pull requests, and work queues across all linked projects
-- **Dispatches AI agents** (Claude CLI) with full project context, git worktrees, and MCP server access
-- **Routes intelligently** — fixes first, then reviews, then implementation, matched to agent strengths
-- **Learns from itself** — agents write findings, engine consolidates into institutional knowledge
-- **Tracks quality** — approval rates, error rates, and task metrics per agent
-- **Shares workflows** — agents create reusable skills (Claude Code-compatible) that all other agents can follow
-- **Supports cross-repo tasks** — a single work item can span multiple repositories
-- **Fan-out dispatch** — broad tasks can be split across all idle agents in parallel, each assigned a project
-- **Auto-syncs PRs** — engine scans agent output for PR URLs and updates project trackers automatically
-- **Auto-extracts skills** — agents write ` ```skill ` blocks in output; engine auto-extracts them
-- **Heartbeat monitoring** — detects dead/hung agents via output file activity, not just timeouts
-- **Auto-cleanup** — stale temp files, orphaned worktrees, zombie processes cleaned every 10 minutes
+- **Node.js** 18+ (LTS recommended)
+- **Claude Code CLI** — install with `npm install -g @anthropic-ai/claude-code`
+- **Anthropic API key** or Claude Max subscription (agents spawn Claude Code sessions)
+- **Git** — agents create worktrees for all code changes
+
+## Installation
+
+```bash
+# Clone to your home directory
+git clone https://github.com/yemi33/squad.git ~/.squad
+cd ~/.squad
+```
+
+No `npm install` needed — Squad uses only Node.js built-in modules.
 
 ## Quick Start
 
 ```powershell
-# 1. Initialize the squad (one-time)
-node $env:USERPROFILE\.squad\init.js
+# 1. Initialize the squad (creates config.json with default agents)
+node ~/.squad/squad.js init
 
-# 2. Link your projects (interactive — prompts for description, repo host config)
-node $env:USERPROFILE\.squad\init.js C:\path\to\repo1
-node $env:USERPROFILE\.squad\init.js C:\path\to\repo2
+# 2. Link your projects (interactive — prompts for name, description, repo config)
+node ~/.squad/squad.js add C:\path\to\repo1
+node ~/.squad/squad.js add C:\path\to\repo2
 
-# 3. Run
-node $env:USERPROFILE\.squad\engine.js           # Start engine
-node $env:USERPROFILE\.squad\dashboard.js         # Dashboard at localhost:7331
-node $env:USERPROFILE\.squad\engine.js status     # Check state
+# 3. Start the engine (runs in foreground, ticks every 60s)
+node ~/.squad/engine.js
+
+# 4. Open the dashboard (separate terminal)
+node ~/.squad/dashboard.js
+# → http://localhost:7331
+```
+
+### What happens on first run
+
+1. The engine starts ticking every 60 seconds
+2. It scans each linked project for work: PRs needing review, PRD gaps, queued work items
+3. If it finds work and an agent is idle, it spawns a Claude Code session with the right playbook
+4. You can watch progress on the dashboard or via `node engine.js status`
+
+To give the squad its first task, open the dashboard Command Center and add a work item, or use the CLI:
+```powershell
+node ~/.squad/engine.js work "Explore the codebase and document the architecture"
 ```
 
 ## CLI Reference
 
-### `init.js` — Project management
+### `squad.js` — Project & squad management
 
 | Command | Description |
 |---------|-------------|
-| `node init.js` | Initialize squad with default agents and config (no projects) |
-| `node init.js <dir>` | Link a project (prompts for description, repo host config) |
-| `node init.js <dir> --remove` | Unlink a project |
-| `node init.js --list` | List all linked projects with descriptions |
+| `node squad.js init` | Initialize squad with default agents and config |
+| `node squad.js add <dir>` | Link a project (interactive prompts) |
+| `node squad.js remove <dir>` | Unlink a project |
+| `node squad.js list` | List all linked projects with descriptions |
 
 ### `engine.js` — Engine control
 
@@ -100,6 +116,21 @@ PORT=8080 node dashboard.js  # Custom port
      └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
+## What It Does
+
+- **Auto-discovers work** from PRD gaps, pull requests, and work queues across all linked projects
+- **Dispatches AI agents** (Claude CLI) with full project context, git worktrees, and MCP server access
+- **Routes intelligently** — fixes first, then reviews, then implementation, matched to agent strengths
+- **Learns from itself** — agents write findings, engine consolidates into institutional knowledge
+- **Tracks quality** — approval rates, error rates, and task metrics per agent
+- **Shares workflows** — agents create reusable skills (Claude Code-compatible) that all other agents can follow
+- **Supports cross-repo tasks** — a single work item can span multiple repositories
+- **Fan-out dispatch** — broad tasks can be split across all idle agents in parallel, each assigned a project
+- **Auto-syncs PRs** — engine scans agent output for PR URLs and updates project trackers automatically
+- **Auto-extracts skills** — agents write ` ```skill ` blocks in output; engine auto-extracts them
+- **Heartbeat monitoring** — detects dead/hung agents via output file activity, not just timeouts
+- **Auto-cleanup** — stale temp files, orphaned worktrees, zombie processes cleaned every 10 minutes
+
 ## Dashboard
 
 The web dashboard at `http://localhost:7331` provides:
@@ -116,25 +147,42 @@ The web dashboard at `http://localhost:7331` provides:
 - **Dispatch Queue + Engine Log** — active/pending work and audit trail
 - **Agent Metrics** — tasks completed, errors, PRs created/approved/rejected, approval rates
 
-## Multi-Project Config
+## Project Config
 
-Each project in `config.json` has:
+When you run `squad.js add <dir>`, it prompts for project details and saves them to `config.json`. Each project entry looks like:
 
 ```json
 {
   "name": "MyProject",
   "description": "What this repo is for — agents read this to decide where to work",
   "localPath": "C:/Users/you/MyProject",
-  "repositoryId": "ado-guid",
-  "adoOrg": "myorg",
-  "adoProject": "myproject",
+  "repositoryId": "repo-guid-if-applicable",
+  "adoOrg": "your-org",
+  "adoProject": "your-project",
   "repoName": "MyProject",
   "mainBranch": "main",
-  "workSources": { ... }
+  "workSources": {
+    "prd":          { "enabled": true, "path": "docs/prd-gaps.json" },
+    "pullRequests": { "enabled": true, "path": ".squad/pull-requests.json" },
+    "workItems":    { "enabled": true, "path": ".squad/work-items.json" }
+  }
 }
 ```
 
-The `description` field is critical — it tells agents what each repo contains so they can auto-route central work items to the right project.
+**Key fields:**
+- `description` — critical for auto-routing. Agents read this to decide which repo to work in.
+- `repositoryId`, `adoOrg`, `adoProject` — used for PR creation via MCP tools. Leave blank if your repo host doesn't need them.
+- `workSources` — toggle which work sources the engine scans for each project.
+
+The init script also creates `<project>/.squad/` with empty `work-items.json` and `pull-requests.json`.
+
+## MCP Server Integration
+
+Agents need MCP tools to interact with your repo host (create PRs, post review comments, etc.). On engine start, MCP servers are auto-synced from `~/.claude.json` to `mcp-servers.json`.
+
+**Example:** If you use Azure DevOps, configure the `azure-ado` MCP server in your Claude Code settings. If you use GitHub, configure the `github` MCP server. Agents will discover and use whichever tools are available.
+
+Manually refresh with `node engine.js mcp-sync`.
 
 ## Work Items
 
@@ -215,23 +263,31 @@ When an agent finishes:
 9. Skills auto-extracted from ` ```skill ` blocks in output
 10. Temp files cleaned up
 
-## MCP & Tool Access
+## Team
 
-On engine start, MCP servers are auto-synced from `~/.claude.json` to `mcp-servers.json`. Agents inherit all MCP servers and skills configured in the user's Claude Code instance. Manually refresh with `node engine.js mcp-sync`.
+| Agent | Role | Best for |
+|-------|------|----------|
+| Ripley | Lead / Explorer | Code review, architecture, exploration |
+| Dallas | Engineer | Features, tests, UI |
+| Lambert | Analyst | PRD generation, docs |
+| Rebecca | Architect | Complex systems, CI/infra |
+| Ralph | Engineer | Features, bug fixes |
 
-## Node.js Upgrade Caution
+Routing rules in `routing.md`. Charters in `agents/{name}/charter.md`. Both are editable — customize agents and routing to fit your team's needs.
 
-The engine and all spawned agents use the Node binary that started the engine (`process.execPath`). This means:
+## Playbooks
 
-- **After upgrading Node, restart the engine.** The running engine keeps using the old binary. Agents spawned after an upgrade may fail if the old binary was deleted.
-- **All agents inherit the engine's Node version.** There is no per-agent Node resolution — `process.execPath` flows from engine → `spawn-agent.js` → `claude` CLI.
-- **No bash intermediary.** Node spawns Node directly to avoid Windows/bash path translation issues. Do not reintroduce a bash wrapper in the spawn chain.
+| Playbook | Purpose |
+|----------|---------|
+| `work-item.md` | Shared template for all work items (central + per-project) |
+| `implement.md` | Build a PRD item in a git worktree, create PR |
+| `review.md` | Review a PR, post findings to repo host |
+| `fix.md` | Fix review feedback on existing PR branch |
+| `analyze.md` | Generate PRD gap analysis in a worktree |
+| `explore.md` | Read-only codebase exploration |
+| `test.md` | Run tests and report results |
 
-```powershell
-# After upgrading Node:
-node $env:USERPROFILE\.squad\engine.js stop
-node $env:USERPROFILE\.squad\engine.js
-```
+All playbooks use `{{template_variables}}` filled from project config. The `work-item.md` playbook uses `{{scope_section}}` to inject project-specific or multi-project context. Playbooks are fully customizable — edit them to match your workflow.
 
 ## Health Monitoring
 
@@ -277,48 +333,56 @@ Agents save repeatable workflows to `skills/<name>.md` with Claude Code-compatib
 
 See `docs/self-improvement.md` for the full breakdown.
 
-## Team
+## Configuration Reference
 
-| Agent | Role | Best for |
-|-------|------|----------|
-| Ripley | Lead / Explorer | Code review, architecture, exploration |
-| Dallas | Engineer | Features, tests, UI |
-| Lambert | Analyst | PRD generation, docs |
-| Rebecca | Architect | Complex systems, CI/infra |
-| Ralph | Engineer | Features, bug fixes |
+Engine behavior is controlled via `config.json`. Key settings:
 
-Routing rules in `routing.md`. Charters in `agents/{name}/charter.md`.
+```json
+{
+  "engine": {
+    "tickInterval": 60000,
+    "maxConcurrent": 3,
+    "agentTimeout": 600000,
+    "staleThreshold": 1800000,
+    "maxTurns": 100,
+    "inboxConsolidateThreshold": 5
+  }
+}
+```
 
-## Playbooks
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `tickInterval` | 60000 (1min) | Milliseconds between engine ticks |
+| `maxConcurrent` | 3 | Max agents running simultaneously |
+| `agentTimeout` | 600000 (10min) | Kill agents silent longer than this |
+| `staleThreshold` | 1800000 (30min) | Kill stale dispatch entries |
+| `maxTurns` | 100 | Max Claude CLI turns per agent session |
+| `inboxConsolidateThreshold` | 5 | Inbox files needed before consolidation |
 
-| Playbook | Purpose |
-|----------|---------|
-| `work-item.md` | Shared template for all work items (central + per-project) |
-| `implement.md` | Build a PRD item in a git worktree, create PR |
-| `review.md` | Review a PR, post findings to repo host |
-| `fix.md` | Fix review feedback on existing PR branch |
-| `analyze.md` | Generate PRD gap analysis in a worktree |
-| `explore.md` | Read-only codebase exploration |
-| `test.md` | Run tests and report results |
+## Node.js Upgrade Caution
 
-All playbooks use `{{template_variables}}` filled from project config. The `work-item.md` playbook uses `{{scope_section}}` to inject project-specific or multi-project context.
+The engine and all spawned agents use the Node binary that started the engine (`process.execPath`). After upgrading Node, restart the engine:
+
+```powershell
+node ~/.squad/engine.js stop
+node ~/.squad/engine.js
+```
 
 ## Portability
 
 **Portable (works on any machine):** Engine, dashboard, playbooks, charters, routing, decisions, skills, docs, work items.
 
 **Machine-specific (reconfigure per machine):**
-- `config.json` — contains absolute paths to project directories. Re-link via `node init.js <dir>`.
+- `config.json` — contains absolute paths to project directories. Re-link via `node squad.js add <dir>`.
 - `mcp-servers.json` — auto-synced from `~/.claude.json` on engine start.
 
-To move to a new machine: copy `~/.squad/`, delete `engine/control.json`, re-run `node init.js <dir>` for each project.
+To move to a new machine: clone `~/.squad/`, delete `engine/control.json`, re-run `node squad.js add` for each project.
 
 ## File Layout
 
 ```
 ~/.squad/
-  init.js                <- CLI: init, add, remove, list projects
-  squad.js               <- Legacy CLI (same as init.js)
+  squad.js               <- CLI: init, add, remove, list projects
   engine.js              <- Engine daemon
   engine/
     spawn-agent.js       <- Agent spawn wrapper (resolves claude cli.js)
@@ -331,8 +395,8 @@ To move to a new machine: copy `~/.squad/`, delete `engine/control.json`, re-run
   config.json            <- projects[], agents, engine, claude settings
   config.template.json   <- Template for reference
   mcp-servers.json       <- MCP servers (auto-synced, gitignored)
-  routing.md             <- Dispatch rules table
-  team.md                <- Team roster and project context
+  routing.md             <- Dispatch rules table (editable)
+  team.md                <- Team roster
   decisions.md           <- Team rules + consolidated learnings
   work-items.json        <- Central work queue (agent decides which project)
   TODO.md                <- Future improvements roadmap
@@ -349,7 +413,7 @@ To move to a new machine: copy `~/.squad/`, delete `engine/control.json`, re-run
     <name>.md            <- Agent-created reusable workflows
   agents/
     {name}/
-      charter.md         <- Agent identity and boundaries
+      charter.md         <- Agent identity and boundaries (editable)
       status.json        <- Current state (runtime)
       history.md         <- Task history (last 20, runtime)
       live-output.log    <- Streaming output while working (runtime)
@@ -360,9 +424,8 @@ To move to a new machine: copy `~/.squad/`, delete `engine/control.json`, re-run
     inbox/               <- Agent findings drop-box
     archive/             <- Processed inbox files
   docs/
-    auto-discovery.md              <- Auto-discovery pipeline docs
-    self-improvement.md            <- Self-improvement loop docs
-    blog-first-successful-dispatch.md  <- Debugging saga blog post
+    auto-discovery.md    <- Auto-discovery pipeline docs
+    self-improvement.md  <- Self-improvement loop docs
 
 Each linked project keeps locally:
   <project>/.squad/
