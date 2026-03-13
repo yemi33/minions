@@ -105,11 +105,41 @@ Structure your report exactly like this:
 (1-2 sentence overall assessment — is this PR safe to review?)
 ```
 
+## Auto-file Work Items on Failure
+
+If the build OR tests fail, you MUST create a work item so another agent can fix it. Write a JSON entry to the project's work queue:
+
+```bash
+# Read existing items, append new one, write back
+node -e "
+const fs = require('fs');
+const p = '{{project_path}}/.squad/work-items.json';
+const items = JSON.parse(fs.readFileSync(p, 'utf8') || '[]');
+const id = 'W' + String(items.reduce((m,i) => Math.max(m, parseInt((i.id||'').match(/(\d+)$/)?.[1]||0)), 0) + 1).padStart(3, '0');
+items.push({
+  id,
+  title: 'Fix build/test failure on PR {{pr_id}}: <SHORT DESCRIPTION OF FAILURE>',
+  type: 'fix',
+  priority: 'high',
+  description: '<PASTE THE BUILD/TEST ERROR OUTPUT HERE — keep it under 2000 chars>',
+  status: 'pending',
+  created: new Date().toISOString(),
+  createdBy: '{{agent_id}}',
+  pr: '{{pr_id}}',
+  branch: '{{pr_branch}}'
+});
+fs.writeFileSync(p, JSON.stringify(items, null, 2));
+console.log('Filed work item:', id);
+"
+```
+
+Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT HERE>` with the actual error details. The engine will pick this up on the next tick and dispatch a fix agent.
+
 ## Rules
 
 - **Do NOT create pull requests** — this is a build/test task only
 - **Do NOT push commits** or modify code
-- **Do NOT attempt to fix build/test failures** — just report them
+- **Do NOT attempt to fix build/test failures** — report them and file a work item
 - If starting a dev server, output the **exact run command with absolute paths** so the user can restart it:
   ```
   ## Run Command
