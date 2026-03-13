@@ -1109,7 +1109,11 @@ async function adoFetch(url, token) {
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
-  return res.json();
+  const text = await res.text();
+  if (!text || text.trimStart().startsWith('<')) {
+    throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
+  }
+  return JSON.parse(text);
 }
 
 /**
@@ -1143,9 +1147,17 @@ async function pollPrBuildStatus(config) {
       if (!prNum) continue;
 
       try {
-        const orgBase = project.adoOrg.includes('.')
-          ? `https://${project.adoOrg}`
-          : `https://dev.azure.com/${project.adoOrg}`;
+        // Derive API base from prUrlBase if available (handles visualstudio.com orgs)
+        let orgBase;
+        if (project.prUrlBase) {
+          const m = project.prUrlBase.match(/^(https?:\/\/[^/]+(?:\/DefaultCollection)?)/);
+          if (m) orgBase = m[1];
+        }
+        if (!orgBase) {
+          orgBase = project.adoOrg.includes('.')
+            ? `https://${project.adoOrg}`
+            : `https://dev.azure.com/${project.adoOrg}`;
+        }
 
         const statusUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}/statuses?api-version=7.1`;
         const statusData = await adoFetch(statusUrl, token);
