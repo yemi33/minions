@@ -2187,6 +2187,59 @@ function discoverFromPrs(config, project) {
 
       setCooldown(key);
     }
+
+    // Newly created PRs needing build & test verification
+    if (!pr.buildTested) {
+      const key = `build-test-${project?.name || 'default'}-${pr.id}`;
+      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+
+      const agentId = resolveAgent('test', config);
+      if (!agentId) continue;
+
+      const prNumber = (pr.id || '').replace(/^PR-/, '');
+      const vars = {
+        agent_id: agentId,
+        agent_name: config.agents[agentId]?.name || agentId,
+        agent_role: config.agents[agentId]?.role || 'Agent',
+        pr_id: pr.id,
+        pr_number: prNumber,
+        pr_title: pr.title || '',
+        pr_branch: pr.branch || '',
+        pr_author: pr.agent || '',
+        pr_url: pr.url || '',
+        main_branch: project?.mainBranch || 'main',
+        team_root: SQUAD_DIR,
+        repo_id: project?.repositoryId || '',
+        project_name: project?.name || 'Unknown Project',
+        project_path: project?.localPath ? path.resolve(project.localPath) : '',
+        ado_org: project?.adoOrg || 'Unknown',
+        ado_project: project?.adoProject || 'Unknown',
+        repo_name: project?.repoName || 'Unknown',
+        date: dateStamp()
+      };
+
+      const prompt = renderPlaybook('build-and-test', vars);
+      if (!prompt) continue;
+
+      // Mark PR so we don't re-dispatch
+      pr.buildTested = 'dispatched';
+      const prRoot = path.resolve(project.localPath);
+      const prSrc = project.workSources?.pullRequests || {};
+      const prPath = path.resolve(prRoot, prSrc.path || '.squad/pull-requests.json');
+      safeWrite(prPath, prs);
+
+      newWork.push({
+        type: 'test',
+        agent: agentId,
+        agentName: config.agents[agentId]?.name,
+        agentRole: config.agents[agentId]?.role,
+        task: `[${project?.name || 'project'}] Build & test PR ${pr.id}: ${pr.title}`,
+        prompt,
+        meta: { dispatchKey: key, source: 'pr-build-test', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
+      });
+
+      setCooldown(key);
+    }
   }
 
   return newWork;

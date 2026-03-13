@@ -1,0 +1,125 @@
+# Build & Test: PR {{pr_id}}
+
+> Agent: {{agent_name}} ({{agent_role}}) | Project: {{project_name}}
+
+## Context
+
+Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
+Team root: {{team_root}}
+Project path: {{project_path}}
+
+## Your Task
+
+A new PR has been created: **{{pr_id}}** — "{{pr_title}}"
+Branch: `{{pr_branch}}` | Author: {{pr_author}}
+
+Your job is to **check out the branch, build it, run tests, and if it's a webapp, start a local dev server** so the human reviewer can see it running.
+
+## Instructions
+
+### 1. Set up a worktree for the PR branch
+
+```bash
+cd {{project_path}}
+git fetch origin {{pr_branch}}
+git worktree add ../worktrees/bt-{{pr_number}} origin/{{pr_branch}}
+cd ../worktrees/bt-{{pr_number}}
+```
+
+### 2. Install dependencies
+
+Look at the project's build system (package.json, CLAUDE.md, README, Makefile, etc.) and install:
+```bash
+# Examples — use whatever the project needs:
+yarn install   # or npm install
+pip install -r requirements.txt
+dotnet restore
+```
+
+### 3. Build the project
+
+Run the project's build command:
+```bash
+# Examples:
+yarn build   # or npm run build
+dotnet build
+cargo build
+```
+
+If the build **fails**, report the errors clearly and stop. Do NOT attempt to fix the code.
+
+### 4. Run tests
+
+```bash
+# Examples:
+yarn test   # or npm test
+pytest
+dotnet test
+```
+
+Report test results: how many passed, failed, skipped.
+
+### 5. Start a local dev server (if applicable)
+
+Determine if this project is a **webapp** (has a dev server, serves HTTP, has a UI):
+- Check package.json for `dev`, `start`, `serve` scripts
+- Check for frameworks: Next.js, React, Angular, Vue, Express, Flask, ASP.NET
+- Check CLAUDE.md for run instructions
+
+If it IS a webapp:
+1. Start the dev server
+2. Wait for it to be ready (watch for "ready on", "listening on", "compiled" messages)
+3. Note the localhost URL and port
+4. **Keep the server running** — do NOT kill it
+
+If it is NOT a webapp (library, CLI tool, backend service without UI), skip this step.
+
+## Output Format
+
+Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md`
+
+Structure your report exactly like this:
+
+```markdown
+## Build & Test Report: {{pr_id}}
+
+**Branch:** {{pr_branch}}
+**Author:** {{pr_author}}
+**Project:** {{project_name}}
+
+### Build
+- Status: PASS / FAIL
+- Notes: (any warnings or issues)
+
+### Tests
+- Status: PASS / FAIL / SKIPPED
+- Results: X passed, Y failed, Z skipped
+- Failed tests: (list if any)
+
+### Local Server
+- Status: RUNNING / NOT_APPLICABLE / FAILED
+- URL: http://localhost:XXXX (if running)
+- Run Command: `cd <absolute-path> && <command>`
+
+### Summary
+(1-2 sentence overall assessment — is this PR safe to review?)
+```
+
+## Rules
+
+- **Do NOT create pull requests** — this is a build/test task only
+- **Do NOT push commits** or modify code
+- **Do NOT attempt to fix build/test failures** — just report them
+- If starting a dev server, output the **exact run command with absolute paths** so the user can restart it:
+  ```
+  ## Run Command
+  cd <absolute-path-to-worktree> && <exact start command>
+  ```
+- Use the worktree path, NOT the main project path, for all commands
+- The worktree will persist after your process ends so the user can inspect it
+
+## IMPORTANT: Do NOT clean up the worktree
+
+Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up after the PR is merged or closed.
+
+**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
