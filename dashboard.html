@@ -211,9 +211,9 @@
 
   /* @ mention autocomplete */
   .cmd-mention-popup {
-    display: none; position: absolute; bottom: 100%; left: 16px;
+    display: none; position: relative; left: 0; margin-top: 4px;
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 4px 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    padding: 4px 0; min-width: 280px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
     z-index: 200; max-height: 320px; overflow-y: auto;
     scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
@@ -351,8 +351,8 @@
       <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas" or "/decide always use feature flags"'
         oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)"></textarea>
       <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
-      <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
     </div>
+    <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
     <div class="cmd-meta" id="cmd-meta"></div>
     <div class="cmd-hints">
       <span><code>@agent</code> assign</span>
