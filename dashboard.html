@@ -1118,6 +1118,7 @@ function wiRow(item) {
     '</td>' +
     '<td>' + prLink + '</td>' +
     '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
+    '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button></td>' +
   '</tr>';
 }
 
@@ -1136,7 +1137,7 @@ function renderWorkItems(items) {
   const start = wiPage * WI_PER_PAGE;
   const pageItems = items.slice(start, start + WI_PER_PAGE);
 
-  let html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th></tr></thead><tbody>';
+  let html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th></tr></thead><tbody>';
   html += pageItems.map(wiRow).join('');
   html += '</tbody></table>';
 
@@ -1167,12 +1168,26 @@ async function retryWorkItem(id, source) {
   } catch (e) { alert('Retry error: ' + e.message); }
 }
 
+async function deleteWorkItem(id, source) {
+  if (!confirm('Delete work item ' + id + '? This will kill any running agent and remove all dispatch history.')) return;
+  try {
+    const res = await fetch('/api/work-items/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, source: source || undefined })
+    });
+    if (res.ok) { refresh(); } else {
+      const d = await res.json();
+      alert('Delete failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Delete error: ' + e.message); }
+}
+
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
 function wiNext() { const tp = Math.ceil(allWorkItems.length / WI_PER_PAGE); if (wiPage < tp-1) { wiPage++; renderWorkItems(allWorkItems); } }
 
 function openAllWorkItems() {
   document.getElementById('modal-title').textContent = 'All Work Items (' + allWorkItems.length + ')';
-  const html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th></tr></thead><tbody>' +
+  const html = '<table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th></tr></thead><tbody>' +
     allWorkItems.map(wiRow).join('') + '</tbody></table>';
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
