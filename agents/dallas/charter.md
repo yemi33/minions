@@ -31,8 +31,7 @@
 yarn build          # Build packages + Docker image
 yarn test           # Run all tests
 yarn lint           # ESLint
-oagent ping         # Health check
-oagent gen "<prompt>" --open  # Test generation
+# Check project's CLAUDE.md for build/test commands
 ```
 
 ## Boundaries

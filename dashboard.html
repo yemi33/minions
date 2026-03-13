@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Squad Mission Control — OfficeAgent</title>
+<title>Squad Mission Control</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👽</text></svg>">
 <style>
   :root {
@@ -397,7 +397,7 @@
       <span><code>@agent</code> assign</span>
       <span><code>@everyone</code> fan-out</span>
       <span><code>!high</code> / <code>!low</code> priority</span>
-      <span><code>/decide</code> decision</span>
+      <span><code>/decide</code> note</span>
       <span><code>/prd</code> PRD item</span>
       <span><code>#project</code> target project</span>
     </div>
@@ -583,7 +583,7 @@ function renderDetailContent(detail, tab) {
         html += '<div class="section"><strong style="color:var(--purple)">' + escHtml(item.name) + '</strong>\n\n' + escHtml(item.content) + '</div>';
       });
     } else {
-      html += '<h4>Notes & Findings</h4><div class="section" style="color:var(--muted);font-style:italic">No decisions or findings written yet.</div>';
+      html += '<h4>Notes & Findings</h4><div class="section" style="color:var(--muted);font-style:italic">No notes or findings written yet.</div>';
     }
 
     if (detail.outputLog) {
@@ -1410,7 +1410,7 @@ function cmdRenderMeta() {
   let chips = [];
 
   // Intent chip
-  const intentLabels = { 'work-item': 'Work Item', 'decision': 'Decision', 'prd': 'PRD Item' };
+  const intentLabels = { 'work-item': 'Work Item', 'decision': 'Note', 'prd': 'PRD Item' };
   chips.push('<span class="cmd-chip intent">' + intentLabels[parsed.intent] + '</span>');
 
   // Type chip (only for work items)

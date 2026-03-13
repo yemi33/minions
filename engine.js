@@ -30,15 +30,15 @@ const { spawn, execSync } = require('child_process');
 const SQUAD_DIR = __dirname;
 const CONFIG_PATH = path.join(SQUAD_DIR, 'config.json');
 const ROUTING_PATH = path.join(SQUAD_DIR, 'routing.md');
-const DECISIONS_PATH = path.join(SQUAD_DIR, 'decisions.md');
+const NOTES_PATH = path.join(SQUAD_DIR, 'notes.md');
 const AGENTS_DIR = path.join(SQUAD_DIR, 'agents');
 const PLAYBOOKS_DIR = path.join(SQUAD_DIR, 'playbooks');
 const ENGINE_DIR = path.join(SQUAD_DIR, 'engine');
 const CONTROL_PATH = path.join(ENGINE_DIR, 'control.json');
 const DISPATCH_PATH = path.join(ENGINE_DIR, 'dispatch.json');
 const LOG_PATH = path.join(ENGINE_DIR, 'log.json');
-const INBOX_DIR = path.join(SQUAD_DIR, 'decisions', 'inbox');
-const ARCHIVE_DIR = path.join(SQUAD_DIR, 'decisions', 'archive');
+const INBOX_DIR = path.join(SQUAD_DIR, 'notes', 'inbox');
+const ARCHIVE_DIR = path.join(SQUAD_DIR, 'notes', 'archive');
 const PLANS_DIR = path.join(SQUAD_DIR, 'plans');
 const IDENTITY_DIR = path.join(SQUAD_DIR, 'identity');
 
@@ -126,8 +126,8 @@ function getRouting() {
   return safeRead(ROUTING_PATH);
 }
 
-function getDecisions() {
-  return safeRead(DECISIONS_PATH);
+function getNotes() {
+  return safeRead(NOTES_PATH);
 }
 
 function getAgentStatus(agentId) {
@@ -344,15 +344,15 @@ function renderPlaybook(type, vars) {
   }
 
   // Inject decisions context
-  const decisions = getDecisions();
+  const decisions = getNotes();
   if (decisions) {
-    content += '\n\n---\n\n## Team Decisions (MUST READ)\n\n' + decisions;
+    content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + decisions;
   }
 
   // Inject learnings requirement
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
   content += `After completing your task, you MUST write a findings/learnings file to:\n`;
-  content += `\`${SQUAD_DIR}/decisions/inbox/${vars.agent_id || 'agent'}-${dateStamp()}.md\`\n\n`;
+  content += `\`${SQUAD_DIR}/notes/inbox/${vars.agent_id || 'agent'}-${dateStamp()}.md\`\n\n`;
   content += `Include:\n`;
   content += `- What you learned about the codebase\n`;
   content += `- Patterns you discovered or established\n`;
@@ -455,7 +455,7 @@ function getRepoHostToolRule(project) {
 function buildSystemPrompt(agentId, config, project) {
   const agent = config.agents[agentId];
   const charter = getAgentCharter(agentId);
-  const decisions = getDecisions();
+  const decisions = getNotes();
   project = project || config.project || {};
 
   let prompt = '';
@@ -498,7 +498,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `1. Use git worktrees — NEVER checkout on main working tree\n`;
   prompt += `2. ${getRepoHostToolRule(project)}\n`;
   prompt += `3. Follow the project conventions above (from CLAUDE.md) if present\n`;
-  prompt += `4. Write learnings to: ${SQUAD_DIR}/decisions/inbox/${agentId}-${dateStamp()}.md\n`;
+  prompt += `4. Write learnings to: ${SQUAD_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
   prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
   prompt += `6. If you discover a repeatable workflow, save it as a skill:\n`;
   prompt += `   - Squad-wide: \`${SKILLS_DIR}/<name>.md\` (no PR needed)\n`;
@@ -512,7 +512,7 @@ function buildSystemPrompt(agentId, config, project) {
 
   // Team decisions
   if (decisions) {
-    prompt += `## Team Decisions\n\n${decisions}\n\n`;
+    prompt += `## Team Notes\n\n${decisions}\n\n`;
   }
 
   return prompt;
@@ -1480,7 +1480,7 @@ function consolidateInbox(config) {
   const files = getInboxFiles();
   if (files.length < threshold) return;
 
-  log('info', `Consolidating ${files.length} inbox items into decisions.md`);
+  log('info', `Consolidating ${files.length} inbox items into notes.md`);
 
   const items = files.map(f => ({
     name: f,
@@ -1548,9 +1548,9 @@ function consolidateInbox(config) {
     entry += '\n';
   }
 
-  const current = getDecisions();
+  const current = getNotes();
 
-  // Prune old consolidations if decisions.md is getting too large (>50KB)
+  // Prune old consolidations if notes.md is getting too large (>50KB)
   let newContent = current + entry;
   if (newContent.length > 50000) {
     const sections = newContent.split('\n---\n\n### ');
@@ -1559,11 +1559,11 @@ function consolidateInbox(config) {
       const header = sections[0];
       const recent = sections.slice(-8);
       newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
-      log('info', `Pruned decisions.md: removed ${sections.length - 9} old sections`);
+      log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
     }
   }
 
-  safeWrite(DECISIONS_PATH, newContent);
+  safeWrite(NOTES_PATH, newContent);
 
   // Archive
   if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
@@ -1571,7 +1571,7 @@ function consolidateInbox(config) {
     try { fs.renameSync(path.join(INBOX_DIR, f), path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)); } catch {}
   }
 
-  log('info', `Consolidated ${files.length} items into decisions.md (${Object.entries(categories).map(([k,v]) => `${v.length} ${k}`).join(', ')})`);
+  log('info', `Consolidated ${files.length} items into notes.md (${Object.entries(categories).map(([k,v]) => `${v.length} ${k}`).join(', ')})`);
 }
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
@@ -3086,7 +3086,7 @@ const commands = {
       console.log('');
       console.log('Examples:');
       console.log('  node engine.js plan ./my-plan.md');
-      console.log('  node engine.js plan ./my-plan.md OfficeAgent');
+      console.log('  node engine.js plan ./my-plan.md MyProject');
       console.log('  node engine.js plan "Add auth middleware with JWT tokens and role-based access"');
       return;
     }

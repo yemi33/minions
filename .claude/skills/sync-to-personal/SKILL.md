@@ -40,6 +40,9 @@ git rm -r --cached decisions/archive/ decisions/inbox/ 2>/dev/null
 
 # Runtime state files
 git rm --cached decisions.md work-items.json 2>/dev/null
+
+# Notes (session-specific exploration artifacts)
+git rm -r --cached notes/ 2>/dev/null
 ```
 
 ### 4. Ensure .gitignore excludes these on the clean branch
@@ -53,6 +56,7 @@ decisions/archive/
 decisions/inbox/
 decisions.md
 work-items.json
+notes/
 ```
 
 If these lines are not already present, add them. If they are (from a previous sync), skip this step.
@@ -113,6 +117,7 @@ gh auth login --hostname github.com --web
 | Decision inbox | `decisions/inbox/*` | Pending session decisions |
 | Decisions summary | `decisions.md` | Synthesized runtime decisions |
 | Work items | `work-items.json` | Runtime dispatch tracking |
+| Notes | `notes/*` | Session-specific exploration artifacts |
 
 ## Files Preserved
 

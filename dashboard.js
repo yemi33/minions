@@ -26,7 +26,7 @@ const PROJECTS = getProjects();
 const projectNames = PROJECTS.map(p => p.name || 'Project').join(' + ');
 
 const HTML_RAW = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
-const HTML = HTML_RAW.replace(/OfficeAgent/g, projectNames);
+const HTML = HTML_RAW.replace('Squad Mission Control', `Squad Mission Control — ${projectNames}`);
 
 // -- Helpers --
 
@@ -57,7 +57,7 @@ function getAgentDetail(id) {
   let statusData = null;
   if (statusJson) { try { statusData = JSON.parse(statusJson); } catch {} }
 
-  const inboxDir = path.join(SQUAD_DIR, 'decisions', 'inbox');
+  const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
   const inboxContents = safeReadDir(inboxDir)
     .filter(f => f.includes(id))
     .map(f => ({ name: f, content: safeRead(path.join(inboxDir, f)) || '' }));
@@ -69,7 +69,7 @@ function getAgents() {
   const roster = Object.entries(CONFIG.agents).map(([id, info]) => ({ id, ...info }));
 
   return roster.map(a => {
-    const inboxFiles = safeReadDir(path.join(SQUAD_DIR, 'decisions', 'inbox'))
+    const inboxFiles = safeReadDir(path.join(SQUAD_DIR, 'notes', 'inbox'))
       .filter(f => f.includes(a.id));
 
     let status = 'idle';
@@ -92,7 +92,7 @@ function getAgents() {
 
     // Show recent inbox output as context, but don't override idle status
     if (status === 'idle' && inboxFiles.length > 0) {
-      const lastOutput = path.join(SQUAD_DIR, 'decisions', 'inbox', inboxFiles[inboxFiles.length - 1]);
+      const lastOutput = path.join(SQUAD_DIR, 'notes', 'inbox', inboxFiles[inboxFiles.length - 1]);
       try {
         const stat = fs.statSync(lastOutput);
         lastAction = `Output: ${path.basename(lastOutput)} (${timeSince(stat.mtimeMs)})`;
@@ -170,7 +170,7 @@ function getPrdInfo() {
 }
 
 function getInbox() {
-  const dir = path.join(SQUAD_DIR, 'decisions', 'inbox');
+  const dir = path.join(SQUAD_DIR, 'notes', 'inbox');
   return safeReadDir(dir)
     .filter(f => f.endsWith('.md'))
     .map(f => {
@@ -185,8 +185,8 @@ function getInbox() {
     .sort((a, b) => b.mtime - a.mtime);
 }
 
-function getDecisions() {
-  const content = safeRead(path.join(SQUAD_DIR, 'decisions.md')) || '';
+function getNotes() {
+  const content = safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
   return content.split('\n').filter(l => l.startsWith('### ')).map(l => l.replace('### ', '').trim());
 }
 
@@ -407,7 +407,7 @@ function getStatus() {
     agents: getAgents(),
     prdProgress: prdInfo.progress,
     inbox: getInbox(),
-    decisions: getDecisions(),
+    decisions: getNotes(),
     prd: prdInfo.status,
     pullRequests: getPullRequests(),
     archivedPrds: getArchivedPrds(),
@@ -619,11 +619,11 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/decisions
-  if (req.method === 'POST' && req.url === '/api/decisions') {
+  // POST /api/notes
+  if (req.method === 'POST' && (req.url === '/api/notes' || req.url === '/api/decisions')) {
     try {
       const body = await readBody(req);
-      const decPath = path.join(SQUAD_DIR, 'decisions.md');
+      const decPath = path.join(SQUAD_DIR, 'notes.md');
       let content = safeRead(decPath) || '# Squad Decisions\n\n## Active Decisions\n';
       const today = new Date().toISOString().slice(0, 10);
       const entry = `\n### ${today}: ${body.title}\n**By:** ${body.author || os.userInfo().username}\n**What:** ${body.what}\n${body.why ? '**Why:** ' + body.why + '\n' : ''}\n---\n`;
@@ -693,9 +693,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/decisions — return full decisions.md content
+  // GET /api/decisions — return full notes.md content
   if (req.method === 'GET' && req.url === '/api/decisions-full') {
-    const content = safeRead(path.join(SQUAD_DIR, 'decisions.md'));
+    const content = safeRead(path.join(SQUAD_DIR, 'notes.md'));
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content || 'No decisions file found.');
@@ -709,7 +709,7 @@ const server = http.createServer(async (req, res) => {
       const { name } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
 
-      const inboxPath = path.join(SQUAD_DIR, 'decisions', 'inbox', name);
+      const inboxPath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
       const content = safeRead(inboxPath);
       if (!content) return jsonReply(res, 404, { error: 'inbox item not found' });
 
@@ -717,8 +717,8 @@ const server = http.createServer(async (req, res) => {
       const titleMatch = content.match(/^#+ (.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : name.replace('.md', '');
 
-      // Append to decisions.md as a new active decision
-      const decPath = path.join(SQUAD_DIR, 'decisions.md');
+      // Append to notes.md as a new active decision
+      const decPath = path.join(SQUAD_DIR, 'notes.md');
       let decisions = safeRead(decPath) || '# Squad Decisions\n\n## Active Decisions\n';
       const today = new Date().toISOString().slice(0, 10);
       const entry = `\n### ${today}: ${title}\n**By:** Persisted from inbox (${name})\n**What:** ${content.slice(0, 500)}\n\n---\n`;
@@ -734,7 +734,7 @@ const server = http.createServer(async (req, res) => {
       fs.writeFileSync(decPath, decisions);
 
       // Move to archive
-      const archiveDir = path.join(SQUAD_DIR, 'decisions', 'archive');
+      const archiveDir = path.join(SQUAD_DIR, 'notes', 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
       try { fs.renameSync(inboxPath, path.join(archiveDir, `persisted-${name}`)); } catch {}
 
@@ -750,7 +750,7 @@ const server = http.createServer(async (req, res) => {
       if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid name' });
       }
-      const filePath = path.join(SQUAD_DIR, 'decisions', 'inbox', name);
+      const filePath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
       if (!fs.existsSync(filePath)) return jsonReply(res, 404, { error: 'file not found' });
 
       const { exec } = require('child_process');
