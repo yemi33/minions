@@ -48,6 +48,44 @@ const IDENTITY_DIR = path.join(SQUAD_DIR, 'identity');
 //   "projects": [ { ... }, ... ] — multi-project (central .squad)
 // Each project must have "localPath" pointing to the repo root.
 
+function validateConfig(config) {
+  let errors = 0;
+  // Agents
+  if (!config.agents || Object.keys(config.agents).length === 0) {
+    console.error('FATAL: No agents defined in config.json');
+    errors++;
+  }
+  // Projects
+  const projects = config.projects || [];
+  if (projects.length === 0) {
+    console.error('FATAL: No projects configured');
+    errors++;
+  }
+  for (const p of projects) {
+    if (!p.localPath || !fs.existsSync(path.resolve(p.localPath))) {
+      console.error(`WARN: Project "${p.name}" path not found: ${p.localPath}`);
+    }
+    if (!p.repositoryId) {
+      console.warn(`WARN: Project "${p.name}" missing repositoryId — PR operations will fail`);
+    }
+  }
+  // Playbooks
+  const requiredPlaybooks = ['implement', 'review', 'fix', 'work-item'];
+  for (const pb of requiredPlaybooks) {
+    if (!fs.existsSync(path.join(PLAYBOOKS_DIR, `${pb}.md`))) {
+      console.error(`WARN: Missing playbook: playbooks/${pb}.md`);
+    }
+  }
+  // Routing
+  if (!fs.existsSync(ROUTING_PATH)) {
+    console.error('WARN: routing.md not found — agent routing will use fallbacks only');
+  }
+  if (errors > 0) {
+    console.error(`\n${errors} fatal config error(s) — exiting.`);
+    process.exit(1);
+  }
+}
+
 function getProjects(config) {
   if (config.projects && Array.isArray(config.projects)) {
     return config.projects;
@@ -343,10 +381,10 @@ function renderPlaybook(type, vars) {
     return null;
   }
 
-  // Inject decisions context
-  const decisions = getNotes();
-  if (decisions) {
-    content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + decisions;
+  // Inject team notes context
+  const notes = getNotes();
+  if (notes) {
+    content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
   }
 
   // Inject learnings requirement
@@ -455,7 +493,7 @@ function getRepoHostToolRule(project) {
 function buildSystemPrompt(agentId, config, project) {
   const agent = config.agents[agentId];
   const charter = getAgentCharter(agentId);
-  const decisions = getNotes();
+  const notes = getNotes();
   project = project || config.project || {};
 
   let prompt = '';
@@ -510,9 +548,9 @@ function buildSystemPrompt(agentId, config, project) {
     prompt += skillIndex + '\n';
   }
 
-  // Team decisions
-  if (decisions) {
-    prompt += `## Team Notes\n\n${decisions}\n\n`;
+  // Team notes
+  if (notes) {
+    prompt += `## Team Notes\n\n${notes}\n\n`;
   }
 
   return prompt;
@@ -648,9 +686,12 @@ function spawnAgent(dispatchItem, config) {
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
     activeProcesses.delete(id);
 
-    // Save output
-    const outputPath = path.join(AGENTS_DIR, agentId, 'output.log');
-    safeWrite(outputPath, `# Output for dispatch ${id}\n# Exit code: ${code}\n# Completed: ${ts()}\n\n## stdout\n${stdout}\n\n## stderr\n${stderr}`);
+    // Save output — per-dispatch archive + latest symlink
+    const outputContent = `# Output for dispatch ${id}\n# Exit code: ${code}\n# Completed: ${ts()}\n\n## stdout\n${stdout}\n\n## stderr\n${stderr}`;
+    const archivePath = path.join(AGENTS_DIR, agentId, `output-${id}.log`);
+    const latestPath = path.join(AGENTS_DIR, agentId, 'output.log');
+    safeWrite(archivePath, outputContent);
+    safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
     // Update agent status
     setAgentStatus(agentId, {
@@ -1174,6 +1215,11 @@ async function pollPrStatus(config) {
           log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
           pr.status = newStatus;
           projectUpdated++;
+
+          // Post-merge / post-close hooks
+          if (newStatus === 'merged' || newStatus === 'abandoned') {
+            await handlePostMerge(pr, project, config, newStatus);
+          }
         }
 
         // Review status from human reviewers (ADO votes)
@@ -1258,6 +1304,77 @@ async function pollPrStatus(config) {
   if (totalUpdated > 0) {
     log('info', `PR status poll: updated ${totalUpdated} PR(s)`);
   }
+}
+
+// ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
+
+async function handlePostMerge(pr, project, config, newStatus) {
+  const prNum = (pr.id || '').replace('PR-', '');
+
+  // 1. Worktree cleanup
+  if (pr.branch) {
+    const root = path.resolve(project.localPath);
+    const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+    const wtPath = path.join(wtRoot, pr.branch);
+    const btPath = path.join(wtRoot, `bt-${prNum}`); // build-and-test worktree
+    for (const p of [wtPath, btPath]) {
+      if (fs.existsSync(p)) {
+        try {
+          execSync(`git worktree remove "${p}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
+          log('info', `Cleaned up worktree: ${p}`);
+        } catch (e) { log('warn', `Failed to remove worktree ${p}: ${e.message}`); }
+      }
+    }
+  }
+
+  // Only run remaining hooks for merged PRs (not abandoned)
+  if (newStatus !== 'merged') return;
+
+  // 2. Update PRD item status to 'implemented'
+  if (pr.prdItems?.length > 0) {
+    const root = path.resolve(project.localPath);
+    const prdSrc = project.workSources?.prd || {};
+    const prdPath = path.resolve(root, prdSrc.path || 'docs/prd-gaps.json');
+    const prd = safeJson(prdPath);
+    if (prd?.missing_features) {
+      let updated = 0;
+      for (const itemId of pr.prdItems) {
+        const feature = prd.missing_features.find(f => f.id === itemId);
+        if (feature && feature.status !== 'implemented') {
+          feature.status = 'implemented';
+          updated++;
+        }
+      }
+      if (updated > 0) {
+        safeWrite(prdPath, prd);
+        log('info', `Post-merge: marked ${updated} PRD item(s) as implemented for ${pr.id}`);
+      }
+    }
+  }
+
+  // 3. Update agent metrics
+  const agentId = (pr.agent || '').toLowerCase();
+  if (agentId && config.agents?.[agentId]) {
+    const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
+    const metrics = safeJson(metricsPath) || {};
+    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+    metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
+    safeWrite(metricsPath, metrics);
+  }
+
+  // 4. Teams notification
+  const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
+  if (teamsUrl) {
+    try {
+      await fetch(teamsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: `PR ${pr.id} merged: ${pr.title} (${project.name}) by ${pr.agent || 'unknown'}` })
+      });
+    } catch (e) { log('warn', `Teams post-merge notify failed: ${e.message}`); }
+  }
+
+  log('info', `Post-merge hooks completed for ${pr.id}`);
 }
 
 function checkForLearnings(agentId, agentInfo, taskDesc) {
@@ -1613,16 +1730,43 @@ function updateSnapshot(config) {
   safeWrite(path.join(IDENTITY_DIR, 'now.md'), snapshot);
 }
 
+// ─── Idle Alert ─────────────────────────────────────────────────────────────
+
+let _lastActivityTime = Date.now();
+let _idleAlertSent = false;
+
+function checkIdleThreshold(config) {
+  const thresholdMs = (config.engine?.idleAlertMinutes || 15) * 60 * 1000;
+  const agents = Object.keys(config.agents || {});
+  const allIdle = agents.every(id => isAgentIdle(id));
+  const dispatch = getDispatch();
+  const hasPending = (dispatch.pending || []).length > 0;
+
+  if (!allIdle || hasPending) {
+    _lastActivityTime = Date.now();
+    _idleAlertSent = false;
+    return;
+  }
+
+  const idleMs = Date.now() - _lastActivityTime;
+  if (idleMs > thresholdMs && !_idleAlertSent) {
+    const mins = Math.round(idleMs / 60000);
+    log('warn', `All agents idle for ${mins} minutes — no work sources producing items`);
+    _idleAlertSent = true;
+  }
+}
+
 // ─── Timeout Checker ────────────────────────────────────────────────────────
 
 function checkTimeouts(config) {
   const timeout = config.engine?.agentTimeout || 18000000; // 5h default
   const heartbeatTimeout = config.engine?.heartbeatTimeout || 300000; // 5min — no output = dead
 
-  // 1. Check tracked processes for hard timeout
+  // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {
+    const itemTimeout = info.meta?.deadline ? Math.max(0, info.meta.deadline - new Date(info.startedAt).getTime()) : timeout;
     const elapsed = Date.now() - new Date(info.startedAt).getTime();
-    if (elapsed > timeout) {
+    if (elapsed > itemTimeout) {
       log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${Math.round(elapsed / 1000)}s — killing`);
       try { info.proc.kill('SIGTERM'); } catch {}
       setTimeout(() => {
@@ -1699,9 +1843,10 @@ function checkTimeouts(config) {
 
     // Check if agent is in a blocking tool call (TaskOutput block:true, Bash with long timeout, etc.)
     // These tools produce no stdout for extended periods — don't kill them prematurely
+    // Check for BOTH tracked and untracked processes (orphan case after engine restart)
     let isBlocking = false;
     let blockingTimeout = heartbeatTimeout;
-    if (hasProcess && silentMs > heartbeatTimeout) {
+    if (silentMs > heartbeatTimeout) {
       try {
         const liveLog = safeRead(liveLogPath);
         if (liveLog) {
@@ -1739,9 +1884,10 @@ function checkTimeouts(config) {
 
     const effectiveTimeout = isBlocking ? blockingTimeout : heartbeatTimeout;
 
-    if (!hasProcess && silentMs > heartbeatTimeout) {
-      // No tracked process AND no recent output → orphaned
-      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, no output for ${silentSec}s`);
+    if (!hasProcess && silentMs > effectiveTimeout) {
+      // No tracked process AND no recent output past effective timeout → orphaned
+      // (isBlocking extends the timeout so agents in long builds survive engine restarts)
+      log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
       deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
     } else if (hasProcess && silentMs > effectiveTimeout) {
       // Has process but no output past effective timeout → hung
@@ -1954,12 +2100,36 @@ function runCleanup(config, verbose = false) {
 
 // ─── Work Discovery ─────────────────────────────────────────────────────────
 
+const COOLDOWN_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
 const dispatchCooldowns = new Map(); // key → { timestamp, failures }
+
+function loadCooldowns() {
+  const saved = safeJson(COOLDOWN_PATH);
+  if (!saved) return;
+  const now = Date.now();
+  for (const [k, v] of Object.entries(saved)) {
+    // Prune entries older than 24 hours
+    if (now - v.timestamp < 24 * 60 * 60 * 1000) {
+      dispatchCooldowns.set(k, v);
+    }
+  }
+  log('info', `Loaded ${dispatchCooldowns.size} cooldowns from disk`);
+}
+
+let _cooldownWritePending = false;
+function saveCooldowns() {
+  if (_cooldownWritePending) return;
+  _cooldownWritePending = true;
+  setTimeout(() => {
+    const obj = Object.fromEntries(dispatchCooldowns);
+    safeWrite(COOLDOWN_PATH, obj);
+    _cooldownWritePending = false;
+  }, 1000); // debounce — write at most once per second
+}
 
 function isOnCooldown(key, cooldownMs) {
   const entry = dispatchCooldowns.get(key);
   if (!entry) return false;
-  // Exponential backoff: cooldown doubles per failure, max 8x
   const backoff = Math.min(Math.pow(2, entry.failures || 0), 8);
   return (Date.now() - entry.timestamp) < (cooldownMs * backoff);
 }
@@ -1967,6 +2137,7 @@ function isOnCooldown(key, cooldownMs) {
 function setCooldown(key) {
   const existing = dispatchCooldowns.get(key);
   dispatchCooldowns.set(key, { timestamp: Date.now(), failures: existing?.failures || 0 });
+  saveCooldowns();
 }
 
 function setCooldownFailure(key) {
@@ -1976,6 +2147,7 @@ function setCooldownFailure(key) {
   if (failures >= 3) {
     log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 8)}x`);
   }
+  saveCooldowns();
 }
 
 function isAlreadyDispatched(key) {
@@ -2007,15 +2179,16 @@ function discoverFromPrd(config, project) {
   const statusFilter = src.itemFilter?.status || ['missing', 'planned'];
   const items = (prd.missing_features || []).filter(f => statusFilter.includes(f.status));
   const newWork = [];
+  const skipped = { dispatched: 0, cooldown: 0, noAgent: 0 };
 
   for (const item of items) {
     const key = `prd-${project?.name || 'default'}-${item.id}`;
-    if (isAlreadyDispatched(key)) continue;
-    if (isOnCooldown(key, cooldownMs)) continue;
+    if (isAlreadyDispatched(key)) { skipped.dispatched++; continue; }
+    if (isOnCooldown(key, cooldownMs)) { skipped.cooldown++; continue; }
 
     const workType = item.estimated_complexity === 'large' ? 'implement:large' : 'implement';
     const agentId = resolveAgent(workType, config);
-    if (!agentId) continue;
+    if (!agentId) { skipped.noAgent++; continue; }
 
     const branchName = `feature/${item.id.toLowerCase()}-${item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}`;
     const vars = {
@@ -2054,6 +2227,11 @@ function discoverFromPrd(config, project) {
     });
 
     setCooldown(key);
+  }
+
+  const skipTotal = skipped.dispatched + skipped.cooldown + skipped.noAgent;
+  if (skipTotal > 0) {
+    log('debug', `PRD discovery (${project?.name}): skipped ${skipTotal} items (${skipped.dispatched} dispatched, ${skipped.cooldown} cooldown, ${skipped.noAgent} no agent)`);
   }
 
   return newWork;
@@ -2335,20 +2513,20 @@ function discoverFromWorkItems(config, project) {
   const items = safeJson(path.resolve(root, src.path)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
+  const skipped = { gated: 0, noAgent: 0 };
 
   for (const item of items) {
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     const key = `work-${project?.name || 'default'}-${item.id}`;
-    if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+    if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) { skipped.gated++; continue; }
 
     let workType = item.type || 'implement';
-    // Route large items to architecture agents, matching PRD/plan behavior
     if (workType === 'implement' && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
       workType = 'implement:large';
     }
     const agentId = item.agent || resolveAgent(workType, config);
-    if (!agentId) continue;
+    if (!agentId) { skipped.noAgent++; continue; }
 
     const branchName = item.branch || `work/${item.id}`;
     const vars = {
@@ -2407,6 +2585,11 @@ function discoverFromWorkItems(config, project) {
   if (newWork.length > 0) {
     const workItemsPath = path.resolve(root, src.path);
     safeWrite(workItemsPath, items);
+  }
+
+  const skipTotal = skipped.gated + skipped.noAgent;
+  if (skipTotal > 0) {
+    log('debug', `Work item discovery (${project?.name}): skipped ${skipTotal} items (${skipped.gated} gated, ${skipped.noAgent} no agent)`);
   }
 
   return newWork;
@@ -2661,7 +2844,10 @@ function discoverCentralWorkItems(config) {
           agentRole: agent.role,
           task: `[fan-out] ${item.title} → ${agent.name}${assignedProject ? ' → ' + assignedProject.name : ''}`,
           prompt,
-          meta: { dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key }
+          meta: {
+            dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
+            deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || 18000000)
+          }
         });
       }
 
@@ -2804,8 +2990,9 @@ async function tickInner() {
   const config = getConfig();
   tickCount++;
 
-  // 1. Check for timed-out agents
+  // 1. Check for timed-out agents and idle threshold
   checkTimeouts(config);
+  checkIdleThreshold(config);
 
   // 2. Consolidate inbox
   consolidateInbox(config);
@@ -2897,6 +3084,12 @@ const commands = {
       }
     }
 
+    // Validate config before starting
+    validateConfig(config);
+
+    // Load persistent state
+    loadCooldowns();
+
     // Initial tick
     tick();
 
@@ -2907,6 +3100,18 @@ const commands = {
   },
 
   stop() {
+    // Warn if agents are actively working
+    const dispatch = getDispatch();
+    const active = (dispatch.active || []);
+    if (active.length > 0) {
+      console.log(`\n  WARNING: ${active.length} agent(s) are still working:`);
+      for (const item of active) {
+        console.log(`    - ${item.agentName || item.agent}: ${(item.task || '').slice(0, 80)}`);
+      }
+      console.log('\n  These agents will continue running but the engine won\'t monitor them.');
+      console.log('  On next start, they\'ll get a 20-min grace period before being marked as orphans.');
+      console.log('  To kill them now, run: node engine.js kill\n');
+    }
     safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: ts() });
     log('info', 'Engine stopped');
     console.log('Engine stopped.');
