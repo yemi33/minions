@@ -52,4 +52,4 @@ Ships clean code that follows the patterns already in the repo. Gets annoyed by 
 
 ## Directives
 
-**Before starting any work, read `.squad/decisions.md` for team rules and constraints.**
+**Before starting any work, read `.squad/notes.md` for team rules and constraints.**

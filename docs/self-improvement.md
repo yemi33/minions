@@ -9,27 +9,27 @@ The squad has four self-improvement mechanisms that form a continuous feedback l
 ```
 Agent completes task
   │
-  ├─ 1. Learnings Inbox        → decisions.md (all future agents see it)
+  ├─ 1. Learnings Inbox        → notes.md (all future agents see it)
   ├─ 2. Per-Agent History       → history.md (agent sees its own past)
   ├─ 3. Review Feedback Loop    → author gets reviewer's findings
   └─ 4. Quality Metrics         → engine/metrics.json (tracks performance)
 ```
 
-## 1. Learnings Inbox → decisions.md
+## 1. Learnings Inbox → notes.md
 
-**The core loop.** Every playbook instructs agents to write findings to `decisions/inbox/`. The engine consolidates these into `decisions.md`, which is injected into every future playbook prompt.
+**The core loop.** Every playbook instructs agents to write findings to `notes/inbox/`. The engine consolidates these into `notes.md`, which is injected into every future playbook prompt.
 
 ### Flow
 
 ```
 Agent finishes task
-  → writes decisions/inbox/<agent>-<date>.md
+  → writes notes/inbox/<agent>-<date>.md
   → engine checks inbox on each tick
   → at 5+ files: consolidateInbox() runs
   → items categorized (reviews, feedback, learnings, other)
-  → summary appended to decisions.md
-  → originals moved to decisions/archive/
-  → decisions.md injected into every future agent prompt
+  → summary appended to notes.md
+  → originals moved to notes/archive/
+  → notes.md injected into every future agent prompt
 ```
 
 ### Smart Consolidation
@@ -44,7 +44,7 @@ Each category gets a header with item count and one-line summaries.
 
 ### Auto-Pruning
 
-When `decisions.md` exceeds 50KB, the engine prunes old consolidation sections, keeping the header and last 8 consolidations. This prevents the file from growing unbounded while retaining recent institutional knowledge.
+When `notes.md` exceeds 50KB, the engine prunes old consolidation sections, keeping the header and last 8 consolidations. This prevents the file from growing unbounded while retaining recent institutional knowledge.
 
 ## 2. Per-Agent History
 
@@ -87,12 +87,12 @@ When a reviewer (e.g., Ripley) reviews a PR and writes findings, the engine auto
 
 ```
 Ripley reviews Dallas's PR
-  → writes decisions/inbox/ripley-review-pr123-2026-03-12.md
+  → writes notes/inbox/ripley-review-pr123-2026-03-12.md
   → engine detects review completion
   → updatePrAfterReview() runs
   → createReviewFeedbackForAuthor() runs
-  → creates decisions/inbox/feedback-dallas-from-ripley-pr123-2026-03-12.md
-  → next consolidation: feedback appears in decisions.md
+  → creates notes/inbox/feedback-dallas-from-ripley-pr123-2026-03-12.md
+  → next consolidation: feedback appears in notes.md
   → Dallas's next task: he sees what Ripley flagged
 ```
 
@@ -115,7 +115,7 @@ in the future, avoid the patterns flagged here.
 
 ### Why it matters
 
-Without this, review findings only exist in the inbox file under the reviewer's name. The author never explicitly sees them unless they happen to read the consolidated decisions.md. The feedback loop ensures the author gets a direct, targeted learning from every review.
+Without this, review findings only exist in the inbox file under the reviewer's name. The author never explicitly sees them unless they happen to read the consolidated notes.md. The feedback loop ensures the author gets a direct, targeted learning from every review.
 
 ## 4. Quality Metrics
 
@@ -163,7 +163,7 @@ Metrics are currently informational — displayed in status and dashboard. Plann
 
 ```
                          ┌──────────────────────┐
-                         │    decisions.md       │
+                         │    notes.md       │
                          │  (institutional       │
                          │   knowledge)          │
                          └──────┬───────────────┘
@@ -238,9 +238,9 @@ When a git merge or rebase produces conflicts in yarn.lock.
 - Always run `yarn build` after regenerating to verify
 ```
 
-### How it differs from decisions.md
+### How it differs from notes.md
 
-| | decisions.md | Skills |
+| | notes.md | Skills |
 |---|---|---|
 | **Format** | Free-form prose, appended by engine | Structured with frontmatter, one file per workflow |
 | **Granularity** | Rules, conventions, findings | Step-by-step procedures |
@@ -261,7 +261,7 @@ When a git merge or rebase produces conflicts in yarn.lock.
 | Setting | Default | What it controls |
 |---------|---------|-----------------|
 | `engine.inboxConsolidateThreshold` | 5 | Files needed before consolidation triggers |
-| decisions.md max size | 50KB | Auto-prunes old sections above this |
+| notes.md max size | 50KB | Auto-prunes old sections above this |
 | Agent history entries | 20 | Max entries kept in history.md |
 | Metrics file | `engine/metrics.json` | Auto-created on first completion |
 
@@ -269,9 +269,9 @@ When a git merge or rebase produces conflicts in yarn.lock.
 
 | File | Purpose | Written by |
 |------|---------|-----------|
-| `decisions/inbox/*.md` | Agent findings drop-box | Agents |
-| `decisions/archive/*.md` | Archived inbox files | Engine (consolidation) |
-| `decisions.md` | Accumulated team knowledge | Engine (consolidation) |
+| `notes/inbox/*.md` | Agent findings drop-box | Agents |
+| `notes/archive/*.md` | Archived inbox files | Engine (consolidation) |
+| `notes.md` | Accumulated team knowledge | Engine (consolidation) |
 | `agents/<name>/history.md` | Per-agent task history | Engine (post-completion) |
 | `engine/metrics.json` | Quality metrics per agent | Engine (post-completion + review) |
-| `decisions/inbox/feedback-*.md` | Review feedback for authors | Engine (post-review) |
+| `notes/inbox/feedback-*.md` | Review feedback for authors | Engine (post-review) |

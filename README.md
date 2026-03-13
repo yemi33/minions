@@ -122,7 +122,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
                     │  agents/          ← 5 agents  │
                     │  playbooks/       ← templates │
                     │  skills/          ← workflows │
-                    │  decisions/       ← knowledge  │
+                    │  notes/       ← knowledge  │
                     └──────┬────────────────────────┘
                            │ discovers work + dispatches agents
               ┌────────────┼────────────────┐
@@ -159,14 +159,14 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
 The web dashboard at `http://localhost:7331` provides:
 
 - **Projects bar** — all linked projects with descriptions (hover for full text)
-- **Command Center** — add work items (per-project, auto-route, or fan-out), decisions, and PRD items
+- **Command Center** — add work items (per-project, auto-route, or fan-out), notes, and PRD items
 - **Squad Members** — agent cards with status, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
 - **Work Items** — paginated table with status, source, type, priority, assigned agent, linked PRs, fan-out badges, and retry button for failed items
 - **PRD** — gap analysis stats + progress bar with item-level breakdown and linked PRs per item
 - **Pull Requests** — paginated PR tracker sorted by date, with review/build/merge status
 - **Skills** — agent-created reusable workflows (squad-wide + project-specific), click to view full content
-- **Decisions Inbox + Active Decisions** — learnings and team rules
+- **Notes Inbox + Team Notes** — learnings and team rules
 - **Dispatch Queue + Engine Log** — active/pending work and audit trail
 - **Agent Metrics** — tasks completed, errors, PRs created/approved/rejected, approval rates
 
@@ -286,7 +286,7 @@ No bash or shell involved — Node spawns Node directly. Prompts with special ch
 
 ### What Each Agent Gets
 
-- **System prompt** — identity, charter, history, project context, critical rules, skill index, team decisions
+- **System prompt** — identity, charter, history, project context, critical rules, skill index, team notes
 - **Task prompt** — rendered playbook with `{{variables}}` filled from config
 - **Working directory** — project root (agent creates worktrees as needed)
 - **MCP servers** — all servers from `~/.claude.json` via `--mcp-config`
@@ -304,7 +304,7 @@ When an agent finishes:
 5. Agent history updated (last 20 tasks)
 6. Quality metrics updated
 7. Review feedback created for PR authors (if review task)
-8. Learnings checked in `decisions/inbox/`
+8. Learnings checked in `notes/inbox/`
 9. Skills auto-extracted from ` ```skill ` blocks in output
 10. Temp files cleaned up
 
@@ -361,8 +361,8 @@ Manual cleanup: `node engine.js cleanup`
 
 Five mechanisms that make the squad get better over time:
 
-### 1. Learnings Inbox → decisions.md
-Agents write findings to `decisions/inbox/`. Engine consolidates at 5+ files into `decisions.md` — categorized (reviews, feedback, learnings, other) with one-line summaries. Auto-prunes at 50KB. Injected into every future playbook.
+### 1. Learnings Inbox → notes.md
+Agents write findings to `notes/inbox/`. Engine consolidates at 5+ files into `notes.md` — categorized (reviews, feedback, learnings, other) with one-line summaries. Auto-prunes at 50KB. Injected into every future playbook.
 
 ### 2. Per-Agent History
 `agents/{name}/history.md` tracks last 20 tasks with timestamps, results, projects, and branches. Injected into the agent's system prompt so it remembers past work.
@@ -415,7 +415,7 @@ node ~/.squad/engine.js
 
 ## Portability
 
-**Portable (works on any machine):** Engine, dashboard, playbooks, charters, routing, decisions, skills, docs, work items.
+**Portable (works on any machine):** Engine, dashboard, playbooks, charters, routing, notes, skills, docs, work items.
 
 **Machine-specific (reconfigure per machine):**
 - `config.json` — contains absolute paths to project directories. Re-link via `node squad.js add <dir>`.
@@ -442,7 +442,7 @@ To move to a new machine: clone `~/.squad/`, delete `engine/control.json`, re-ru
   mcp-servers.json       <- MCP servers (auto-synced, gitignored)
   routing.md             <- Dispatch rules table (editable)
   team.md                <- Team roster
-  decisions.md           <- Team rules + consolidated learnings
+  notes.md           <- Team rules + consolidated learnings
   work-items.json        <- Central work queue (agent decides which project)
   TODO.md                <- Future improvements roadmap
   playbooks/
@@ -465,7 +465,7 @@ To move to a new machine: clone `~/.squad/`, delete `engine/control.json`, re-ru
       output.log         <- Final output after completion (runtime)
   identity/
     now.md               <- Engine-generated state snapshot
-  decisions/
+  notes/
     inbox/               <- Agent findings drop-box
     archive/             <- Processed inbox files
   docs/

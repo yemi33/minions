@@ -1,6 +1,6 @@
 ---
 name: sync-to-personal
-description: Syncs a sanitized copy of the squad repo to the personal GitHub remote, stripping all logs, history, and decisions. Use when the user says "sync to personal", "update personal repo", or "push clean to personal".
+description: Syncs a sanitized copy of the squad repo to the personal GitHub remote, stripping all logs, history, and notes. Use when the user says "sync to personal", "update personal repo", or "push clean to personal".
 allowed-tools: Bash, Read, Edit, Write, Glob
 ---
 
@@ -35,11 +35,11 @@ These files contain runtime logs, session history, and machine-specific state:
 # Agent history files
 git rm --cached agents/*/history.md 2>/dev/null
 
-# Decision archives and inbox
-git rm -r --cached decisions/archive/ decisions/inbox/ 2>/dev/null
+# Notes archives and inbox
+git rm -r --cached notes/archive/ notes/inbox/ 2>/dev/null
 
 # Runtime state files
-git rm --cached decisions.md work-items.json 2>/dev/null
+git rm --cached notes.md work-items.json 2>/dev/null
 
 # Notes (session-specific exploration artifacts)
 git rm -r --cached notes/ 2>/dev/null
@@ -55,9 +55,9 @@ The `.gitignore` on the dist-clean branch should include:
 ```
 # Session logs and history (stripped for distribution)
 agents/*/history.md
-decisions/archive/
-decisions/inbox/
-decisions.md
+notes/archive/
+notes/inbox/
+notes.md
 work-items.json
 notes/
 CLAUDE.md
@@ -72,7 +72,7 @@ Before committing, scan for machine/user-specific values that shouldn't be distr
 ```bash
 # Check for hardcoded usernames or absolute paths in distributable files
 grep -rn "C:/Users/\|C:\\\\Users\\\\" --include="*.js" --include="*.html" --include="*.md" \
-  --exclude-dir=decisions --exclude-dir=.claude | grep -v config.json | grep -v node_modules
+  --exclude-dir=notes --exclude-dir=.claude | grep -v config.json | grep -v node_modules
 ```
 
 If found, replace with dynamic alternatives:
@@ -85,15 +85,15 @@ If found, replace with dynamic alternatives:
 ### 6. Preserve empty directories with .gitkeep
 
 ```bash
-touch decisions/archive/.gitkeep decisions/inbox/.gitkeep
-git add -f decisions/archive/.gitkeep decisions/inbox/.gitkeep
+touch notes/archive/.gitkeep notes/inbox/.gitkeep
+git add -f notes/archive/.gitkeep notes/inbox/.gitkeep
 ```
 
 ### 7. Commit and force push to personal
 
 ```bash
 git add .gitignore
-git commit -m "Strip logs, history, and decisions for clean distribution"
+git commit -m "Strip logs, history, and notes for clean distribution"
 git push personal dist-clean:master --force
 ```
 
@@ -117,9 +117,9 @@ gh auth login --hostname github.com --web
 | Category | Pattern | Reason |
 |----------|---------|--------|
 | Agent history | `agents/*/history.md` | Session-specific conversation logs |
-| Decision archive | `decisions/archive/*` | Historical decision records |
-| Decision inbox | `decisions/inbox/*` | Pending session decisions |
-| Decisions summary | `decisions.md` | Synthesized runtime decisions |
+| Notes archive | `notes/archive/*` | Historical decision records |
+| Notes inbox | `notes/inbox/*` | Pending session notes |
+| Notes summary | `notes.md` | Synthesized runtime notes |
 | Work items | `work-items.json` | Runtime dispatch tracking |
 | Notes | `notes/*` | Session-specific exploration artifacts |
 | Project instructions | `CLAUDE.md` | Org-specific context (repo remote purposes, internal notes) |
@@ -136,7 +136,7 @@ gh auth login --hostname github.com --web
 
 | File | What | Fix |
 |------|------|-----|
-| `dashboard.js` | Default author in decisions | Use `os.userInfo().username` |
+| `dashboard.js` | Default author in notes | Use `os.userInfo().username` |
 | `dashboard.html` | Author field in forms | Leave empty (server fills in) |
 | `README.md` | Clone URLs | Use `<your-user>` placeholder |
 | `config.json` | Absolute paths, repo IDs, org URLs | Expected — users reconfigure via `squad.js add` |

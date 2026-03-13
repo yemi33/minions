@@ -55,7 +55,7 @@ The agent process terminates after completion, so any dev server you start will 
 
 ## After Completion
 
-Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
+Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
 
 Include:
 - Build status (pass/fail)

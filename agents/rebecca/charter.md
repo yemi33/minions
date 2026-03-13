@@ -53,4 +53,4 @@ Won't sign off on a design until she's traced every data flow and failure path. 
 
 ## Directives
 
-**Before starting any work, read `.squad/decisions.md` for team rules and constraints.**
+**Before starting any work, read `.squad/notes.md` for team rules and constraints.**

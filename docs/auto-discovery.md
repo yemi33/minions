@@ -9,7 +9,7 @@ The engine runs a tick every 60 seconds (configurable via `config.json` → `eng
 ```
 tick()
   1. checkTimeouts()       Kill stale/hung agents (>heartbeatTimeout)
-  2. consolidateInbox()    Merge learnings into decisions.md (at 5+ inbox files)
+  2. consolidateInbox()    Merge learnings into notes.md (at 5+ inbox files)
   2.5 runCleanup()         Periodic cleanup (every 10 ticks ≈ 5min)
   2.6 pollPrStatus()       Poll ADO for build, review, merge status (every 6 ticks ≈ 3min)
   3. discoverWork()        Scan ALL linked projects for new tasks
@@ -221,7 +221,7 @@ git worktree add <rootDir>/../worktrees/<branch> -b <branch> <mainBranch>
 
 ### 3. Render Playbook
 ```
-playbooks/<type>.md  →  substitute {{variables}}  →  append decisions.md  →  append learnings requirement
+playbooks/<type>.md  →  substitute {{variables}}  →  append notes.md  →  append learnings requirement
 ```
 
 Variables injected from config and item metadata:
@@ -236,7 +236,7 @@ Combines:
 - Agent charter (`agents/<name>/charter.md`)
 - Project context (repo name, repo host config, main branch)
 - Critical rules (worktrees, MCP tools, PowerShell, learnings)
-- Full `decisions.md` content
+- Full `notes.md` content
 
 ### 5. Spawn Claude CLI
 ```bash
@@ -274,7 +274,7 @@ proc.on('close')
   │    fix        → set PR squadReview back to "waiting"
   │    build-test → (agent auto-files fix work items on failure)
   │
-  ├─ Check for learnings in decisions/inbox/
+  ├─ Check for learnings in notes/inbox/
   │    (warns if agent didn't write findings)
   │
   ├─ Update agent history and metrics
@@ -292,7 +292,7 @@ The dashboard exposes a unified input box at `http://localhost:7331` that parses
 | `@agent` | Assigns to a specific agent (sets `item.agent`) |
 | `@everyone` | Fan-out to all agents (sets `scope: 'fan-out'`) |
 | `!high` / `!low` | Sets priority (default: medium) |
-| `/decide` | Creates a decision (appended to `decisions.md`) |
+| `/decide` | Creates a decision (appended to `notes.md`) |
 | `/prd` | Creates a PRD item (appended to `prd-gaps.json`) |
 | `#project` | Targets a specific project queue |
 
@@ -335,14 +335,14 @@ ADO REST API ─── pollPrBuildStatus() ──► pull-requests.json
                                             │
                         ┌───────────┬───────┼───────┬──────────┐
                         ▼           ▼       ▼       ▼          ▼
-                   output.log  decisions/  PRs    work-items  localhost
+                   output.log  notes/  PRs    work-items  localhost
                    (per agent) inbox/*.md  .json  .json       (if webapp,
                                     │             (auto-filed  from build
                           consolidateInbox()       on failure)  & test)
                           (at 5+ files)
                                     │
                                     ▼
-                              decisions.md
+                              notes.md
                               (injected into
                                all future
                                playbooks)

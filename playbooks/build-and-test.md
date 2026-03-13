@@ -76,7 +76,7 @@ If it is NOT a webapp (library, CLI tool, backend service without UI), skip this
 
 ## Output Format
 
-Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md`
+Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-bt-{{pr_number}}-{{date}}.md`
 
 Structure your report exactly like this:
 

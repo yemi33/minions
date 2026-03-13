@@ -57,7 +57,7 @@ Keep branch names lowercase, use hyphens, max 60 chars.
 
 ## After Completion
 
-Write your findings to: `{{team_root}}/decisions/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
+Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{date}}.md`
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 

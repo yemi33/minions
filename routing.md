@@ -26,4 +26,4 @@ Notes:
 2. **No self-review** — author cannot review their own PR
 3. **Exploration gates implementation** — when exploring, finish before implementing
 4. **Implementation informs PRD** — Lambert reads build summaries before writing PRD
-5. **All rules in `decisions.md` apply** — engine injects them into every playbook
+5. **All rules in `notes.md` apply** — engine injects them into every playbook

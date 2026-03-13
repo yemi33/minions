@@ -41,4 +41,4 @@ Gets the job done. Reports status concisely. Doesn't overthink it.
 
 ## Directives
 
-**Before starting any work, read `.squad/decisions.md` for team rules and constraints.**
+**Before starting any work, read `.squad/notes.md` for team rules and constraints.**

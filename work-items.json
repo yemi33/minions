@@ -118,12 +118,14 @@
     "type": "test",
     "priority": "medium",
     "description": "",
-    "status": "dispatched",
+    "status": "failed",
     "created": "2026-03-13T09:30:51.902Z",
     "createdBy": "dashboard",
     "agent": "rebecca",
     "dispatched_at": "2026-03-13T10:19:37.636Z",
-    "dispatched_to": "rebecca"
+    "dispatched_to": "rebecca",
+    "failReason": "Orphaned — no process, silent for 319s",
+    "failedAt": "2026-03-13T10:49:06.963Z"
   },
   {
     "id": "W009",

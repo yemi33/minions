@@ -16,4 +16,4 @@ Project details (name, stack, repo host, etc.) are configured per-project in `co
 
 ## Rules
 
-See `decisions.md` for all team rules and constraints.
+See `notes.md` for all team rules and constraints.

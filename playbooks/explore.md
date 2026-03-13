@@ -31,7 +31,7 @@ Explore the codebase area specified in the task description. Your primary goal i
 - What conventions are followed?
 
 ### 4. Document Findings
-Write your findings to `{{team_root}}/decisions/inbox/{{agent_id}}-explore-{{task_id}}-{{date}}.md` with these sections:
+Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-explore-{{task_id}}-{{date}}.md` with these sections:
 - **Area Explored**: what you looked at
 - **Architecture**: how it works
 - **Patterns**: conventions and patterns found
@@ -56,8 +56,8 @@ If the task is purely exploratory (no deliverable requested), skip this step.
 - Do NOT modify existing code unless the task explicitly asks for it.
 - Use the appropriate MCP tools for PR creation — check available tools before starting.
 - Do NOT checkout branches in the main working tree — use worktrees.
-- Read `decisions.md` for all team rules before starting.
+- Read `notes.md` for all team rules before starting.
 - If you discover a repeatable workflow, save it as a skill: squad-wide at `{{team_root}}/skills/<name>.md`, or project-specific at `<project>/.claude/skills/<name>.md` (requires PR)
 
 ## Team Decisions
-{{decisions_content}}
+{{notes_content}}
