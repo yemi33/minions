@@ -2,41 +2,11 @@
 
 ## Active Notes
 
-### 2026-03-12: Rebecca W003 Findings — Progression UI & Ask-User-Question Design
-**By:** Persisted from inbox (rebecca-W003-2026-03-12.md)
-**What:** # Rebecca W003 Findings — Progression UI & Ask-User-Question Design
-
-**Date:** 2026-03-12
-**Task:** W003 — Design doc for progression UI and ask-user-question UI
-**PR:** PR-4959405 (office-bohemia)
-
-## What I Learned
-
-### bebop-desktop Patterns
-
-1. **ChainOfThoughtCard is the core progression component** — It renders a list of `CoTProcessingStep` objects per message, each with `Pending → InProgress → Complete` status transitions. Steps are streamed progressively with configurable timin
+### 2026-03-14: Loop Pages Skill
+**By:** yemishin
+**What:** You can use the loop-page skill to read and modify Loop files given to you.
 
 ---
-
-
-### 2026-03-12: Ralph — Learnings from office-bohemia Exploration
-**By:** Persisted from inbox (ralph-2026-03-12.md)
-**What:** # Ralph — Learnings from office-bohemia Exploration
-
-**Date:** 2026-03-12
-
-## Key Learnings
-
-1. **office-bohemia is the Microsoft Loop monorepo** — ~227 packages, Yarn 4.12, Lage 2.14, TypeScript 5.9, Node 24+. Main branch is `master`.
-
-2. **Two main apps with different stacks:**
-   - **Bebop** (M365 Copilot App): TanStack Start + React 19 + Vite 7 + Nitro + SSR/RSC + React Compiler
-   - **Loop App**: React 18 + Webpack + Cloudpack + Fluent UI SPA
-
-3. **Bebop feature-first pattern is
-
----
-
 
 ### 2026-03-11: Use Azure DevOps (ADO) for all git/repo operations
 **By:** yemishin
@@ -73,46 +43,24 @@
 
 ---
 
+### 2026-03-12: office-bohemia Codebase Patterns
+**By:** Ralph, Ripley, Lambert (consolidated)
+
+- **office-bohemia is the Microsoft Loop monorepo** — ~227 packages, Yarn 4.12, Lage 2.14, TypeScript 5.9, Node 24+. Main branch is `master`.
+- **Two main apps with different stacks:**
+  - **Bebop** (M365 Copilot App): TanStack Start + React 19 + Vite 7 + Nitro + SSR/RSC + React Compiler
+  - **Loop App**: React 18 + Webpack + Cloudpack + Fluent UI SPA
+- **Bebop thin-route pattern**: Routes under `apps/bebop/src/routes/` follow a strict template — `head()` for meta, `loader()` for data, default export for component. Layout routes prefixed with `_mainLayout`.
+- **Bebop feature-first organization**: Features live under `apps/bebop/src/features/` with co-located components, hooks, and state.
+- **Jotai for local state** in Bebop features (synchronous UI state).
+- **No barrel files**: `index.ts` barrel exports violate the `no-barrel-files` lint rule — use concrete paths.
+- **ADO PR status codes**: `status: 1` = active, `status: 2` = abandoned, `status: 3` = completed/merged.
 
 ---
 
-### 2026-03-12: Consolidated from 5 inbox items
-**By:** Engine (auto-consolidation)
+### 2026-03-12: bebop-desktop Patterns
+**By:** Rebecca
 
-#### Review Findings (2)
-- **feedback-dallas-from-ripley-PR-4959180-2026-03-12.md**: **PR:** PR-4959180 — Add cowork route to bebop webapp
-
-#### Other (3)
-- **dallas-2026-03-12.md**: - **office-bohemia** (OC/office-bohemia)
-- **ralph-fanout-W002-2026-03-12.md**: **Date:** 2026-03-12
-- **ripley-2026-03-12.md**: 1. **Bebop route pattern**: New routes in Bebop follow a thin-route pattern under `apps/bebop/src/routes/`. Layout routes are prefixed with `_mainLayo
-
-
+- **ChainOfThoughtCard is the core progression component** — renders `CoTProcessingStep` objects per message, each with `Pending → InProgress → Complete` status transitions. Steps are streamed progressively with configurable timing.
 
 ---
-
-### 2026-03-12: Consolidated from 5 inbox items
-**By:** Engine (auto-consolidation)
-
-#### Review Findings (1)
-
-#### Other (4)
-- **lambert-2026-03-12.md**: 1. **Bebop thin-route pattern is highly uniform**: Route files under `apps/bebop/src/routes/` follow a strict template — `head()` for meta, `loader()`
-- **rebecca-2026-03-12.md**: **Date:** 2026-03-12
-- **rebecca-fanout-W002-2026-03-12.md**: **By:** Rebecca (Architect)
-- **ripley-2026-03-12.md**: 1. **Bebop thin-route pattern**: New routes in Bebop follow a thin-route pattern under `apps/bebop/src/routes/`. Layout routes are prefixed with `_mai
-
-
-
----
-
-### 2026-03-13: Consolidated from 5 inbox items
-**By:** Engine (auto-consolidation)
-
-#### Other (5)
-- **dallas-W005-2026-03-12.md**: **Date:** 2026-03-12
-- **dallas-W006-2026-03-13.md**: **Date:** 2026-03-13
-- **lambert-2026-03-12.md**: 1. **Bebop MessageTemplates pattern**: The `MessageTemplates` interface in `bebop-conversation-orchestrator` uses a render-function-per-message-type p
-- **lambert-2026-03-13.md**: 1. **ADO PR status codes**: `status: 1` = active, `status: 2` = abandoned, `status: 3` = completed/merged. The `mergeStatus` field is separate — `merg
-- **ralph-2026-03-13.md**: **Date:** 2026-03-13
-

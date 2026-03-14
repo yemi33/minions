@@ -151,5 +151,31 @@
     "dispatched_at": "2026-03-14T01:02:14.707Z",
     "dispatched_to": "dallas",
     "completedAt": "2026-03-14T01:04:24.038Z"
+  },
+  {
+    "id": "W011",
+    "title": "these are the relevant prs from sachin, who is working on the officeagent + augloop orchestration part of it - https://dev.azure.com/office/ISS/_git/OfficeAgent/pullrequest/4961660, https://dev.azure.com/office/ISS/_git/augloop-workflows/pullrequest/4961631 - analyze what he is doing and figure out how to set that up locally e2e - ultimate goal is to be able to hook this up to the ux work that we've been doing in office-bohemia",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T02:20:02.819Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T02:29:04.220Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T02:32:16.741Z"
+  },
+  {
+    "id": "W012",
+    "title": "remember that you can use loop-page skill or a loop mcp server to look at loop files, when given the link",
+    "type": "implement",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T02:36:09.955Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T02:36:49.693Z",
+    "dispatched_to": "dallas",
+    "completedAt": "2026-03-14T02:37:09.235Z"
   }
 ]
