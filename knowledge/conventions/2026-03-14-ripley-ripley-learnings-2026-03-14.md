@@ -1,3 +1,10 @@
+---
+source: ripley-2026-03-14.md
+agent: ripley
+category: conventions
+date: 2026-03-14
+---
+
 # Ripley Learnings — 2026-03-14
 
 ## Loop Page Access from SharePoint URLs

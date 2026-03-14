@@ -154,3 +154,31 @@ _Processed 2 notes, 14 insights extracted, 2 duplicates removed._
   → see knowledge/project-notes/2026-03-14-yemishin-use-the-loop-mcp-server-to-read-docs.md
 
 _Processed 3 notes, 8 insights extracted, 0 duplicates removed._
+
+---
+
+### 2026-03-14: SharePoint Loop page access — URL extraction, ID construction, and CSP limitations
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **SharePoint `:fl:` URL nav parameter extraction**: Decode the nav parameter (URL-decode → base64-decode → parse as query string) to extract `d` (driveId), `f` (itemId), `s` (site path), `a` (app type). _(Dallas, Ripley)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md and knowledge/conventions/2026-03-14-ripley-ripley-learnings-2026-03-14.md
+- **PageId construction from odspMetadata**: Build pageId as base64(domain + ',' + driveId + ',' + itemId) from workspace odspMetadata, not URL nav params. _(Dallas, Ripley)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md and knowledge/conventions/2026-03-14-ripley-ripley-learnings-2026-03-14.md
+- **WorkspaceId construction format**: Build workspaceId as ODSP| + base64(domain + ',' + driveId) for Loop MCP operations. _(Ripley)_
+  → see knowledge/conventions/2026-03-14-ripley-ripley-learnings-2026-03-14.md
+- **Dogfood environment context**: sharepoint-df.com is Microsoft's dogfood SharePoint environment; standard Loop API endpoints may not route correctly for dogfood content. _(Ripley)_
+  → see knowledge/conventions/2026-03-14-ripley-ripley-learnings-2026-03-14.md
+- **SharePoint Loop page access workflow**: (1) Decode nav parameter to extract IDs, (2) Extract workspace podId from `x.w` field, (3) Call `list_pages` with workspace podId, (4) Construct pageId from odspMetadata, (5) Call `get_page` with constructed pageId. _(Dallas)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md
+
+#### Bugs & Gotchas
+- **DriveId mismatch between URL and workspace listing**: DriveId in URL nav params may differ from workspace listing results (e.g., `...MH9F...` vs `...MG9F...`); always use `list_pages` odspMetadata to avoid 404 errors. _(Dallas)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md
+- **CSP containers inaccessible via all available tools**: Shared content storage containers (CSP_*) return errors across all access methods—Loop MCP API (403 accessDenied), WebFetch (401 Unauthorized), URL decoder (format mismatch for `:fl:` URLs). _(Dallas, Ripley)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md and knowledge/conventions/2026-03-14-ripley-ripley-learnings-2026-03-14.md
+- **uuidgen unavailable on Windows**: Use `require('crypto').randomUUID()` in Node.js instead of the `uuidgen` command. _(Dallas)_
+  → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md
+
+_Processed 3 notes, 8 insights extracted, 5 duplicates removed._
