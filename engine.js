@@ -2054,6 +2054,25 @@ function consolidateInbox(config) {
 function consolidateWithLLM(items, existingNotes, files, config) {
   _consolidationInFlight = true;
 
+  // Pre-classify items to generate KB paths for Haiku to reference
+  const kbPaths = items.map(item => {
+    const content = item.content || '';
+    const name = (item.name || '').toLowerCase();
+    const contentLower = content.toLowerCase();
+    let cat = 'project-notes';
+    if (name.includes('review') || name.includes('pr-') || name.includes('pr4') || name.includes('feedback')) cat = 'reviews';
+    else if (name.includes('build') || name.includes('bt-') || contentLower.includes('build pass') || contentLower.includes('build fail') || contentLower.includes('lint')) cat = 'build-reports';
+    else if (contentLower.includes('architecture') || contentLower.includes('design doc') || contentLower.includes('system design')) cat = 'architecture';
+    else if (contentLower.includes('convention') || contentLower.includes('pattern') || contentLower.includes('always use') || contentLower.includes('best practice')) cat = 'conventions';
+    const agentMatch = item.name.match(/^(\w+)-/);
+    const agent = agentMatch ? agentMatch[1] : 'unknown';
+    const titleMatch = content.match(/^#\s+(.+)/m);
+    const titleSlug = titleMatch ? titleMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50) : item.name.replace(/\.md$/, '');
+    return { file: item.name, category: cat, kbPath: `knowledge/${cat}/${dateStamp()}-${agent}-${titleSlug}.md` };
+  });
+
+  const kbRefBlock = kbPaths.map(p => `- \`${p.file}\` → \`${p.kbPath}\``).join('\n');
+
   // Build the prompt with all inbox notes
   const notesBlock = items.map(item =>
     `<note file="${item.name}">\n${(item.content || '').slice(0, 8000)}\n</note>`
@@ -2098,6 +2117,10 @@ Read every inbox note carefully. Produce a consolidated digest following these r
 
 6. **Write a descriptive title**: First line must be a single-line title summarizing what was learned. Do NOT use generic text like "Consolidated from N items".
 
+7. **Reference the knowledge base**: Each note is being filed into the knowledge base at these paths. After each insight bullet, add a reference link so readers know where to find the full detail:
+${kbRefBlock}
+   Format: \`→ see knowledge/category/filename.md\` on a new line after the insight, indented.
+
 ## Output Format
 
 Respond with ONLY the markdown below — no preamble, no explanation, no code fences:
@@ -2107,6 +2130,7 @@ Respond with ONLY the markdown below — no preamble, no explanation, no code fe
 
 #### Category Name
 - **Bold key**: insight text _(agent)_
+  → see \`knowledge/category/filename.md\`
 
 _Processed N notes, M insights extracted, K duplicates removed._
 
