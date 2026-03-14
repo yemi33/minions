@@ -125,3 +125,32 @@ _Processed 2 notes, 12 insights extracted, 1 duplicate removed._
 - **Dallas's quick-fix**: Run `yarn lint --fix --to bebop` to auto-repair 6 fixable linting errors _(Rebecca)_
 
 _Processed 2 notes, 14 insights extracted, 2 duplicates removed._
+
+---
+
+### 2026-03-14: Loop page access patterns and platform constraints
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Loop page ID format**: Base64 encoding of (domain, driveId, itemId); workspace podId adds `ODSP|` prefix to same encoding _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+- **Loop API environments**: prod (`prod.api.loop.cloud.microsoft`), SDF (`sdf.api.loop.cloud.microsoft`), EU (`eu.prod.api.loop.cloud.microsoft`) _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+- **Loop API token scope**: Tokens for `https://api.loop.cloud.microsoft` work only for user's Copilot workspace, not other content storage containers _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+
+#### Bugs & Gotchas
+- **Loop CSP access limitation**: Shared content storage containers (CSP_*) are not accessible via Loop API without explicit ODSP-level access; Azure CLI app lacks SharePoint delegated permissions _(Ralph)_
+  → see knowledge/project-notes/2026-03-14-ralph-w018-ux-options-loop-page-access-blocked-.md
+- **DriveId shell escaping**: DriveIds with `b!` prefix cause shell escaping issues—use heredocs or node/python instead of inline commands _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+- **Windows platform constraints**: python3 unavailable (Microsoft Store stub only), `/dev/stdin` incompatible with Node.js, `uuidgen` absent; use `node -e` for UUID generation _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+- **Background command retrieval**: Short background commands may not be retrievable via TaskOutput if they complete quickly—prefer synchronous execution _(Ralph)_
+  → see knowledge/conventions/2026-03-14-ralph-ralph-learnings-2026-03-14.md
+
+#### Action Items
+- **Prefer Loop MCP server for shared workspace access**: Use Loop MCP server instead of direct API calls to access Loop pages in shared/team workspaces _(yemishin)_
+  → see knowledge/project-notes/2026-03-14-yemishin-use-the-loop-mcp-server-to-read-docs.md
+
+_Processed 3 notes, 8 insights extracted, 0 duplicates removed._
