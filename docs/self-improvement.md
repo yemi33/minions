@@ -24,23 +24,62 @@ Agent completes task
 ```
 Agent finishes task
   → writes notes/inbox/<agent>-<date>.md
-  → engine checks inbox on each tick
-  → at 5+ files: consolidateInbox() runs
-  → items categorized (reviews, feedback, learnings, other)
-  → summary appended to notes.md
+  → engine checks inbox on next tick (~60s)
+  → consolidateInbox() fires (threshold: 1 file)
+  → spawns Claude Haiku for LLM-powered summarization
+  → Haiku reads all inbox notes + existing notes.md
+  → produces deduplicated, categorized digest
+  → digest appended to notes.md
   → originals moved to notes/archive/
   → notes.md injected into every future agent prompt
 ```
 
-### Smart Consolidation
+### LLM-Powered Consolidation (Primary)
 
-The engine doesn't just dump files — it categorizes them:
-- **Reviews** — files containing "review" or PR references
-- **Feedback** — review feedback files for authors
-- **Learnings** — build summaries, explorations, implementation notes
-- **Other** — everything else
+The engine spawns Claude Haiku to read all inbox notes and produce a smart digest. Haiku is chosen for speed (~10s) and low cost while being capable enough for summarization.
 
-Each category gets a header with item count and one-line summaries.
+**What Haiku does:**
+- Reads full content of every inbox note (up to 8KB each)
+- Cross-references against existing notes.md to avoid repeating known knowledge
+- Extracts only actionable insights: patterns, conventions, gotchas, build results, architectural decisions
+- Deduplicates — if multiple agents report the same finding, merges into one entry
+- Groups by category: Patterns & Conventions, Build & Test Results, PR Review Findings, Bugs & Gotchas, Architecture Notes, Action Items
+- Attributes each insight to the source agent(s)
+- Writes a descriptive title summarizing what was learned
+
+**Example output:**
+```markdown
+### 2026-03-13: PR-4964594 Build & Lint Analysis
+**By:** Engine (LLM-consolidated)
+
+#### Build & Test Results
+- **Build and tests passing** for progression UI feature _(rebecca)_
+
+#### Bugs & Gotchas
+- **Barrel file violation**: index.ts under src/features/progression/ violates no-barrel-files rule — use concrete paths _(rebecca)_
+- **11 lint errors**: unnecessary conditionals and missing curly braces in progressionAtoms.ts and ProgressionCard.tsx _(rebecca)_
+
+#### Patterns & Conventions
+- **Jotai for local state**: appropriate for synchronous UI state in Bebop features _(rebecca)_
+
+_Processed 1 note, 4 insights extracted, 1 duplicate removed._
+```
+
+**Async execution:** The LLM call doesn't block the engine tick loop. A `_consolidationInFlight` flag prevents concurrent runs.
+
+**Timeout:** 3 minutes max. If Haiku doesn't respond, the engine kills the process and falls back to regex.
+
+### Regex Fallback Consolidation
+
+If the LLM call fails (timeout, error, malformed output), the engine falls back to pattern-matching extraction:
+
+- **Numbered items**: `1. **Bold key**: explanation` — captured via regex
+- **Bullet items**: `- **Bold key**: explanation` — captured via regex
+- **Important lines**: standalone sentences containing must/never/always/convention/pattern/gotcha
+- **Deduplication**: fingerprint-based (lowercased, stripped, 70% word overlap threshold)
+- **Cross-reference**: checks against existing notes.md to skip known insights
+
+Fallback entries are labeled `**By:** Engine (regex fallback)` so you can tell which method was used.
 
 ### Auto-Pruning
 
@@ -284,7 +323,9 @@ When a git merge or rebase produces conflicts in yarn.lock.
 
 | Setting | Default | What it controls |
 |---------|---------|-----------------|
-| `engine.inboxConsolidateThreshold` | 5 | Files needed before consolidation triggers |
+| `engine.inboxConsolidateThreshold` | 1 | Files needed before consolidation triggers |
+| Consolidation model | Haiku | LLM used for summarization (fast, cheap) |
+| Consolidation timeout | 3 min | Max time for LLM call before fallback |
 | notes.md max size | 50KB | Auto-prunes old sections above this |
 | Agent history entries | 20 | Max entries kept in history.md |
 | Metrics file | `engine/metrics.json` | Auto-created on first completion |
