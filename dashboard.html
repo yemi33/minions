@@ -47,6 +47,25 @@
   .status-badge.working { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid var(--yellow); animation: pulse 1.5s infinite; }
   .status-badge.done { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .agent-action { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .modal-qa { border-top: 1px solid var(--border); padding: 10px 20px; }
+  .modal-qa-thread { max-height: 200px; overflow-y: auto; margin-bottom: 8px; }
+  .modal-qa-q { font-size: 12px; color: var(--blue); margin-bottom: 4px; font-weight: 600; }
+  .modal-qa-q .selection-ref { font-weight: 400; color: var(--muted); font-style: italic; display: block; font-size: 10px; margin-top: 2px; }
+  .modal-qa-a { font-size: 12px; color: var(--text); margin-bottom: 12px; padding: 8px 10px; background: var(--surface2); border-radius: 6px; border-left: 2px solid var(--blue); white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .modal-qa-loading { font-size: 11px; color: var(--muted); padding: 8px 10px; display: flex; align-items: center; gap: 8px; }
+  .modal-qa-loading .dot-pulse { display: inline-flex; gap: 3px; }
+  .modal-qa-loading .dot-pulse span { width: 5px; height: 5px; background: var(--blue); border-radius: 50%; animation: dotPulse 1.2s infinite; }
+  .modal-qa-loading .dot-pulse span:nth-child(2) { animation-delay: 0.2s; }
+  .modal-qa-loading .dot-pulse span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dotPulse { 0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
+  .modal-qa-input-wrap { display: flex; gap: 6px; }
+  .modal-qa-input { flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 12px; color: var(--text); font-family: inherit; }
+  .modal-qa-input:focus { border-color: var(--blue); outline: none; }
+  .modal-qa-btn { background: var(--blue); color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font-size: 12px; cursor: pointer; }
+  .modal-qa-btn:hover { opacity: 0.9; }
+  .modal-qa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ask-selection-btn { display: none; position: fixed; z-index: 500; background: var(--blue); color: #fff; font-size: 11px; padding: 5px 12px; border-radius: 4px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .ask-selection-btn:hover { opacity: 0.9; }
   .plan-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
   .plan-card.awaiting { border-left: 3px solid var(--yellow, #d29922); }
   .plan-card.approved { border-left: 3px solid var(--green); }
@@ -580,8 +599,18 @@
       </div>
     </div>
     <div class="modal-body" id="modal-body"></div>
+    <div class="modal-qa" id="modal-qa">
+      <div class="modal-qa-thread" id="modal-qa-thread"></div>
+      <div class="modal-qa-input-wrap">
+        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document (or select text first)..." onkeydown="if(event.key==='Enter')modalAskSubmit()">
+        <button class="modal-qa-btn" id="modal-qa-btn" onclick="modalAskSubmit()">Ask</button>
+      </div>
+    </div>
   </div>
 </div>
+
+<!-- Floating "Ask about selection" button -->
+<div class="ask-selection-btn" id="ask-selection-btn" onclick="modalAskAboutSelection()">Ask about this</div>
 
 <script>
 let inboxData = [];
@@ -976,7 +1005,15 @@ function openModal(i) {
   document.getElementById('modal-body').textContent = item.content;
   document.getElementById('modal').classList.add('open');
 }
-function closeModal() { document.getElementById('modal').classList.remove('open'); }
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+  // Clear Q&A state
+  _modalDocContext = { title: '', content: '', selection: '' };
+  document.getElementById('modal-qa-thread').innerHTML = '';
+  document.getElementById('modal-qa-input').value = '';
+  document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
+  document.getElementById('ask-selection-btn').style.display = 'none';
+}
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeDetail(); closeModal(); }
@@ -2012,6 +2049,96 @@ async function cmdSubmitPrd(parsed) {
   const projLabel = (parsed.projects || []).length > 0 ? ' (' + parsed.projects.join(', ') + ')' : '';
   showToast('cmd-toast', 'PRD item ' + (data.id || id) + ' added' + projLabel, true);
 }
+// ─── Modal Q&A (Ask about document) ──────────────────────────────────────────
+
+let _modalDocContext = { title: '', content: '', selection: '' };
+
+// Track text selection in modal body for the floating "Ask about this" button
+document.addEventListener('mouseup', function(e) {
+  const btn = document.getElementById('ask-selection-btn');
+  const modalBody = document.getElementById('modal-body');
+  const sel = window.getSelection();
+  const text = sel?.toString()?.trim();
+
+  if (text && text.length > 5 && modalBody?.contains(sel?.anchorNode)) {
+    _modalDocContext.selection = text;
+    btn.style.display = 'block';
+    btn.style.left = e.pageX + 'px';
+    btn.style.top = (e.pageY - 35) + 'px';
+  } else {
+    btn.style.display = 'none';
+  }
+});
+
+function modalAskAboutSelection() {
+  document.getElementById('ask-selection-btn').style.display = 'none';
+  const input = document.getElementById('modal-qa-input');
+  input.value = '';
+  input.placeholder = 'Ask about: "' + _modalDocContext.selection.slice(0, 60) + '..."';
+  input.focus();
+}
+
+async function modalAskSubmit() {
+  const input = document.getElementById('modal-qa-input');
+  const question = input.value.trim();
+  if (!question) return;
+  if (!_modalDocContext.content) return;
+
+  const thread = document.getElementById('modal-qa-thread');
+  const btn = document.getElementById('modal-qa-btn');
+
+  // Show question
+  let qHtml = '<div class="modal-qa-q">' + escHtml(question);
+  if (_modalDocContext.selection) {
+    qHtml += '<span class="selection-ref">Re: "' + escHtml(_modalDocContext.selection.slice(0, 100)) + ((_modalDocContext.selection.length > 100) ? '...' : '') + '"</span>';
+  }
+  qHtml += '</div>';
+  thread.innerHTML += qHtml;
+
+  // Show loading
+  const loadingId = 'qa-loading-' + Date.now();
+  thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '"><div class="dot-pulse"><span></span><span></span><span></span></div> Thinking...</div>';
+  thread.scrollTop = thread.scrollHeight;
+
+  input.value = '';
+  input.placeholder = 'Ask another question...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('/api/ask-about', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        document: _modalDocContext.content,
+        title: _modalDocContext.title,
+        selection: _modalDocContext.selection || '',
+      }),
+    });
+    const data = await res.json();
+    const loadingEl = document.getElementById(loadingId);
+    if (loadingEl) loadingEl.remove();
+
+    if (data.ok && data.answer) {
+      thread.innerHTML += '<div class="modal-qa-a">' + escHtml(data.answer) + '</div>';
+    } else {
+      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'No answer') + '</div>';
+    }
+  } catch (e) {
+    const loadingEl = document.getElementById(loadingId);
+    if (loadingEl) loadingEl.remove();
+    thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '</div>';
+  }
+
+  _modalDocContext.selection = ''; // Clear selection after asking
+  btn.disabled = false;
+  thread.scrollTop = thread.scrollHeight;
+  input.focus();
+}
+
+// Override closeModal to clear Q&A state
+const _origCloseModal = typeof closeModal === 'function' ? closeModal : null;
+
 // ─── Plans (Approval Gate) ────────────────────────────────────────────────────
 
 async function refreshPlans() {

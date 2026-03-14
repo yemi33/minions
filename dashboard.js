@@ -1074,6 +1074,81 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/ask-about — ask a question about a document with context, answered by Haiku
+  if (req.method === 'POST' && req.url === '/api/ask-about') {
+    try {
+      const body = await readBody(req);
+      if (!body.question) return jsonReply(res, 400, { error: 'question required' });
+      if (!body.document) return jsonReply(res, 400, { error: 'document required' });
+
+      const prompt = `You are answering a question about a document from a software engineering squad's knowledge base.
+
+## Document
+${body.title ? '**Title:** ' + body.title + '\n' : ''}
+${body.document.slice(0, 15000)}
+
+${body.selection ? '## Highlighted Selection\n\nThe user highlighted this specific part:\n> ' + body.selection.slice(0, 2000) + '\n' : ''}
+
+## Question
+
+${body.question}
+
+## Instructions
+
+Answer concisely and directly. Reference specific parts of the document. If the answer isn't in the document, say so. Use markdown formatting.`;
+
+      const sysPrompt = 'You are a concise technical assistant. Answer based on the document provided. No preamble.';
+
+      // Write temp files
+      const id = Date.now();
+      const promptPath = path.join(SQUAD_DIR, 'engine', 'ask-prompt-' + id + '.md');
+      const sysPath = path.join(SQUAD_DIR, 'engine', 'ask-sys-' + id + '.md');
+      safeWrite(promptPath, prompt);
+      safeWrite(sysPath, sysPrompt);
+
+      // Spawn Haiku
+      const spawnScript = path.join(SQUAD_DIR, 'engine', 'spawn-agent.js');
+      const childEnv = { ...process.env };
+      for (const key of Object.keys(childEnv)) {
+        if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
+      }
+
+      const { spawn: cpSpawn } = require('child_process');
+      const proc = cpSpawn(process.execPath, [
+        spawnScript, promptPath, sysPath,
+        '--output-format', 'text', '--max-turns', '1', '--model', 'haiku',
+        '--permission-mode', 'bypassPermissions', '--verbose',
+      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', d => { stdout += d.toString(); });
+      proc.stderr.on('data', d => { stderr += d.toString(); });
+
+      // Timeout 60s
+      const timeout = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 60000);
+
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        try { fs.unlinkSync(promptPath); } catch {}
+        try { fs.unlinkSync(sysPath); } catch {}
+        if (code === 0 && stdout.trim()) {
+          return jsonReply(res, 200, { ok: true, answer: stdout.trim() });
+        } else {
+          return jsonReply(res, 500, { error: 'Failed to get answer', stderr: stderr.slice(0, 200) });
+        }
+      });
+
+      proc.on('error', (err) => {
+        clearTimeout(timeout);
+        try { fs.unlinkSync(promptPath); } catch {}
+        try { fs.unlinkSync(sysPath); } catch {}
+        return jsonReply(res, 500, { error: err.message });
+      });
+      return; // Don't fall through — response handled in callbacks
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/inbox/persist — promote an inbox item to team notes
   if (req.method === 'POST' && req.url === '/api/inbox/persist') {
     try {

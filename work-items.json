@@ -213,9 +213,46 @@
     "status": "failed",
     "created": "2026-03-14T04:53:40.408Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T04:54:04.389Z",
-    "dispatched_to": "rebecca",
-    "failReason": "Orphaned — no process, silent for 3137s",
-    "failedAt": "2026-03-14T05:47:13.742Z"
+    "dispatched_at": "2026-03-14T16:29:23.866Z",
+    "dispatched_to": "ripley",
+    "failReason": "Orphaned — no process, silent for 2224s",
+    "failedAt": "2026-03-14T17:10:18.374Z"
+  },
+  {
+    "id": "W017",
+    "title": "look how weave / cowork existing code in 1js is structure is structured, their architecture for loading their experience, how the ux interacts with model output, model backend interfacing, what stack they're using to do so, etc",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "dispatched",
+    "created": "2026-03-14T16:52:50.660Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T16:53:18.098Z",
+    "dispatched_to": "rebecca"
+  },
+  {
+    "id": "W018",
+    "title": "make a note of the https://microsoft.sharepoint-df.com/:fl:/g/contentstorage/CSP_96f34ace-61d2-44c7-a207-5b80b73efd94/IQDaw7fOButDQrWkoH1kPJSNAfCUh9LKU0f38qtLhWJ9tzI?e=d9Aap1&nav=cz0lMkZjb250ZW50c3RvcmFnZSUyRkNTUF85NmYzNGFjZS02MWQyLTQ0YzctYTIwNy01YjgwYjczZWZkOTQmZD1iJTIxemtyemx0Smh4MFNpQjF1QXR6NzlsR0F5NmtoWVFnUkNud0VIbXZEdlpXQWVTRFFOSTlRTlFhZGhTUTFjVjl3MiZmPTAxTUdaUTRDNjJZTzM0NEJYTElOQkxMSkZBUFZTRFpGRU4mYz0lMkYmYT1Mb29wQXBwJnA9JTQwZmx1aWR4JTJGbG9vcC1wYWdlLWNvbnRhaW5lcg%3D%3D <- this document outlines ux options",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T16:57:54.965Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T16:58:18.174Z",
+    "dispatched_to": "ralph",
+    "completedAt": "2026-03-14T17:12:15.970Z"
+  },
+  {
+    "id": "W019",
+    "title": "make a plan for how we're going to implement claude cowork style ux in bebop that has officeagent capabilites and interface with augloop - the ux will be packaged and shown inside 1js framework",
+    "type": "implement",
+    "priority": "medium",
+    "description": "",
+    "status": "dispatched",
+    "created": "2026-03-14T16:59:50.631Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T17:00:18.180Z",
+    "dispatched_to": "dallas"
   }
 ]
