@@ -80,9 +80,13 @@ try {
     if (Buffer.byteLength(sysPrompt) < 30000) {
       actualArgs = ['-p', '--system-prompt', sysPrompt, ...extraArgs];
     } else {
-      // Too large for inline — prepend system prompt to the user prompt via stdin
-      actualArgs = ['-p', ...extraArgs];
-      // We'll inject system prompt into stdin along with the prompt below
+      // Too large for inline — split: short identity as --system-prompt, rest prepended to user prompt
+      // Extract first section (agent identity) as the system prompt, rest goes into user context
+      const splitIdx = sysPrompt.indexOf('\n---\n');
+      const shortSys = splitIdx > 0 && splitIdx < 2000
+        ? sysPrompt.slice(0, splitIdx)
+        : sysPrompt.slice(0, 1500) + '\n\n[System prompt truncated for CLI arg limit — full context provided below in user message]';
+      actualArgs = ['-p', '--system-prompt', shortSys, ...extraArgs];
     }
   }
 } catch {
@@ -100,9 +104,10 @@ fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(
 const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
 fs.writeFileSync(pidFile, String(proc.pid || ''));
 
-// Send prompt via stdin — if system prompt couldn't be passed via args, prepend it
-if (!actualArgs.includes('--system-prompt') && !actualArgs.includes('--system-prompt-file')) {
-  proc.stdin.write(`<system>\n${sysPrompt}\n</system>\n\n${prompt}`);
+// Send prompt via stdin — if system prompt was truncated, prepend the full context
+if (Buffer.byteLength(sysPrompt) >= 30000) {
+  // System prompt was too large for CLI — prepend full context to user prompt
+  proc.stdin.write(`## Full Agent Context\n\n${sysPrompt}\n\n---\n\n## Your Task\n\n${prompt}`);
 } else {
   proc.stdin.write(prompt);
 }
