@@ -1685,6 +1685,42 @@ function cmdKeyDown(e) {
     }
   }
 
+  // ArrowUp/ArrowDown to navigate command history (only when no popup visible)
+  if (e.key === 'ArrowUp' && !isPopupVisible) {
+    const input = document.getElementById('cmd-input');
+    // Only intercept if cursor is at start of input (or input is single-line)
+    if (input.selectionStart === 0 || !input.value.includes('\n')) {
+      const history = cmdGetHistory();
+      if (history.length === 0) return;
+      if (_cmdHistoryIdx === -1) _cmdHistoryDraft = input.value; // Save current draft
+      if (_cmdHistoryIdx < history.length - 1) {
+        _cmdHistoryIdx++;
+        input.value = history[_cmdHistoryIdx].text;
+        cmdAutoResize();
+        cmdRenderMeta();
+        e.preventDefault();
+        // Move cursor to end
+        setTimeout(() => input.setSelectionRange(input.value.length, input.value.length), 0);
+      }
+      return;
+    }
+  }
+  if (e.key === 'ArrowDown' && !isPopupVisible) {
+    const input = document.getElementById('cmd-input');
+    if (input.selectionStart === input.value.length || !input.value.includes('\n')) {
+      if (_cmdHistoryIdx >= 0) {
+        _cmdHistoryIdx--;
+        const history = cmdGetHistory();
+        input.value = _cmdHistoryIdx >= 0 ? history[_cmdHistoryIdx].text : (_cmdHistoryDraft || '');
+        cmdAutoResize();
+        cmdRenderMeta();
+        e.preventDefault();
+        setTimeout(() => input.setSelectionRange(input.value.length, input.value.length), 0);
+      }
+      return;
+    }
+  }
+
   // Ctrl+Enter to submit
   if (e.key === 'Enter' && e.ctrlKey) {
     e.preventDefault();
@@ -1714,6 +1750,8 @@ async function cmdSubmit() {
     }
     // Save to history on success
     cmdSaveHistory(raw, parsed.intent);
+    _cmdHistoryIdx = -1;
+    _cmdHistoryDraft = '';
     // Clear on success
     input.value = '';
     cmdAutoResize();
@@ -1809,6 +1847,8 @@ async function cmdSubmitPrd(parsed) {
 // ─── Command History ──────────────────────────────────────────────────────────
 const CMD_HISTORY_KEY = 'squad-cmd-history';
 const CMD_HISTORY_MAX = 50;
+let _cmdHistoryIdx = -1; // -1 = not browsing history
+let _cmdHistoryDraft = ''; // saves current draft when browsing
 
 function cmdGetHistory() {
   try { return JSON.parse(localStorage.getItem(CMD_HISTORY_KEY) || '[]'); } catch { return []; }
