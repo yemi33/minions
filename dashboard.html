@@ -1406,10 +1406,11 @@ function cmdParseInput(raw) {
     type: '',             // work item type (auto-detected)
   };
 
-  // Detect /decide or /note prefix
-  if (/^\/decide\b/i.test(text) || /^\/note\b/i.test(text)) {
+  // Detect /decide, /note, or natural "remember" keyword
+  const rememberPattern = /^(remember|remember that|don't forget|note that|keep in mind)\b/i;
+  if (/^\/decide\b/i.test(text) || /^\/note\b/i.test(text) || rememberPattern.test(text)) {
     result.intent = 'note';
-    text = text.replace(/^\/decide\s*/i, '');
+    text = text.replace(/^\/decide\s*/i, '').replace(/^\/note\s*/i, '').replace(rememberPattern, '').trim();
   } else if (/^\/plan\b/i.test(text)) {
     result.intent = 'plan';
     text = text.replace(/^\/plan\s*/i, '');
