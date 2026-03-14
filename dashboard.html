@@ -691,7 +691,26 @@ function renderDetailContent(detail, tab) {
   } else if (tab === 'charter') {
     el.innerHTML = '<div class="section">' + escHtml(detail.charter || 'No charter found.') + '</div>';
   } else if (tab === 'history') {
-    el.innerHTML = '<div class="section">' + escHtml(detail.history || 'No history yet.') + '</div>';
+    let html = '';
+    // Recent dispatch results
+    if (detail.recentDispatches && detail.recentDispatches.length > 0) {
+      html += '<h4>Recent Dispatches</h4><table class="pr-table" style="margin-bottom:16px"><thead><tr><th>Task</th><th>Type</th><th>Result</th><th>Completed</th></tr></thead><tbody>';
+      detail.recentDispatches.forEach(d => {
+        const isError = d.result === 'error';
+        const color = isError ? 'var(--red)' : 'var(--green)';
+        const reason = d.reason ? ' title="' + escHtml(d.reason) + '"' : '';
+        html += '<tr>' +
+          '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(d.task) + '">' + escHtml(d.task.slice(0, 80)) + '</td>' +
+          '<td><span class="dispatch-type ' + d.type + '">' + escHtml(d.type) + '</span></td>' +
+          '<td style="color:' + color + '"' + reason + '>' + escHtml(d.result) + (isError && d.reason ? ' <span style="font-size:10px;color:var(--muted)">(' + escHtml(d.reason.slice(0, 50)) + ')</span>' : '') + '</td>' +
+          '<td style="font-size:10px;color:var(--muted)">' + (d.completed_at ? new Date(d.completed_at).toLocaleString() : '') + '</td>' +
+        '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+    // Raw history.md
+    html += '<h4>Task History</h4><div class="section">' + escHtml(detail.history || 'No history yet.') + '</div>';
+    el.innerHTML = html;
   } else if (tab === 'output') {
     el.innerHTML = '<div class="section">' + escHtml(detail.outputLog || 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
   }

@@ -75,7 +75,7 @@ function getAgentDetail(id) {
   const agentDir = path.join(SQUAD_DIR, 'agents', id);
   const charter = safeRead(path.join(agentDir, 'charter.md')) || 'No charter found.';
   const history = safeRead(path.join(agentDir, 'history.md')) || 'No history yet.';
-  const outputLog = safeRead(path.join(agentDir, 'output.md')) || '';
+  const outputLog = safeRead(path.join(agentDir, 'output.log')) || '';
 
   const statusJson = safeRead(path.join(agentDir, 'status.json'));
   let statusData = null;
@@ -86,7 +86,25 @@ function getAgentDetail(id) {
     .filter(f => f.includes(id))
     .map(f => ({ name: f, content: safeRead(path.join(inboxDir, f)) || '' }));
 
-  return { charter, history, statusData, outputLog, inboxContents };
+  // Recent completed dispatches for this agent (last 10)
+  let recentDispatches = [];
+  try {
+    const dispatch = JSON.parse(safeRead(path.join(SQUAD_DIR, 'engine', 'dispatch.json')) || '{}');
+    recentDispatches = (dispatch.completed || [])
+      .filter(d => d.agent === id)
+      .slice(-10)
+      .reverse()
+      .map(d => ({
+        id: d.id,
+        task: d.task || '',
+        type: d.type || '',
+        result: d.result || '',
+        reason: d.reason || '',
+        completed_at: d.completed_at || '',
+      }));
+  } catch {}
+
+  return { charter, history, statusData, outputLog, inboxContents, recentDispatches };
 }
 
 function getAgents() {
