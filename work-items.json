@@ -118,14 +118,13 @@
     "type": "test",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-13T09:30:51.902Z",
     "createdBy": "dashboard",
     "agent": "rebecca",
-    "dispatched_at": "2026-03-13T11:59:26.953Z",
+    "dispatched_at": "2026-03-13T16:07:46.714Z",
     "dispatched_to": "rebecca",
-    "failReason": "Agent died or was killed",
-    "failedAt": "2026-03-13T12:04:00.474Z"
+    "completedAt": "2026-03-13T16:37:17.195Z"
   },
   {
     "id": "W009",
@@ -139,5 +138,18 @@
     "dispatched_at": "2026-03-13T09:37:36.987Z",
     "dispatched_to": "dallas",
     "completedAt": "2026-03-13T09:46:19.311Z"
+  },
+  {
+    "id": "W010",
+    "title": "explain what this pr is doing https://office.visualstudio.com/Sydney/_git/Sydney/pullrequest/4902216?path=/services/TuringBot/src/Service/Config/BuiltInAgents/NotebookCoworkAgent/releases/1.0.0.json",
+    "type": "implement",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T00:30:38.886Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T01:02:14.707Z",
+    "dispatched_to": "dallas",
+    "completedAt": "2026-03-14T01:04:24.038Z"
   }
 ]
