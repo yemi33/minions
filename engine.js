@@ -738,6 +738,23 @@ function spawnAgent(dispatchItem, config) {
     safeWrite(archivePath, outputContent);
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
+    // Extract agent's final result text from stream-json output
+    let resultSummary = '';
+    try {
+      const lines = stdout.split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line || !line.startsWith('{')) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type === 'result' && obj.result) {
+            resultSummary = obj.result.slice(0, 500);
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
+
     // Update agent status
     setAgentStatus(agentId, {
       status: code === 0 ? 'done' : 'error',
@@ -747,7 +764,8 @@ function spawnAgent(dispatchItem, config) {
       branch: branchName,
       exit_code: code,
       started_at: startedAt,
-      completed_at: ts()
+      completed_at: ts(),
+      resultSummary: resultSummary || undefined,
     });
 
     // Move from active to completed in dispatch

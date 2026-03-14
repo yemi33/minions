@@ -99,6 +99,7 @@ function getAgents() {
     let status = 'idle';
     let lastAction = 'Waiting for assignment';
     let currentTask = '';
+    let resultSummary = '';
 
     const statusFile = safeRead(path.join(SQUAD_DIR, 'agents', a.id, 'status.json'));
     if (statusFile) {
@@ -106,6 +107,7 @@ function getAgents() {
         const sj = JSON.parse(statusFile);
         status = sj.status || 'idle';
         currentTask = sj.task || '';
+        resultSummary = sj.resultSummary || '';
         if (sj.status === 'working') {
           lastAction = `Working: ${sj.task}`;
         } else if (sj.status === 'done') {
@@ -126,7 +128,7 @@ function getAgents() {
     const chartered = fs.existsSync(path.join(SQUAD_DIR, 'agents', a.id, 'charter.md'));
     // Truncate lastAction to prevent UI overflow from corrupted data
     if (lastAction.length > 120) lastAction = lastAction.slice(0, 120) + '...';
-    return { ...a, status, lastAction, currentTask: (currentTask || '').slice(0, 200), chartered, inboxCount: inboxFiles.length };
+    return { ...a, status, lastAction, currentTask: (currentTask || '').slice(0, 200), resultSummary: (resultSummary || '').slice(0, 500), chartered, inboxCount: inboxFiles.length };
   });
 }
 

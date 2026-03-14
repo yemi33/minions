@@ -47,6 +47,7 @@
   .status-badge.working { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid var(--yellow); animation: pulse 1.5s infinite; }
   .status-badge.done { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .agent-action { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .agent-result { font-size: 10px; color: var(--text); background: var(--surface2); padding: 6px 8px; border-radius: 4px; margin-top: 6px; white-space: pre-wrap; word-break: break-word; max-height: 80px; overflow-y: auto; line-height: 1.4; border-left: 2px solid var(--blue); }
   .agent-card { min-width: 0; }
   .agent-emoji { font-size: 20px; margin-right: 4px; }
   .click-hint { font-size: 10px; color: var(--border); margin-top: 6px; }
@@ -671,6 +672,7 @@ function renderAgents(agents) {
       </div>
       <div class="agent-role">${a.role}</div>
       <div class="agent-action" title="${escHtml(a.lastAction)}">${escHtml(a.lastAction)}</div>
+      ${a.resultSummary ? `<div class="agent-result" title="${escHtml(a.resultSummary)}">${escHtml(a.resultSummary.slice(0, 200))}${a.resultSummary.length > 200 ? '...' : ''}</div>` : ''}
     </div>
   `).join('');
 }
