@@ -3083,6 +3083,13 @@ function materializePlansAsWorkItems(config) {
     const plan = safeJson(path.join(PLANS_DIR, file));
     if (!plan?.missing_features) continue;
 
+    // Human approval gate: plans start as 'awaiting-approval' and must be approved before work begins
+    // Plans without a status (legacy) or with status 'approved' are allowed through
+    const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
+    if (planStatus === 'awaiting-approval' || planStatus === 'rejected' || planStatus === 'revision-requested') {
+      continue; // Skip — waiting for human approval or revision
+    }
+
     const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
     const project = getProjects(config).find(p => p.name?.toLowerCase() === projectName.toLowerCase());
     if (!project) continue;

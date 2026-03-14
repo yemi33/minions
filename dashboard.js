@@ -858,6 +858,109 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/plans — list all plan files with status
+  if (req.method === 'GET' && req.url === '/api/plans') {
+    const plansDir = path.join(SQUAD_DIR, 'plans');
+    const files = safeReadDir(plansDir).filter(f => f.endsWith('.json'));
+    const plans = files.map(f => {
+      const plan = JSON.parse(safeRead(path.join(plansDir, f)) || '{}');
+      return {
+        file: f,
+        project: plan.project || '',
+        summary: plan.plan_summary || '',
+        status: plan.status || 'active',
+        branchStrategy: plan.branch_strategy || 'parallel',
+        featureBranch: plan.feature_branch || '',
+        itemCount: (plan.missing_features || []).length,
+        generatedBy: plan.generated_by || '',
+        generatedAt: plan.generated_at || '',
+        requiresApproval: plan.requires_approval || false,
+        revisionFeedback: plan.revision_feedback || null,
+      };
+    }).sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+    return jsonReply(res, 200, plans);
+  }
+
+  // GET /api/plans/:file — read full plan JSON
+  const planFileMatch = req.url.match(/^\/api\/plans\/([^?]+)$/);
+  if (planFileMatch && req.method === 'GET') {
+    const file = decodeURIComponent(planFileMatch[1]);
+    if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
+    const content = safeRead(path.join(SQUAD_DIR, 'plans', file));
+    if (!content) return jsonReply(res, 404, { error: 'not found' });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(content);
+    return;
+  }
+
+  // POST /api/plans/approve — approve a plan for execution
+  if (req.method === 'POST' && req.url === '/api/plans/approve') {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const plan = JSON.parse(safeRead(planPath) || '{}');
+      plan.status = 'approved';
+      plan.approvedAt = new Date().toISOString();
+      plan.approvedBy = body.approvedBy || os.userInfo().username;
+      safeWrite(planPath, plan);
+      return jsonReply(res, 200, { ok: true, status: 'approved' });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/plans/reject — reject a plan
+  if (req.method === 'POST' && req.url === '/api/plans/reject') {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const plan = JSON.parse(safeRead(planPath) || '{}');
+      plan.status = 'rejected';
+      plan.rejectedAt = new Date().toISOString();
+      plan.rejectedBy = body.rejectedBy || os.userInfo().username;
+      if (body.reason) plan.rejectionReason = body.reason;
+      safeWrite(planPath, plan);
+      return jsonReply(res, 200, { ok: true, status: 'rejected' });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/plans/revise — request revision with feedback, dispatches agent to revise
+  if (req.method === 'POST' && req.url === '/api/plans/revise') {
+    try {
+      const body = await readBody(req);
+      if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const plan = JSON.parse(safeRead(planPath) || '{}');
+      plan.status = 'revision-requested';
+      plan.revision_feedback = body.feedback;
+      plan.revisionRequestedAt = new Date().toISOString();
+      plan.revisionRequestedBy = body.requestedBy || os.userInfo().username;
+      safeWrite(planPath, plan);
+
+      // Create a work item to revise the plan
+      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      let items = [];
+      const existing = safeRead(wiPath);
+      if (existing) { try { items = JSON.parse(existing); } catch {} }
+      const maxNum = items.reduce(function(max, i) {
+        const m = (i.id || '').match(/(\d+)$/);
+        return m ? Math.max(max, parseInt(m[1])) : max;
+      }, 0);
+      const id = 'W' + String(maxNum + 1).padStart(3, '0');
+      items.push({
+        id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
+        type: 'plan-to-prd', priority: 'high',
+        description: 'Revision requested on plan file: plans/' + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
+        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
+        project: plan.project || '',
+        planFile: body.file,
+      });
+      safeWrite(wiPath, items);
+      return jsonReply(res, 200, { ok: true, status: 'revision-requested', workItemId: id });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/inbox/persist — promote an inbox item to team notes
   if (req.method === 'POST' && req.url === '/api/inbox/persist') {
     try {

@@ -47,6 +47,24 @@
   .status-badge.working { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid var(--yellow); animation: pulse 1.5s infinite; }
   .status-badge.done { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .agent-action { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .plan-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
+  .plan-card.awaiting { border-left: 3px solid var(--yellow, #d29922); }
+  .plan-card.approved { border-left: 3px solid var(--green); }
+  .plan-card.rejected { border-left: 3px solid var(--red); opacity: 0.6; }
+  .plan-card.revision-requested { border-left: 3px solid var(--purple, #a855f7); }
+  .plan-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+  .plan-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .plan-card-meta { font-size: 10px; color: var(--muted); margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .plan-card-actions { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+  .plan-btn { font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text); transition: all 0.15s; }
+  .plan-btn:hover { border-color: var(--text); }
+  .plan-btn.approve { color: var(--green); border-color: var(--green); }
+  .plan-btn.approve:hover { background: rgba(63,185,80,0.1); }
+  .plan-btn.revise { color: var(--yellow, #d29922); border-color: var(--yellow, #d29922); }
+  .plan-btn.revise:hover { background: rgba(210,153,34,0.1); }
+  .plan-btn.reject { color: var(--red); border-color: var(--red); }
+  .plan-btn.reject:hover { background: rgba(248,81,73,0.1); }
+  .plan-feedback-input { width: 100%; margin-top: 6px; padding: 6px 8px; font-size: 11px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-family: inherit; resize: vertical; min-height: 50px; }
   .token-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
   .token-tile { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
   .token-tile-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -479,6 +497,11 @@
   <section class="pr-panel" id="pr-section">
     <h2>Pull Requests <span class="count" id="pr-count">0</span></h2>
     <div id="pr-content"><p class="pr-empty">No pull requests yet.</p></div>
+  </section>
+
+  <section>
+    <h2>Plans <span class="count" id="plans-count">0</span></h2>
+    <div id="plans-list"><p class="empty">No plans yet. Use /plan in the command center to create one.</p></div>
   </section>
 
   <section>
@@ -1173,9 +1196,9 @@ async function refresh() {
     renderMetrics(data.metrics || {});
     renderWorkItems(data.workItems || []);
     renderSkills(data.skills || []);
-    // Refresh KB less frequently (every 3rd cycle = ~12s)
+    // Refresh KB and plans less frequently (every 3rd cycle = ~12s)
     if (!window._kbRefreshCount) window._kbRefreshCount = 0;
-    if (window._kbRefreshCount++ % 3 === 0) refreshKnowledgeBase();
+    if (window._kbRefreshCount++ % 3 === 0) { refreshKnowledgeBase(); refreshPlans(); }
   } catch(e) { console.error('refresh error', e); }
 }
 
@@ -1968,6 +1991,133 @@ async function cmdSubmitPrd(parsed) {
   const projLabel = (parsed.projects || []).length > 0 ? ' (' + parsed.projects.join(', ') + ')' : '';
   showToast('cmd-toast', 'PRD item ' + (data.id || id) + ' added' + projLabel, true);
 }
+// ─── Plans (Approval Gate) ────────────────────────────────────────────────────
+
+async function refreshPlans() {
+  try {
+    const plans = await fetch('/api/plans').then(r => r.json());
+    renderPlans(plans);
+  } catch {}
+}
+
+function renderPlans(plans) {
+  const el = document.getElementById('plans-list');
+  const countEl = document.getElementById('plans-count');
+  countEl.textContent = plans.length;
+
+  if (plans.length === 0) {
+    el.innerHTML = '<p class="empty">No plans yet. Use /plan in the command center to create one.</p>';
+    return;
+  }
+
+  const statusLabels = { 'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected', 'revision-requested': 'Revision Requested', 'completed': 'Completed', 'active': 'Active' };
+  const statusClass = (s) => s === 'awaiting-approval' ? 'awaiting' : s || '';
+
+  el.innerHTML = plans.map(p => {
+    const status = p.status || 'active';
+    const label = statusLabels[status] || status;
+    const needsAction = status === 'awaiting-approval';
+    const isRevision = status === 'revision-requested';
+
+    let actions = '';
+    if (needsAction) {
+      actions = '<div class="plan-card-actions">' +
+        '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(p.file) + '\')">Approve</button>' +
+        '<button class="plan-btn revise" onclick="planShowRevise(\'' + escHtml(p.file) + '\')">Revise</button>' +
+        '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(p.file) + '\')">Reject</button>' +
+        '<button class="plan-btn" onclick="planView(\'' + escHtml(p.file) + '\')">View Full Plan</button>' +
+      '</div>' +
+      '<div id="revise-input-' + escHtml(p.file).replace(/\./g, '-') + '" style="display:none">' +
+        '<textarea class="plan-feedback-input" placeholder="What should be changed? Be specific..." id="revise-feedback-' + escHtml(p.file).replace(/\./g, '-') + '"></textarea>' +
+        '<div class="plan-card-actions" style="margin-top:4px">' +
+          '<button class="plan-btn revise" onclick="planSubmitRevise(\'' + escHtml(p.file) + '\')">Submit Revision Request</button>' +
+          '<button class="plan-btn" onclick="planHideRevise(\'' + escHtml(p.file) + '\')">Cancel</button>' +
+        '</div>' +
+      '</div>';
+    } else if (isRevision) {
+      actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
+    } else if (status === 'approved' || status === 'active') {
+      actions = '<div class="plan-card-actions"><button class="plan-btn" onclick="planView(\'' + escHtml(p.file) + '\')">View</button></div>';
+    }
+
+    return '<div class="plan-card ' + statusClass(status) + '">' +
+      '<div class="plan-card-header">' +
+        '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + '</div>' +
+          '<div class="plan-card-meta">' +
+            '<span style="font-weight:600;color:' + (needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
+            '<span>' + escHtml(p.project) + '</span>' +
+            '<span>' + p.itemCount + ' items</span>' +
+            '<span>' + escHtml(p.branchStrategy) + '</span>' +
+            (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
+            (p.generatedAt ? '<span>' + p.generatedAt + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      actions +
+    '</div>';
+  }).join('');
+}
+
+async function planApprove(file) {
+  try {
+    await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
+    showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
+    refreshPlans();
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+}
+
+async function planReject(file) {
+  if (!confirm('Reject this plan? It will not be executed.')) return;
+  const reason = prompt('Reason for rejection (optional):') || '';
+  try {
+    await fetch('/api/plans/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, reason }) });
+    showToast('cmd-toast', 'Plan rejected', true);
+    refreshPlans();
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+}
+
+function planShowRevise(file) {
+  const id = 'revise-input-' + file.replace(/\./g, '-');
+  document.getElementById(id).style.display = 'block';
+}
+
+function planHideRevise(file) {
+  const id = 'revise-input-' + file.replace(/\./g, '-');
+  document.getElementById(id).style.display = 'none';
+}
+
+async function planSubmitRevise(file) {
+  const id = 'revise-feedback-' + file.replace(/\./g, '-');
+  const feedback = document.getElementById(id).value.trim();
+  if (!feedback) { showToast('cmd-toast', 'Please enter feedback', false); return; }
+  try {
+    const res = await fetch('/api/plans/revise', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, feedback }) });
+    const data = await res.json();
+    showToast('cmd-toast', 'Revision requested — agent will update the plan (' + data.workItemId + ')', true);
+    planHideRevise(file);
+    refreshPlans();
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+}
+
+async function planView(file) {
+  try {
+    const plan = await fetch('/api/plans/' + encodeURIComponent(file)).then(r => r.json());
+    const items = (plan.missing_features || []).map((f, i) =>
+      (i + 1) + '. [' + f.id + '] ' + f.name + ' (' + f.estimated_complexity + ', ' + f.priority + ')' +
+      (f.depends_on?.length ? ' → depends on: ' + f.depends_on.join(', ') : '') +
+      '\n   ' + (f.description || '').slice(0, 150)
+    ).join('\n\n');
+    const text = 'Project: ' + plan.project + '\nStrategy: ' + (plan.branch_strategy || 'parallel') +
+      '\nBranch: ' + (plan.feature_branch || 'per-item') +
+      '\nStatus: ' + (plan.status || 'active') +
+      '\n\n--- Items ---\n\n' + items +
+      (plan.open_questions?.length ? '\n\n--- Open Questions ---\n\n' + plan.open_questions.join('\n') : '');
+    document.getElementById('modal-title').textContent = plan.plan_summary || file;
+    document.getElementById('modal-body').textContent = text;
+    document.getElementById('modal').classList.add('open');
+  } catch (e) { console.error(e); }
+}
+
 // ─── Knowledge Base ──────────────────────────────────────────────────────────
 let _kbData = {};
 let _kbActiveTab = 'all';
