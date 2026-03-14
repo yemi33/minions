@@ -64,3 +64,64 @@
 - **ChainOfThoughtCard is the core progression component** — renders `CoTProcessingStep` objects per message, each with `Pending → InProgress → Complete` status transitions. Steps are streamed progressively with configurable timing.
 
 ---
+
+
+---
+
+### 2026-03-14: OfficeAgent three-tier agent architecture with registry-first design and orchestrator abstraction
+**By:** Engine (LLM-consolidated)
+
+#### Build & Test Results
+- **PR-4964594 Dallas progression feature**: Build PASS (106 lage tasks, 3m 1s), Tests PASS (13.13s), Lint FAIL (13 errors: 11 from PR, 2 pre-existing). _(Rebecca)_
+
+#### PR Review Findings
+- **Lint errors in progression feature**: 6 errors in `progressionAtoms.ts` (unnecessary conditionals, missing curly braces), 3 in `ProgressionCard.tsx` (unnecessary conditionals/optional chains), 1 in `UserQuestionBanner.tsx` (should use optional chain), 1 in `index.ts` (barrel file violates `no-barrel-files` rule). _(Rebecca)_
+
+#### Architecture Notes
+- **Three-tier agent pattern**: OfficeAgent uses Full Claude SDK agents (multi-version, sub-agents, 20+ flights), Copilot SDK agents (simpler, GhcpOrchestrator), and Minimal agents (no LLM, direct conversion). _(Ripley)_
+- **Orchestrator abstraction**: `@officeagent/orchestrator` provides provider-agnostic `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` implementations using factory pattern. _(Ripley)_
+- **Registry-first design**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. _(Ripley)_
+- **Versioned prompts with EJS templates**: Prompts organized under `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. _(Ripley)_
+- **Skills vs sub-agents distinction**: Skills are direct instructions + scripts (shared context window); sub-agents are isolated Claude instances with own system prompt (parallel, focused). _(Ripley)_
+- **Hook system**: `HookRegistry` with per-agent-type providers (Base, Word, Excel, PowerPoint) for performance tracking, CoT streaming, and output validation. _(Ripley)_
+- **Flight system for feature gating**: OAGENT_FLIGHTS environment variable enables per-version feature flags that override version, model, subagents, scripts, and entire prompt files. _(Ripley)_
+- **Grounding pipeline (4-stage)**: Preprocessor → Retriever → Postprocessor → Storage with entity-specific extractors (Email, File, Chat, Meeting, People, Calendar, Transcript). _(Ripley)_
+- **Docker setup**: Multi-stage build with poppler + LibreOffice + Node 24, ports 6010 (external API), 6011 (internal), 6020 (debug), 7010 (grounding); hot reload via `yarn reload`. _(Ripley)_
+
+#### Action Items
+- **Dallas's PR-4964594 lint fixes**: Add curly braces to 6 errors in `progressionAtoms.ts`, remove unnecessary conditionals/optional chains (3 in ProgressionCard, 1 in UserQuestionBanner), remove barrel file `index.ts`, run `yarn lint --fix --to bebop`. _(Rebecca)_
+
+_Processed 2 notes, 12 insights extracted, 1 duplicate removed._
+
+---
+
+### 2026-03-14: W008 build results and OfficeAgent architecture deep-dive
+
+**By:** Engine (LLM-consolidated)
+
+#### Build & Test Results
+- **W008 PR-4964594 results**: Build PASS (3m 1s, 106 tasks succeeded), unit tests PASS (13.13s), lint FAIL with 13 errors _(Rebecca)_
+
+#### PR Review Findings
+- **Dallas's lint violations**: 6 in `progressionAtoms.ts` (unnecessary conditionals, missing braces), 3 in `ProgressionCard.tsx` (unnecessary conditionals/optional chains), 1 in `UserQuestionBanner.tsx` (missing optional chain), 1 in `index.ts` barrel file (violates no-barrel-files rule) _(Rebecca)_
+- **Barrel file performance**: Bebop CONTRIBUTING.md requires concrete module paths to avoid build performance regressions _(Rebecca)_
+
+#### Architecture Notes
+- **OfficeAgent registry-first design**: Every agent exports versioned `agentRegistry` configuration (identity, tools, skills, subagents, scripts, flights) with dynamic version/flight selection _(Ripley)_
+- **OfficeAgent orchestrator abstraction**: `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` implementations; factory selects provider at runtime _(Ripley)_
+- **OfficeAgent versioned prompts**: Organized under `src/prompts/<version>/` including system prompt, RAI, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites _(Ripley)_
+- **OfficeAgent skills vs subagents**: Skills are shared-context instructions; subagents are isolated Claude instances for parallel execution of focused pipeline steps (e.g., DOCX outline → multiple section generators) _(Ripley)_
+- **OfficeAgent hook system**: `HookRegistry` with per-agent-type providers (PreToolUse, PostToolUse, SessionStart, SessionEnd, startTurn) enabling CoT streaming and performance instrumentation _(Ripley)_
+- **OfficeAgent flight system**: Feature-flag toggles via `OAGENT_FLIGHTS=<key>:true` that override version, model, subagents, scripts, RAI, and prompt files per version _(Ripley)_
+- **OfficeAgent grounding pipeline**: 4-stage processing (Preprocessor → Retriever → Postprocessor → Storage) with entity extractors for email, file, chat, meeting, people, calendar, transcript _(Ripley)_
+- **OfficeAgent three-tier agents**: Tier 1 (Create-agent: full Claude SDK, 20+ flights), Tier 2 (Copilot SDK agents importing shared services), Tier 3 (minimal agents, no LLM logic) _(Ripley)_
+
+#### Gaps
+- **OfficeAgent documentation**: CLAUDE.md missing for 6 agents; README outdated (lists 7 agents vs. 14+ actual) _(Ripley)_
+- **OfficeAgent testing**: Coverage data only visible in CI; no documented local coverage or smoke-test command _(Ripley)_
+
+#### Action Items
+- **Dallas's lint fixes**: Fix 6 errors in `progressionAtoms.ts`, 3 in `ProgressionCard.tsx`, 1 in `UserQuestionBanner.tsx`; remove/restructure `index.ts` barrel file _(Rebecca)_
+- **Dallas's quick-fix**: Run `yarn lint --fix --to bebop` to auto-repair 6 fixable linting errors _(Rebecca)_
+
+_Processed 2 notes, 14 insights extracted, 2 duplicates removed._

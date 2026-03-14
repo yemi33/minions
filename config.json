@@ -23,7 +23,9 @@
         },
         "specs": {
           "enabled": true,
-          "filePatterns": ["docs/**/*.md"],
+          "filePatterns": [
+            "docs/**/*.md"
+          ],
           "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
@@ -52,7 +54,9 @@
         },
         "specs": {
           "enabled": true,
-          "filePatterns": ["docs/**/*.md"],
+          "filePatterns": [
+            "docs/**/*.md"
+          ],
           "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
@@ -80,7 +84,9 @@
         },
         "specs": {
           "enabled": true,
-          "filePatterns": ["docs/**/*.md"],
+          "filePatterns": [
+            "docs/**/*.md"
+          ],
           "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
@@ -109,7 +115,9 @@
         },
         "specs": {
           "enabled": true,
-          "filePatterns": ["docs/**/*.md"],
+          "filePatterns": [
+            "docs/**/*.md"
+          ],
           "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
@@ -120,7 +128,7 @@
     "tickInterval": 30000,
     "heartbeatTimeout": 300000,
     "maxConcurrent": 4,
-    "inboxConsolidateThreshold": 5,
+    "inboxConsolidateThreshold": 3,
     "agentTimeout": 18000000,
     "maxTurns": 100
   },

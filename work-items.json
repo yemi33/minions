@@ -166,29 +166,54 @@
     "completedAt": "2026-03-14T02:32:16.741Z"
   },
   {
-    "id": "W012",
-    "title": "remember that you can use loop-page skill or a loop mcp server to look at loop files, when given the link",
-    "type": "implement",
-    "priority": "medium",
-    "description": "",
-    "status": "done",
-    "created": "2026-03-14T02:36:09.955Z",
-    "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T02:36:49.693Z",
-    "dispatched_to": "dallas",
-    "completedAt": "2026-03-14T02:37:09.235Z"
-  },
-  {
     "id": "W013",
     "title": "relevant prs from sachin - https://dev.azure.com/office/ISS/_git/OfficeAgent/pullrequest/4961660, https://dev.azure.com/office/ISS/_git/augloop-workflows/pullrequest/4961631 - summarize what's going on - and how augloop and officeagent connect - my job will be to work on the ux that connect to the augloop - analyze",
     "type": "explore",
     "priority": "medium",
     "description": "",
     "status": "done",
-    "created": "2026-03-14T03:33:48.062Z",
+    "created": "2026-03-14T04:36:51.054Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T03:34:17.268Z",
+    "dispatched_at": "2026-03-14T04:36:57.036Z",
     "dispatched_to": "ripley",
-    "completedAt": "2026-03-14T03:34:33.214Z"
+    "completedAt": "2026-03-14T04:37:21.834Z"
+  },
+  {
+    "id": "W014",
+    "title": "relevant prs from sachin - https://dev.azure.com/office/ISS/_git/OfficeAgent/pullrequest/4961660, https://dev.azure.com/office/ISS/_git/augloop-workflows/pullrequest/4961631 - summarize what's going on - and how augloop and officeagent connect - my job will be to work on the ux that connect to the augloop - analyze",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T04:39:10.726Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T04:39:30.911Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T04:40:26.479Z"
+  },
+  {
+    "id": "W015",
+    "title": "relevant prs from sachin - https://dev.azure.com/office/ISS/_git/OfficeAgent/pullrequest/4961660, https://dev.azure.com/office/ISS/_git/augloop-workflows/pullrequest/4961631 - summarize what's going on - and how augloop and officeagent connect - my job will be to work on the ux that connect to the augloop - analyze",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-14T04:46:10.666Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T04:46:34.256Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T04:55:05.813Z"
+  },
+  {
+    "id": "W016",
+    "title": "read and summarize this architecture doc for copilot cowork https://microsoft.sharepoint-df.com/:fl:/g/contentstorage/x8FNO-xtskuCRX2_fMTHLQRhYsWmYbJDhG2bHnDG7Gg/IQDbJdLSRQtER5cIe1y-gHPcAZKpRv1JUX0AsTdwlYRxDb4?e=yJUle8&nav=cz0lMkZjb250ZW50c3RvcmFnZSUyRng4Rk5PLXh0c2t1Q1JYMl9mTVRITFFSaFlzV21ZYkpEaEcyYkhuREc3R2cmZD1iJTIxOEgyQmZQME9XVVc3dWRNdDRCVjItSHBnLTFOc2hybEVxNU9OR2VpMXJELUhEYnpmUmY5SlQ2U2lmRTJVa3VnTiZmPTAxMlJPVjVJVzNFWEpORVJJTElSRFpPQ0QzTFM3SUE0NjQmYz0lMkYmcD0lNDBmbHVpZHglMkZsb29wLXBhZ2UtY29udGFpbmVy&isSPOFile=1&xsdata=MDV8MDJ8fGQ2N2JjOThhY2M1OTQxNmRmOTRhMDhkZTdmNmJmYTFjfDcyZjk4OGJmODZmMTQxYWY5MWFiMmQ3Y2QwMTFkYjQ3fDB8MHw2MzkwODgyOTg4Njc2MjAxNzB8VW5rbm93bnxWR1ZoYlhOVFpXTjFjbWwwZVZObGNuWnBZMlY4ZXlKRFFTSTZJbFJsWVcxelgwRlVVRk5sY25acFkyVmZVMUJQVEU5R0lpd2lWaUk2SWpBdU1DNHdNREF3SWl3aVVDSTZJbGRwYmpNeUlpd2lRVTRpT2lKUGRHaGxjaUlzSWxkVUlqb3hNWDA9fDF8TDJOb1lYUnpMekU1T21Fek5UQmhOalJoTnpKbU5EUmtZVEk0WmpNNFlqVmhOVFF4WXpRNU9UWXhRSFJvY21WaFpDNTJNaTl0WlhOellXZGxjeTh4Tnpjek1qTXpNRGcyTlRNMHxmNjBiZmEwNDQ3MDE0NDUxNWM3MTA4ZGU3ZjZiZmExY3w1MTg5MmM1ZDRkOGI0NDhjYWRkOTkwZjFjNTgzMDUwNw%3D%3D&sdata=VVd4b1lTQmJJcldRTXp1L1NoRXVmWTd5VTUvalNmdXFCaGRNWWJidnZEST0%3D&ovuser=72f988bf-86f1-41af-91ab-2d7cd011db47%2Cyemishin%40microsoft.com",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "dispatched",
+    "created": "2026-03-14T04:53:40.408Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-14T04:54:04.389Z",
+    "dispatched_to": "rebecca"
   }
 ]
