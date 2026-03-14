@@ -1465,6 +1465,106 @@ async function pollPrStatus(config) {
   }
 }
 
+// ─── Poll Human Comments on PRs ──────────────────────────────────────────────
+
+async function pollPrHumanComments(config) {
+  const token = getAdoToken();
+  if (!token) return;
+
+  const projects = getProjects(config);
+  let totalUpdated = 0;
+
+  for (const project of projects) {
+    if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
+
+    const prs = getPrs(project);
+    const activePrs = prs.filter(pr => pr.status === 'active');
+    if (activePrs.length === 0) continue;
+
+    let projectUpdated = 0;
+
+    for (const pr of activePrs) {
+      const prNum = (pr.id || '').replace('PR-', '');
+      if (!prNum) continue;
+
+      try {
+        let orgBase;
+        if (project.prUrlBase) {
+          const m = project.prUrlBase.match(/^(https?:\/\/[^/]+(?:\/DefaultCollection)?)/);
+          if (m) orgBase = m[1];
+        }
+        if (!orgBase) {
+          orgBase = project.adoOrg.includes('.')
+            ? `https://${project.adoOrg}`
+            : `https://dev.azure.com/${project.adoOrg}`;
+        }
+
+        const threadsUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}/threads?api-version=7.1`;
+        const threadsData = await adoFetch(threadsUrl, token);
+        const threads = threadsData.value || [];
+
+        // Collect human comments newer than our last-processed timestamp
+        const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+        const newHumanComments = [];
+
+        for (const thread of threads) {
+          for (const comment of (thread.comments || [])) {
+            if (!comment.content) continue;
+            // Skip system comments
+            if (comment.commentType === 'system') continue;
+            // Skip agent-posted comments (signature pattern from playbooks)
+            if (/\bSquad\s*\(/i.test(comment.content)) continue;
+            // Only process comments with @squad trigger
+            if (!/@squad\b/i.test(comment.content)) continue;
+            // Only new comments
+            if (comment.publishedDate && comment.publishedDate > cutoff) {
+              newHumanComments.push({
+                threadId: thread.id,
+                commentId: comment.id,
+                author: comment.author?.displayName || 'Human',
+                content: comment.content,
+                date: comment.publishedDate
+              });
+            }
+          }
+        }
+
+        if (newHumanComments.length === 0) continue;
+
+        // Sort by date, concatenate feedback
+        newHumanComments.sort((a, b) => a.date.localeCompare(b.date));
+        const feedbackContent = newHumanComments
+          .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
+          .join('\n\n---\n\n');
+        const latestDate = newHumanComments[newHumanComments.length - 1].date;
+
+        pr.humanFeedback = {
+          lastProcessedCommentDate: latestDate,
+          pendingFix: true,
+          feedbackContent
+        };
+
+        log('info', `PR ${pr.id}: found ${newHumanComments.length} new human @squad comment(s)`);
+        projectUpdated++;
+      } catch (e) {
+        log('warn', `Failed to poll comments for ${pr.id}: ${e.message}`);
+      }
+    }
+
+    if (projectUpdated > 0) {
+      const root = path.resolve(project.localPath);
+      const prSrc = project.workSources?.pullRequests || {};
+      const prPath = path.resolve(root, prSrc.path || '.squad/pull-requests.json');
+      safeWrite(prPath, prs);
+      totalUpdated += projectUpdated;
+    }
+  }
+
+  if (totalUpdated > 0) {
+    log('info', `PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
+  }
+}
+
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
 
 async function handlePostMerge(pr, project, config, newStatus) {
@@ -2560,6 +2660,51 @@ function discoverFromPrs(config, project) {
       setCooldown(key);
     }
 
+    // PRs with pending human feedback (@squad comments) → route to author for fix
+    if (pr.humanFeedback?.pendingFix) {
+      const key = `human-fix-${project?.name || 'default'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}`;
+      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+
+      const agentId = resolveAgent('fix', config, pr.agent);
+      if (!agentId) continue;
+
+      const prNumber = (pr.id || '').replace(/^PR-/, '');
+      const vars = {
+        agent_id: agentId,
+        agent_name: config.agents[agentId]?.name || agentId,
+        agent_role: config.agents[agentId]?.role || 'Agent',
+        pr_id: pr.id,
+        pr_number: prNumber,
+        pr_title: pr.title || '',
+        pr_branch: pr.branch || '',
+        reviewer: 'Human Reviewer',
+        review_note: pr.humanFeedback.feedbackContent || 'See PR thread comments',
+        team_root: SQUAD_DIR,
+        repo_id: project?.repositoryId || config.project?.repositoryId || '',
+        project_name: project?.name || 'Unknown Project',
+        ado_org: project?.adoOrg || 'Unknown',
+        ado_project: project?.adoProject || 'Unknown',
+        repo_name: project?.repoName || 'Unknown'
+      };
+
+      const prompt = renderPlaybook('fix', vars);
+      if (!prompt) continue;
+
+      newWork.push({
+        type: 'fix',
+        agent: agentId,
+        agentName: config.agents[agentId]?.name,
+        agentRole: config.agents[agentId]?.role,
+        task: `[${project?.name || 'project'}] Fix PR ${pr.id} — human feedback`,
+        prompt,
+        meta: { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
+      });
+
+      // Clear pendingFix so it doesn't re-dispatch next tick
+      pr.humanFeedback.pendingFix = false;
+      setCooldown(key);
+    }
+
     // PRs with build failures → route to any idle agent
     if (pr.status === 'active' && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
@@ -3178,6 +3323,11 @@ async function tickInner() {
   // Awaited so PR state is consistent before discoverWork reads it
   if (tickCount % 6 === 0) {
     try { await pollPrStatus(config); } catch (e) { log('warn', `PR status poll error: ${e.message}`); }
+  }
+
+  // 2.7. Poll PR threads for human @squad comments (every 12 ticks = ~6 minutes)
+  if (tickCount % 12 === 0) {
+    try { await pollPrHumanComments(config); } catch (e) { log('warn', `PR comment poll error: ${e.message}`); }
   }
 
   // 3. Discover new work from sources

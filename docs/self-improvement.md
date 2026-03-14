@@ -117,7 +117,31 @@ in the future, avoid the patterns flagged here.
 
 Without this, review findings only exist in the inbox file under the reviewer's name. The author never explicitly sees them unless they happen to read the consolidated notes.md. The feedback loop ensures the author gets a direct, targeted learning from every review.
 
-## 4. Quality Metrics
+## 4. Human Feedback on PRs
+
+Humans can leave comments on ADO PRs containing `@squad` to trigger fix tasks. The engine polls PR threads every ~6 minutes and dispatches fixes to the PR's author agent.
+
+### Flow
+
+```
+Human comments on PR with "@squad fix the error handling here"
+  → pollPrHumanComments() detects new @squad comment
+  → sets pr.humanFeedback.pendingFix = true with comment text
+  → discoverFromPrs() sees pendingFix flag
+  → dispatches fix task to PR author agent
+  → author agent fixes and pushes
+  → PR goes back into normal review cycle
+```
+
+### How it works
+
+- **Trigger:** Any PR comment containing `@squad` (case-insensitive) from a non-agent author
+- **Agent detection:** Comments matching `/\bSquad\s*\(/i` are skipped (agent signature pattern)
+- **Dedup:** Only comments newer than `pr.humanFeedback.lastProcessedCommentDate` are processed
+- **Multiple comments:** All new `@squad` comments are concatenated into a single fix task
+- **After fix:** `pendingFix` is cleared; PR re-enters normal review cycle
+
+## 5. Quality Metrics
 
 The engine tracks per-agent performance metrics in `engine/metrics.json`. Updated after every task completion and PR review.
 
