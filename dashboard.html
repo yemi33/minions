@@ -1601,9 +1601,9 @@ function cmdParseInput(raw) {
   if (/^\/decide\b/i.test(text) || /^\/note\b/i.test(text) || rememberPattern.test(text)) {
     result.intent = 'note';
     text = text.replace(/^\/decide\s*/i, '').replace(/^\/note\s*/i, '').replace(rememberPattern, '').trim();
-  } else if (/^\/plan\b/i.test(text)) {
+  } else if (/^\/plan\b/i.test(text) || /^(make a plan|plan out|plan for|plan how|create a plan|design a plan|come up with a plan|draft a plan|write a plan)\b/i.test(text)) {
     result.intent = 'plan';
-    text = text.replace(/^\/plan\s*/i, '');
+    text = text.replace(/^\/plan\s*/i, '').replace(/^(make a plan for|plan out how|plan for how|plan how|create a plan for|design a plan for|come up with a plan for|draft a plan for|write a plan for|make a plan|plan out|create a plan|design a plan|come up with a plan|draft a plan|write a plan)\s*/i, '').trim();
     // Extract branch strategy flag
     if (/--parallel\b/i.test(text)) {
       result.branchStrategy = 'parallel';
