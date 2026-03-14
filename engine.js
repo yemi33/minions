@@ -1967,7 +1967,7 @@ function updateMetrics(agentId, dispatchItem, result) {
 // ─── Inbox Consolidation ────────────────────────────────────────────────────
 
 function consolidateInbox(config) {
-  const threshold = config.engine?.inboxConsolidateThreshold || 5;
+  const threshold = config.engine?.inboxConsolidateThreshold || 1;
   const files = getInboxFiles();
   if (files.length < threshold) return;
 
@@ -1978,65 +1978,179 @@ function consolidateInbox(config) {
     content: safeRead(path.join(INBOX_DIR, f))
   }));
 
-  // Categorize by type based on filename patterns
-  const categories = {
-    reviews: [],
-    feedback: [],
-    learnings: [],
-    other: []
-  };
+  // ─── Smart extraction: pull all actionable knowledge from each note ────────
+  const allInsights = []; // { text, source, category, agent, fingerprint }
 
   for (const item of items) {
-    const name = item.name.toLowerCase();
-    if (name.includes('review') || name.includes('pr-') || name.includes('pr4')) {
-      categories.reviews.push(item);
-    } else if (name.includes('feedback')) {
-      categories.feedback.push(item);
-    } else if (name.includes('build') || name.includes('explore') || name.includes('m0') || name.includes('m1')) {
-      categories.learnings.push(item);
-    } else {
-      categories.other.push(item);
+    const content = item.content || '';
+    const agentMatch = item.name.match(/^(\w+)-/);
+    const agent = agentMatch ? agentMatch[1] : 'unknown';
+    const lines = content.split('\n');
+
+    // Extract the note title from first heading
+    const titleLine = lines.find(l => /^#\s/.test(l));
+    const noteTitle = titleLine ? titleLine.replace(/^#+\s*/, '').trim() : item.name;
+
+    // Categorize by filename + content patterns
+    const nameLower = item.name.toLowerCase();
+    const contentLower = content.toLowerCase();
+    let category = 'learnings';
+    if (nameLower.includes('review') || nameLower.includes('pr-') || nameLower.includes('pr4')) category = 'reviews';
+    else if (nameLower.includes('feedback')) category = 'feedback';
+    else if (nameLower.includes('build') || nameLower.includes('bt-')) category = 'build-results';
+    else if (nameLower.includes('explore')) category = 'exploration';
+    else if (contentLower.includes('bug') || contentLower.includes('fix')) category = 'bugs-fixes';
+
+    // Extract numbered insights (lines starting with N. **Bold text**)
+    const numberedPattern = /^\d+\.\s+\*\*(.+?)\*\*\s*[—–:-]\s*(.+)/;
+    // Extract bullet insights (lines starting with - **Bold**: content)
+    const bulletPattern = /^[-*]\s+\*\*(.+?)\*\*[:\s]+(.+)/;
+    // Extract section headers that contain actionable info
+    const sectionPattern = /^###+\s+(.+)/;
+    // Extract standalone important lines (gotchas, warnings, conventions)
+    const importantKeywords = /\b(must|never|always|convention|pattern|gotcha|warning|important|rule|tip|note that)\b/i;
+
+    let currentSection = '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      // Track current section
+      const secMatch = trimmed.match(sectionPattern);
+      if (secMatch) { currentSection = secMatch[1]; continue; }
+
+      let insight = null;
+
+      // Numbered list items with bold key
+      const numMatch = trimmed.match(numberedPattern);
+      if (numMatch) {
+        insight = `**${numMatch[1].trim()}**: ${numMatch[2].trim()}`;
+      }
+
+      // Bullet items with bold key
+      if (!insight) {
+        const bulMatch = trimmed.match(bulletPattern);
+        if (bulMatch) {
+          insight = `**${bulMatch[1].trim()}**: ${bulMatch[2].trim()}`;
+        }
+      }
+
+      // Important standalone lines (must contain a keyword to qualify)
+      if (!insight && importantKeywords.test(trimmed) && !trimmed.startsWith('#') && trimmed.length > 30 && trimmed.length < 500) {
+        insight = trimmed;
+      }
+
+      if (insight) {
+        // Truncate long insights
+        if (insight.length > 300) insight = insight.slice(0, 297) + '...';
+        // Create a fingerprint for dedup: lowercase, strip punctuation, take first 80 chars
+        const fingerprint = insight.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        allInsights.push({ text: insight, source: item.name, noteTitle, category, agent, fingerprint });
+      }
+    }
+
+    // If no insights extracted, use the note title as a summary entry
+    if (!allInsights.some(i => i.source === item.name)) {
+      allInsights.push({
+        text: `See full note: ${noteTitle}`,
+        source: item.name, noteTitle, category, agent,
+        fingerprint: noteTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)
+      });
     }
   }
 
-  let entry = `\n\n---\n\n### ${dateStamp()}: Consolidated from ${items.length} inbox items\n`;
+  // ─── Deduplication: remove near-duplicate insights ─────────────────────────
+  const seen = new Map(); // fingerprint → { insight, sources }
+  const deduped = [];
+
+  // Also check existing notes.md for duplicates
+  const existingNotes = (getNotes() || '').toLowerCase();
+
+  for (const insight of allInsights) {
+    // Skip if this insight already exists in notes.md (substring match on fingerprint content)
+    const fpWords = insight.fingerprint.split(' ').filter(w => w.length > 4).slice(0, 5);
+    if (fpWords.length >= 3 && fpWords.every(w => existingNotes.includes(w))) continue;
+
+    // Dedup within this batch
+    const existing = seen.get(insight.fingerprint);
+    if (existing) {
+      // Merge sources
+      if (!existing.sources.includes(insight.agent)) existing.sources.push(insight.agent);
+      continue;
+    }
+
+    // Check for similar fingerprints (>70% word overlap)
+    let isDup = false;
+    for (const [fp, entry] of seen) {
+      const fpWordsA = new Set(fp.split(' '));
+      const fpWordsB = new Set(insight.fingerprint.split(' '));
+      const intersection = [...fpWordsA].filter(w => fpWordsB.has(w));
+      const overlap = intersection.length / Math.max(fpWordsA.size, fpWordsB.size);
+      if (overlap > 0.7) {
+        if (!entry.sources.includes(insight.agent)) entry.sources.push(insight.agent);
+        isDup = true;
+        break;
+      }
+    }
+    if (isDup) continue;
+
+    seen.set(insight.fingerprint, { insight, sources: [insight.agent] });
+    deduped.push({ ...insight, sources: seen.get(insight.fingerprint).sources });
+  }
+
+  // ─── Build descriptive title from what was actually consolidated ────────────
+  const agents = [...new Set(items.map(i => {
+    const m = i.name.match(/^(\w+)-/);
+    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Unknown';
+  }))];
+  const categorySet = [...new Set(deduped.map(i => i.category))];
+  const topicHints = categorySet.map(c => {
+    switch (c) {
+      case 'reviews': return 'PR reviews';
+      case 'feedback': return 'review feedback';
+      case 'build-results': return 'build/test results';
+      case 'exploration': return 'codebase exploration';
+      case 'bugs-fixes': return 'bug findings';
+      default: return 'learnings';
+    }
+  });
+  const title = `${agents.join(', ')}: ${topicHints.join(', ')} (${deduped.length} insights from ${items.length} notes)`;
+
+  // ─── Group deduped insights by category ────────────────────────────────────
+  const grouped = {};
+  for (const item of deduped) {
+    if (!grouped[item.category]) grouped[item.category] = [];
+    grouped[item.category].push(item);
+  }
+
+  const categoryLabels = {
+    reviews: 'PR Review Findings',
+    feedback: 'Review Feedback',
+    'build-results': 'Build & Test Results',
+    exploration: 'Codebase Exploration',
+    'bugs-fixes': 'Bugs & Fixes',
+    learnings: 'Patterns & Conventions',
+  };
+
+  let entry = `\n\n---\n\n### ${dateStamp()}: ${title}\n`;
   entry += `**By:** Engine (auto-consolidation)\n\n`;
 
-  if (categories.reviews.length > 0) {
-    entry += `#### Review Findings (${categories.reviews.length})\n`;
-    for (const item of categories.reviews) {
-      // Extract first meaningful line as summary
-      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
-      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
+  for (const [cat, catItems] of Object.entries(grouped)) {
+    entry += `#### ${categoryLabels[cat] || cat} (${catItems.length})\n`;
+    for (const item of catItems) {
+      const sourceTag = item.sources.length > 1 ? ` _(${item.sources.join(', ')})_` : ` _(${item.agent})_`;
+      entry += `- ${item.text}${sourceTag}\n`;
     }
     entry += '\n';
   }
 
-  if (categories.feedback.length > 0) {
-    entry += `#### Review Feedback (${categories.feedback.length})\n`;
-    for (const item of categories.feedback) {
-      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
-      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
-    }
-    entry += '\n';
+  if (deduped.length === 0) {
+    entry += `_No new actionable insights extracted (${items.length} notes processed, all duplicates of existing knowledge)._\n\n`;
   }
 
-  if (categories.learnings.length > 0) {
-    entry += `#### Learnings & Conventions (${categories.learnings.length})\n`;
-    for (const item of categories.learnings) {
-      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
-      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
-    }
-    entry += '\n';
-  }
-
-  if (categories.other.length > 0) {
-    entry += `#### Other (${categories.other.length})\n`;
-    for (const item of categories.other) {
-      const firstLine = item.content.split('\n').find(l => l.trim() && !l.startsWith('#')) || item.name;
-      entry += `- **${item.name}**: ${firstLine.trim().slice(0, 150)}\n`;
-    }
-    entry += '\n';
+  const dupCount = allInsights.length - deduped.length;
+  if (dupCount > 0) {
+    entry += `_Deduplication: ${dupCount} duplicate insight(s) removed._\n`;
   }
 
   const current = getNotes();
@@ -2046,7 +2160,6 @@ function consolidateInbox(config) {
   if (newContent.length > 50000) {
     const sections = newContent.split('\n---\n\n### ');
     if (sections.length > 10) {
-      // Keep header + last 8 consolidation sections
       const header = sections[0];
       const recent = sections.slice(-8);
       newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
@@ -2062,7 +2175,7 @@ function consolidateInbox(config) {
     try { fs.renameSync(path.join(INBOX_DIR, f), path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)); } catch {}
   }
 
-  log('info', `Consolidated ${files.length} items into notes.md (${Object.entries(categories).map(([k,v]) => `${v.length} ${k}`).join(', ')})`);
+  log('info', `Consolidated ${files.length} notes → ${deduped.length} insights (${dupCount} dupes removed) into notes.md`);
 }
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
