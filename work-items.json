@@ -210,12 +210,12 @@
     "type": "explore",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-14T04:53:40.408Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T18:59:06.070Z",
-    "dispatched_to": "rebecca",
-    "failReason": "Agent was interrupted by engine restart"
+    "dispatched_at": "2026-03-14T19:18:02.352Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T19:24:34.944Z"
   },
   {
     "id": "W018",
@@ -236,15 +236,15 @@
     "type": "plan",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-14T18:43:44.348Z",
     "createdBy": "dashboard",
     "chain": "plan-to-prd",
     "branchStrategy": "parallel",
     "_planFileName": "plan-w020-2026-03-14.md",
-    "dispatched_at": "2026-03-14T18:44:05.295Z",
+    "dispatched_at": "2026-03-14T19:18:02.358Z",
     "dispatched_to": "ripley",
-    "failReason": "Agent was interrupted by engine restart"
+    "completedAt": "2026-03-14T19:24:34.896Z"
   },
   {
     "id": "W021",
@@ -252,12 +252,12 @@
     "type": "ask",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-14T18:54:29.580Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T18:54:35.768Z",
-    "dispatched_to": "rebecca",
-    "failReason": "Agent was interrupted by engine restart"
+    "dispatched_at": "2026-03-14T19:18:02.363Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T19:21:28.078Z"
   },
   {
     "id": "W022",
@@ -265,11 +265,11 @@
     "type": "explore",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-14T18:57:36.893Z",
     "createdBy": "dashboard",
-    "dispatched_at": "2026-03-14T18:59:06.077Z",
-    "dispatched_to": "rebecca",
-    "failReason": "Agent was interrupted by engine restart"
+    "dispatched_at": "2026-03-14T19:18:02.368Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-14T19:24:34.989Z"
   }
 ]
