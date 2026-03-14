@@ -16,9 +16,6 @@ plans/
 # Machine-specific (synced from ~/.claude.json on engine start)
 mcp-servers.json
 
-# GitHub Actions (personal repo only, added during sync)
-.github/
-
 # Legacy
 agents/ralph/next-action.json
 agents/ralph/loop.log
