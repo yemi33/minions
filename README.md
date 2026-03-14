@@ -41,9 +41,11 @@ node ~/.squad/squad.js init
 ## Quick Start
 
 ```bash
-# 1. Link your projects (interactive — prompts for name, description, repo config)
-squad add ~/repo1
-squad add ~/repo2
+# 1. Init + scan — finds all git repos on your machine, multi-select to add
+squad init
+#    → creates config, agents, engine defaults
+#    → scans ~ for git repos (auto-detects host, org, branch)
+#    → shows numbered list, pick with "1,3,5-7" or "all"
 
 # 2. Start the engine (runs in foreground, ticks every 60s)
 squad start
@@ -51,6 +53,13 @@ squad start
 # 3. Open the dashboard (separate terminal)
 squad dash
 # → http://localhost:7331
+```
+
+You can also add/scan repos later:
+```bash
+squad scan              # Re-scan and add more repos
+squad scan ~/code 4     # Scan specific dir, depth 4
+squad add ~/repo        # Add a single repo interactively
 ```
 
 ## Setup via Claude Code
@@ -91,8 +100,9 @@ squad work "Explore the codebase and document the architecture"
 
 | Command | Description |
 |---------|-------------|
-| `squad init` | Bootstrap `~/.squad/` with default agents and config |
-| `squad add <dir>` | Link a project (auto-detects settings from git, prompts to confirm) |
+| `squad init` | Bootstrap `~/.squad/` then auto-scan for repos to add |
+| `squad scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
+| `squad add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
 | `squad remove <dir>` | Unlink a project |
 | `squad list` | List all linked projects with descriptions |
 | `squad start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
@@ -121,6 +131,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
                     │  mcp-servers.json ← auto-sync │
                     │  agents/          ← 5 agents  │
                     │  playbooks/       ← templates │
+                    │  prd.json         ← squad PRD │
                     │  skills/          ← workflows │
                     │  notes/       ← knowledge  │
                     └──────┬────────────────────────┘
@@ -132,8 +143,6 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
      │  .squad/     │ │  .squad/     │ │  .squad/     │
      │   work-items │ │   work-items │ │   work-items │
      │   pull-reqs  │ │   pull-reqs  │ │   pull-reqs  │
-     │  docs/       │ │  docs/       │ │  docs/       │
-     │   prd-gaps   │ │   prd-gaps   │ │   prd-gaps   │
      │  .claude/    │ │  .claude/    │ │  .claude/    │
      │   skills/    │ │   skills/    │ │   skills/    │
      └──────────────┘ └──────────────┘ └──────────────┘
@@ -141,7 +150,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
 
 ## What It Does
 
-- **Auto-discovers work** from PRD gaps, pull requests, and work queues across all linked projects
+- **Auto-discovers work** from squad-level PRD (multi-project), pull requests, and work queues across all linked projects
 - **Dispatches AI agents** (Claude CLI) with full project context, git worktrees, and MCP server access
 - **Routes intelligently** — fixes first, then reviews, then implementation, matched to agent strengths
 - **Learns from itself** — agents write findings, engine consolidates into institutional knowledge
@@ -159,7 +168,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
 The web dashboard at `http://localhost:7331` provides:
 
 - **Projects bar** — all linked projects with descriptions (hover for full text)
-- **Command Center** — add work items (per-project, auto-route, or fan-out), notes, and PRD items
+- **Command Center** — add work items, notes, plans, and PRD items (multi-project via `#project` tags)
 - **Squad Members** — agent cards with status, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
 - **Work Items** — paginated table with status, source, type, priority, assigned agent, linked PRs, fan-out badges, and retry button for failed items
@@ -186,7 +195,6 @@ When you run `squad add <dir>`, it prompts for project details and saves them to
   "repoName": "MyProject",
   "mainBranch": "main",
   "workSources": {
-    "prd":          { "enabled": true, "path": "docs/prd-gaps.json" },
     "pullRequests": { "enabled": true, "path": ".squad/pull-requests.json" },
     "workItems":    { "enabled": true, "path": ".squad/work-items.json" }
   }
@@ -281,7 +289,7 @@ The engine discovers work from 5 sources, in priority order:
 |----------|--------|---------------|
 | 1 | PRs with changes-requested | `fix` |
 | 2 | PRs pending review | `review` |
-| 3 | PRD items (missing/planned) | `implement` |
+| 3 | Squad PRD items (missing/planned, multi-project) | `implement` |
 | 4 | Per-project work items | item's `type` |
 | 5 | Central work items | item's `type` |
 
@@ -358,10 +366,11 @@ All playbooks use `{{template_variables}}` filled from project config. The `work
 
 Uses `live-output.log` file modification time as a heartbeat:
 - **Process alive + recent output** → healthy, keep running
+- **Process alive + in blocking tool call** → extended timeout (matches tool's timeout + grace period)
 - **Process alive + silent >5min** → hung, kill and mark failed
 - **No process + silent >5min** → orphaned (engine restarted), mark failed
 
-Agents can run for hours as long as they're producing output. The `heartbeatTimeout` (default 5min) only triggers on silence.
+Agents can run for hours as long as they're producing output. The `heartbeatTimeout` (default 5min) only triggers on silence. When an agent is in a blocking tool call (e.g., `TaskOutput` with `block:true`, `Bash` with long timeout), the engine detects this from the live output and extends the timeout automatically.
 
 ### Automated Cleanup (every 10 ticks)
 
@@ -459,6 +468,7 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
   dashboard.js           <- Web dashboard server
   dashboard.html         <- Dashboard UI (single-file)
   config.json            <- projects[], agents, engine, claude settings
+  prd.json               <- Squad-level PRD (multi-project items)
   config.template.json   <- Template for new installs
   package.json           <- npm package definition
   mcp-servers.json       <- MCP servers (auto-synced, gitignored)
@@ -500,6 +510,4 @@ Each linked project keeps locally:
     pull-requests.json   <- PR tracker
   <project>/.claude/
     skills/              <- Project-specific skills (requires PR)
-  <project>/docs/
-    prd-gaps.json        <- PRD gap analysis
 ```
