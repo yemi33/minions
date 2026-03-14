@@ -677,6 +677,20 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/ask — drop a question into notes/inbox for agent pickup
+  if (req.method === 'POST' && req.url === '/api/ask') {
+    try {
+      const body = await readBody(req);
+      if (!body.question || !body.question.trim()) return jsonReply(res, 400, { error: 'Question is required' });
+      const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+      if (!fs.existsSync(inboxDir)) fs.mkdirSync(inboxDir, { recursive: true });
+      const id = 'q' + Date.now();
+      const filePath = path.join(inboxDir, `ask-${id}.md`);
+      fs.writeFileSync(filePath, body.question.trim());
+      return jsonReply(res, 200, { ok: true, id });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/notes
   if (req.method === 'POST' && req.url === '/api/notes') {
     try {
