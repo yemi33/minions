@@ -564,6 +564,13 @@ function buildSystemPrompt(agentId, config, project) {
     prompt += skillIndex + '\n';
   }
 
+  // Team context (human team, domain knowledge, contacts)
+  const teamContext = safeRead(path.join(SQUAD_DIR, 'team.md'));
+  if (teamContext && teamContext.trim()) {
+    const truncated = teamContext.length > 4096 ? teamContext.slice(0, 4096) + '\n\n...(truncated)' : teamContext;
+    prompt += `## Team Context\n\n${truncated}\n\n`;
+  }
+
   // Team notes
   if (notes) {
     prompt += `## Team Notes\n\n${notes}\n\n`;
@@ -1966,10 +1973,14 @@ function updateMetrics(agentId, dispatchItem, result) {
 
 // ─── Inbox Consolidation ────────────────────────────────────────────────────
 
+// Track in-flight LLM consolidation to prevent concurrent runs
+let _consolidationInFlight = false;
+
 function consolidateInbox(config) {
   const threshold = config.engine?.inboxConsolidateThreshold || 1;
   const files = getInboxFiles();
   if (files.length < threshold) return;
+  if (_consolidationInFlight) return;
 
   log('info', `Consolidating ${files.length} inbox items into notes.md`);
 
@@ -1978,20 +1989,189 @@ function consolidateInbox(config) {
     content: safeRead(path.join(INBOX_DIR, f))
   }));
 
-  // ─── Smart extraction: pull all actionable knowledge from each note ────────
-  const allInsights = []; // { text, source, category, agent, fingerprint }
+  const existingNotes = getNotes() || '';
+  consolidateWithLLM(items, existingNotes, files, config);
+}
 
+// ─── LLM-Powered Consolidation ──────────────────────────────────────────────
+// Spawns Claude (Haiku) to read all inbox notes + existing notes.md and produce
+// a smart, deduplicated, categorized digest. Falls back to regex if LLM fails.
+
+function consolidateWithLLM(items, existingNotes, files, config) {
+  _consolidationInFlight = true;
+
+  // Build the prompt with all inbox notes
+  const notesBlock = items.map(item =>
+    `<note file="${item.name}">\n${(item.content || '').slice(0, 8000)}\n</note>`
+  ).join('\n\n');
+
+  // Include tail of existing notes.md for dedup context
+  const existingTail = existingNotes.length > 2000
+    ? '...\n' + existingNotes.slice(-2000)
+    : existingNotes;
+
+  const prompt = `You are a knowledge manager for a software engineering squad. Your job is to consolidate agent notes into team memory.
+
+## Inbox Notes to Process
+
+${notesBlock}
+
+## Existing Team Notes (for deduplication — do NOT repeat what's already here)
+
+<existing_notes>
+${existingTail}
+</existing_notes>
+
+## Instructions
+
+Read every inbox note carefully. Produce a consolidated digest following these rules:
+
+1. **Extract actionable knowledge only**: patterns, conventions, gotchas, warnings, build results, architectural decisions, review findings. Skip boilerplate (dates, filenames, task IDs).
+
+2. **Deduplicate aggressively**: If an insight already exists in the existing team notes, skip it entirely. If multiple agents report the same finding, merge into one entry and credit all agents.
+
+3. **Write concisely**: Each insight should be 1-2 sentences max. Use **bold key** at the start of each bullet.
+
+4. **Group by category**: Use these exact headers (only include categories that have content):
+   - \`#### Patterns & Conventions\`
+   - \`#### Build & Test Results\`
+   - \`#### PR Review Findings\`
+   - \`#### Bugs & Gotchas\`
+   - \`#### Architecture Notes\`
+   - \`#### Action Items\`
+
+5. **Attribute sources**: End each bullet with _(agentName)_ or _(agent1, agent2)_ if multiple.
+
+6. **Write a descriptive title**: First line must be a single-line title summarizing what was learned. Do NOT use generic text like "Consolidated from N items".
+
+## Output Format
+
+Respond with ONLY the markdown below — no preamble, no explanation, no code fences:
+
+### YYYY-MM-DD: <descriptive title>
+**By:** Engine (LLM-consolidated)
+
+#### Category Name
+- **Bold key**: insight text _(agent)_
+
+_Processed N notes, M insights extracted, K duplicates removed._
+
+Use today's date: ${dateStamp()}`;
+
+  // Write prompt to temp file
+  const promptPath = path.join(ENGINE_DIR, 'consolidate-prompt.md');
+  safeWrite(promptPath, prompt);
+
+  const sysPrompt = 'You are a concise knowledge manager. Output only markdown. No preamble. No code fences around your output.';
+  const sysPromptPath = path.join(ENGINE_DIR, 'consolidate-sysprompt.md');
+  safeWrite(sysPromptPath, sysPrompt);
+
+  // Build args — use Haiku for speed/cost, single turn, print mode
+  const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+  const args = [
+    '--output-format', 'text',
+    '--max-turns', '1',
+    '--model', 'haiku',
+    '--permission-mode', 'bypassPermissions',
+    '--verbose',
+  ];
+
+  const childEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) {
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) {
+      delete childEnv[key];
+    }
+  }
+
+  log('info', 'Spawning Haiku for LLM consolidation...');
+
+  const proc = spawn(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
+    cwd: SQUAD_DIR,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: childEnv
+  });
+
+  let stdout = '';
+  let stderr = '';
+  proc.stdout.on('data', d => { stdout += d.toString(); if (stdout.length > 100000) stdout = stdout.slice(-50000); });
+  proc.stderr.on('data', d => { stderr += d.toString(); if (stderr.length > 50000) stderr = stderr.slice(-25000); });
+
+  // Timeout: 3 minutes max
+  const timeout = setTimeout(() => {
+    log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
+    try { proc.kill('SIGTERM'); } catch {}
+  }, 180000);
+
+  proc.on('close', (code) => {
+    clearTimeout(timeout);
+    _consolidationInFlight = false;
+    try { fs.unlinkSync(promptPath); } catch {}
+    try { fs.unlinkSync(sysPromptPath); } catch {}
+
+    if (code === 0 && stdout.trim().length > 50) {
+      let digest = stdout.trim();
+      // Strip any code fences the model might add
+      digest = digest.replace(/^\`\`\`\w*\n?/gm, '').replace(/\n?\`\`\`$/gm, '').trim();
+
+      // Validate: must contain ### (our expected format)
+      if (!digest.startsWith('### ')) {
+        const sectionIdx = digest.indexOf('### ');
+        if (sectionIdx >= 0) {
+          digest = digest.slice(sectionIdx);
+        } else {
+          log('warn', 'LLM consolidation output missing expected format — falling back to regex');
+          consolidateWithRegex(items, files);
+          return;
+        }
+      }
+
+      const entry = '\n\n---\n\n' + digest;
+      const current = getNotes();
+      let newContent = current + entry;
+
+      // Prune if too large
+      if (newContent.length > 50000) {
+        const sections = newContent.split('\n---\n\n### ');
+        if (sections.length > 10) {
+          const header = sections[0];
+          const recent = sections.slice(-8);
+          newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
+          log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
+        }
+      }
+
+      safeWrite(NOTES_PATH, newContent);
+      archiveInboxFiles(files);
+      log('info', `LLM consolidation complete: ${files.length} notes processed by Haiku`);
+    } else {
+      log('warn', `LLM consolidation failed (code=${code}) — falling back to regex`);
+      if (stderr) log('debug', `LLM stderr: ${stderr.slice(0, 500)}`);
+      consolidateWithRegex(items, files);
+    }
+  });
+
+  proc.on('error', (err) => {
+    clearTimeout(timeout);
+    _consolidationInFlight = false;
+    log('warn', `LLM consolidation spawn error: ${err.message} — falling back to regex`);
+    try { fs.unlinkSync(promptPath); } catch {}
+    try { fs.unlinkSync(sysPromptPath); } catch {}
+    consolidateWithRegex(items, files);
+  });
+}
+
+// ─── Regex Fallback Consolidation ────────────────────────────────────────────
+
+function consolidateWithRegex(items, files) {
+  const allInsights = [];
   for (const item of items) {
     const content = item.content || '';
     const agentMatch = item.name.match(/^(\w+)-/);
     const agent = agentMatch ? agentMatch[1] : 'unknown';
     const lines = content.split('\n');
-
-    // Extract the note title from first heading
     const titleLine = lines.find(l => /^#\s/.test(l));
     const noteTitle = titleLine ? titleLine.replace(/^#+\s*/, '').trim() : item.name;
 
-    // Categorize by filename + content patterns
     const nameLower = item.name.toLowerCase();
     const contentLower = content.toLowerCase();
     let category = 'learnings';
@@ -2001,181 +2181,94 @@ function consolidateInbox(config) {
     else if (nameLower.includes('explore')) category = 'exploration';
     else if (contentLower.includes('bug') || contentLower.includes('fix')) category = 'bugs-fixes';
 
-    // Extract numbered insights (lines starting with N. **Bold text**)
-    const numberedPattern = /^\d+\.\s+\*\*(.+?)\*\*\s*[—–:-]\s*(.+)/;
-    // Extract bullet insights (lines starting with - **Bold**: content)
+    const numberedPattern = /^\d+\.\s+\*\*(.+?)\*\*\s*[\u2014\u2013:-]\s*(.+)/;
     const bulletPattern = /^[-*]\s+\*\*(.+?)\*\*[:\s]+(.+)/;
-    // Extract section headers that contain actionable info
     const sectionPattern = /^###+\s+(.+)/;
-    // Extract standalone important lines (gotchas, warnings, conventions)
     const importantKeywords = /\b(must|never|always|convention|pattern|gotcha|warning|important|rule|tip|note that)\b/i;
 
-    let currentSection = '';
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      // Track current section
-      const secMatch = trimmed.match(sectionPattern);
-      if (secMatch) { currentSection = secMatch[1]; continue; }
-
+      if (!trimmed || sectionPattern.test(trimmed)) continue;
       let insight = null;
-
-      // Numbered list items with bold key
       const numMatch = trimmed.match(numberedPattern);
-      if (numMatch) {
-        insight = `**${numMatch[1].trim()}**: ${numMatch[2].trim()}`;
-      }
-
-      // Bullet items with bold key
+      if (numMatch) insight = `**${numMatch[1].trim()}**: ${numMatch[2].trim()}`;
       if (!insight) {
         const bulMatch = trimmed.match(bulletPattern);
-        if (bulMatch) {
-          insight = `**${bulMatch[1].trim()}**: ${bulMatch[2].trim()}`;
-        }
+        if (bulMatch) insight = `**${bulMatch[1].trim()}**: ${bulMatch[2].trim()}`;
       }
-
-      // Important standalone lines (must contain a keyword to qualify)
       if (!insight && importantKeywords.test(trimmed) && !trimmed.startsWith('#') && trimmed.length > 30 && trimmed.length < 500) {
         insight = trimmed;
       }
-
       if (insight) {
-        // Truncate long insights
         if (insight.length > 300) insight = insight.slice(0, 297) + '...';
-        // Create a fingerprint for dedup: lowercase, strip punctuation, take first 80 chars
-        const fingerprint = insight.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
-        allInsights.push({ text: insight, source: item.name, noteTitle, category, agent, fingerprint });
+        const fp = insight.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80);
+        allInsights.push({ text: insight, source: item.name, noteTitle, category, agent, fingerprint: fp });
       }
     }
-
-    // If no insights extracted, use the note title as a summary entry
     if (!allInsights.some(i => i.source === item.name)) {
-      allInsights.push({
-        text: `See full note: ${noteTitle}`,
-        source: item.name, noteTitle, category, agent,
-        fingerprint: noteTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80)
-      });
+      allInsights.push({ text: `See full note: ${noteTitle}`, source: item.name, noteTitle, category, agent,
+        fingerprint: noteTitle.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim().slice(0, 80) });
     }
   }
 
-  // ─── Deduplication: remove near-duplicate insights ─────────────────────────
-  const seen = new Map(); // fingerprint → { insight, sources }
-  const deduped = [];
-
-  // Also check existing notes.md for duplicates
+  // Dedup
   const existingNotes = (getNotes() || '').toLowerCase();
-
+  const seen = new Map();
+  const deduped = [];
   for (const insight of allInsights) {
-    // Skip if this insight already exists in notes.md (substring match on fingerprint content)
     const fpWords = insight.fingerprint.split(' ').filter(w => w.length > 4).slice(0, 5);
     if (fpWords.length >= 3 && fpWords.every(w => existingNotes.includes(w))) continue;
-
-    // Dedup within this batch
     const existing = seen.get(insight.fingerprint);
-    if (existing) {
-      // Merge sources
-      if (!existing.sources.includes(insight.agent)) existing.sources.push(insight.agent);
-      continue;
-    }
-
-    // Check for similar fingerprints (>70% word overlap)
+    if (existing) { if (!existing.sources.includes(insight.agent)) existing.sources.push(insight.agent); continue; }
     let isDup = false;
     for (const [fp, entry] of seen) {
-      const fpWordsA = new Set(fp.split(' '));
-      const fpWordsB = new Set(insight.fingerprint.split(' '));
-      const intersection = [...fpWordsA].filter(w => fpWordsB.has(w));
-      const overlap = intersection.length / Math.max(fpWordsA.size, fpWordsB.size);
-      if (overlap > 0.7) {
-        if (!entry.sources.includes(insight.agent)) entry.sources.push(insight.agent);
-        isDup = true;
-        break;
+      const a = new Set(fp.split(' ')), b = new Set(insight.fingerprint.split(' '));
+      if ([...a].filter(w => b.has(w)).length / Math.max(a.size, b.size) > 0.7) {
+        if (!entry.sources.includes(insight.agent)) entry.sources.push(insight.agent); isDup = true; break;
       }
     }
     if (isDup) continue;
-
     seen.set(insight.fingerprint, { insight, sources: [insight.agent] });
     deduped.push({ ...insight, sources: seen.get(insight.fingerprint).sources });
   }
 
-  // ─── Build descriptive title from what was actually consolidated ────────────
-  const agents = [...new Set(items.map(i => {
-    const m = i.name.match(/^(\w+)-/);
-    return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Unknown';
-  }))];
-  const categorySet = [...new Set(deduped.map(i => i.category))];
-  const topicHints = categorySet.map(c => {
-    switch (c) {
-      case 'reviews': return 'PR reviews';
-      case 'feedback': return 'review feedback';
-      case 'build-results': return 'build/test results';
-      case 'exploration': return 'codebase exploration';
-      case 'bugs-fixes': return 'bug findings';
-      default: return 'learnings';
-    }
-  });
+  const agents = [...new Set(items.map(i => { const m = i.name.match(/^(\w+)-/); return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : 'Unknown'; }))];
+  const catLabels = { reviews: 'PR Review Findings', feedback: 'Review Feedback', 'build-results': 'Build & Test Results', exploration: 'Codebase Exploration', 'bugs-fixes': 'Bugs & Gotchas', learnings: 'Patterns & Conventions' };
+  const topicHints = [...new Set(deduped.map(i => i.category))].map(c => ({ reviews: 'PR reviews', feedback: 'review feedback', 'build-results': 'build/test results', exploration: 'codebase exploration', 'bugs-fixes': 'bug findings' }[c] || 'learnings'));
   const title = `${agents.join(', ')}: ${topicHints.join(', ')} (${deduped.length} insights from ${items.length} notes)`;
 
-  // ─── Group deduped insights by category ────────────────────────────────────
   const grouped = {};
-  for (const item of deduped) {
-    if (!grouped[item.category]) grouped[item.category] = [];
-    grouped[item.category].push(item);
-  }
-
-  const categoryLabels = {
-    reviews: 'PR Review Findings',
-    feedback: 'Review Feedback',
-    'build-results': 'Build & Test Results',
-    exploration: 'Codebase Exploration',
-    'bugs-fixes': 'Bugs & Fixes',
-    learnings: 'Patterns & Conventions',
-  };
+  for (const item of deduped) { if (!grouped[item.category]) grouped[item.category] = []; grouped[item.category].push(item); }
 
   let entry = `\n\n---\n\n### ${dateStamp()}: ${title}\n`;
-  entry += `**By:** Engine (auto-consolidation)\n\n`;
-
+  entry += '**By:** Engine (regex fallback)\n\n';
   for (const [cat, catItems] of Object.entries(grouped)) {
-    entry += `#### ${categoryLabels[cat] || cat} (${catItems.length})\n`;
+    entry += `#### ${catLabels[cat] || cat} (${catItems.length})\n`;
     for (const item of catItems) {
-      const sourceTag = item.sources.length > 1 ? ` _(${item.sources.join(', ')})_` : ` _(${item.agent})_`;
-      entry += `- ${item.text}${sourceTag}\n`;
+      const src = item.sources.length > 1 ? ` _(${item.sources.join(', ')})_` : ` _(${item.agent})_`;
+      entry += `- ${item.text}${src}\n`;
     }
     entry += '\n';
   }
-
-  if (deduped.length === 0) {
-    entry += `_No new actionable insights extracted (${items.length} notes processed, all duplicates of existing knowledge)._\n\n`;
-  }
-
   const dupCount = allInsights.length - deduped.length;
-  if (dupCount > 0) {
-    entry += `_Deduplication: ${dupCount} duplicate insight(s) removed._\n`;
-  }
+  if (dupCount > 0) entry += `_Deduplication: ${dupCount} duplicate(s) removed._\n`;
 
   const current = getNotes();
-
-  // Prune old consolidations if notes.md is getting too large (>50KB)
   let newContent = current + entry;
   if (newContent.length > 50000) {
     const sections = newContent.split('\n---\n\n### ');
-    if (sections.length > 10) {
-      const header = sections[0];
-      const recent = sections.slice(-8);
-      newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
-      log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
-    }
+    if (sections.length > 10) { newContent = sections[0] + '\n---\n\n### ' + sections.slice(-8).join('\n---\n\n### '); }
   }
-
   safeWrite(NOTES_PATH, newContent);
+  archiveInboxFiles(files);
+  log('info', `Regex fallback: consolidated ${files.length} notes → ${deduped.length} insights into notes.md`);
+}
 
-  // Archive
+function archiveInboxFiles(files) {
   if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
   for (const f of files) {
     try { fs.renameSync(path.join(INBOX_DIR, f), path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)); } catch {}
   }
-
-  log('info', `Consolidated ${files.length} notes → ${deduped.length} insights (${dupCount} dupes removed) into notes.md`);
 }
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
