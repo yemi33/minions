@@ -3028,6 +3028,14 @@ function discoverFromWorkItems(config, project) {
       date: dateStamp()
     };
 
+    // Inject ask-specific variables for the ask playbook
+    if (workType === 'ask') {
+      vars.question = item.title + (item.description ? '\n\n' + item.description : '');
+      vars.task_id = item.id;
+      vars.notes_content = '';
+      try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+    }
+
     // Select playbook: shared-branch items use implement-shared, others use type-specific or work-item
     let playbookName;
     if (item.branchStrategy === 'shared-branch' && (workType === 'implement' || workType === 'implement:large')) {
@@ -3311,6 +3319,14 @@ function discoverCentralWorkItems(config) {
           date: dateStamp()
         };
 
+        // Inject ask-specific variables for the ask playbook
+        if (workType === 'ask') {
+          vars.question = item.title + (item.description ? '\n\n' + item.description : '');
+          vars.task_id = item.id;
+          vars.notes_content = '';
+          try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+        }
+
         const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
         const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -3380,6 +3396,14 @@ function discoverCentralWorkItems(config) {
         try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
       }
 
+      // Inject ask-specific variables for the ask playbook
+      if (workType === 'ask') {
+        vars.question = item.title + (item.description ? '\n\n' + item.description : '');
+        vars.task_id = item.id;
+        vars.notes_content = '';
+        try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+      }
+
       const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
       const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -3406,78 +3430,6 @@ function discoverCentralWorkItems(config) {
   return newWork;
 }
 
-
-/**
- * Discover user questions from notes/inbox/ask-*.md files.
- * When a user drops an ask-*.md file in the inbox, the engine picks it up,
- * dispatches an agent to answer, and renames the file so it doesn't re-trigger.
- */
-function discoverQuestions(config) {
-  const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
-  if (!fs.existsSync(inboxDir)) return [];
-
-  const newWork = [];
-  const projects = getProjects(config);
-
-  let files;
-  try { files = fs.readdirSync(inboxDir); } catch { return []; }
-
-  const askFiles = files.filter(f => /^ask-.*\.md$/i.test(f) && !f.startsWith('ask-dispatched-'));
-
-  for (const file of askFiles) {
-    const filePath = path.join(inboxDir, file);
-    const question = safeRead(filePath);
-    if (!question || !question.trim()) continue;
-
-    const taskId = file.replace(/^ask-/i, '').replace(/\.md$/i, '') || `q-${Date.now()}`;
-    const key = `ask-${taskId}`;
-    if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
-
-    const agentId = resolveAgent('ask', config);
-    if (!agentId) continue;
-
-    const agentName = config.agents[agentId]?.name || agentId;
-    const agentRole = config.agents[agentId]?.role || 'Agent';
-
-    const vars = {
-      agent_id: agentId,
-      agent_name: agentName,
-      agent_role: agentRole,
-      task_id: taskId,
-      task_description: question.trim(),
-      question: question.trim(),
-      scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
-      team_root: SQUAD_DIR,
-      date: dateStamp(),
-      notes_content: getNotes() || ''
-    };
-
-    const prompt = renderPlaybook('ask', vars);
-    if (!prompt) continue;
-
-    newWork.push({
-      type: 'ask',
-      agent: agentId,
-      agentName,
-      agentRole,
-      task: `Answer question: ${question.trim().slice(0, 80)}${question.trim().length > 80 ? '...' : ''}`,
-      prompt,
-      meta: { dispatchKey: key, source: 'ask-inbox', taskId }
-    });
-
-    // Rename so it doesn't re-trigger on next tick
-    try {
-      fs.renameSync(filePath, path.join(inboxDir, `ask-dispatched-${file}`));
-    } catch (e) {
-      log('warn', `Could not rename ask file ${file}: ${e.message}`);
-    }
-
-    setCooldown(key);
-    log('info', `Picked up question from ${file} → dispatching to ${agentName}`);
-  }
-
-  return newWork;
-}
 
 /**
  * Run all work discovery sources and queue new items
@@ -3514,10 +3466,7 @@ function discoverWork(config) {
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
 
-  // User questions (ask-*.md files in notes/inbox)
-  const questions = discoverQuestions(config);
-
-  const allWork = [...allFixes, ...questions, ...allReviews, ...allImplements, ...allWorkItems, ...centralWork];
+  const allWork = [...allFixes, ...allReviews, ...allImplements, ...allWorkItems, ...centralWork];
 
   for (const item of allWork) {
     addToDispatch(item);

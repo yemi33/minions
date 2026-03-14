@@ -388,7 +388,7 @@
   <section class="cmd-center">
     <h2>Command Center</h2>
     <div class="cmd-input-wrap" id="cmd-input-wrap">
-      <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "/ask explain the dispatch flow", or "/note always use feature flags"'
+      <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "explain the dispatch flow", or "/note always use feature flags"'
         oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)"></textarea>
       <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
     </div>
@@ -398,7 +398,6 @@
       <span><code>@agent</code> assign</span>
       <span><code>@everyone</code> fan-out</span>
       <span><code>!high</code> / <code>!low</code> priority</span>
-      <span><code>/ask</code> question</span>
       <span><code>/note</code> team note</span>
       <span><code>/prd</code> PRD item</span>
       <span><code>#project</code> target project</span>
@@ -1427,9 +1426,6 @@ function cmdParseInput(raw) {
   } else if (/^\/prd\b/i.test(text)) {
     result.intent = 'prd';
     text = text.replace(/^\/prd\s*/i, '');
-  } else if (/^\/ask\b/i.test(text)) {
-    result.intent = 'ask';
-    text = text.replace(/^\/ask\s*/i, '');
   }
 
   // Extract @mentions
@@ -1684,9 +1680,7 @@ async function cmdSubmit() {
   btn.disabled = true;
 
   try {
-    if (parsed.intent === 'ask') {
-      await cmdSubmitAsk(parsed);
-    } else if (parsed.intent === 'note') {
+    if (parsed.intent === 'note') {
       await cmdSubmitNote(parsed);
     } else if (parsed.intent === 'plan') {
       await cmdSubmitPlan(parsed);
@@ -1730,18 +1724,6 @@ async function cmdSubmitWorkItem(parsed) {
   if (!res.ok) throw new Error(data.error || 'Failed to add');
   const agentLabel = parsed.fanout ? ' (fan-out)' : parsed.agents.length ? ' → ' + parsed.agents.join(', ') : '';
   showToast('cmd-toast', 'Work item ' + data.id + ' created' + agentLabel, true);
-}
-
-async function cmdSubmitAsk(parsed) {
-  const question = (parsed.title + (parsed.description ? '\n' + parsed.description : '')).trim();
-  if (!question) throw new Error('No question provided');
-  const res = await fetch('/api/ask', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to submit question');
-  showToast('cmd-toast', 'Question submitted (' + data.id + ') — agent will answer in inbox', true);
 }
 
 async function cmdSubmitNote(parsed) {
