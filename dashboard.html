@@ -244,7 +244,19 @@
     transition: border-color 0.2s, box-shadow 0.2s; padding: 0;
   }
   .cmd-input-wrap:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,0.12); }
+  .cmd-highlight-layer {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    padding: 14px 16px; font-size: 14px; font-family: inherit; line-height: 1.5;
+    white-space: pre-wrap; word-wrap: break-word; overflow: hidden;
+    pointer-events: none; color: transparent; border-radius: 10px;
+  }
+  .cmd-highlight-layer .hl-cmd { color: transparent; background: rgba(88,166,255,0.18); border-radius: 3px; }
+  .cmd-highlight-layer .hl-mention { color: transparent; background: rgba(63,185,80,0.18); border-radius: 3px; }
+  .cmd-highlight-layer .hl-priority { color: transparent; background: rgba(210,153,34,0.18); border-radius: 3px; }
+  .cmd-highlight-layer .hl-project { color: transparent; background: rgba(188,140,255,0.18); border-radius: 3px; }
+  .cmd-highlight-layer .hl-flag { color: transparent; background: rgba(248,81,73,0.18); border-radius: 3px; }
   .cmd-input-wrap textarea {
+    position: relative; z-index: 1;
     flex: 1; background: transparent; border: none; color: var(--text);
     padding: 14px 16px; font-size: 14px; font-family: inherit; resize: none;
     outline: none; line-height: 1.5; min-height: 48px; max-height: 200px;
@@ -483,8 +495,9 @@
   <section class="cmd-center">
     <h2>Command Center</h2>
     <div class="cmd-input-wrap" id="cmd-input-wrap">
+      <div class="cmd-highlight-layer" id="cmd-highlight" aria-hidden="true"></div>
       <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "explain the dispatch flow", or "/note always use feature flags"'
-        oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)"></textarea>
+        oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)" onscroll="syncHighlightScroll()"></textarea>
       <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
     </div>
     <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
@@ -1867,8 +1880,30 @@ function cmdAutoResize() {
   ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
 }
 
+function cmdUpdateHighlight() {
+  const text = document.getElementById('cmd-input').value;
+  const hl = document.getElementById('cmd-highlight');
+  if (!text) { hl.innerHTML = ''; return; }
+  // Escape HTML then wrap tokens with highlight spans
+  let html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  html = html.replace(/(\/(?:plan|prd|note|decide)\b)/gi, '<span class="hl-cmd">$1</span>');
+  html = html.replace(/(@\w+)/g, '<span class="hl-mention">$1</span>');
+  html = html.replace(/(![a-z]+\b)/gi, '<span class="hl-priority">$1</span>');
+  html = html.replace(/(#\S+)/g, '<span class="hl-project">$1</span>');
+  html = html.replace(/(--(?:stack|parallel)\b)/gi, '<span class="hl-flag">$1</span>');
+  hl.innerHTML = html + '\n'; // trailing newline prevents layout shift
+}
+
+function syncHighlightScroll() {
+  const ta = document.getElementById('cmd-input');
+  const hl = document.getElementById('cmd-highlight');
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
 function cmdInputChanged() {
   cmdAutoResize();
+  cmdUpdateHighlight();
   cmdRenderMeta();
 
   // Check for @ mention or # project trigger
