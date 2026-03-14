@@ -609,7 +609,7 @@ function spawnAgent(dispatchItem, config) {
     } catch (err) {
       log('error', `Failed to create worktree for ${branchName}: ${err.message}`);
       // Fall back to main directory for non-writing tasks
-      if (type === 'review' || type === 'analyze' || type === 'plan-to-prd') {
+      if (type === 'review' || type === 'analyze' || type === 'plan-to-prd' || type === 'plan') {
         cwd = rootDir;
       } else {
         completeDispatch(id, 'error', 'Worktree creation failed');
@@ -728,6 +728,11 @@ function spawnAgent(dispatchItem, config) {
     // Post-completion: update work item status on success
     if (code === 0 && meta?.item?.id) {
       updateWorkItemStatus(meta, 'done', '');
+    }
+
+    // Post-completion: chain plan → plan-to-prd if this was a plan task
+    if (code === 0 && type === 'plan' && meta?.item?.chain === 'plan-to-prd') {
+      chainPlanToPrd(dispatchItem, meta, config);
     }
 
     // Post-completion: scan output for PRs and sync to pull-requests.json
@@ -868,6 +873,132 @@ function completeDispatch(id, result = 'success', reason = '') {
     if (result === 'error') {
       if (item.meta?.dispatchKey) setCooldownFailure(item.meta.dispatchKey);
       if (item.meta?.item?.id) updateWorkItemStatus(item.meta, 'failed', reason);
+    }
+  }
+}
+
+// ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
+// When a 'plan' type task completes, find the plan file it wrote and dispatch
+// a plan-to-prd task so Lambert converts it to structured PRD items.
+function chainPlanToPrd(dispatchItem, meta, config) {
+  const planDir = path.join(SQUAD_DIR, 'plans');
+  if (!fs.existsSync(planDir)) {
+    log('warn', `Plan chaining: no plans/ directory found after plan task ${dispatchItem.id}`);
+    return;
+  }
+
+  // Find the plan file — look for recently created .md files in plans/
+  const planFiles = fs.readdirSync(planDir)
+    .filter(f => f.endsWith('.md'))
+    .map(f => ({ name: f, mtime: fs.statSync(path.join(planDir, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+
+  // Use the most recently modified plan file (the one the plan agent just wrote)
+  const planFile = planFiles[0];
+  if (!planFile) {
+    log('warn', `Plan chaining: no .md plan files found in plans/ after task ${dispatchItem.id}`);
+    return;
+  }
+
+  const planPath = path.join(planDir, planFile.name);
+  let planContent;
+  try { planContent = fs.readFileSync(planPath, 'utf8'); } catch (e) {
+    log('error', `Plan chaining: failed to read plan file ${planFile.name}: ${e.message}`);
+    return;
+  }
+
+  // Resolve target project
+  const projectName = meta?.item?.project || meta?.project?.name;
+  const projects = getProjects(config);
+  const targetProject = projectName
+    ? projects.find(p => p.name === projectName) || projects[0]
+    : projects[0];
+
+  if (!targetProject) {
+    log('error', 'Plan chaining: no target project available');
+    return;
+  }
+
+  // Resolve agent for plan-to-prd (typically Lambert)
+  const agentId = resolveAgent('plan-to-prd', config);
+  if (!agentId) {
+    // No agent available now — create a pending work item so engine picks it up on next tick
+    log('info', `Plan chaining: no agent available now, queuing plan-to-prd for next tick`);
+    const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+    let items = [];
+    try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch {}
+    const maxNum = items.reduce((max, i) => {
+      const m = (i.id || '').match(/(\d+)$/);
+      return m ? Math.max(max, parseInt(m[1])) : max;
+    }, 0);
+    items.push({
+      id: 'W' + String(maxNum + 1).padStart(3, '0'),
+      title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
+      type: 'plan-to-prd',
+      priority: meta?.item?.priority || 'high',
+      description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
+      status: 'pending',
+      created: ts(),
+      createdBy: 'engine:chain',
+      project: targetProject.name,
+      planFile: planFile.name,
+    });
+    safeWrite(wiPath, items);
+    return;
+  }
+
+  // Build plan-to-prd vars and dispatch immediately
+  const vars = {
+    agent_id: agentId,
+    agent_name: config.agents[agentId]?.name || agentId,
+    agent_role: config.agents[agentId]?.role || '',
+    project_name: targetProject.name || 'Unknown',
+    project_path: targetProject.localPath || '',
+    main_branch: targetProject.mainBranch || 'main',
+    ado_org: targetProject.adoOrg || config.project?.adoOrg || 'Unknown',
+    ado_project: targetProject.adoProject || config.project?.adoProject || 'Unknown',
+    repo_name: targetProject.repoName || config.project?.repoName || 'Unknown',
+    team_root: SQUAD_DIR,
+    date: dateStamp(),
+    plan_content: planContent,
+    plan_summary: (meta?.item?.title || planFile.name).substring(0, 80),
+    project_name_lower: (targetProject.name || 'project').toLowerCase(),
+  };
+
+  if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
+
+  const prompt = renderPlaybook('plan-to-prd', vars);
+  if (!prompt) {
+    log('error', 'Plan chaining: could not render plan-to-prd playbook');
+    return;
+  }
+
+  const id = addToDispatch({
+    type: 'plan-to-prd',
+    agent: agentId,
+    agentName: config.agents[agentId]?.name,
+    agentRole: config.agents[agentId]?.role,
+    task: `[${targetProject.name}] Convert plan to PRD: ${vars.plan_summary}`,
+    prompt,
+    meta: {
+      source: 'chain',
+      chainedFrom: dispatchItem.id,
+      project: { name: targetProject.name, localPath: targetProject.localPath },
+      planFile: planFile.name,
+      planSummary: vars.plan_summary,
+    }
+  });
+
+  log('info', `Plan chaining: dispatched plan-to-prd ${id} → ${config.agents[agentId]?.name} (chained from ${dispatchItem.id})`);
+
+  // Spawn immediately if engine is running
+  const control = getControl();
+  if (control.state === 'running') {
+    const dispatch = getDispatch();
+    const item = dispatch.pending.find(d => d.id === id);
+    if (item) {
+      spawnAgent(item, config);
+      log('info', `Plan chaining: agent spawned immediately for ${id}`);
     }
   }
 }
@@ -2582,7 +2713,7 @@ function discoverFromWorkItems(config, project) {
     };
 
     // Use type-specific playbook if it exists (e.g., explore.md, review.md), fall back to work-item.md
-    const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd'];
+    const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
     const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
     const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) {
@@ -2859,7 +2990,7 @@ function discoverCentralWorkItems(config) {
           date: dateStamp()
         };
 
-        const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd'];
+        const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
         const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) continue;
@@ -2917,7 +3048,18 @@ function discoverCentralWorkItems(config) {
         date: dateStamp()
       };
 
-      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd'];
+      // Inject plan-specific variables for the plan playbook
+      if (workType === 'plan') {
+        const planFileName = `plan-${item.id.toLowerCase()}-${dateStamp()}.md`;
+        vars.plan_content = item.title + (item.description ? '\n\n' + item.description : '');
+        vars.plan_title = item.title;
+        vars.plan_file = planFileName;
+        vars.task_description = item.title;
+        vars.notes_content = '';
+        try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+      }
+
+      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
       const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) continue;
@@ -3057,7 +3199,7 @@ async function tickInner() {
   const slotsAvailable = maxConcurrent - activeCount;
 
   // Priority dispatch: fixes > reviews > plan-to-prd > implement > other
-  const typePriority = { fix: 0, review: 1, test: 2, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
+  const typePriority = { fix: 0, review: 1, test: 2, plan: 3, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
   const itemPriority = { high: 0, medium: 1, low: 2 };
   dispatch.pending.sort((a, b) => {
     const ta = typePriority[a.type] ?? 5, tb = typePriority[b.type] ?? 5;

@@ -580,6 +580,66 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/work-items/archive — move a completed/failed work item to archive
+  if (req.method === 'POST' && req.url === '/api/work-items/archive') {
+    try {
+      const body = await readBody(req);
+      const { id, source } = body;
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+      let wiPath;
+      if (!source || source === 'central') {
+        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      } else {
+        const proj = PROJECTS.find(p => p.name === source);
+        if (proj) {
+          const root = path.resolve(proj.localPath || path.resolve(SQUAD_DIR, '..'));
+          const wiSrc = proj.workSources?.workItems || CONFIG.workSources?.workItems || {};
+          wiPath = path.resolve(root, wiSrc.path || '.squad/work-items.json');
+        }
+      }
+      if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
+
+      const items = JSON.parse(safeRead(wiPath) || '[]');
+      const idx = items.findIndex(i => i.id === id);
+      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
+
+      const item = items.splice(idx, 1)[0];
+      item.archivedAt = new Date().toISOString();
+
+      // Append to archive file
+      const archivePath = wiPath.replace('.json', '-archive.json');
+      let archive = [];
+      const existing = safeRead(archivePath);
+      if (existing) { try { archive = JSON.parse(existing); } catch {} }
+      archive.push(item);
+      fs.writeFileSync(archivePath, JSON.stringify(archive, null, 2));
+      fs.writeFileSync(wiPath, JSON.stringify(items, null, 2));
+
+      return jsonReply(res, 200, { ok: true, id });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // GET /api/work-items/archive — list archived work items
+  if (req.method === 'GET' && req.url === '/api/work-items/archive') {
+    try {
+      let allArchived = [];
+      // Central archive
+      const centralPath = path.join(SQUAD_DIR, 'work-items-archive.json');
+      const central = safeRead(centralPath);
+      if (central) { try { allArchived.push(...JSON.parse(central).map(i => ({ ...i, _source: 'central' }))); } catch {} }
+      // Project archives
+      for (const project of PROJECTS) {
+        const root = path.resolve(project.localPath || path.resolve(SQUAD_DIR, '..'));
+        const wiSrc = project.workSources?.workItems || CONFIG.workSources?.workItems || {};
+        const archPath = path.resolve(root, (wiSrc.path || '.squad/work-items.json').replace('.json', '-archive.json'));
+        const content = safeRead(archPath);
+        if (content) { try { allArchived.push(...JSON.parse(content).map(i => ({ ...i, _source: project.name }))); } catch {} }
+      }
+      return jsonReply(res, 200, allArchived);
+    } catch (e) { return jsonReply(res, 200, []); }
+  }
+
   // POST /api/work-items
   if (req.method === 'POST' && req.url === '/api/work-items') {
     try {
@@ -638,6 +698,34 @@ const server = http.createServer(async (req, res) => {
       }
       fs.writeFileSync(decPath, content);
       return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/plan — create a plan work item that chains to PRD on completion
+  if (req.method === 'POST' && req.url === '/api/plan') {
+    try {
+      const body = await readBody(req);
+      // Write as a work item with type 'plan' — engine handles the chaining
+      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      let items = [];
+      const existing = safeRead(wiPath);
+      if (existing) { try { items = JSON.parse(existing); } catch {} }
+      const maxNum = items.reduce(function(max, i) {
+        const m = (i.id || '').match(/(\d+)$/);
+        return m ? Math.max(max, parseInt(m[1])) : max;
+      }, 0);
+      const id = 'W' + String(maxNum + 1).padStart(3, '0');
+      const item = {
+        id, title: body.title, type: 'plan',
+        priority: body.priority || 'high', description: body.description || '',
+        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+        chain: 'plan-to-prd',
+      };
+      if (body.project) item.project = body.project;
+      if (body.agent) item.agent = body.agent;
+      items.push(item);
+      fs.writeFileSync(wiPath, JSON.stringify(items, null, 2));
+      return jsonReply(res, 200, { ok: true, id, agent: body.agent || '' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 

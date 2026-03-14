@@ -232,7 +232,7 @@
 
   /* Hints bar */
   .cmd-hints {
-    display: flex; gap: 12px; margin-top: 2px; font-size: 10px; color: var(--muted);
+    display: flex; gap: 12px; margin-top: 4px; font-size: 10px; color: var(--muted);
     letter-spacing: 0.2px; padding: 0 4px; overflow-x: auto; white-space: nowrap;
     scrollbar-width: thin; scrollbar-color: var(--border) transparent;
   }
@@ -410,8 +410,9 @@
   </section>
 
   <section id="work-items-section" style="overflow:visible">
-    <h2>Work Items <span class="count" id="wi-count">0</span></h2>
+    <h2>Work Items <span class="count" id="wi-count">0</span> <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px" onclick="toggleWorkItemArchive()">See Archive</button></h2>
     <div id="work-items-content"><p class="empty">No work items. Add tasks via Command Center above.</p></div>
+    <div id="work-items-archive" style="display:none;margin-top:12px"></div>
   </section>
 
   <section class="prd-panel" id="prd-section">
@@ -1197,11 +1198,23 @@ function wiRow(item) {
     '</td>' +
     '<td>' + prLink + '</td>' +
     '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
-    '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button></td>' +
+    '<td style="white-space:nowrap">' +
+      ((item.status === 'done' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
+    '</td>' +
   '</tr>';
 }
 
 function renderWorkItems(items) {
+  // Sort: active/dispatched first, then by most recent activity
+  const statusOrder = { dispatched: 0, pending: 1, queued: 1, failed: 2, done: 3 };
+  items.sort((a, b) => {
+    const sa = statusOrder[a.status] ?? 2, sb = statusOrder[b.status] ?? 2;
+    if (sa !== sb) return sa - sb;
+    const ta = a.completedAt || a.dispatched_at || a.created || '';
+    const tb = b.completedAt || b.dispatched_at || b.created || '';
+    return tb.localeCompare(ta); // most recent first
+  });
   allWorkItems = items;
   const el = document.getElementById('work-items-content');
   const countEl = document.getElementById('wi-count');
@@ -1259,6 +1272,44 @@ async function deleteWorkItem(id, source) {
       alert('Delete failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Delete error: ' + e.message); }
+}
+
+async function archiveWorkItem(id, source) {
+  try {
+    const res = await fetch('/api/work-items/archive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, source: source || undefined })
+    });
+    if (res.ok) { refresh(); } else {
+      const d = await res.json();
+      alert('Archive failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Archive error: ' + e.message); }
+}
+
+let wiArchiveVisible = false;
+async function toggleWorkItemArchive() {
+  const el = document.getElementById('work-items-archive');
+  wiArchiveVisible = !wiArchiveVisible;
+  if (!wiArchiveVisible) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = '<p class="empty">Loading archive...</p>';
+  try {
+    const items = await fetch('/api/work-items/archive').then(r => r.json());
+    if (!items.length) { el.innerHTML = '<p class="empty">No archived work items.</p>'; return; }
+    el.innerHTML = '<div style="font-size:10px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Archived (' + items.length + ')</div>' +
+      '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Type</th><th>Status</th><th>Agent</th><th>Archived</th></tr></thead><tbody>' +
+      items.map(function(i) {
+        return '<tr style="opacity:0.6">' +
+          '<td><span class="pr-id">' + escHtml(i.id || '') + '</span></td>' +
+          '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(i.title || '') + '</td>' +
+          '<td><span class="dispatch-type ' + (i.type || '') + '">' + escHtml(i.type || '') + '</span></td>' +
+          '<td style="color:' + (i.status === 'done' ? 'var(--green)' : 'var(--red)') + '">' + escHtml(i.status || '') + '</td>' +
+          '<td>' + escHtml(i.dispatched_to || '—') + '</td>' +
+          '<td class="pr-date">' + shortTime(i.archivedAt) + '</td>' +
+        '</tr>';
+      }).join('') + '</tbody></table></div>';
+  } catch (e) { el.innerHTML = '<p class="empty">Failed to load archive.</p>'; }
 }
 
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
@@ -1352,6 +1403,9 @@ function cmdParseInput(raw) {
   if (/^\/decide\b/i.test(text) || /^\/note\b/i.test(text)) {
     result.intent = 'note';
     text = text.replace(/^\/decide\s*/i, '');
+  } else if (/^\/plan\b/i.test(text)) {
+    result.intent = 'plan';
+    text = text.replace(/^\/plan\s*/i, '');
   } else if (/^\/prd\b/i.test(text)) {
     result.intent = 'prd';
     text = text.replace(/^\/prd\s*/i, '');
@@ -1410,12 +1464,16 @@ function cmdRenderMeta() {
   let chips = [];
 
   // Intent chip
-  const intentLabels = { 'work-item': 'Work Item', 'note': 'Note', 'prd': 'PRD Item' };
+  const intentLabels = { 'work-item': 'Work Item', 'note': 'Note', 'prd': 'PRD Item', 'plan': 'Plan → PRD → Dispatch' };
   chips.push('<span class="cmd-chip intent">' + intentLabels[parsed.intent] + '</span>');
 
   // Type chip (only for work items)
   if (parsed.intent === 'work-item') {
     chips.push('<span class="cmd-chip">' + parsed.type + '</span>');
+  }
+  // Pipeline chip for /plan
+  if (parsed.intent === 'plan') {
+    chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">plan → prd → agents</span>');
   }
 
   // Priority chip
@@ -1600,6 +1658,8 @@ async function cmdSubmit() {
   try {
     if (parsed.intent === 'note') {
       await cmdSubmitNote(parsed);
+    } else if (parsed.intent === 'plan') {
+      await cmdSubmitPlan(parsed);
     } else if (parsed.intent === 'prd') {
       await cmdSubmitPrd(parsed);
     } else {
@@ -1655,6 +1715,25 @@ async function cmdSubmitNote(parsed) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Failed to add');
   showToast('cmd-toast', 'Note added', true);
+}
+
+async function cmdSubmitPlan(parsed) {
+  const body = {
+    title: parsed.title,
+    description: parsed.description || '',
+    priority: parsed.priority,
+  };
+  if (parsed.project) body.project = parsed.project;
+  if (parsed.agents.length === 1) body.agent = parsed.agents[0];
+
+  const res = await fetch('/api/plan', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to create plan');
+  const agentLabel = data.agent ? ' → ' + data.agent : '';
+  showToast('cmd-toast', 'Plan ' + data.id + ' dispatched' + agentLabel + ' (will chain → PRD → dispatch)', true);
 }
 
 async function cmdSubmitPrd(parsed) {

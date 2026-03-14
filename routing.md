@@ -11,6 +11,7 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 | implement:large | rebecca | dallas |
 | review | ripley | lambert |
 | fix | _author_ | dallas |
+| plan | ripley | rebecca |
 | plan-to-prd | lambert | rebecca |
 | explore | ripley | rebecca |
 | test | dallas | ralph |
