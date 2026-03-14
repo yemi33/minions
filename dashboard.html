@@ -80,6 +80,8 @@
   .prd-item-priority.low { background: rgba(139,148,158,0.15); color: var(--muted); }
   .prd-project-badge { font-size: 9px; padding: 1px 5px; border-radius: 6px; background: rgba(56,139,253,0.12); color: var(--blue); border: 1px solid rgba(56,139,253,0.25); white-space: nowrap; }
 
+  .notes-preview { max-height: 240px; overflow-y: auto; font-size: 12px; line-height: 1.6; color: var(--muted); font-family: Consolas, monospace; white-space: pre-wrap; word-wrap: break-word; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; cursor: pointer; transition: border-color 0.2s; }
+  .notes-preview:hover { border-color: var(--blue); }
   .inbox-item { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: 4px; padding: 10px 12px; cursor: pointer; }
   .inbox-item:hover { border-color: var(--blue); border-left-color: var(--blue); }
   .inbox-name { font-weight: 500; font-size: 12px; color: var(--purple); margin-bottom: 4px; display: flex; justify-content: space-between; }
@@ -745,21 +747,18 @@ async function openInboxInExplorer(name) {
 
 function renderNotes(notes) {
   const el = document.getElementById('notes-list');
-  if (!notes.length) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
-  el.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px">' +
-    notes.map(d => '<div style="font-size:12px;color:var(--text);padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:pointer" onclick="openNotesFile()">' + escHtml(d) + '</div>').join('') +
-  '</div>';
+  if (!notes || !notes.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
+  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + escHtml(notes) + '</div>';
 }
 
-async function openNotesFile() {
-  try {
-    const content = await fetch('/api/notes-full').then(r => r.text());
-    document.getElementById('modal-title').textContent = 'Team Notes (notes.md)';
-    document.getElementById('modal-body').textContent = content;
-    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
-    document.getElementById('modal').classList.add('open');
-  } catch {}
+function openNotesModal() {
+  const preview = document.querySelector('.notes-preview');
+  if (!preview) return;
+  document.getElementById('modal-title').textContent = 'Team Notes';
+  document.getElementById('modal-body').textContent = preview.textContent;
+  document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal').classList.add('open');
 }
 
 function renderPrd(prd) {

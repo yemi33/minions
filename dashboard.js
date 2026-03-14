@@ -184,8 +184,7 @@ function getInbox() {
 }
 
 function getNotes() {
-  const content = safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
-  return content.split('\n').filter(l => l.startsWith('### ')).map(l => l.replace('### ', '').trim());
+  return safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
 }
 
 function getPullRequests() {
