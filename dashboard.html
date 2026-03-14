@@ -1569,9 +1569,8 @@ function showToast(id, msg, ok) {
 function detectWorkItemType(text) {
   const t = text.toLowerCase();
   const patterns = [
-    { type: 'note',     words: ['is an eng', 'is a designer', 'is a pm', 'is on the team', 'works on', 'owns the', 'is responsible for', 'remember that', 'keep in mind', 'fyi', 'for the record', 'for context', 'heads up', 'is the person', 'is our', 'contacts are', 'deploy freeze', 'code freeze', 'out of office', 'on vacation'] },
     { type: 'ask',      words: ['explain', 'why does', 'why is', 'what does', 'how do i', 'how do you', 'what\'s the', 'tell me', 'can you explain', 'walk me through'] },
-    { type: 'explore',  words: ['explore', 'investigate', 'understand', 'analyze', 'audit', 'document', 'architecture', 'how does', 'what is', 'look into', 'research', 'survey', 'map out', 'codebase', 'make a note of', 'note the', 'take note of', 'learn about', 'find out'] },
+    { type: 'explore',  words: ['explore', 'investigate', 'understand', 'analyze', 'audit', 'document', 'architecture', 'how does', 'what is', 'look into', 'research', 'survey', 'map out', 'codebase', 'make a note of', 'find out'] },
     { type: 'fix',      words: ['fix', 'bug', 'broken', 'crash', 'error', 'issue', 'patch', 'repair', 'resolve', 'regression', 'failing', 'doesn\'t work', 'not working'] },
     { type: 'review',   words: ['review', 'code review', 'check pr', 'look at pr', 'audit code', 'inspect'] },
     { type: 'test',     words: ['test', 'write tests', 'add tests', 'unit test', 'e2e test', 'coverage', 'testing', 'build', 'run locally', 'localhost', 'start the', 'spin up', 'verify', 'check if it works'] },
@@ -1662,11 +1661,6 @@ function cmdParseInput(raw) {
 
   // Auto-detect work type
   result.type = detectWorkItemType(result.title + ' ' + result.description);
-
-  // If type detection says 'note' and user didn't explicitly /note, promote intent
-  if (result.type === 'note' && result.intent === 'work-item') {
-    result.intent = 'note';
-  }
 
   return result;
 }
