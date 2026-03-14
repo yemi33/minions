@@ -1747,18 +1747,18 @@ function cmdRenderMeta() {
   let chips = [];
 
   // Intent chip
-  const intentLabels = { 'work-item': 'Work Item', 'note': 'Note', 'prd': 'PRD Item', 'plan': 'Plan → PRD → Dispatch' };
-  chips.push('<span class="cmd-chip intent">' + intentLabels[parsed.intent] + '</span>');
+  if (parsed.intent === 'plan') {
+    const strategy = parsed.branchStrategy || 'shared-branch';
+    const stratLabel = strategy === 'parallel' ? 'parallel branches' : 'shared branch';
+    chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">Plan → PRD → Dispatch (' + stratLabel + ')</span>');
+  } else {
+    const intentLabels = { 'work-item': 'Work Item', 'note': 'Note', 'prd': 'PRD Item' };
+    chips.push('<span class="cmd-chip intent">' + intentLabels[parsed.intent] + '</span>');
+  }
 
   // Type chip (only for work items)
   if (parsed.intent === 'work-item') {
     chips.push('<span class="cmd-chip">' + parsed.type + '</span>');
-  }
-  // Pipeline chip for /plan
-  if (parsed.intent === 'plan') {
-    const strategy = parsed.branchStrategy || 'shared-branch';
-    const stratLabel = strategy === 'parallel' ? 'parallel branches' : 'shared branch';
-    chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">plan → prd → agents (' + stratLabel + ')</span>');
   }
 
   // Priority chip
