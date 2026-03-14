@@ -506,10 +506,10 @@ function getRepoHostToolRule(project) {
 
 // ─── System Prompt Builder ──────────────────────────────────────────────────
 
+// Lean system prompt: agent identity + rules only (~2-4KB, never grows)
 function buildSystemPrompt(agentId, config, project) {
   const agent = config.agents[agentId];
   const charter = getAgentCharter(agentId);
-  const notes = getNotes();
   project = project || config.project || {};
 
   let prompt = '';
@@ -519,57 +519,66 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `Agent ID: ${agentId}\n`;
   prompt += `Skills: ${(agent.skills || []).join(', ')}\n\n`;
 
-  // Charter (detailed instructions)
+  // Charter (detailed instructions — typically 1-2KB)
   if (charter) {
     prompt += `## Your Charter\n\n${charter}\n\n`;
   }
 
-  // Agent history (past tasks)
-  const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));
-  if (history && history.trim() !== '# Agent History') {
-    prompt += `## Your Recent History\n\n${history}\n\n`;
-  }
-
-  // Project context
+  // Project context (fixed size)
   prompt += `## Project: ${project.name || 'Unknown Project'}\n\n`;
   prompt += `- Repo: ${project.repoName || 'Unknown'} (${project.adoOrg || 'Unknown'}/${project.adoProject || 'Unknown'})\n`;
   prompt += `- Repo ID: ${project.repositoryId || ''}\n`;
   prompt += `- Repo host: ${getRepoHostLabel(project)}\n`;
   prompt += `- Main branch: ${project.mainBranch || 'main'}\n\n`;
 
-  // Project conventions (from CLAUDE.md)
-  if (project.localPath) {
-    const claudeMd = safeRead(path.join(project.localPath, 'CLAUDE.md'));
-    if (claudeMd && claudeMd.trim()) {
-      // Truncate to 4KB to avoid bloating the system prompt
-      const truncated = claudeMd.length > 4096 ? claudeMd.slice(0, 4096) + '\n\n...(truncated)' : claudeMd;
-      prompt += `## Project Conventions (from CLAUDE.md)\n\n${truncated}\n\n`;
-    }
-  }
-
-  // Critical rules
+  // Critical rules (fixed size)
   prompt += `## Critical Rules\n\n`;
   prompt += `1. Use git worktrees — NEVER checkout on main working tree\n`;
   prompt += `2. ${getRepoHostToolRule(project)}\n`;
-  prompt += `3. Follow the project conventions above (from CLAUDE.md) if present\n`;
+  prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
   prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
   prompt += `6. If you discover a repeatable workflow, save it as a skill:\n`;
   prompt += `   - Squad-wide: \`${SKILLS_DIR}/<name>.md\` (no PR needed)\n`;
   prompt += `   - Project-specific: \`<project>/.claude/skills/<name>.md\` (requires a PR since it modifies the repo)\n\n`;
 
+  return prompt;
+}
+
+// Bulk context: history, notes, conventions, skills — prepended to user/task prompt.
+// This is the content that grows over time and would bloat the system prompt.
+function buildAgentContext(agentId, config, project) {
+  project = project || config.project || {};
+  const notes = getNotes();
+  let context = '';
+
+  // Agent history (past tasks)
+  const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));
+  if (history && history.trim() !== '# Agent History') {
+    context += `## Your Recent History\n\n${history}\n\n`;
+  }
+
+  // Project conventions (from CLAUDE.md)
+  if (project.localPath) {
+    const claudeMd = safeRead(path.join(project.localPath, 'CLAUDE.md'));
+    if (claudeMd && claudeMd.trim()) {
+      const truncated = claudeMd.length > 8192 ? claudeMd.slice(0, 8192) + '\n\n...(truncated)' : claudeMd;
+      context += `## Project Conventions (from CLAUDE.md)\n\n${truncated}\n\n`;
+    }
+  }
+
   // Skills
   const skillIndex = getSkillIndex();
   if (skillIndex) {
-    prompt += skillIndex + '\n';
+    context += skillIndex + '\n';
   }
 
-  // Team notes
+  // Team notes (the big one — can be 50KB)
   if (notes) {
-    prompt += `## Team Notes\n\n${notes}\n\n`;
+    context += `## Team Notes (MUST READ)\n\n${notes}\n\n`;
   }
 
-  return prompt;
+  return context;
 }
 
 function sanitizeBranch(name) {
@@ -631,12 +640,18 @@ function spawnAgent(dispatchItem, config) {
     }
   }
 
-  // Build the system prompt
+  // Build lean system prompt (identity + rules, ~2-4KB) and bulk context (history, notes, skills)
   const systemPrompt = buildSystemPrompt(agentId, config, project);
+  const agentContext = buildAgentContext(agentId, config, project);
+
+  // Prepend bulk context to task prompt — keeps system prompt small and stable
+  const fullTaskPrompt = agentContext
+    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPrompt}`
+    : taskPrompt;
 
   // Write prompt and system prompt to temp files (avoids shell escaping issues)
   const promptPath = path.join(ENGINE_DIR, `prompt-${id}.md`);
-  safeWrite(promptPath, taskPrompt);
+  safeWrite(promptPath, fullTaskPrompt);
 
   const sysPromptPath = path.join(ENGINE_DIR, `sysprompt-${id}.md`);
   safeWrite(sysPromptPath, systemPrompt);
