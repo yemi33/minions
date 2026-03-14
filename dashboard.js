@@ -1394,6 +1394,54 @@ server.listen(PORT, '127.0.0.1', () => {
     console.log(`  Could not auto-open browser: ${e.message}`);
     console.log(`  Please open http://localhost:${PORT} manually.`);
   }
+
+  // ─── Engine Watchdog ─────────────────────────────────────────────────────
+  // Every 30s, check if engine PID is alive. If dead but control.json says
+  // running, auto-restart it. Prevents silent engine death.
+  const { execSync, spawn: cpSpawn } = require('child_process');
+  setInterval(() => {
+    try {
+      const control = getEngineState();
+      if (control.state !== 'running' || !control.pid) return;
+
+      // Check if PID is alive
+      let alive = false;
+      try {
+        if (process.platform === 'win32') {
+          const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', timeout: 3000 });
+          alive = out.includes(String(control.pid));
+        } else {
+          process.kill(control.pid, 0); // signal 0 = check existence
+          alive = true;
+        }
+      } catch { alive = false; }
+
+      if (!alive) {
+        console.log(`[watchdog] Engine PID ${control.pid} is dead — auto-restarting...`);
+
+        // Set state to stopped first
+        const controlPath = path.join(SQUAD_DIR, 'engine', 'control.json');
+        safeWrite(controlPath, { state: 'stopped', pid: null, crashed_at: new Date().toISOString() });
+
+        // Restart engine
+        const childEnv = { ...process.env };
+        for (const key of Object.keys(childEnv)) {
+          if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
+        }
+        const engineProc = cpSpawn(process.execPath, [path.join(SQUAD_DIR, 'engine.js'), 'start'], {
+          cwd: SQUAD_DIR,
+          stdio: 'ignore',
+          detached: true,
+          env: childEnv,
+        });
+        engineProc.unref();
+        console.log(`[watchdog] Engine restarted (new PID: ${engineProc.pid})`);
+      }
+    } catch (e) {
+      console.error(`[watchdog] Error: ${e.message}`);
+    }
+  }, 30000);
+  console.log(`  Engine watchdog: active (checks every 30s)`);
 });
 
 server.on('error', e => {
