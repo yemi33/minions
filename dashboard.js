@@ -718,6 +718,7 @@ const server = http.createServer(async (req, res) => {
         priority: body.priority || 'high', description: body.description || '',
         status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
         chain: 'plan-to-prd',
+        branchStrategy: body.branch_strategy || 'shared-branch',
       };
       if (body.project) item.project = body.project;
       if (body.agent) item.agent = body.agent;

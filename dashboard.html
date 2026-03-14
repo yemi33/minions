@@ -1412,6 +1412,16 @@ function cmdParseInput(raw) {
   } else if (/^\/plan\b/i.test(text)) {
     result.intent = 'plan';
     text = text.replace(/^\/plan\s*/i, '');
+    // Extract branch strategy flag
+    if (/--parallel\b/i.test(text)) {
+      result.branchStrategy = 'parallel';
+      text = text.replace(/--parallel\b/i, '').trim();
+    } else if (/--shared\b/i.test(text)) {
+      result.branchStrategy = 'shared-branch';
+      text = text.replace(/--shared\b/i, '').trim();
+    } else {
+      result.branchStrategy = 'shared-branch'; // default
+    }
   } else if (/^\/prd\b/i.test(text)) {
     result.intent = 'prd';
     text = text.replace(/^\/prd\s*/i, '');
@@ -1482,7 +1492,9 @@ function cmdRenderMeta() {
   }
   // Pipeline chip for /plan
   if (parsed.intent === 'plan') {
-    chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">plan → prd → agents</span>');
+    const strategy = parsed.branchStrategy || 'shared-branch';
+    const stratLabel = strategy === 'parallel' ? 'parallel branches' : 'shared branch';
+    chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">plan → prd → agents (' + stratLabel + ')</span>');
   }
 
   // Priority chip
@@ -1733,6 +1745,7 @@ async function cmdSubmitPlan(parsed) {
     title: parsed.title,
     description: parsed.description || '',
     priority: parsed.priority,
+    branch_strategy: parsed.branchStrategy || 'shared-branch',
   };
   if (parsed.project) body.project = parsed.project;
   if (parsed.agents.length === 1) body.agent = parsed.agents[0];

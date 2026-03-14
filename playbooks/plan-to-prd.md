@@ -33,6 +33,8 @@ This file is NOT checked into the repo. The engine reads it on every tick and di
   "generated_by": "{{agent_id}}",
   "generated_at": "{{date}}",
   "plan_summary": "{{plan_summary}}",
+  "branch_strategy": "shared-branch|parallel",
+  "feature_branch": "feat/plan-short-name",
   "missing_features": [
     {
       "id": "P001",
@@ -54,6 +56,24 @@ This file is NOT checked into the repo. The engine reads it on every tick and di
 }
 ```
 
+## Branch Strategy
+
+Choose one of the following strategies based on how the items relate to each other:
+
+- **`shared-branch`** — All items share a single feature branch. Agents work sequentially, respecting `depends_on` order. One PR is created at the end with all changes. **Use this when items build on each other** (most common for feature plans).
+- **`parallel`** — Each item gets its own branch and PR. Items are dispatched independently. **Use this when items are fully independent** and can be reviewed/merged separately.
+
+{{branch_strategy_hint}}
+
+When using `shared-branch`:
+- Generate a `feature_branch` name: `feat/plan-<short-kebab-description>` (max 60 chars, lowercase)
+- Use `depends_on` to express the ordering — items execute in dependency order
+- Each item should be able to build on the prior items' work
+
+When using `parallel`:
+- Omit `feature_branch` (the engine generates per-item branches)
+- `depends_on` is still respected but items can dispatch concurrently if no deps
+
 Rules for items:
 - IDs are `P001`, `P002`, etc. (P for plan-derived)
 - All items start with `status: "missing"` — the engine picks these up automatically
@@ -67,7 +87,8 @@ Rules for items:
 - Do NOT create a git branch, worktree, or PR — this playbook writes squad-internal state only
 - Do NOT modify any files in the project repo
 - The engine will dispatch implementation agents automatically once this file exists
-- Each implementation agent will create its own branch and PR for its assigned item
+- For `shared-branch`: agents commit to a single branch — one PR is created automatically when all items are done
+- For `parallel`: each agent creates its own branch and PR
 
 ## Signal Completion
 
