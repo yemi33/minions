@@ -553,7 +553,7 @@
   </section>
 
   <section>
-    <h2>Team Notes</h2>
+    <h2>Team Notes <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0" id="notes-updated"></span></h2>
     <div id="notes-list">Loading...</div>
   </section>
 
@@ -938,17 +938,29 @@ async function openInboxInExplorer(name) {
 
 function renderNotes(notes) {
   const el = document.getElementById('notes-list');
-  if (!notes || !notes.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
-  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + escHtml(notes) + '</div>';
+  const content = typeof notes === 'object' ? notes.content : notes;
+  const updatedAt = typeof notes === 'object' ? notes.updatedAt : null;
+
+  // Show last updated timestamp
+  const updatedEl = document.getElementById('notes-updated');
+  if (updatedEl && updatedAt) {
+    const d = new Date(updatedAt);
+    updatedEl.textContent = 'updated ' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+
+  if (!content || !content.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
+  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + escHtml(content) + '</div>';
 }
 
 function openNotesModal() {
   const preview = document.querySelector('.notes-preview');
   if (!preview) return;
+  const content = preview.textContent;
   document.getElementById('modal-title').textContent = 'Team Notes';
-  document.getElementById('modal-body').textContent = preview.textContent;
+  document.getElementById('modal-body').textContent = content;
   document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
   document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  _modalDocContext = { title: 'Team Notes', content, selection: '' };
   document.getElementById('modal').classList.add('open');
 }
 

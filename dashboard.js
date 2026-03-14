@@ -228,7 +228,12 @@ function getInbox() {
 }
 
 function getNotes() {
-  return safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
+  const notesPath = path.join(SQUAD_DIR, 'notes.md');
+  const content = safeRead(notesPath) || '';
+  try {
+    const stat = fs.statSync(notesPath);
+    return { content, updatedAt: stat.mtimeMs };
+  } catch { return { content, updatedAt: null }; }
 }
 
 function getPullRequests() {
