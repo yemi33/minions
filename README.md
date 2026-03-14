@@ -229,6 +229,23 @@ Agents need MCP tools to interact with your repo host (create PRs, post review c
 
 Manually refresh with `squad mcp-sync`.
 
+### Azure DevOps Users
+
+For the best experience with ADO repos, install the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) and use the [Azure DevOps MCP server](https://github.com/microsoft/azure-devops-mcp). This gives agents full access to PRs, work items, repos, and pipelines via MCP tools — no `gh` CLI needed.
+
+```bash
+# Install Azure CLI
+winget install Microsoft.AzureCLI   # Windows
+brew install azure-cli               # macOS
+curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash  # Linux
+
+# Login and set defaults
+az login
+az devops configure --defaults organization=https://dev.azure.com/YOUR_ORG project=YOUR_PROJECT
+```
+
+Then add the ADO MCP server to your Claude Code settings (`~/.claude.json`). The engine will auto-sync it to all agents on next start.
+
 ## Work Items
 
 All work items use the shared `playbooks/work-item.md` template, which provides consistent branch naming, worktree workflow, PR creation steps, and status tracking.
