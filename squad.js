@@ -165,12 +165,6 @@ async function addProject(targetDir) {
     mainBranch,
     prUrlBase,
     workSources: {
-      prd: {
-        enabled: true,
-        path: 'docs/prd-gaps.json',
-        itemFilter: { status: ['missing', 'planned'] },
-        cooldownMinutes: 30
-      },
       pullRequests: {
         enabled: true,
         path: '.squad/pull-requests.json',
@@ -244,6 +238,169 @@ function listProjects() {
   }
 }
 
+// ─── Scan & Multi-Select ─────────────────────────────────────────────────────
+
+function findGitRepos(rootDir, maxDepth = 3) {
+  const repos = [];
+  const visited = new Set();
+
+  function walk(dir, depth) {
+    if (depth > maxDepth || visited.has(dir)) return;
+    visited.add(dir);
+    try {
+      // Skip common non-project dirs
+      const base = path.basename(dir);
+      if (['node_modules', '.git', '.hg', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files',
+           'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees'].includes(base)) return;
+
+      const gitDir = path.join(dir, '.git');
+      if (fs.existsSync(gitDir)) {
+        repos.push(dir);
+        return; // Don't recurse into git repos (they may have nested submodules)
+      }
+
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() || entry.isSymbolicLink()) {
+          walk(path.join(dir, entry.name), depth + 1);
+        }
+      }
+    } catch {} // permission errors, etc.
+  }
+
+  walk(rootDir, 0);
+  return repos;
+}
+
+async function scanAndAdd() {
+  const homeDir = process.env.USERPROFILE || process.env.HOME || '';
+  const scanRoot = rest[0] || homeDir;
+  const maxDepth = parseInt(rest[1]) || 3;
+
+  console.log(`\n  Scanning for git repos in: ${scanRoot}`);
+  console.log(`  Max depth: ${maxDepth}\n`);
+
+  const repos = findGitRepos(scanRoot, maxDepth);
+  if (repos.length === 0) {
+    console.log('  No git repositories found.\n');
+    rl.close();
+    return;
+  }
+
+  const config = loadConfig();
+  const linkedPaths = new Set((config.projects || []).map(p => path.resolve(p.localPath)));
+
+  // Enrich repos with auto-discovered metadata
+  const enriched = repos.map(repoPath => {
+    const detected = autoDiscover(repoPath);
+    const alreadyLinked = linkedPaths.has(path.resolve(repoPath));
+    return {
+      path: repoPath,
+      name: detected.name || detected.repoName || path.basename(repoPath),
+      host: detected.repoHost || '?',
+      org: detected.org || '',
+      project: detected.project || '',
+      repoName: detected.repoName || path.basename(repoPath),
+      mainBranch: detected.mainBranch || 'main',
+      description: detected.description || '',
+      linked: alreadyLinked,
+    };
+  });
+
+  console.log(`  Found ${enriched.length} git repo(s):\n`);
+  enriched.forEach((r, i) => {
+    const tag = r.linked ? ' (already linked)' : '';
+    const hostTag = r.host === 'ado' ? 'ADO' : r.host === 'github' ? 'GitHub' : 'git';
+    console.log(`  ${String(i + 1).padStart(3)}. ${r.name} [${hostTag}]${tag}`);
+    console.log(`       ${r.path}`);
+  });
+
+  console.log('\n  Enter numbers to add (comma-separated, ranges ok, e.g. "1,3,5-7")');
+  console.log('  Or "all" to add all unlinked repos, "q" to quit.\n');
+
+  const answer = await ask('Select repos', '');
+  if (!answer || answer.toLowerCase() === 'q') {
+    console.log('  Cancelled.\n');
+    rl.close();
+    return;
+  }
+
+  // Parse selection
+  let indices;
+  if (answer.toLowerCase() === 'all') {
+    indices = enriched.map((_, i) => i).filter(i => !enriched[i].linked);
+  } else {
+    indices = [];
+    for (const part of answer.split(',')) {
+      const trimmed = part.trim();
+      const rangeMatch = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (rangeMatch) {
+        const start = parseInt(rangeMatch[1]) - 1;
+        const end = parseInt(rangeMatch[2]) - 1;
+        for (let i = start; i <= end; i++) indices.push(i);
+      } else {
+        const n = parseInt(trimmed) - 1;
+        if (!isNaN(n)) indices.push(n);
+      }
+    }
+  }
+
+  // Filter valid, unlinked selections
+  const toAdd = [...new Set(indices)]
+    .filter(i => i >= 0 && i < enriched.length && !enriched[i].linked)
+    .map(i => enriched[i]);
+
+  if (toAdd.length === 0) {
+    console.log('  Nothing to add.\n');
+    rl.close();
+    return;
+  }
+
+  console.log(`\n  Adding ${toAdd.length} project(s)...\n`);
+
+  for (const repo of toAdd) {
+    const prUrlBase = repo.host === 'github'
+      ? (repo.org && repo.repoName ? `https://github.com/${repo.org}/${repo.repoName}/pull/` : '')
+      : (repo.org && repo.project && repo.repoName
+        ? `https://${repo.org}.visualstudio.com/DefaultCollection/${repo.project}/_git/${repo.repoName}/pullrequest/`
+        : '');
+
+    const project = {
+      name: repo.name,
+      description: repo.description,
+      localPath: repo.path.replace(/\\/g, '/'),
+      repositoryId: '',
+      adoOrg: repo.org,
+      adoProject: repo.project,
+      repoName: repo.repoName,
+      mainBranch: repo.mainBranch,
+      prUrlBase,
+      workSources: {
+        pullRequests: { enabled: true, path: '.squad/pull-requests.json', cooldownMinutes: 30 },
+        workItems: { enabled: true, path: '.squad/work-items.json', cooldownMinutes: 0 },
+        specs: { enabled: true, filePatterns: ['docs/**/*.md'], statePath: '.squad/spec-tracker.json', lookbackDays: 7 },
+      }
+    };
+
+    config.projects.push(project);
+
+    // Create project-local state files
+    const squadDir = path.join(repo.path, '.squad');
+    if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
+    for (const [f, content] of Object.entries({ 'pull-requests.json': '[]', 'work-items.json': '[]' })) {
+      const fp = path.join(squadDir, f);
+      if (!fs.existsSync(fp)) fs.writeFileSync(fp, content);
+    }
+
+    console.log(`  + ${repo.name} (${repo.path})`);
+  }
+
+  saveConfig(config);
+  console.log(`\n  Done. ${config.projects.length} total project(s) linked.`);
+  console.log(`  Run "node squad.js list" to verify.\n`);
+  rl.close();
+}
+
 // ─── CLI ─────────────────────────────────────────────────────────────────────
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -282,6 +439,7 @@ const commands = {
     removeProject(dir);
   },
   list: () => listProjects(),
+  scan: () => scanAndAdd().catch(e => { console.error(e); process.exit(1); }),
 };
 
 if (cmd && commands[cmd]) {
@@ -291,7 +449,8 @@ if (cmd && commands[cmd]) {
   console.log('  Usage: node squad <command>\n');
   console.log('  Commands:');
   console.log('    init                    Initialize squad (no projects)');
-  console.log('    add <project-dir>       Link a project');
+  console.log('    scan [dir] [depth]      Scan for git repos and multi-select to add');
+  console.log('    add <project-dir>       Link a single project');
   console.log('    remove <project-dir>    Unlink a project');
   console.log('    list                    List linked projects\n');
   console.log('  After init, also use:');
