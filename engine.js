@@ -797,8 +797,9 @@ function spawnAgent(dispatchItem, config) {
     }
 
     // Post-completion: scan output for PRs and sync to pull-requests.json
+    let prsCreatedCount = 0;
     if (code === 0) {
-      syncPrsFromOutput(stdout, agentId, meta, config);
+      prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
     }
 
     // Post-completion: update PR status if relevant
@@ -817,7 +818,7 @@ function spawnAgent(dispatchItem, config) {
     updateAgentHistory(agentId, dispatchItem, code === 0 ? 'success' : 'error');
 
     // Update quality metrics
-    updateMetrics(agentId, dispatchItem, code === 0 ? 'success' : 'error', taskUsage);
+    updateMetrics(agentId, dispatchItem, code === 0 ? 'success' : 'error', taskUsage, prsCreatedCount);
 
     // Cleanup temp files
     try { fs.unlinkSync(sysPromptPath); } catch {}
@@ -1322,7 +1323,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     while ((match = prHeaderPattern.exec(content)) !== null) prMatches.add(match[1] || match[2]);
   }
 
-  if (prMatches.size === 0) return;
+  if (prMatches.size === 0) return 0;
 
   // Determine which project to add PRs to
   const projects = getProjects(config);
@@ -1385,6 +1386,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     safeWrite(prPath, prs);
     log('info', `Synced ${added} PR(s) from ${agentName}'s output to ${targetProject.name}/pull-requests.json`);
   }
+  return added;
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
@@ -2002,7 +2004,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
-function updateMetrics(agentId, dispatchItem, result, taskUsage) {
+function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount) {
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
   const metrics = safeJson(metricsPath) || {};
 
@@ -2029,7 +2031,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage) {
 
   if (result === 'success') {
     m.tasksCompleted++;
-    if (dispatchItem.type === 'implement') m.prsCreated++;
+    if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
     if (dispatchItem.type === 'review') m.reviewsDone++;
   } else {
     m.tasksErrored++;
