@@ -135,7 +135,7 @@ Human comments on PR with "@squad fix the error handling here"
 
 ### How it works
 
-- **Trigger:** Any PR comment containing `@squad` (case-insensitive) from a non-agent author
+- **Trigger:** If you're the only human commenter, **any** comment triggers a fix. If multiple humans are commenting, `@squad` keyword is required to avoid noise
 - **Agent detection:** Comments matching `/\bSquad\s*\(/i` are skipped (agent signature pattern)
 - **Dedup:** Only comments newer than `pr.humanFeedback.lastProcessedCommentDate` are processed
 - **Multiple comments:** All new `@squad` comments are concatenated into a single fix task

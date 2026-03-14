@@ -1505,29 +1505,36 @@ async function pollPrHumanComments(config) {
 
         // Collect human comments newer than our last-processed timestamp
         const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
-        const newHumanComments = [];
+        const allHumanComments = [];
 
         for (const thread of threads) {
           for (const comment of (thread.comments || [])) {
             if (!comment.content) continue;
-            // Skip system comments
             if (comment.commentType === 'system') continue;
             // Skip agent-posted comments (signature pattern from playbooks)
             if (/\bSquad\s*\(/i.test(comment.content)) continue;
-            // Only process comments with @squad trigger
-            if (!/@squad\b/i.test(comment.content)) continue;
             // Only new comments
             if (comment.publishedDate && comment.publishedDate > cutoff) {
-              newHumanComments.push({
+              allHumanComments.push({
                 threadId: thread.id,
                 commentId: comment.id,
                 author: comment.author?.displayName || 'Human',
+                authorId: comment.author?.uniqueName || '',
                 content: comment.content,
-                date: comment.publishedDate
+                date: comment.publishedDate,
+                hasSquadTag: /@squad\b/i.test(comment.content)
               });
             }
           }
         }
+
+        // If only one unique human is commenting, all their comments are actionable.
+        // If multiple humans, require @squad to avoid triggering on casual discussion.
+        const uniqueHumans = new Set(allHumanComments.map(c => c.authorId || c.author));
+        const soloReviewer = uniqueHumans.size <= 1;
+        const newHumanComments = soloReviewer
+          ? allHumanComments
+          : allHumanComments.filter(c => c.hasSquadTag);
 
         if (newHumanComments.length === 0) continue;
 
@@ -1544,7 +1551,7 @@ async function pollPrHumanComments(config) {
           feedbackContent
         };
 
-        log('info', `PR ${pr.id}: found ${newHumanComments.length} new human @squad comment(s)`);
+        log('info', `PR ${pr.id}: found ${newHumanComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
         projectUpdated++;
       } catch (e) {
         log('warn', `Failed to poll comments for ${pr.id}: ${e.message}`);
@@ -2873,7 +2880,7 @@ function discoverFromWorkItems(config, project) {
     };
 
     // Use type-specific playbook if it exists (e.g., explore.md, review.md), fall back to work-item.md
-    const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
+    const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
     const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
     const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) {
@@ -3150,7 +3157,7 @@ function discoverCentralWorkItems(config) {
           date: dateStamp()
         };
 
-        const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
+        const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
         const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) continue;
@@ -3219,7 +3226,7 @@ function discoverCentralWorkItems(config) {
         try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
       }
 
-      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan'];
+      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
       const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) continue;
