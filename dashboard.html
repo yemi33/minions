@@ -1680,9 +1680,9 @@ function cmdParseInput(raw) {
     if (/--parallel\b/i.test(text)) {
       result.branchStrategy = 'parallel';
       text = text.replace(/--parallel\b/i, '').trim();
-    } else if (/--shared\b/i.test(text)) {
+    } else if (/--stack\b/i.test(text)) {
       result.branchStrategy = 'shared-branch';
-      text = text.replace(/--shared\b/i, '').trim();
+      text = text.replace(/--stack\b/i, '').trim();
     } else {
       result.branchStrategy = 'parallel'; // default — items without depends_on get independent branches
     }
@@ -1749,7 +1749,7 @@ function cmdRenderMeta() {
   // Intent chip
   if (parsed.intent === 'plan') {
     const strategy = parsed.branchStrategy || 'parallel';
-    const stratLabel = strategy === 'parallel' ? 'parallel branches' : 'shared branch';
+    const stratLabel = strategy === 'parallel' ? 'parallel branches' : 'stacked';
     chips.push('<span class="cmd-chip" style="background:var(--purple,#a855f7);color:#fff">Plan → PRD → Dispatch (' + stratLabel + ')</span>');
   } else {
     const intentLabels = { 'work-item': 'Work Item', 'note': 'Note', 'prd': 'PRD Item' };
