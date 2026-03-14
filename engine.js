@@ -1046,10 +1046,7 @@ ${itemSummary}
 // a plan-to-prd task so Lambert converts it to structured PRD items.
 function chainPlanToPrd(dispatchItem, meta, config) {
   const planDir = path.join(SQUAD_DIR, 'plans');
-  if (!fs.existsSync(planDir)) {
-    log('warn', `Plan chaining: no plans/ directory found after plan task ${dispatchItem.id}`);
-    return;
-  }
+  if (!fs.existsSync(planDir)) fs.mkdirSync(planDir, { recursive: true });
 
   // Use the plan filename from dispatch meta (set during plan task creation)
   // Falls back to mtime-based detection if meta doesn't have it
@@ -3859,6 +3856,8 @@ function discoverCentralWorkItems(config) {
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {
+        // Ensure plans directory exists before agent tries to write
+        if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
         const planFileName = `plan-${item.id.toLowerCase()}-${dateStamp()}.md`;
         vars.plan_content = item.title + (item.description ? '\n\n' + item.description : '');
         vars.plan_title = item.title;
