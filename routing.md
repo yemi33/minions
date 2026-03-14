@@ -15,6 +15,7 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 | plan-to-prd | lambert | rebecca |
 | explore | ripley | rebecca |
 | test | dallas | ralph |
+| ask | ripley | rebecca |
 
 Notes:
 - `_author_` means route to the PR author

@@ -600,10 +600,23 @@ function spawnAgent(dispatchItem, config) {
     worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', branchName);
     try {
       if (!fs.existsSync(worktreePath)) {
-        log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
-        execSync(`git worktree add "${worktreePath}" -b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, {
-          cwd: rootDir, stdio: 'pipe'
-        });
+        const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
+        if (isSharedBranch) {
+          // Shared branch: fetch and checkout existing branch (no -b)
+          log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
+          try { execSync(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe' }); } catch {}
+          execSync(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe' });
+        } else {
+          // Parallel: create new branch
+          log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
+          execSync(`git worktree add "${worktreePath}" -b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, {
+            cwd: rootDir, stdio: 'pipe'
+          });
+        }
+      } else if (meta?.branchStrategy === 'shared-branch') {
+        // Worktree exists — pull latest from prior plan item
+        log('info', `Pulling latest on shared branch ${branchName}`);
+        try { execSync(`git pull origin "${branchName}"`, { cwd: worktreePath, stdio: 'pipe' }); } catch {}
       }
       cwd = worktreePath;
     } catch (err) {
@@ -733,6 +746,11 @@ function spawnAgent(dispatchItem, config) {
     // Post-completion: chain plan → plan-to-prd if this was a plan task
     if (code === 0 && type === 'plan' && meta?.item?.chain === 'plan-to-prd') {
       chainPlanToPrd(dispatchItem, meta, config);
+    }
+
+    // Post-completion: check shared-branch plan completion
+    if (code === 0 && meta?.item?.branchStrategy === 'shared-branch') {
+      checkPlanCompletion(meta, config);
     }
 
     // Post-completion: scan output for PRs and sync to pull-requests.json
@@ -877,6 +895,94 @@ function completeDispatch(id, result = 'success', reason = '') {
   }
 }
 
+// ─── Dependency Gate ─────────────────────────────────────────────────────────
+function areDependenciesMet(item, config) {
+  const deps = item.depends_on;
+  if (!deps || deps.length === 0) return true;
+  const sourcePlan = item.sourcePlan;
+  if (!sourcePlan) return true;
+  const projectName = item.project;
+  const projects = getProjects(config);
+  const project = projectName
+    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase())
+    : projects[0];
+  if (!project) return true;
+  const wiPath = projectWorkItemsPath(project);
+  const workItems = safeJson(wiPath) || [];
+  for (const depId of deps) {
+    const depItem = workItems.find(w => w.sourcePlan === sourcePlan && w.planItemId === depId);
+    if (!depItem || depItem.status !== 'done') return false;
+  }
+  return true;
+}
+
+function detectDependencyCycles(items) {
+  const graph = new Map();
+  for (const item of items) graph.set(item.id, item.depends_on || []);
+  const visited = new Set(), inStack = new Set(), cycleIds = new Set();
+  function dfs(id) {
+    if (inStack.has(id)) { cycleIds.add(id); return true; }
+    if (visited.has(id)) return false;
+    visited.add(id); inStack.add(id);
+    for (const dep of (graph.get(id) || [])) { if (dfs(dep)) cycleIds.add(id); }
+    inStack.delete(id); return false;
+  }
+  for (const id of graph.keys()) dfs(id);
+  return [...cycleIds];
+}
+
+// ─── Plan Completion Detection ───────────────────────────────────────────────
+function checkPlanCompletion(meta, config) {
+  const planFile = meta.item?.sourcePlan;
+  if (!planFile) return;
+  const plan = safeJson(path.join(PLANS_DIR, planFile));
+  if (!plan?.missing_features || plan.branch_strategy !== 'shared-branch') return;
+  if (plan.status === 'completed') return;
+  const projectName = plan.project;
+  const projects = getProjects(config);
+  const project = projectName
+    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
+  if (!project) return;
+  const wiPath = projectWorkItemsPath(project);
+  const workItems = safeJson(wiPath) || [];
+  const planItems = workItems.filter(w => w.sourcePlan === planFile && w.planItemId !== 'PR');
+  if (planItems.length === 0) return;
+  if (!planItems.every(w => w.status === 'done')) return;
+  log('info', `All ${planItems.length} items in plan ${planFile} completed — creating PR work item`);
+  const maxNum = workItems.reduce((max, i) => {
+    const m = (i.id || '').match(/(\d+)$/);
+    return m ? Math.max(max, parseInt(m[1])) : max;
+  }, 0);
+  const id = 'PL-W' + String(maxNum + 1).padStart(3, '0');
+  const featureBranch = plan.feature_branch;
+  const mainBranch = project.mainBranch || 'main';
+  const itemSummary = planItems.map(w => '- ' + w.planItemId + ': ' + w.title.replace('Implement: ', '')).join('\n');
+  workItems.push({
+    id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
+    type: 'implement', priority: 'high',
+    description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.
+Create a pull request and clean up the worktree.
+
+**Branch:** \`${featureBranch}\`
+**Target:** \`${mainBranch}\`
+
+## Completed Items
+${itemSummary}
+
+## Instructions
+1. Rebase onto ${mainBranch} if needed (abort if conflicts — PR as-is is fine)
+2. Push: git push origin ${featureBranch} --force-with-lease
+3. Create the PR targeting ${mainBranch}
+4. Cleanup: git worktree remove ../worktrees/${featureBranch} --force`,
+    status: 'pending', created: ts(), createdBy: 'engine:plan-completion',
+    sourcePlan: planFile, planItemId: 'PR',
+    branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
+  });
+  safeWrite(wiPath, workItems);
+  plan.status = 'completed'; plan.completedAt = ts();
+  safeWrite(path.join(PLANS_DIR, planFile), plan);
+}
+
 // ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
 // When a 'plan' type task completes, find the plan file it wrote and dispatch
 // a plan-to-prd task so Lambert converts it to structured PRD items.
@@ -963,6 +1069,9 @@ function chainPlanToPrd(dispatchItem, meta, config) {
     plan_content: planContent,
     plan_summary: (meta?.item?.title || planFile.name).substring(0, 80),
     project_name_lower: (targetProject.name || 'project').toLowerCase(),
+    branch_strategy_hint: meta?.item?.branchStrategy
+      ? `The user requested **${meta.item.branchStrategy}** strategy. Use this unless the analysis strongly suggests otherwise.`
+      : 'Choose the best strategy based on your analysis of item dependencies.',
   };
 
   if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
@@ -2569,7 +2678,12 @@ function materializePlansAsWorkItems(config) {
         created: ts(),
         createdBy: 'engine:plan-discovery',
         sourcePlan: file,
-        sourcePlanItem: item.id
+        sourcePlanItem: item.id,
+        planItemId: item.id,
+        depends_on: item.depends_on || [],
+        branchStrategy: plan.branch_strategy || 'parallel',
+        featureBranch: plan.feature_branch || null,
+        project: plan.project || null,
       });
       created++;
     }
@@ -2577,6 +2691,36 @@ function materializePlansAsWorkItems(config) {
     if (created > 0) {
       safeWrite(wiPath, existingItems);
       log('info', `Plan discovery: created ${created} work item(s) from ${file} → ${project.name}`);
+
+      // Pre-create shared feature branch if branch_strategy is shared-branch
+      if (plan.branch_strategy === 'shared-branch' && plan.feature_branch) {
+        try {
+          const root = path.resolve(project.localPath);
+          const mainBranch = project.mainBranch || 'main';
+          const branch = sanitizeBranch(plan.feature_branch);
+          // Create branch from main (idempotent — ignores if exists)
+          execSync(`git branch "${branch}" "${mainBranch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
+          execSync(`git push -u origin "${branch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
+          log('info', `Shared branch pre-created: ${branch} for plan ${file}`);
+        } catch (err) {
+          log('warn', `Failed to pre-create shared branch for ${file}: ${err.message}`);
+        }
+      }
+
+      // Cycle detection for plan items
+      const planDerivedItems = plan.missing_features.filter(f => f.depends_on && f.depends_on.length > 0);
+      if (planDerivedItems.length > 0) {
+        const cycles = detectDependencyCycles(plan.missing_features);
+        if (cycles.length > 0) {
+          log('warn', `Dependency cycle detected in plan ${file}: ${cycles.join(', ')} — clearing deps for cycling items`);
+          for (const wi of existingItems) {
+            if (wi.sourcePlan === file && cycles.includes(wi.planItemId)) {
+              wi.depends_on = [];
+            }
+          }
+          safeWrite(wiPath, existingItems);
+        }
+      }
     }
   }
 }
@@ -2843,6 +2987,9 @@ function discoverFromWorkItems(config, project) {
   for (const item of items) {
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
+    // Dependency gate: skip items whose depends_on are not yet met
+    if (item.depends_on && item.depends_on.length > 0 && !areDependenciesMet(item, config)) continue;
+
     const key = `work-${project?.name || 'default'}-${item.id}`;
     if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) { skipped.gated++; continue; }
 
@@ -2853,7 +3000,8 @@ function discoverFromWorkItems(config, project) {
     const agentId = item.agent || resolveAgent(workType, config);
     if (!agentId) { skipped.noAgent++; continue; }
 
-    const branchName = item.branch || `work/${item.id}`;
+    const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
+    const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
     const vars = {
       agent_id: agentId,
       agent_name: config.agents[agentId]?.name || agentId,
@@ -2879,9 +3027,14 @@ function discoverFromWorkItems(config, project) {
       date: dateStamp()
     };
 
-    // Use type-specific playbook if it exists (e.g., explore.md, review.md), fall back to work-item.md
-    const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
-    const playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
+    // Select playbook: shared-branch items use implement-shared, others use type-specific or work-item
+    let playbookName;
+    if (item.branchStrategy === 'shared-branch' && (workType === 'implement' || workType === 'implement:large')) {
+      playbookName = 'implement-shared';
+    } else {
+      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
+      playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
+    }
     const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) {
       log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
@@ -2900,7 +3053,7 @@ function discoverFromWorkItems(config, project) {
       agentRole: config.agents[agentId]?.role,
       task: `[${project?.name || 'project'}] ${item.title || item.description?.slice(0, 80) || item.id}`,
       prompt,
-      meta: { dispatchKey: key, source: 'work-item', branch: branchName, item, project: { name: project?.name, localPath: project?.localPath } }
+      meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(item.branchStrategy === 'shared-branch' && item.featureBranch), item, project: { name: project?.name, localPath: project?.localPath } }
     });
 
     setCooldown(key);
@@ -3254,8 +3407,80 @@ function discoverCentralWorkItems(config) {
 
 
 /**
+ * Discover user questions from notes/inbox/ask-*.md files.
+ * When a user drops an ask-*.md file in the inbox, the engine picks it up,
+ * dispatches an agent to answer, and renames the file so it doesn't re-trigger.
+ */
+function discoverQuestions(config) {
+  const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+  if (!fs.existsSync(inboxDir)) return [];
+
+  const newWork = [];
+  const projects = getProjects(config);
+
+  let files;
+  try { files = fs.readdirSync(inboxDir); } catch { return []; }
+
+  const askFiles = files.filter(f => /^ask-.*\.md$/i.test(f) && !f.startsWith('ask-dispatched-'));
+
+  for (const file of askFiles) {
+    const filePath = path.join(inboxDir, file);
+    const question = safeRead(filePath);
+    if (!question || !question.trim()) continue;
+
+    const taskId = file.replace(/^ask-/i, '').replace(/\.md$/i, '') || `q-${Date.now()}`;
+    const key = `ask-${taskId}`;
+    if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
+
+    const agentId = resolveAgent('ask', config);
+    if (!agentId) continue;
+
+    const agentName = config.agents[agentId]?.name || agentId;
+    const agentRole = config.agents[agentId]?.role || 'Agent';
+
+    const vars = {
+      agent_id: agentId,
+      agent_name: agentName,
+      agent_role: agentRole,
+      task_id: taskId,
+      task_description: question.trim(),
+      question: question.trim(),
+      scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
+      team_root: SQUAD_DIR,
+      date: dateStamp(),
+      notes_content: getNotes() || ''
+    };
+
+    const prompt = renderPlaybook('ask', vars);
+    if (!prompt) continue;
+
+    newWork.push({
+      type: 'ask',
+      agent: agentId,
+      agentName,
+      agentRole,
+      task: `Answer question: ${question.trim().slice(0, 80)}${question.trim().length > 80 ? '...' : ''}`,
+      prompt,
+      meta: { dispatchKey: key, source: 'ask-inbox', taskId }
+    });
+
+    // Rename so it doesn't re-trigger on next tick
+    try {
+      fs.renameSync(filePath, path.join(inboxDir, `ask-dispatched-${file}`));
+    } catch (e) {
+      log('warn', `Could not rename ask file ${file}: ${e.message}`);
+    }
+
+    setCooldown(key);
+    log('info', `Picked up question from ${file} → dispatching to ${agentName}`);
+  }
+
+  return newWork;
+}
+
+/**
  * Run all work discovery sources and queue new items
- * Priority: fix (0) > review (1) > implement (2) > work-items (3) > central (4)
+ * Priority: fix (0) > ask (1) > review (1) > implement (2) > work-items (3) > central (4)
  */
 function discoverWork(config) {
   const projects = getProjects(config);
@@ -3288,7 +3513,10 @@ function discoverWork(config) {
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
 
-  const allWork = [...allFixes, ...allReviews, ...allImplements, ...allWorkItems, ...centralWork];
+  // User questions (ask-*.md files in notes/inbox)
+  const questions = discoverQuestions(config);
+
+  const allWork = [...allFixes, ...questions, ...allReviews, ...allImplements, ...allWorkItems, ...centralWork];
 
   for (const item of allWork) {
     addToDispatch(item);
@@ -3371,7 +3599,7 @@ async function tickInner() {
   const slotsAvailable = maxConcurrent - activeCount;
 
   // Priority dispatch: fixes > reviews > plan-to-prd > implement > other
-  const typePriority = { fix: 0, review: 1, test: 2, plan: 3, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
+  const typePriority = { fix: 0, ask: 1, review: 1, test: 2, plan: 3, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
   const itemPriority = { high: 0, medium: 1, low: 2 };
   dispatch.pending.sort((a, b) => {
     const ta = typePriority[a.type] ?? 5, tb = typePriority[b.type] ?? 5;
