@@ -128,7 +128,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
                     │  engine.js        ← tick 60s  │
                     │  dashboard.js     ← :7331     │
                     │  config.json      ← projects  │
-                    │  mcp-servers.json ← auto-sync │
+                    │  mcp-servers.json ← dashboard  │
                     │  agents/          ← 5 agents  │
                     │  playbooks/       ← templates │
                     │  prd.json         ← squad PRD │
@@ -231,7 +231,7 @@ When dispatching agents, the engine reads each project's `CLAUDE.md` and injects
 
 ## MCP Server Integration
 
-Agents need MCP tools to interact with your repo host (create PRs, post review comments, etc.). On engine start, MCP servers are auto-synced from `~/.claude.json` to `mcp-servers.json`.
+Agents need MCP tools to interact with your repo host (create PRs, post review comments, etc.). Agents inherit MCP servers directly from `~/.claude.json` as Claude Code processes — add servers there and they're immediately available to all agents on next spawn.
 
 **Example:** If you use Azure DevOps, configure the `azure-ado` MCP server in your Claude Code settings. If you use GitHub, configure the `github` MCP server. Agents will discover and use whichever tools are available.
 
@@ -314,7 +314,7 @@ No bash or shell involved — Node spawns Node directly. Prompts with special ch
 - **System prompt** — identity, charter, history, project context, critical rules, skill index, team notes
 - **Task prompt** — rendered playbook with `{{variables}}` filled from config
 - **Working directory** — project root (agent creates worktrees as needed)
-- **MCP servers** — all servers from `~/.claude.json` via `--mcp-config`
+- **MCP servers** — inherited from `~/.claude.json` (no extra config needed)
 - **Full tool access** — all built-in tools plus all MCP tools
 - **Permission mode** — `bypassPermissions` (no interactive prompts)
 - **Output format** — `stream-json` (real-time streaming for live dashboard + heartbeat)
@@ -446,7 +446,7 @@ squad start
 
 **Machine-specific (reconfigure per machine):**
 - `config.json` — contains absolute paths to project directories. Re-link via `squad add <dir>`.
-- `mcp-servers.json` — auto-synced from `~/.claude.json` on engine start.
+- `mcp-servers.json` — cached copy of `~/.claude.json` MCP servers for dashboard display.
 
 To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, then re-run `squad add` for each project.
 
@@ -471,7 +471,7 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
   prd.json               <- Squad-level PRD (multi-project items)
   config.template.json   <- Template for new installs
   package.json           <- npm package definition
-  mcp-servers.json       <- MCP servers (auto-synced, gitignored)
+  mcp-servers.json       <- MCP servers cache for dashboard (synced from ~/.claude.json)
   routing.md             <- Dispatch rules table (editable)
   team.md                <- Team roster
   notes.md               <- Team rules + consolidated learnings (runtime)
