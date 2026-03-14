@@ -2167,7 +2167,19 @@ async function modalAskSubmit() {
   const input = document.getElementById('modal-qa-input');
   const question = input.value.trim();
   if (!question) return;
-  if (!_modalDocContext.content) return;
+
+  // Capture content from modal body if not already set
+  if (!_modalDocContext.content) {
+    const body = document.getElementById('modal-body');
+    if (body) {
+      _modalDocContext.content = body.textContent || body.innerText || '';
+      _modalDocContext.title = document.getElementById('modal-title')?.textContent || '';
+    }
+  }
+  if (!_modalDocContext.content) {
+    showToast('cmd-toast', 'No document content to ask about', false);
+    return;
+  }
 
   const thread = document.getElementById('modal-qa-thread');
   const btn = document.getElementById('modal-qa-btn');
