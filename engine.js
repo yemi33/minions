@@ -292,6 +292,10 @@ function isAgentIdle(agentId) {
   return ['idle', 'done', 'completed'].includes(status.status);
 }
 
+// Track agents claimed during a single discovery pass to distribute work
+const _claimedAgents = new Set();
+function resetClaimedAgents() { _claimedAgents.clear(); }
+
 function resolveAgent(workType, config, authorAgent = null) {
   const routes = parseRoutingTable();
   const route = routes[workType] || routes['implement'];
@@ -301,16 +305,23 @@ function resolveAgent(workType, config, authorAgent = null) {
   let preferred = route.preferred === '_author_' ? authorAgent : route.preferred;
   let fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
 
+  const isAvailable = (id) => agents[id] && isAgentIdle(id) && !_claimedAgents.has(id);
+
   // Check preferred and fallback first (routing table order)
-  if (preferred && agents[preferred] && isAgentIdle(preferred)) return preferred;
-  if (fallback && agents[fallback] && isAgentIdle(fallback)) return fallback;
+  if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
+  if (fallback && isAvailable(fallback)) { _claimedAgents.add(fallback); return fallback; }
 
   // Fall back to any idle agent, preferring lower error rates
   const idle = Object.keys(agents)
-    .filter(id => id !== preferred && id !== fallback && isAgentIdle(id))
+    .filter(id => id !== preferred && id !== fallback && isAvailable(id))
     .sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b));
 
-  return idle[0] || null;
+  if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
+
+  // Last resort: allow already-claimed agents (better than not dispatching)
+  if (preferred && agents[preferred] && isAgentIdle(preferred)) return preferred;
+  if (fallback && agents[fallback] && isAgentIdle(fallback)) return fallback;
+  return null;
 }
 
 // ─── Task Context Resolution ────────────────────────────────────────────────
@@ -2276,6 +2287,7 @@ function discoverCentralWorkItems(config) {
  * Priority: fix (0) > ask (1) > review (1) > implement (2) > work-items (3) > central (4)
  */
 function discoverWork(config) {
+  resetClaimedAgents(); // Reset per-tick agent claims for fair distribution
   const projects = getProjects(config);
   let allFixes = [], allReviews = [], allImplements = [], allWorkItems = [];
 
