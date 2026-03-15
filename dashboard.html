@@ -98,6 +98,7 @@
   .plan-card.rejected { border-left: 3px solid var(--red); opacity: 0.6; }
   .plan-card.working { border-left: 3px solid var(--blue); animation: planPulse 2s infinite; }
   @keyframes planPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(88,166,255,0); } 50% { box-shadow: 0 0 0 4px rgba(88,166,255,0.2); } }
+  @keyframes wipPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   .plan-card.revision-requested { border-left: 3px solid var(--purple); }
   .plan-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); }
   .plan-card-title { font-size: var(--text-lg); font-weight: 600; color: var(--text); }
@@ -937,7 +938,27 @@ function renderPrdProgress(prog) {
     '<div class="prd-legend-item"><span class="prd-legend-dot missing"></span>Missing (' + prog.missing + ')</div>' +
   '</div>';
 
-  const statusIcon = (s) => s === 'complete' ? 'OK' : s === 'pr-created' ? 'PR' : s === 'in-progress' ? 'WIP' : s === 'planned' ? 'PLAN' : '---';
+  const statusBadge = (s) => {
+    const styles = {
+      'complete':    'background:rgba(63,185,80,0.15);color:var(--green)',
+      'implemented': 'background:rgba(63,185,80,0.15);color:var(--green)',
+      'pr-created':  'background:rgba(46,160,67,0.15);color:#2ea043',
+      'in-progress': 'background:rgba(56,139,253,0.2);color:var(--blue);animation:wipPulse 1.5s infinite',
+      'dispatched':  'background:rgba(56,139,253,0.2);color:var(--blue);animation:wipPulse 1.5s infinite',
+      'planned':     'background:rgba(56,139,253,0.08);color:var(--blue);opacity:0.6',
+      'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
+    };
+    const labels = { 'complete': 'DONE', 'implemented': 'DONE', 'pr-created': 'PR', 'in-progress': 'WIP', 'dispatched': 'WIP', 'planned': 'PLAN', 'failed': 'FAIL', 'missing': '—' };
+    const style = styles[s] || 'background:var(--surface);color:var(--muted)';
+    const label = labels[s] || '—';
+    return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
+  };
+
+  // Build work item lookup: PRD item ID → work item info
+  const wiByPlanItem = {};
+  for (const w of (window._lastWorkItems || [])) {
+    if (w.sourcePlanItem) wiByPlanItem[w.sourcePlanItem] = w;
+  }
 
   // Group items by source plan
   const grouped = {};
@@ -956,10 +977,17 @@ function renderPrdProgress(prog) {
     ).join(' ');
     const src = escHtml(i.source || '');
     const iid = escHtml(i.id || '');
+
+    // Linked work item info
+    const wi = wiByPlanItem[i.id];
+    const wiLabel = wi ? '<span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)" title="Work item: ' + escHtml(wi.id) + '">' +
+      escHtml(wi.id) + (wi.dispatched_to ? ' → ' + escHtml(wi.dispatched_to) : '') + '</span>' : '';
+
     return '<div class="prd-item-row" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
-      '<span>' + statusIcon(i.status) + '</span>' +
+      statusBadge(i.status) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
+      wiLabel +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
