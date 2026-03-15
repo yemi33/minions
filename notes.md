@@ -4,7 +4,7 @@
 
 ### 2026-03-14: Loop Pages Skill
 **By:** yemishin
-**What:** You can use the loop-page skill to read and modify Loop files given to you.
+**What:** You can use the loop-mcp-server to read and modify Loop files given to you.
 
 ---
 

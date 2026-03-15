@@ -297,5 +297,22 @@
     "dispatched_at": "2026-03-14T19:41:35.176Z",
     "dispatched_to": "dallas",
     "completedAt": "2026-03-14T19:45:36.652Z"
+  },
+  {
+    "id": "W025",
+    "title": "how we're going to implement claude cowork style ux in bebop that has officeagent capabilites and interface with augloop - the ux will be packaged and shown inside 1js framework",
+    "type": "plan",
+    "priority": "medium",
+    "description": "",
+    "status": "failed",
+    "created": "2026-03-14T20:54:25.635Z",
+    "createdBy": "dashboard",
+    "chain": "plan-to-prd",
+    "branchStrategy": "parallel",
+    "_planFileName": "plan-w025-2026-03-14.md",
+    "dispatched_at": "2026-03-14T20:54:34.643Z",
+    "dispatched_to": "ripley",
+    "failReason": "Orphaned — no process, silent for 1206s",
+    "failedAt": "2026-03-14T21:22:34.454Z"
   }
 ]
