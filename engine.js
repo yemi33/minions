@@ -802,7 +802,8 @@ function spawnAgent(dispatchItem, config) {
   const proc = spawn(process.execPath, spawnArgs, {
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: childEnv
+    env: childEnv,
+    windowsHide: true
   });
 
   const MAX_OUTPUT = 1024 * 1024; // 1MB
@@ -2320,7 +2321,8 @@ Use today's date: ${dateStamp()}`;
   const proc = spawn(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
     cwd: SQUAD_DIR,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: childEnv
+    env: childEnv,
+    windowsHide: true
   });
 
   let stdout = '';
