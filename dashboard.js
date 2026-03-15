@@ -854,6 +854,70 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/prd-items/update — edit a PRD item in its source plan JSON
+  if (req.method === 'POST' && req.url === '/api/prd-items/update') {
+    try {
+      const body = await readBody(req);
+      if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+      const item = (plan.missing_features || []).find(f => f.id === body.itemId);
+      if (!item) return jsonReply(res, 404, { error: 'item not found in plan' });
+
+      // Update allowed fields
+      if (body.name !== undefined) item.name = body.name;
+      if (body.description !== undefined) item.description = body.description;
+      if (body.priority !== undefined) item.priority = body.priority;
+      if (body.estimated_complexity !== undefined) item.estimated_complexity = body.estimated_complexity;
+      if (body.status !== undefined) item.status = body.status;
+
+      safeWrite(planPath, plan);
+      return jsonReply(res, 200, { ok: true, item });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/prd-items/remove — remove a PRD item from plan + cancel materialized work item
+  if (req.method === 'POST' && req.url === '/api/prd-items/remove') {
+    try {
+      const body = await readBody(req);
+      if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+      const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
+      if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
+
+      plan.missing_features.splice(idx, 1);
+      safeWrite(planPath, plan);
+
+      // Also remove any materialized work item for this plan item
+      let cancelled = false;
+      for (const proj of PROJECTS) {
+        const wiPath = path.join(proj.localPath, '.squad', 'work-items.json');
+        try {
+          const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+          const before = items.length;
+          const filtered = items.filter(w => !(w.sourcePlan === body.source && w.sourcePlanItem === body.itemId));
+          if (filtered.length < before) {
+            safeWrite(wiPath, filtered);
+            cancelled = true;
+          }
+        } catch {}
+      }
+      // Also check central work-items
+      const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+      try {
+        const items = JSON.parse(fs.readFileSync(centralPath, 'utf8'));
+        const before = items.length;
+        const filtered = items.filter(w => !(w.sourcePlan === body.source && w.sourcePlanItem === body.itemId));
+        if (filtered.length < before) { safeWrite(centralPath, filtered); cancelled = true; }
+      } catch {}
+
+      return jsonReply(res, 200, { ok: true, cancelled });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/triage — Haiku LLM command triage for natural language input
   if (req.method === 'POST' && req.url === '/api/triage') {
     try {

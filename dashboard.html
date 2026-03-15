@@ -954,13 +954,16 @@ function renderPrdProgress(prog) {
     const projBadges = (i.projects || []).map(p =>
       '<span class="prd-project-badge">' + escHtml(p) + '</span>'
     ).join(' ');
-    return '<div class="prd-item-row" style="flex-wrap:wrap">' +
+    const src = escHtml(i.source || '');
+    const iid = escHtml(i.id || '');
+    return '<div class="prd-item-row" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       '<span>' + statusIcon(i.status) + '</span>' +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
+      '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="color:var(--red);cursor:pointer;font-size:10px;padding:0 4px" title="Remove item">x</span>' +
       (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 52px;line-height:1.4">' + escHtml(i.description) + '</div>' : '') +
     '</div>';
   };
@@ -984,6 +987,75 @@ function renderPrdProgress(prog) {
   }
 
   el.innerHTML = bar + legend + items;
+}
+
+let _prdItems = []; // cache for edit lookups
+function _cachePrdItems(prog) { _prdItems = prog?.items || []; }
+
+async function prdItemEdit(source, itemId) {
+  const item = _prdItems.find(i => i.source === source && i.id === itemId);
+  if (!item) return;
+
+  const html = '<div style="padding:8px 0">' +
+    '<label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Name</label>' +
+    '<input id="prd-edit-name" value="' + escHtml(item.name || '') + '" style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;margin-bottom:10px">' +
+    '<label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Description</label>' +
+    '<textarea id="prd-edit-desc" rows="4" style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;resize:vertical;margin-bottom:10px">' + escHtml(item.description || '') + '</textarea>' +
+    '<div style="display:flex;gap:12px;margin-bottom:12px">' +
+      '<div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Priority</label>' +
+        '<select id="prd-edit-priority" style="padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text)">' +
+          '<option value="high"' + (item.priority === 'high' ? ' selected' : '') + '>High</option>' +
+          '<option value="medium"' + (item.priority === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="low"' + (item.priority === 'low' ? ' selected' : '') + '>Low</option>' +
+        '</select></div>' +
+      '<div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Complexity</label>' +
+        '<select id="prd-edit-complexity" style="padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text)">' +
+          '<option value="small"' + (item.complexity === 'small' ? ' selected' : '') + '>Small</option>' +
+          '<option value="medium"' + (item.complexity === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="large"' + (item.complexity === 'large' ? ' selected' : '') + '>Large</option>' +
+        '</select></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px">' +
+      '<button class="plan-btn approve" onclick="prdItemSave(\'' + escHtml(source) + '\',\'' + escHtml(itemId) + '\')">Save</button>' +
+      '<button class="plan-btn" onclick="closeModal()">Cancel</button>' +
+      '<button class="plan-btn reject" style="margin-left:auto" onclick="prdItemRemove(\'' + escHtml(source) + '\',\'' + escHtml(itemId) + '\')">Remove Item</button>' +
+    '</div>' +
+  '</div>';
+
+  document.getElementById('modal-title').textContent = 'Edit: ' + item.id + ' — ' + (item.name || '').slice(0, 60);
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = '';
+  document.getElementById('modal-body').style.whiteSpace = '';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function prdItemSave(source, itemId) {
+  try {
+    const res = await fetch('/api/prd-items/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source, itemId,
+        name: document.getElementById('prd-edit-name').value,
+        description: document.getElementById('prd-edit-desc').value,
+        priority: document.getElementById('prd-edit-priority').value,
+        estimated_complexity: document.getElementById('prd-edit-complexity').value,
+      })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item updated', true); }
+    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdItemRemove(source, itemId) {
+  if (!confirm('Remove item ' + itemId + '? This also cancels any pending work item.')) return;
+  try {
+    const res = await fetch('/api/prd-items/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, itemId })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item removed', true); }
+    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 function renderInbox(inbox) {
@@ -1514,6 +1586,7 @@ async function refresh() {
     document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
     renderAgents(data.agents);
     renderPrdProgress(data.prdProgress);
+    _cachePrdItems(data.prdProgress);
     renderInbox(data.inbox);
     cmdUpdateAgentList(data.agents);
     cmdUpdateProjectList(data.projects || []);
