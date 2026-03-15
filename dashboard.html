@@ -2842,11 +2842,28 @@ function renderPlans(plans) {
       for (const p of plans) { if (d.task.includes(p.file?.replace('.md', '').replace('.json', '') || '___')) workingPlanFiles.add(p.file); }
     }
   }
-  // Also check work items for pending/dispatched plan-to-prd
+  // Check work items for pending/dispatched plan-to-prd or implement tasks
   const allWi = window._lastWorkItems || [];
   for (const w of allWi) {
     if (w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched') && w.planFile) {
       workingPlanFiles.add(w.planFile);
+    }
+    // Also track which PRD .json files have active work
+    if (w.sourcePlan && (w.status === 'dispatched' || w.status === 'pending')) {
+      workingPlanFiles.add(w.sourcePlan);
+    }
+  }
+
+  // Link .md plans to their PRD .json — if a PRD is being worked on, the source plan is too
+  // Convention: plan-w025-2026-03-15.md → officeagent-2026-03-15.json (same date, different prefix)
+  const workingJsons = new Set([...workingPlanFiles].filter(f => f.endsWith('.json')));
+  if (workingJsons.size > 0) {
+    for (const p of plans) {
+      if (p.format === 'draft' && p.file.endsWith('.md')) {
+        // A .md plan is "working" if any PRD .json has active dispatches
+        // (since the .md is the source that generated those PRDs)
+        if (workingJsons.size > 0) workingPlanFiles.add(p.file);
+      }
     }
   }
 
@@ -2879,7 +2896,7 @@ function renderPlans(plans) {
     const isDraft = p.format === 'draft' || status === 'draft';
     const isPaused = status === 'awaiting-approval';
     const isApproved = status === 'approved' || status === 'active';
-    const executeBtn = isDraft ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
+    const executeBtn = isDraft && !isWorking ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
     const pauseBtn = (isApproved || isWorking) && !isDraft ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(p.file) + '\')">Pause</button>' : '';
