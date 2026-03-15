@@ -337,3 +337,163 @@ _Processed 3 notes, 17 insights extracted, 1 duplicate removed._
   → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-.md`
 
 _Processed 3 notes, 27 insights extracted, 6 duplicates removed._
+
+---
+
+### 2026-03-15: Bebop Cowork Protocol Types, PR-4970115 Review, and Cross-Repo PRD Patterns
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **String union types over enums**: Bebop (Vite 7/esbuild) uses `type Foo = 'a' | 'b'` for zero runtime overhead vs TypeScript enums which compile to IIFEs and cannot be tree-shaken _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Readonly fields for message types**: All protocol message interface fields marked `readonly` to prevent accidental mutation in React/Jotai state and enable reference-equality re-render optimization _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Discriminated union with `kind` field**: CoTStreamEvent uses `kind` as discriminant across event types (step_started, step_completed, tool_use, thinking) for exhaustive switch patterns without type assertions _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Feature types directory pattern**: Bebop features can have `types/` subdirectory for type definitions (e.g., `features/conversations/types/Conversation.ts`) even though not listed in CONTRIBUTING.md _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+- **Client-side simplification in mirrors**: SessionInitPayload omits OfficeAgent's OfficePySettings/McpServers/groundingSourceToggles; FileInfo excludes content/Buffer; ErrorPayload uses `message` instead of `errorMsg` _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Source references in cross-repo mirrors**: Include file paths, line numbers, and "Last synced: <date>" header in mirrored type files to track future drift _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **PRD item sizing for cross-repo work**: small = 1–2 files single concern; medium = 3–5 files single module; large = 6+ files or cross-cutting _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **Dependency ordering for cross-repo features**: Protocol types ship first (zero deps); feature gates ship early; scaffolding depends only on gates; UI/adapters depend on scaffold+types; integration layers last _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+#### PR Review Findings
+- **Pattern evolution in readonly fields**: Existing Conversation.ts lacks readonly; new messageProtocol.ts uses it, showing alignment with CLAUDE.md's immutability preference _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+- **Mirrors vs proposed extensions clarity needed**: messageProtocol.ts mixes actual OfficeAgent mirrors (MessageSchema, Message<T>, QueryStatusType, QueryErrorCode, FileInfo, QueryStatusPayload, ErrorPayload) with proposed extensions (cot_stream, ask_user_question, user_answer types; CoTStreamEvent; SessionInitPayload); file header should clarify distinction _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+- **az CLI reviewer vote limitation**: `az repos pr reviewer add --vote 5` is unsupported; must use REST API directly: `PUT /pullRequests/{id}/reviewers/{reviewerId}` with `{ vote: 5 }` body _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+#### Bugs & Gotchas
+- **Task scope labeling mismatch**: PR labeled as "Project — OfficeAgent" but code path is `apps/bebop/src/features/cowork/` in office-bohemia; must target `master` branch not `main` _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **ADO MCP tools unavailable fallback**: `mcp__azure-ado__*` tools unavailable; used `az repos pr create` via Azure CLI (requires `azure-devops` extension) _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **office-bohemia main branch is `master` not `main`**: All PRs must target `master`; OfficeAgent uses `main` _(Rebecca, Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **PowerShell required for OfficeAgent**: All yarn/oagent/gulp commands fail in Bash/sh _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **No barrel files in Bebop**: `index.ts` re-exports violate `no-barrel-files` lint rule _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **AugLoop dev endpoint requires local service**: localhost:11040 must be running; verify availability before transport P004 implementation begins _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **SharedTree schema changes are irreversible**: Production schema mutations cannot be undone; design P013 carefully and obtain Fluid team review before merging _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **Existing cowork branches may contain prior work**: OfficeAgent has branches `user/mohitkishore/coworkFeatures`, `user/sacra/cowork-officeagent`, `user/spuranda/cowork-prompt-tuning` in .git/packed-refs; investigate for conflicts or reusable patterns _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **Cowork route does not exist yet**: `_mainLayout.cowork.tsx` missing from `apps/bebop/src/routes/` in current working tree _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+#### Architecture Notes
+- **OfficeAgent message protocol structure**: Schema { type, id } → Message<T> { sessionId, payload } → ResponseMessage<T> { requestId } _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **MessageType enum spans 165+ entries**: Covers internal, LLM, enterprise search, Excel, PPT, Word, ODSP, workspace, chat, grounding; includes `workspace_chain_of_thought` as batch/final-state only _(Rebecca, Lambert)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Chain-of-thought notification pattern exists**: ChainOfThoughtContentNotifier interface in `modules/chain-of-thought/src/content-handler.ts` with async `sendChainOfThoughtContent()` method; OfficeAgent CoT is not purely file-based _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **Two CoT payload forms in OfficeAgent**: ChainOfThoughtPayload (simple content string) and PptAgentCotPayload (typed with contentType, turnNumber, toolName) _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **QueryStatus nested discriminated pattern**: QueryStatusPayload.type field selects which optional nested fields are populated _(Rebecca)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **Feature gating infrastructure exists in Loop monorepo**: Multiple packages use `getFluidExperiencesSetting()` with SettingsProvider pattern (conversa, conversa-list, video, video-playback); P005 can follow established pattern _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+- **New message types required for cowork**: `cot_stream`, `ask_user_question`, `user_answer` don't exist in OfficeAgent's MessageType enum; must be added as P001 protocol extension _(Rebecca, Lambert)_
+  → see `knowledge/architecture/2026-03-15-rebecca-rebecca-learnings-pl-w017-cowork-mirrored-protocol.md`
+
+- **ADO reviewer vote values**: 10 = approved, 5 = approved with suggestions, 0 = no vote, −5 = waiting for author, −10 = rejected; use REST API PUT endpoint _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+#### Action Items
+- **Clarify mirrors vs proposed extensions in messageProtocol.ts header**: Document which type definitions have OfficeAgent counterparts vs which are new extensions _(Ripley)_
+  → see `knowledge/reviews/2026-03-15-feedback-review-feedback-for-rebecca.md`
+
+- **Investigate existing OfficeAgent cowork branches**: Check user/mohitkishore/coworkFeatures, user/sacra/cowork-officeagent, user/spuranda/cowork-prompt-tuning for conflicts or reusable patterns before starting P001–P004 _(Lambert)_
+  → see `knowledge/build-reports/2026-03-15-lambert-lambert-learnings-2026-03-15-w025-prd-conversion-v.md`
+
+_Processed 4 notes, 25 insights extracted, 5 duplicates removed._
+
+---
+
+### 2026-03-15: Cross-repo PR tracking, mirrored type patterns, and phantom PR detection
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Mirrored types should use string unions over enums**: For Vite/esbuild tree-shaking; `readonly` fields prevent mutation in React/Jotai state. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **Mirrored type header conventions**: Include `// Last synced: YYYY-MM-DD` and per-type `// Source: path/to/file.ts:line` comments; every field name must match wire format exactly. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **Cross-repo PR tracking needs new convention**: `.squad/pull-requests.json` entries tracked under OfficeAgent can point to office-bohemia repo (project OC, repo ID `74031860-e0cd-45a1-913f-10bbf3f82555`, master branch); clarify branch vs PR mapping in tracking. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **Targeted yarn builds avoid Docker requirement**: Use `yarn workspace @officeagent/<pkg> build` instead of `yarn build --to <pkg>`; latter triggers full lage pipeline including Docker image build (~5s vs failure without Docker Desktop). _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-learnings-2026-03-15.md`
+
+#### Build & Test Results
+- **PR-4970115 code validates**: @officeagent/message-protocol builds successfully (4.79s), @officeagent/core downstream consumer has no breakage (5.64s), 110 tests pass (6.4s), lint clean. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
+
+- **New MessageType enum values integrate cleanly**: ChainOfThoughtUpdate, AskUserQuestion, UserAnswer added without breaking existing values. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
+
+#### PR Review Findings
+- **ADO REST API for PR thread comments**: Use `POST {org}/{project}/_apis/git/repositories/{repoId}/pullRequests/{prId}/threads?api-version=7.1` with body `{comments:[{parentCommentId:0,content:"...",commentType:1}],status:1}`; use `DefaultCollection` in URL path. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **ADO REST API for reviewer votes**: Use `PUT .../pullRequests/{prId}/reviewers/{reviewerId}?api-version=7.1` with vote body; specific values align with existing convention (10=approve, 5=approve-with-suggestions, −10=reject). _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **az repos pr show requires Visual Studio URL and no project flag**: Use `--org https://office.visualstudio.com/DefaultCollection`; project is inferred from PR ID. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+#### Bugs & Gotchas
+- **Phantom PR pattern**: PR-4970115 tracked in `.squad/pull-requests.json` but does not exist on ADO; branch `work/PL-W017` has zero changes and was never pushed. Actual implementation lives in different worktree `feat-PL-W001` (branch `feat/PL-W001-cot-askuser-types`). _(Rebecca, Lambert)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
+
+- **Wire format field name mismatches are silent failures**: When mirrored types use different field names than source (e.g., `question` vs `text`, `label` vs `stepLabel`), JSON deserialization produces `undefined` with no runtime error — hardest bugs to find. Always verify field names against source before approving. _(Lambert)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **OfficeAgent CoT types still in-flight**: Chain-of-thought and ask-user-question type definitions in OfficeAgent exist only as uncommitted changes in `feat/PL-W001` worktree; Bebop mirror may have been written against different version or improvised. Both sides must be finalized and synced before either merges. _(Lambert, Rebecca)_
+  → see `knowledge/conventions/2026-03-15-lambert-lambert-learnings-2026-03-15.md`
+
+- **python3 unavailable on Windows dev machines**: Microsoft Store stub intercepts the command; use `node -e` for scripting instead. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-learnings-2026-03-15.md`
+
+#### Action Items
+- **Verify PR existence before dispatching build tasks**: Engine should check `az repos pr show` before queuing build jobs to avoid wasting cycles on phantom PRs. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
+
+- **Create proper PR or reconcile branches**: Either push `feat/PL-W001-cot-askuser-types` to remote and create PR, or cherry-pick changes onto `work/PL-W017` and push; clarify which is source of truth. _(Rebecca, Lambert)_
+  → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
+
+_Processed 3 notes, 16 insights extracted, 2 duplicates removed._

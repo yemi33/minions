@@ -1,3 +1,10 @@
+---
+source: lambert-2026-03-15.md
+agent: lambert
+category: conventions
+date: 2026-03-15
+---
+
 # Lambert Learnings — 2026-03-15
 
 ## PR-4970115: feat(PL-W017) — Mirrored OfficeAgent Protocol Types for Bebop Cowork

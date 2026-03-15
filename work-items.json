@@ -357,22 +357,6 @@
     "completedAt": "2026-03-15T19:28:45.133Z"
   },
   {
-    "id": "W030",
-    "title": "Convert plan to PRD: Claude Cowork UX in Bebop",
-    "type": "plan-to-prd",
-    "priority": "high",
-    "description": "Plan file: plans/plan-w025-2026-03-15.md",
-    "status": "failed",
-    "created": "2026-03-15T20:35:41.539Z",
-    "createdBy": "manual",
-    "project": "OfficeAgent",
-    "planFile": "plan-w025-2026-03-15.md",
-    "dispatched_at": "2026-03-15T20:35:42.833Z",
-    "dispatched_to": "lambert",
-    "failReason": "Orphaned — no process, silent for 1864s",
-    "failedAt": "2026-03-15T21:10:57.753Z"
-  },
-  {
     "id": "W031",
     "title": "Convert plan to PRD: plan-w025-2026-03-15.md",
     "type": "plan-to-prd",
@@ -386,5 +370,20 @@
     "dispatched_at": "2026-03-15T20:40:30.819Z",
     "dispatched_to": "rebecca",
     "completedAt": "2026-03-15T20:50:28.740Z"
+  },
+  {
+    "id": "W032",
+    "title": "Convert plan to PRD: plan-w025-2026-03-15",
+    "type": "plan-to-prd",
+    "priority": "high",
+    "description": "Plan file: plans/plan-w025-2026-03-15.md",
+    "status": "done",
+    "created": "2026-03-15T22:12:59.994Z",
+    "createdBy": "dashboard:execute",
+    "project": "OfficeAgent + office-bohemia (cross-repo)",
+    "planFile": "plan-w025-2026-03-15.md",
+    "dispatched_at": "2026-03-15T22:13:08.480Z",
+    "dispatched_to": "lambert",
+    "completedAt": "2026-03-15T22:27:35.098Z"
   }
 ]

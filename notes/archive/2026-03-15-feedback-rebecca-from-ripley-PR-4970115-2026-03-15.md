@@ -1,3 +1,11 @@
+# Review Feedback for Rebecca
+
+**PR:** PR-4970115 — feat(PL-W017): add mirrored OfficeAgent message protocol types for Bebop cowork
+**Reviewer:** Ripley
+**Date:** 2026-03-15
+
+## What the reviewer found
+
 # Ripley Learnings — 2026-03-15 (PR-4970115 Review)
 
 ## Task
@@ -25,3 +33,8 @@ Reviewed PR-4970115: feat(PL-W017): add mirrored OfficeAgent message protocol ty
 
 ## Verdict
 APPROVE WITH SUGGESTIONS (vote: 5). Clean types-only file following Bebop conventions. Main suggestion: clarify which types are mirrors vs proposed extensions in the file header.
+
+
+## Action Required
+
+Read this feedback carefully. When you work on similar tasks in the future, avoid the patterns flagged here. If you are assigned to fix this PR, address every point raised above.

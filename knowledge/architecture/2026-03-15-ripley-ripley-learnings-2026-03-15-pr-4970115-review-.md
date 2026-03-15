@@ -1,3 +1,10 @@
+---
+source: ripley-2026-03-15.md
+agent: ripley
+category: architecture
+date: 2026-03-15
+---
+
 # Ripley Learnings — 2026-03-15 (PR-4970115 Review)
 
 ## Task
