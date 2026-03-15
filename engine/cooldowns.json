@@ -1,16 +1,4 @@
 {
-  "central-work-W010": {
-    "timestamp": 1773450134707,
-    "failures": 0
-  },
-  "central-work-W011": {
-    "timestamp": 1773455344220,
-    "failures": 0
-  },
-  "central-work-W012": {
-    "timestamp": 1773455809693,
-    "failures": 0
-  },
   "central-work-W013": {
     "timestamp": 1773459257268,
     "failures": 0
@@ -58,5 +46,9 @@
   "central-work-W024": {
     "timestamp": 1773517295176,
     "failures": 0
+  },
+  "central-work-W025": {
+    "timestamp": 1773543665548,
+    "failures": 1
   }
 }

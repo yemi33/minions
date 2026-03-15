@@ -304,15 +304,14 @@
     "type": "plan",
     "priority": "medium",
     "description": "",
-    "status": "failed",
+    "status": "done",
     "created": "2026-03-14T20:54:25.635Z",
     "createdBy": "dashboard",
     "chain": "plan-to-prd",
     "branchStrategy": "parallel",
-    "_planFileName": "plan-w025-2026-03-14.md",
-    "dispatched_at": "2026-03-14T20:54:34.643Z",
+    "_planFileName": "plan-w025-2026-03-15.md",
+    "dispatched_at": "2026-03-15T03:01:05.548Z",
     "dispatched_to": "ripley",
-    "failReason": "Orphaned — no process, silent for 1206s",
-    "failedAt": "2026-03-14T21:22:34.454Z"
+    "completedAt": "2026-03-15T03:17:35.377Z"
   }
 ]

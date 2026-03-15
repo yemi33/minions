@@ -182,3 +182,65 @@ _Processed 3 notes, 8 insights extracted, 0 duplicates removed._
   → see knowledge/conventions/2026-03-14-dallas-dallas-learnings-2026-03-14-w023-.md
 
 _Processed 3 notes, 8 insights extracted, 5 duplicates removed._
+
+---
+
+### 2026-03-15: Loop ID construction corrected; Bebop and OfficeAgent architecture mapped; PR naming conventions defined
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **PR naming standard**: Use type prefix (feat, fix, design) and branch convention `user/yemishin/<feature name or bug description>`. _(yemishin)_
+  → see `knowledge/reviews/2026-03-15-yemishin-generated-pr-title-should-have-type-of-pr-feat-fix.md`
+
+- **Windows bash escaping in Node.js**: Avoid `String.raw` template literals inline with bash `-e`; use forward slashes or heredocs for Windows paths in Node.js eval commands. _(Dallas)_
+  → see `knowledge/project-notes/2026-03-15-dallas-dallas-learnings-w024-2026-03-14-.md`
+
+- **Bebop feature-first pattern**: Co-locate components, hooks, atoms, and server functions under `apps/bebop/src/features/cowork/`; avoid barrel files. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **Protocol adapter pattern**: Explicit adapter layer required to bridge OfficeAgent messages to Bebop state model; avoid tight coupling. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **Dual state model in UI**: Combine Jotai (local UI) with SharedTree DDS (collaborative state) to match Bebop's existing TanStack Query + Jotai split. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+#### Architecture Notes
+- **Loop ID construction corrected**: WorkspaceId = raw base64-encoded `w` field from nav parameter (NOT `ODSP|base64(domain,driveId)`, which returns 422); pageId = base64(domain,driveId,itemId) with comma separator. _(Dallas)_
+  → see `knowledge/project-notes/2026-03-15-dallas-dallas-learnings-w024-2026-03-14-.md`
+
+- **Bebop streaming dual-mode**: Token-by-token via `writeAtCursor` + authoritative markdown snapshots via `snapshot`; responses serialized as HTML + inline `<script type="application/json">` metadata. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **OfficeAgent CoT is file-based only**: `trackChainOfThought()` writes to `.claude/cot.jsonl`; streaming to clients not implemented (no WebSocket types exist yet). _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **Loop Components are Fluid-based, not Office Add-ins**: Loaded via CDN manifest (2x/week) with `registrationId` and discovery; require dependency injection (token providers, code loaders, Fluid services). _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **OfficeAgent WebSocket protocol structure**: Messages use `Message<T> { type, id, sessionId, payload }`; key types: `llm_request/response`, `query_status`, `telemetry`, `mcp_request/response`; buffer limit 99MB. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **Workspace Agent pattern**: Two-phase design (`@workspace-planner` → `@workspace-generator`) with file-based handoff via `workspace_plan.json`; all artifacts as web experiences (HTML). _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **AugLoop integration status**: Only in test code (`.devtools/test-client`), not production; endpoints: Dev `localhost:11040`, Prod `augloop.svc.cloud.microsoft`. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+#### Bugs & Gotchas
+- **Cowork feature is entirely greenfield**: No protocol, routing, or UI exists in either office-bohemia or OfficeAgent codebase. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **CoT streaming to clients requires new WebSocket types**: Currently only file-based; adding real-time CoT to UI requires extending OfficeAgent message protocol. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **AugLoop for agent communication is unbuilt**: Test integration exists but production AugLoop transport for agent orchestration needs implementation from scratch. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **Cross-repo builds are independent pipelines**: office-bohemia (Yarn 4.12, different TS version) and OfficeAgent (Yarn 4.10.3) cannot share build artifacts. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+- **SharedTree schema changes require versioning strategy**: Once deployed, schema mutations demand careful migration planning; design schema first. _(Ripley)_
+  → see `knowledge/architecture/2026-03-15-ripley-ripley-learnings-2026-03-15.md`
+
+_Processed 3 notes, 17 insights extracted, 1 duplicate removed._
