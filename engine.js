@@ -2601,9 +2601,17 @@ function checkTimeouts(config) {
           completed_at: ts()
         });
 
-        // Run post-completion hooks
+        // Run post-completion hooks (same as proc.on('close') path)
         if (isSuccess) {
           const config = getConfig();
+          // Chain plan → plan-to-prd
+          if (item.type === 'plan' && item.meta?.item?.chain === 'plan-to-prd') {
+            chainPlanToPrd(item, item.meta, config);
+          }
+          // Check shared-branch plan completion
+          if (item.meta?.item?.branchStrategy === 'shared-branch') {
+            checkPlanCompletion(item.meta, config);
+          }
           syncPrsFromOutput(liveLog, item.agent, item.meta, config);
           checkForLearnings(item.agent, config.agents?.[item.agent], item.task);
           updateAgentHistory(item.agent, item, isSuccess ? 'success' : 'error');
