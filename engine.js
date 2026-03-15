@@ -1168,6 +1168,30 @@ function chainPlanToPrd(dispatchItem, meta, config) {
     log('info', `Plan chaining: using mtime fallback — found ${planFileName}`);
   }
 
+  // Enforce: plans must be .md — if agent wrote .json, rename it
+  if (planFileName.endsWith('.json')) {
+    const mdName = planFileName.replace(/\.json$/, '.md');
+    const jsonPath = path.join(planDir, planFileName);
+    const mdPath = path.join(planDir, mdName);
+    try {
+      // Check if the .json is actually a JSON PRD (has missing_features) — leave it alone
+      const content = fs.readFileSync(jsonPath, 'utf8');
+      const parsed = JSON.parse(content);
+      if (!parsed.missing_features) {
+        fs.renameSync(jsonPath, mdPath);
+        planFileName = mdName;
+        log('info', `Plan chaining: renamed ${planFileName} → ${mdName} (plans must be .md)`);
+      }
+    } catch {
+      // Not valid JSON — definitely should be .md
+      try {
+        fs.renameSync(jsonPath, path.join(planDir, mdName));
+        planFileName = mdName;
+        log('info', `Plan chaining: renamed to .md (not valid JSON)`);
+      } catch {}
+    }
+  }
+
   const planFile = { name: planFileName };
   const planPath = path.join(planDir, planFileName);
   let planContent;
@@ -3042,6 +3066,25 @@ function isAlreadyDispatched(key) {
  */
 function materializePlansAsWorkItems(config) {
   if (!fs.existsSync(PLANS_DIR)) return;
+
+  // Enforce: PRDs must be .json — auto-rename .md files that contain valid PRD JSON
+  try {
+    const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
+    for (const mf of mdFiles) {
+      try {
+        const content = fs.readFileSync(path.join(PLANS_DIR, mf), 'utf8').trim();
+        // Strip markdown code fences if agent wrapped JSON in them
+        const stripped = content.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+        const parsed = JSON.parse(stripped);
+        if (parsed.missing_features) {
+          const jsonName = mf.replace(/\.md$/, '.json');
+          fs.writeFileSync(path.join(PLANS_DIR, jsonName), JSON.stringify(parsed, null, 2));
+          fs.unlinkSync(path.join(PLANS_DIR, mf));
+          log('info', `Plan enforcement: renamed ${mf} → ${jsonName} (PRDs must be .json)`);
+        }
+      } catch {} // Not JSON — it's a proper plan .md, leave it
+    }
+  } catch {}
 
   let planFiles;
   try { planFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.json')); } catch { return; }

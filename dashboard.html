@@ -2248,8 +2248,11 @@ async function cmdSubmit() {
 
   const btn = document.getElementById('cmd-send-btn');
   btn.disabled = true;
-  btn.textContent = '...';
+  btn.textContent = 'Thinking...';
+  const triageTimer = setTimeout(() => { btn.textContent = 'Still thinking...'; }, 8000);
   const parsed = await cmdTriageAndSubmit(raw);
+  clearTimeout(triageTimer);
+  btn.textContent = 'Sending...';
 
   try {
     if (parsed.intent === 'note') {
