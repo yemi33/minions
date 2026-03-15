@@ -4291,6 +4291,130 @@ const commands = {
       }
     }
 
+    // Recovery sweep — fix broken state from unclean shutdown
+    (function recoverBrokenState() {
+      const projects = getProjects(config);
+      let fixes = 0;
+
+      // 1. Work items stuck in 'dispatched' with no matching active dispatch → reset to pending
+      const activeIds = new Set((dispatch.active || []).map(d => d.meta?.item?.id).filter(Boolean));
+      const allWiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      for (const p of projects) {
+        allWiPaths.push(path.join(p.localPath, '.squad', 'work-items.json'));
+      }
+      for (const wiPath of allWiPaths) {
+        try {
+          const items = safeJson(wiPath) || [];
+          let changed = false;
+          for (const item of items) {
+            if (item.status === 'dispatched' && !activeIds.has(item.id)) {
+              item.status = 'pending';
+              delete item.dispatched_at;
+              delete item.dispatched_to;
+              changed = true;
+              fixes++;
+              log('info', `Recovery: reset stuck item ${item.id} from dispatched → pending`);
+            }
+          }
+          if (changed) safeWrite(wiPath, items);
+        } catch {}
+      }
+
+      // 2. Plan tasks with chain:'plan-to-prd' that are done but have no plan-to-prd work item queued
+      try {
+        const centralItems = safeJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+        const hasPlanToPrd = centralItems.some(w => w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched'));
+        const donePlanChains = centralItems.filter(w =>
+          w.type === 'plan' && w.status === 'done' && w.chain === 'plan-to-prd'
+        );
+        if (donePlanChains.length > 0 && !hasPlanToPrd) {
+          // Check if the plan file exists but no PRD JSON was created
+          const planDir = path.join(SQUAD_DIR, 'plans');
+          const jsonFiles = fs.existsSync(planDir) ? fs.readdirSync(planDir).filter(f => f.endsWith('.json')) : [];
+          const mdFiles = fs.existsSync(planDir) ? fs.readdirSync(planDir).filter(f => f.endsWith('.md')) : [];
+
+          for (const planItem of donePlanChains) {
+            const expectedMd = planItem._planFileName;
+            // If plan .md exists but no .json PRD was generated, re-queue plan-to-prd
+            const mdExists = expectedMd ? fs.existsSync(path.join(planDir, expectedMd)) : mdFiles.length > 0;
+            if (mdExists && jsonFiles.length === 0) {
+              const planFile = expectedMd || mdFiles[mdFiles.length - 1];
+              const maxNum = centralItems.reduce((max, i) => {
+                const m = (i.id || '').match(/(\d+)$/);
+                return m ? Math.max(max, parseInt(m[1])) : max;
+              }, 0);
+              centralItems.push({
+                id: 'W' + String(maxNum + 1).padStart(3, '0'),
+                title: 'Convert plan to PRD: ' + (planItem.title || planFile),
+                type: 'plan-to-prd',
+                priority: 'high',
+                description: 'Plan file: plans/' + planFile + '\nRecovery: re-queued after engine restart',
+                status: 'pending',
+                created: ts(),
+                createdBy: 'engine:recovery',
+                project: planItem.project || '',
+                planFile: planFile,
+              });
+              safeWrite(path.join(SQUAD_DIR, 'work-items.json'), centralItems);
+              fixes++;
+              log('info', `Recovery: re-queued plan-to-prd for ${planFile} (chain was broken)`);
+              break; // only queue one at a time
+            }
+          }
+        }
+      } catch {}
+
+      // 3. Plan .md files with no .json PRD and no plan-to-prd in queue → queue one
+      try {
+        const centralItems = safeJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+        const pendingPlanToPrd = centralItems.filter(w => w.type === 'plan-to-prd' && w.status === 'pending');
+        if (pendingPlanToPrd.length === 0) {
+          const planDir = path.join(SQUAD_DIR, 'plans');
+          if (fs.existsSync(planDir)) {
+            const mdFiles = fs.readdirSync(planDir).filter(f => f.endsWith('.md'));
+            const jsonFiles = fs.readdirSync(planDir).filter(f => f.endsWith('.json'));
+            // For each .md plan, check if a corresponding .json PRD exists
+            for (const md of mdFiles) {
+              const base = md.replace(/\.md$/, '');
+              const hasJson = jsonFiles.some(j => j.includes(base) || j.includes(base.replace(/^plan-/, '')));
+              if (!hasJson) {
+                // No PRD for this plan — but only queue if not already done
+                const alreadyDone = centralItems.some(w =>
+                  w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === md
+                );
+                if (!alreadyDone) {
+                  const maxNum = centralItems.reduce((max, i) => {
+                    const m = (i.id || '').match(/(\d+)$/);
+                    return m ? Math.max(max, parseInt(m[1])) : max;
+                  }, 0);
+                  centralItems.push({
+                    id: 'W' + String(maxNum + 1).padStart(3, '0'),
+                    title: 'Convert plan to PRD: ' + md,
+                    type: 'plan-to-prd',
+                    priority: 'high',
+                    description: 'Plan file: plans/' + md + '\nRecovery: orphaned plan with no PRD',
+                    status: 'pending',
+                    created: ts(),
+                    createdBy: 'engine:recovery',
+                    project: '',
+                    planFile: md,
+                  });
+                  safeWrite(path.join(SQUAD_DIR, 'work-items.json'), centralItems);
+                  fixes++;
+                  log('info', `Recovery: queued plan-to-prd for orphaned plan ${md}`);
+                  break; // one at a time
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+
+      if (fixes > 0) {
+        console.log(`  Recovery: fixed ${fixes} broken state issue(s)`);
+      }
+    })();
+
     // Initial tick
     tick();
 
