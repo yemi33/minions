@@ -2865,8 +2865,7 @@ function renderPlans(plans) {
     // No else needed — whole card is clickable
 
     const isPaused = status === 'awaiting-approval';
-    const isApproved = status === 'approved' || status === 'active' || !status;
-    const pauseBtn = isApproved ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
+    const pauseBtn = isWorking ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(p.file) + '\')">Pause</button>' : '';
     const resumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
       'onclick="event.stopPropagation();planApprove(\'' + escHtml(p.file) + '\')">Resume</button>' : '';
