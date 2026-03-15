@@ -873,8 +873,11 @@ ${ctx.activeDispatch}
 
 - "work-item": A task for an agent. Types: ask, explore, fix, review, test, implement
 - "note": A decision, reminder, or knowledge to save (keywords: remember, note, don't forget)
-- "plan": Create a multi-step implementation plan (keywords: plan, design, architect)
-- "prd": Add a feature/backlog item to the PRD
+- "plan": Create a multi-step implementation plan that gets broken into tasks and auto-dispatched to agents.
+  Use this when the user wants to BUILD or IMPLEMENT something, especially from an existing plan/doc.
+  Keywords: plan, design, architect, implement this, build this, create PRD from, execute, make it happen
+- "prd": Add a SINGLE line-item to the backlog/feature list. Use ONLY for quick feature requests or ideas
+  that the user wants to track but not execute yet. Keywords: add to backlog, feature request, track this idea
 
 ## Rules
 
@@ -897,6 +900,9 @@ ${ctx.activeDispatch}
 8. Default branchStrategy for plans: "parallel"
 9. Be concise in title and description — the title should be action-oriented,
    the description should include any resolved references or context.
+10. "Create PRD from X", "implement X's plan", "execute the plan", "build from the plan"
+    → intent "plan", NOT "prd". These mean "take a plan and break it into executable tasks."
+    Only use "prd" for simple "add this idea to the backlog" requests.
 
 ## Output Format
 
@@ -941,7 +947,7 @@ User command: ${body.message}`;
       proc.stdout.on('data', d => { stdout += d.toString(); });
       proc.stderr.on('data', d => { stderr += d.toString(); });
 
-      const timeout = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 30000);
+      const timeout = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, 45000);
 
       proc.on('close', (code) => {
         clearTimeout(timeout);

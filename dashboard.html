@@ -2232,7 +2232,7 @@ async function cmdTriageAndSubmit(raw) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: raw }),
-      signal: AbortSignal.timeout(35000),
+      signal: AbortSignal.timeout(50000),
     });
     if (resp.ok) {
       const parsed = await resp.json();
