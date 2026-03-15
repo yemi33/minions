@@ -1179,6 +1179,21 @@ User command: ${body.message}`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/plans/delete — delete a plan file
+  if (req.method === 'POST' && req.url === '/api/plans/delete') {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      if (body.file.includes('..') || body.file.includes('/') || body.file.includes('\\')) {
+        return jsonReply(res, 400, { error: 'invalid filename' });
+      }
+      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
+      fs.unlinkSync(planPath);
+      return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/plans/revise — request revision with feedback, dispatches agent to revise
   if (req.method === 'POST' && req.url === '/api/plans/revise') {
     try {
