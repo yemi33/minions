@@ -3135,6 +3135,51 @@ function materializePlansAsWorkItems(config) {
   }
 }
 
+// ─── Work Discovery Helpers ──────────────────────────────────────────────────
+
+function buildBaseVars(agentId, config, project) {
+  return {
+    agent_id: agentId,
+    agent_name: config.agents[agentId]?.name || agentId,
+    agent_role: config.agents[agentId]?.role || 'Agent',
+    team_root: SQUAD_DIR,
+    repo_id: project?.repositoryId || config.project?.repositoryId || '',
+    project_name: project?.name || 'Unknown Project',
+    ado_org: project?.adoOrg || 'Unknown',
+    ado_project: project?.adoProject || 'Unknown',
+    repo_name: project?.repoName || 'Unknown',
+    main_branch: project?.mainBranch || 'main',
+    date: dateStamp(),
+  };
+}
+
+function selectPlaybook(workType, item) {
+  if (item?.branchStrategy === 'shared-branch' && (workType === 'implement' || workType === 'implement:large')) {
+    return 'implement-shared';
+  }
+  if (workType === 'review' && !item?._pr && !item?.pr_id) {
+    return 'work-item';
+  }
+  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
+  return typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
+}
+
+function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabel, meta) {
+  const vars = { ...buildBaseVars(agentId, config, project), ...extraVars };
+  const playbookName = type === 'test' ? 'build-and-test' : (type === 'review' ? 'review' : 'fix');
+  const prompt = renderPlaybook(playbookName, vars);
+  if (!prompt) return null;
+  return {
+    type,
+    agent: agentId,
+    agentName: config.agents[agentId]?.name,
+    agentRole: config.agents[agentId]?.role,
+    task: `[${project?.name || 'project'}] ${taskLabel}`,
+    prompt,
+    meta,
+  };
+}
+
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
@@ -3147,226 +3192,85 @@ function discoverFromPrs(config, project) {
   const cooldownMs = (src.cooldownMinutes || 30) * 60 * 1000;
   const newWork = [];
 
+  const projMeta = { name: project?.name, localPath: project?.localPath };
+
   for (const pr of prs) {
     if (pr.status !== 'active') continue;
 
-    // PRs needing review — use squad review state (not ADO reviewStatus which pollPrStatus manages)
+    const prNumber = (pr.id || '').replace(/^PR-/, '');
     const squadStatus = pr.squadReview?.status;
+
+    // PRs needing review
     const needsReview = !squadStatus || squadStatus === 'waiting';
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
 
-      // Extract numeric PR ID from "PR-NNNNN" format
-      const prNumber = (pr.id || '').replace(/^PR-/, '');
-      const vars = {
-        agent_id: agentId,
-        agent_name: config.agents[agentId]?.name || agentId,
-        agent_role: config.agents[agentId]?.role || 'Agent',
-        pr_id: pr.id,
-        pr_number: prNumber,
-        pr_title: pr.title || '',
-        pr_branch: pr.branch || '',
-        pr_author: pr.agent || '',
-        pr_url: pr.url || '',
-        main_branch: project?.mainBranch || 'main',
-        team_root: SQUAD_DIR,
-        repo_id: project?.repositoryId || config.project?.repositoryId || '',
-        project_name: project?.name || 'Unknown Project',
-        ado_org: project?.adoOrg || 'Unknown',
-        ado_project: project?.adoProject || 'Unknown',
-        repo_name: project?.repoName || 'Unknown'
-      };
-
-      const prompt = renderPlaybook('review', vars);
-      if (!prompt) continue;
-
-      newWork.push({
-        type: 'review',
-        agent: agentId,
-        agentName: config.agents[agentId]?.name,
-        agentRole: config.agents[agentId]?.role,
-        task: `[${project?.name || 'project'}] Review PR ${pr.id}: ${pr.title}`,
-        prompt,
-        meta: { dispatchKey: key, source: 'pr', pr, project: { name: project?.name, localPath: project?.localPath } }
-      });
-
-      setCooldown(key);
+      const item = buildPrDispatch(agentId, config, project, pr, 'review', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
+      }, `Review PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, project: projMeta });
+      if (item) { newWork.push(item); setCooldown(key); }
     }
 
-    // PRs with changes requested (by squad review) → route back to author for fix
+    // PRs with changes requested → route back to author for fix
     if (squadStatus === 'changes-requested') {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
-      const vars = {
-        agent_id: agentId,
-        agent_name: config.agents[agentId]?.name || agentId,
-        agent_role: config.agents[agentId]?.role || 'Agent',
-        pr_id: pr.id,
-        pr_branch: pr.branch || '',
+      const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+        pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.squadReview?.note || pr.reviewNote || 'See PR thread comments',
-        team_root: SQUAD_DIR,
-        repo_id: project?.repositoryId || config.project?.repositoryId || '',
-        project_name: project?.name || 'Unknown Project',
-        ado_org: project?.adoOrg || 'Unknown',
-        ado_project: project?.adoProject || 'Unknown',
-        repo_name: project?.repoName || 'Unknown'
-      };
-
-      const prompt = renderPlaybook('fix', vars);
-      if (!prompt) continue;
-
-      newWork.push({
-        type: 'fix',
-        agent: agentId,
-        agentName: config.agents[agentId]?.name,
-        agentRole: config.agents[agentId]?.role,
-        task: `[${project?.name || 'project'}] Fix PR ${pr.id} review feedback`,
-        prompt,
-        meta: { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
-      });
-
-      setCooldown(key);
+      }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); setCooldown(key); }
     }
 
-    // PRs with pending human feedback (@squad comments) → route to author for fix
+    // PRs with pending human feedback
     if (pr.humanFeedback?.pendingFix) {
       const key = `human-fix-${project?.name || 'default'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
-      const prNumber = (pr.id || '').replace(/^PR-/, '');
-      const vars = {
-        agent_id: agentId,
-        agent_name: config.agents[agentId]?.name || agentId,
-        agent_role: config.agents[agentId]?.role || 'Agent',
-        pr_id: pr.id,
-        pr_number: prNumber,
-        pr_title: pr.title || '',
-        pr_branch: pr.branch || '',
+      const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         reviewer: 'Human Reviewer',
         review_note: pr.humanFeedback.feedbackContent || 'See PR thread comments',
-        team_root: SQUAD_DIR,
-        repo_id: project?.repositoryId || config.project?.repositoryId || '',
-        project_name: project?.name || 'Unknown Project',
-        ado_org: project?.adoOrg || 'Unknown',
-        ado_project: project?.adoProject || 'Unknown',
-        repo_name: project?.repoName || 'Unknown'
-      };
-
-      const prompt = renderPlaybook('fix', vars);
-      if (!prompt) continue;
-
-      newWork.push({
-        type: 'fix',
-        agent: agentId,
-        agentName: config.agents[agentId]?.name,
-        agentRole: config.agents[agentId]?.role,
-        task: `[${project?.name || 'project'}] Fix PR ${pr.id} — human feedback`,
-        prompt,
-        meta: { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
-      });
-
-      // Clear pendingFix so it doesn't re-dispatch next tick
-      pr.humanFeedback.pendingFix = false;
-      setCooldown(key);
+      }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); pr.humanFeedback.pendingFix = false; setCooldown(key); }
     }
 
-    // PRs with build failures → route to any idle agent
+    // PRs with build failures
     if (pr.status === 'active' && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-
       const agentId = resolveAgent('fix', config);
       if (!agentId) continue;
 
-      const vars = {
-        agent_id: agentId,
-        agent_name: config.agents[agentId]?.name || agentId,
-        agent_role: config.agents[agentId]?.role || 'Agent',
-        pr_id: pr.id,
-        pr_branch: pr.branch || '',
+      const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+        pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`,
-        team_root: SQUAD_DIR,
-        repo_id: project?.repositoryId || config.project?.repositoryId || '',
-        project_name: project?.name || 'Unknown Project',
-        ado_org: project?.adoOrg || 'Unknown',
-        ado_project: project?.adoProject || 'Unknown',
-        repo_name: project?.repoName || 'Unknown'
-      };
-
-      const prompt = renderPlaybook('fix', vars);
-      if (!prompt) continue;
-
-      newWork.push({
-        type: 'fix',
-        agent: agentId,
-        agentName: config.agents[agentId]?.name,
-        agentRole: config.agents[agentId]?.role,
-        task: `[${project?.name || 'project'}] Fix build failure on PR ${pr.id}`,
-        prompt,
-        meta: { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
-      });
-
-      setCooldown(key);
+      }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); setCooldown(key); }
     }
 
     // Newly created PRs needing build & test verification
     if (!pr.buildTested) {
       const key = `build-test-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-
       const agentId = resolveAgent('test', config);
       if (!agentId) continue;
 
-      const prNumber = (pr.id || '').replace(/^PR-/, '');
-      const vars = {
-        agent_id: agentId,
-        agent_name: config.agents[agentId]?.name || agentId,
-        agent_role: config.agents[agentId]?.role || 'Agent',
-        pr_id: pr.id,
-        pr_number: prNumber,
-        pr_title: pr.title || '',
-        pr_branch: pr.branch || '',
-        pr_author: pr.agent || '',
-        pr_url: pr.url || '',
-        main_branch: project?.mainBranch || 'main',
-        team_root: SQUAD_DIR,
-        repo_id: project?.repositoryId || '',
-        project_name: project?.name || 'Unknown Project',
+      const item = buildPrDispatch(agentId, config, project, pr, 'test', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
         project_path: project?.localPath ? path.resolve(project.localPath) : '',
-        ado_org: project?.adoOrg || 'Unknown',
-        ado_project: project?.adoProject || 'Unknown',
-        repo_name: project?.repoName || 'Unknown',
-        date: dateStamp()
-      };
-
-      const prompt = renderPlaybook('build-and-test', vars);
-      if (!prompt) continue;
-
-      // Mark PR so we don't re-dispatch (written after loop)
-      pr.buildTested = 'dispatched';
-
-      newWork.push({
-        type: 'test',
-        agent: agentId,
-        agentName: config.agents[agentId]?.name,
-        agentRole: config.agents[agentId]?.role,
-        task: `[${project?.name || 'project'}] Build & test PR ${pr.id}: ${pr.title}`,
-        prompt,
-        meta: { dispatchKey: key, source: 'pr-build-test', pr, branch: pr.branch, project: { name: project?.name, localPath: project?.localPath } }
-      });
-
-      setCooldown(key);
+      }, `Build & test PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr-build-test', pr, branch: pr.branch, project: projMeta });
+      if (item) { pr.buildTested = 'dispatched'; newWork.push(item); setCooldown(key); }
     }
   }
 
@@ -3419,9 +3323,7 @@ function discoverFromWorkItems(config, project) {
     const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
     const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
     const vars = {
-      agent_id: agentId,
-      agent_name: config.agents[agentId]?.name || agentId,
-      agent_role: config.agents[agentId]?.role || 'Agent',
+      ...buildBaseVars(agentId, config, project),
       item_id: item.id,
       item_name: item.title || item.id,
       item_priority: item.priority || 'medium',
@@ -3434,16 +3336,8 @@ function discoverFromWorkItems(config, project) {
       scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
       branch_name: branchName,
       project_path: root,
-      main_branch: project?.mainBranch || 'main',
       worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', branchName),
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
-      team_root: SQUAD_DIR,
-      repo_id: project?.repositoryId || config.project?.repositoryId || '',
-      project_name: project?.name || 'Unknown Project',
-      ado_org: project?.adoOrg || 'Unknown',
-      ado_project: project?.adoProject || 'Unknown',
-      repo_name: project?.repoName || 'Unknown',
-      date: dateStamp(),
       notes_content: '',
     };
     try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
@@ -3463,18 +3357,9 @@ function discoverFromWorkItems(config, project) {
       vars.task_description = vars.task_description + resolvedCtx.additionalContext;
     }
 
-    // Select playbook: shared-branch items use implement-shared, others use type-specific or work-item
-    // Note: 'review' playbook is PR-specific — if this is a work item review (no PR), use work-item instead
-    let playbookName;
-    if (item.branchStrategy === 'shared-branch' && (workType === 'implement' || workType === 'implement:large')) {
-      playbookName = 'implement-shared';
-    } else if (workType === 'review' && !item._pr && !item.pr_id) {
-      // Review without a PR — use work-item playbook (review.md expects PR variables)
-      playbookName = 'work-item';
+    const playbookName = selectPlaybook(workType, item);
+    if (playbookName === 'work-item' && workType === 'review') {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
-    } else {
-      const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
-      playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
     }
     const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) {
@@ -3729,9 +3614,7 @@ function discoverCentralWorkItems(config) {
 
         const ap = assignedProject || projects[0];
         const vars = {
-          agent_id: agent.id,
-          agent_name: agent.name,
-          agent_role: agent.role,
+          ...buildBaseVars(agent.id, config, ap),
           item_id: item.id,
           item_name: item.title || item.id,
           item_priority: item.priority || 'medium',
@@ -3740,17 +3623,8 @@ function discoverCentralWorkItems(config) {
           additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
           scope_section: buildProjectContext(projects, assignedProject, true, agent.name, agent.role),
           project_path: ap?.localPath || '',
-          main_branch: ap?.mainBranch || 'main',
-          repo_id: ap?.repositoryId || '',
-          project_name: ap?.name || 'Unknown',
-          ado_org: ap?.adoOrg || 'Unknown',
-          ado_project: ap?.adoProject || 'Unknown',
-          repo_name: ap?.repoName || 'Unknown',
-          team_root: SQUAD_DIR,
-          date: dateStamp()
         };
 
-        // Inject ask-specific variables for the ask playbook
         if (workType === 'ask') {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
           vars.task_id = item.id;
@@ -3758,19 +3632,12 @@ function discoverCentralWorkItems(config) {
           try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
         }
 
-        // Resolve implicit context references
         const resolvedCtx = resolveTaskContext(item, config);
         if (resolvedCtx.additionalContext) {
           vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
         }
 
-        let playbookName;
-        if (workType === 'review' && !item._pr && !item.pr_id) {
-          playbookName = 'work-item';
-        } else {
-          const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
-          playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
-        }
+        const playbookName = selectPlaybook(workType, item);
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) {
           log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
@@ -3809,9 +3676,7 @@ function discoverCentralWorkItems(config) {
       const firstProject = projects[0];
 
       const vars = {
-        agent_id: agentId,
-        agent_name: agentName,
-        agent_role: agentRole,
+        ...buildBaseVars(agentId, config, firstProject),
         item_id: item.id,
         item_name: item.title || item.id,
         item_priority: item.priority || 'medium',
@@ -3823,14 +3688,6 @@ function discoverCentralWorkItems(config) {
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
         scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
-        main_branch: firstProject?.mainBranch || 'main',
-        repo_id: firstProject?.repositoryId || '',
-        project_name: firstProject?.name || 'Unknown',
-        ado_org: firstProject?.adoOrg || 'Unknown',
-        ado_project: firstProject?.adoProject || 'Unknown',
-        repo_name: firstProject?.repoName || 'Unknown',
-        team_root: SQUAD_DIR,
-        date: dateStamp(),
         notes_content: '',
       };
       try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
@@ -3882,13 +3739,7 @@ function discoverCentralWorkItems(config) {
         vars.task_description = vars.task_description + resolvedCtx.additionalContext;
       }
 
-      let playbookName;
-      if (workType === 'review' && !item._pr && !item.pr_id) {
-        playbookName = 'work-item';
-      } else {
-        const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask'];
-        playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
-      }
+      const playbookName = selectPlaybook(workType, item);
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) {
         log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
