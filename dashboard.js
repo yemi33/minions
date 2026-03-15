@@ -1793,6 +1793,109 @@ Answer concisely and directly. Follow these rules:
     return;
   }
 
+  // POST /api/projects/browse — open folder picker dialog, return selected path
+  if (req.method === 'POST' && req.url === '/api/projects/browse') {
+    try {
+      const { execSync } = require('child_process');
+      let selectedPath = '';
+      if (process.platform === 'win32') {
+        // PowerShell folder browser dialog
+        const ps = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select project folder'; $f.ShowNewFolderButton = $false; if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath } else { '' }`;
+        selectedPath = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000, windowsHide: true }).trim();
+      } else if (process.platform === 'darwin') {
+        selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
+      } else {
+        selectedPath = execSync(`zenity --file-selection --directory --title="Select project folder" 2>/dev/null`, { encoding: 'utf8', timeout: 120000 }).trim();
+      }
+      if (!selectedPath) return jsonReply(res, 200, { cancelled: true });
+      return jsonReply(res, 200, { path: selectedPath.replace(/\\/g, '/') });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
+  // POST /api/projects/add — auto-discover and add a project to config
+  if (req.method === 'POST' && req.url === '/api/projects/add') {
+    try {
+      const body = await readBody(req);
+      if (!body.path) return jsonReply(res, 400, { error: 'path required' });
+      const target = path.resolve(body.path);
+      if (!fs.existsSync(target)) return jsonReply(res, 400, { error: 'Directory not found: ' + target });
+
+      const configPath = path.join(SQUAD_DIR, 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (!config.projects) config.projects = [];
+
+      // Check if already linked
+      if (config.projects.find(p => path.resolve(p.localPath) === target)) {
+        return jsonReply(res, 400, { error: 'Project already linked at ' + target });
+      }
+
+      // Auto-discover from git repo
+      const { execSync: ex } = require('child_process');
+      const detected = { name: path.basename(target), _found: [] };
+      try {
+        const head = ex('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        detected.mainBranch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
+      } catch { detected.mainBranch = 'main'; }
+      try {
+        const remoteUrl = ex('git remote get-url origin', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        if (remoteUrl.includes('github.com')) {
+          detected.repoHost = 'github';
+          const m = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+          if (m) { detected.org = m[1]; detected.repoName = m[2]; }
+        } else if (remoteUrl.includes('visualstudio.com') || remoteUrl.includes('dev.azure.com')) {
+          detected.repoHost = 'ado';
+          const m = remoteUrl.match(/https:\/\/([^.]+)\.visualstudio\.com[^/]*\/([^/]+)\/_git\/([^/\s]+)/) ||
+                    remoteUrl.match(/https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/);
+          if (m) { detected.org = m[1]; detected.project = m[2]; detected.repoName = m[3]; }
+        }
+      } catch {}
+      try {
+        const pkgPath = path.join(target, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+          if (pkg.name) detected.name = pkg.name.replace(/^@[^/]+\//, '');
+        }
+      } catch {}
+      let description = '';
+      try {
+        const claudeMd = path.join(target, 'CLAUDE.md');
+        if (fs.existsSync(claudeMd)) {
+          const lines = fs.readFileSync(claudeMd, 'utf8').split('\n').filter(l => l.trim() && !l.startsWith('#'));
+          if (lines[0] && lines[0].length < 200) description = lines[0].trim();
+        }
+      } catch {}
+
+      const name = body.name || detected.name;
+      const prUrlBase = detected.repoHost === 'github'
+        ? (detected.org && detected.repoName ? `https://github.com/${detected.org}/${detected.repoName}/pull/` : '')
+        : (detected.org && detected.project && detected.repoName
+          ? `https://${detected.org}.visualstudio.com/DefaultCollection/${detected.project}/_git/${detected.repoName}/pullrequest/` : '');
+
+      const project = {
+        name, description, localPath: target.replace(/\\/g, '/'),
+        repoHost: detected.repoHost || 'ado', repositoryId: '',
+        adoOrg: detected.org || '', adoProject: detected.project || '',
+        repoName: detected.repoName || name, mainBranch: detected.mainBranch || 'main',
+        prUrlBase,
+        workSources: { pullRequests: { enabled: true, path: '.squad/pull-requests.json', cooldownMinutes: 30 }, workItems: { enabled: true, path: '.squad/work-items.json', cooldownMinutes: 0 } }
+      };
+
+      config.projects.push(project);
+      safeWrite(configPath, config);
+
+      // Create project-local state files
+      const squadDir = path.join(target, '.squad');
+      if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
+      const stateFiles = { 'pull-requests.json': '[]', 'work-items.json': '[]' };
+      for (const [f, content] of Object.entries(stateFiles)) {
+        const fp = path.join(squadDir, f);
+        if (!fs.existsSync(fp)) fs.writeFileSync(fp, content);
+      }
+
+      return jsonReply(res, 200, { ok: true, name, path: target, detected });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // GET /api/health — lightweight health check for monitoring
   if (req.method === 'GET' && req.url === '/api/health') {
     const engine = getEngineState();

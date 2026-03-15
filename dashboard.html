@@ -577,6 +577,7 @@
 <div id="projects-bar" style="background:var(--surface);border-bottom:1px solid var(--border);padding:8px 24px;display:flex;align-items:center;gap:12px;font-size:12px;">
   <span style="color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">Projects</span>
   <div id="projects-list" style="display:flex;gap:8px;flex-wrap:wrap;">—</div>
+  <button class="pr-pager-btn" style="font-size:9px;padding:2px 10px;margin-left:auto" onclick="addProject()">+ Add Project</button>
 </div>
 
 <div class="layout">
@@ -1528,6 +1529,26 @@ function renderProjects(projects) {
     '</span>'
   ).join('');
 
+}
+
+async function addProject() {
+  try {
+    // Open folder picker
+    const browseRes = await fetch('/api/projects/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const browseData = await browseRes.json();
+    if (browseData.cancelled || !browseData.path) return;
+
+    // Add the project
+    const addRes = await fetch('/api/projects/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: browseData.path })
+    });
+    const addData = await addRes.json();
+    if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
+
+    showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true);
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 // -- MCP Servers --
