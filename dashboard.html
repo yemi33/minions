@@ -96,6 +96,8 @@
   .plan-card.awaiting { border-left: 3px solid var(--yellow); }
   .plan-card.approved { border-left: 3px solid var(--green); }
   .plan-card.rejected { border-left: 3px solid var(--red); opacity: 0.6; }
+  .plan-card.working { border-left: 3px solid var(--blue); animation: planPulse 2s infinite; }
+  @keyframes planPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(88,166,255,0); } 50% { box-shadow: 0 0 0 4px rgba(88,166,255,0.2); } }
   .plan-card.revision-requested { border-left: 3px solid var(--purple); }
   .plan-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); }
   .plan-card-title { font-size: var(--text-lg); font-weight: 600; color: var(--text); }
@@ -2689,9 +2691,22 @@ function renderPlans(plans) {
   const statusLabels = { 'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected', 'revision-requested': 'Revision Requested', 'completed': 'Completed', 'active': 'Active' };
   const statusClass = (s) => s === 'awaiting-approval' ? 'awaiting' : s || '';
 
+  // Check which plans have active dispatches (plan-to-prd or implement from plan)
+  const activeDisp = (window._lastDispatch?.active || []);
+  const workingPlanFiles = new Set();
+  for (const d of activeDisp) {
+    const src = d.meta?.item?.sourcePlan || '';
+    if (src) workingPlanFiles.add(src);
+    // Also match plan-to-prd tasks by plan filename in task description
+    if (d.type === 'plan-to-prd' && d.task) {
+      for (const p of plans) { if (d.task.includes(p.file?.replace('.json', '') || '___')) workingPlanFiles.add(p.file); }
+    }
+  }
+
   el.innerHTML = plans.map(p => {
     const status = p.status || 'active';
-    const label = statusLabels[status] || status;
+    const isWorking = workingPlanFiles.has(p.file);
+    const label = isWorking ? 'In Progress' : (statusLabels[status] || status);
     const needsAction = status === 'awaiting-approval';
     const isRevision = status === 'revision-requested';
 
@@ -2717,11 +2732,11 @@ function renderPlans(plans) {
     const deleteBtn = '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>';
 
-    return '<div class="plan-card ' + statusClass(status) + '" style="cursor:pointer" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card ' + statusClass(status) + (isWorking ? ' working' : '') + '" style="cursor:pointer" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + '</div>' +
           '<div class="plan-card-meta">' +
-            '<span style="font-weight:600;color:' + (needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
+            '<span style="font-weight:600;color:' + (isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
             '<span>' + p.itemCount + ' items</span>' +
             '<span>' + escHtml(p.branchStrategy) + '</span>' +
