@@ -577,7 +577,6 @@
 <div id="projects-bar" style="background:var(--surface);border-bottom:1px solid var(--border);padding:8px 24px;display:flex;align-items:center;gap:12px;font-size:12px;">
   <span style="color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">Projects</span>
   <div id="projects-list" style="display:flex;gap:8px;flex-wrap:wrap;">—</div>
-  <button class="pr-pager-btn" style="font-size:9px;padding:2px 10px;margin-left:auto" onclick="addProject()">+ Add Project</button>
 </div>
 
 <div class="layout">
@@ -1497,6 +1496,7 @@ async function refresh() {
     renderArchiveButtons(data.archivedPrds || []);
     renderEngineStatus(data.engine);
     renderDispatch(data.dispatch);
+    window._lastDispatch = data.dispatch;
     renderEngineLog(data.engineLog || []);
     renderProjects(data.projects || []);
     renderMetrics(data.metrics || {});
@@ -1527,7 +1527,8 @@ function renderProjects(projects) {
       escHtml(p.name) +
       (p.description ? '<span style="color:var(--muted);font-weight:400;margin-left:6px;font-size:10px">' + escHtml(p.description.slice(0, 60)) + (p.description.length > 60 ? '...' : '') + '</span>' : '') +
     '</span>'
-  ).join('');
+  ).join('') +
+  '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--muted);font-weight:500;cursor:pointer;border-style:dashed">+ Add</span>';
 
 }
 
