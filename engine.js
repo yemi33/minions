@@ -616,6 +616,86 @@ function buildAgentContext(agentId, config, project) {
 
 // sanitizeBranch imported from shared.js
 
+// ─── Agent Output Parsing ────────────────────────────────────────────────────
+
+function parseAgentOutput(stdout) {
+  let resultSummary = '';
+  let taskUsage = null;
+  try {
+    const lines = stdout.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line || !line.startsWith('{')) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'result') {
+          if (obj.result) resultSummary = obj.result.slice(0, 500);
+          if (obj.total_cost_usd || obj.usage) {
+            taskUsage = {
+              costUsd: obj.total_cost_usd || 0,
+              inputTokens: obj.usage?.input_tokens || 0,
+              outputTokens: obj.usage?.output_tokens || 0,
+              cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
+              cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
+              durationMs: obj.duration_ms || 0,
+              numTurns: obj.num_turns || 0,
+            };
+          }
+          break;
+        }
+      } catch {}
+    }
+  } catch {}
+  return { resultSummary, taskUsage };
+}
+
+function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
+  const type = dispatchItem.type;
+  const meta = dispatchItem.meta;
+  const isSuccess = code === 0;
+  const result = isSuccess ? 'success' : 'error';
+  const { resultSummary, taskUsage } = parseAgentOutput(stdout);
+
+  // Update work item status on success
+  if (isSuccess && meta?.item?.id) {
+    updateWorkItemStatus(meta, 'done', '');
+  }
+
+  // Chain plan to plan-to-prd
+  if (isSuccess && type === 'plan' && meta?.item?.chain === 'plan-to-prd') {
+    chainPlanToPrd(dispatchItem, meta, config);
+  }
+
+  // Check shared-branch plan completion
+  if (isSuccess && meta?.item?.branchStrategy === 'shared-branch') {
+    checkPlanCompletion(meta, config);
+  }
+
+  // Scan output for PRs
+  let prsCreatedCount = 0;
+  if (isSuccess) {
+    prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
+  }
+
+  // Update PR status if relevant
+  if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
+  if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project);
+
+  // Check for learnings
+  checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
+
+  // Extract skills from output
+  if (isSuccess) {
+    extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
+  }
+
+  // Update agent history and metrics
+  updateAgentHistory(agentId, dispatchItem, result);
+  updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount);
+
+  return { resultSummary, taskUsage };
+}
+
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
@@ -767,34 +847,8 @@ function spawnAgent(dispatchItem, config) {
     safeWrite(archivePath, outputContent);
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
-    // Extract agent's final result text + token usage from stream-json output
-    let resultSummary = '';
-    let taskUsage = null;
-    try {
-      const lines = stdout.split('\n');
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (!line || !line.startsWith('{')) continue;
-        try {
-          const obj = JSON.parse(line);
-          if (obj.type === 'result') {
-            if (obj.result) resultSummary = obj.result.slice(0, 500);
-            if (obj.total_cost_usd || obj.usage) {
-              taskUsage = {
-                costUsd: obj.total_cost_usd || 0,
-                inputTokens: obj.usage?.input_tokens || 0,
-                outputTokens: obj.usage?.output_tokens || 0,
-                cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
-                cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
-                durationMs: obj.duration_ms || 0,
-                numTurns: obj.num_turns || 0,
-              };
-            }
-            break;
-          }
-        } catch {}
-      }
-    } catch {}
+    // Parse output and run all post-completion hooks
+    const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Update agent status
     setAgentStatus(agentId, {
@@ -811,45 +865,6 @@ function spawnAgent(dispatchItem, config) {
 
     // Move from active to completed in dispatch
     completeDispatch(id, code === 0 ? 'success' : 'error');
-
-    // Post-completion: update work item status on success
-    if (code === 0 && meta?.item?.id) {
-      updateWorkItemStatus(meta, 'done', '');
-    }
-
-    // Post-completion: chain plan → plan-to-prd if this was a plan task
-    if (code === 0 && type === 'plan' && meta?.item?.chain === 'plan-to-prd') {
-      chainPlanToPrd(dispatchItem, meta, config);
-    }
-
-    // Post-completion: check shared-branch plan completion
-    if (code === 0 && meta?.item?.branchStrategy === 'shared-branch') {
-      checkPlanCompletion(meta, config);
-    }
-
-    // Post-completion: scan output for PRs and sync to pull-requests.json
-    let prsCreatedCount = 0;
-    if (code === 0) {
-      prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
-    }
-
-    // Post-completion: update PR status if relevant
-    if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
-    if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project);
-
-    // Check for learnings
-    checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-
-    // Extract skills from output
-    if (code === 0) {
-      extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
-    }
-
-    // Update agent history
-    updateAgentHistory(agentId, dispatchItem, code === 0 ? 'success' : 'error');
-
-    // Update quality metrics
-    updateMetrics(agentId, dispatchItem, code === 0 ? 'success' : 'error', taskUsage, prsCreatedCount);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch {}
@@ -2573,17 +2588,16 @@ function checkTimeouts(config) {
         log('info', `Agent ${item.agent} (${item.id}) completed via output detection (${isSuccess ? 'success' : 'error'})`);
 
         // Extract output text for the output.log
-        const outputPath = path.join(AGENTS_DIR, item.agent, 'output.log');
+        const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
         try {
           const resultLine = liveLog.split('\n').find(l => l.includes('"type":"result"'));
           if (resultLine) {
             const result = JSON.parse(resultLine);
-            safeWrite(outputPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${result.result || '(no text)'}\n`);
+            safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${result.result || '(no text)'}\n`);
           }
         } catch {}
 
         completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');
-        if (item.meta?.item?.id) updateWorkItemStatus(item.meta, isSuccess ? 'done' : 'failed', '');
         setAgentStatus(item.agent, {
           status: 'done',
           task: item.task || '',
@@ -2591,22 +2605,8 @@ function checkTimeouts(config) {
           completed_at: ts()
         });
 
-        // Run post-completion hooks (same as proc.on('close') path)
-        if (isSuccess) {
-          const config = getConfig();
-          // Chain plan → plan-to-prd
-          if (item.type === 'plan' && item.meta?.item?.chain === 'plan-to-prd') {
-            chainPlanToPrd(item, item.meta, config);
-          }
-          // Check shared-branch plan completion
-          if (item.meta?.item?.branchStrategy === 'shared-branch') {
-            checkPlanCompletion(item.meta, config);
-          }
-          syncPrsFromOutput(liveLog, item.agent, item.meta, config);
-          checkForLearnings(item.agent, config.agents?.[item.agent], item.task);
-          updateAgentHistory(item.agent, item, isSuccess ? 'success' : 'error');
-          updateMetrics(item.agent, item, isSuccess ? 'success' : 'error');
-        }
+        // Run post-completion hooks via shared helper
+        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
 
         if (hasProcess) {
           try { activeProcesses.get(item.id)?.proc.kill('SIGTERM'); } catch {}
