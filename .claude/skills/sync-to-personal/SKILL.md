@@ -55,6 +55,12 @@ git rm --cached prd.json 2>/dev/null
 
 # Internal skills (org-specific, not for distribution)
 git rm -r --cached .claude/ 2>/dev/null
+
+# Org-specific squad skills
+git rm --cached skills/ado-pr-status-fetch.md 2>/dev/null
+
+# Knowledge base (session-specific learnings)
+git rm -r --cached knowledge/ 2>/dev/null
 ```
 
 ### 4. Ensure .gitignore excludes these on the clean branch
