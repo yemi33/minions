@@ -1511,7 +1511,7 @@ function renderDispatch(dispatch) {
           ? ' <button class="error-details-btn" data-agent="' + escHtml(agentId) + '" data-reason="' + escHtml(d.reason || 'No reason recorded') + '" data-task="' + escHtml((d.task || '').slice(0, 100)) + '" onclick="showErrorDetails(this.dataset.agent, this.dataset.reason, this.dataset.task)" title="View error details">details</button>'
           : '';
         return '<tr>' +
-          '<td style="font-family:Consolas;font-size:10px">' + escHtml((d.id || '').slice(0, 20)) + '</td>' +
+          '<td style="font-family:Consolas;font-size:10px" title="' + escHtml(d.id || '') + '">' + escHtml(d.id || '') + '</td>' +
           '<td><span class="dispatch-type ' + (d.type || '') + '">' + escHtml(d.type || '') + '</span></td>' +
           '<td>' + escHtml(d.agentName || d.agent || '') + '</td>' +
           '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml((d.task || '').slice(0, 60)) + '</td>' +
