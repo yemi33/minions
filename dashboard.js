@@ -874,14 +874,13 @@ ${ctx.activeDispatch}
 - "work-item": A task for an agent. Types: ask, explore, fix, review, test, implement
 - "note": A decision, reminder, or knowledge to save (keywords: remember, note, don't forget)
 - "plan": Create a multi-step implementation plan that gets broken into tasks and auto-dispatched to agents.
-  Use this when the user wants to BUILD or IMPLEMENT something, especially from an existing plan/doc.
-  Keywords: plan, design, architect, implement this, build this, create PRD from, execute, make it happen
-- "prd": Add a SINGLE line-item to the backlog/feature list. Use ONLY for quick feature requests or ideas
-  that the user wants to track but not execute yet. Keywords: add to backlog, feature request, track this idea
+  Use this when the user wants to BUILD, IMPLEMENT, or PLAN something, especially from an existing plan/doc.
+  Also use for PRD creation — "create PRD from X" means analyze and break into executable tasks.
+  Keywords: plan, design, architect, implement, build, create PRD, execute, make it happen, prd
 
 ## Rules
 
-1. Explicit prefixes override everything: /plan → plan, /note or /decide → note, /prd → prd
+1. Explicit prefixes override everything: /plan or /prd → plan, /note or /decide → note
 2. @mentions map to agent IDs. @everyone or @all → fanout=true
 3. #tags map to project names from the project list above
 4. !high or !urgent → priority "high"; !low → "low"; default "medium"
@@ -901,14 +900,13 @@ ${ctx.activeDispatch}
 9. Be concise in title and description — the title should be action-oriented,
    the description should include any resolved references or context.
 10. "Create PRD from X", "implement X's plan", "execute the plan", "build from the plan"
-    → intent "plan", NOT "prd". These mean "take a plan and break it into executable tasks."
-    Only use "prd" for simple "add this idea to the backlog" requests.
+    → all intent "plan". These mean "take a plan and break it into executable tasks."
 
 ## Output Format
 
 Respond with ONLY a JSON object, no markdown fences, no explanation:
 {
-  "intent": "work-item|note|plan|prd",
+  "intent": "work-item|note|plan",
   "title": "concise action title",
   "description": "additional context, resolved references",
   "type": "ask|explore|fix|review|test|implement",

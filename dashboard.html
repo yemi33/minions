@@ -1922,8 +1922,9 @@ function cmdParseInput(raw) {
       result.branchStrategy = 'parallel'; // default — items without depends_on get independent branches
     }
   } else if (/^\/prd\b/i.test(text)) {
-    result.intent = 'prd';
+    result.intent = 'plan';
     text = text.replace(/^\/prd\s*/i, '');
+    result.branchStrategy = 'parallel';
   }
 
   // Extract @mentions
@@ -2258,10 +2259,8 @@ async function cmdSubmit() {
   try {
     if (parsed.intent === 'note') {
       await cmdSubmitNote(parsed);
-    } else if (parsed.intent === 'plan') {
+    } else if (parsed.intent === 'plan' || parsed.intent === 'prd') {
       await cmdSubmitPlan(parsed);
-    } else if (parsed.intent === 'prd') {
-      await cmdSubmitPrd(parsed);
     } else {
       await cmdSubmitWorkItem(parsed);
     }
@@ -2342,26 +2341,6 @@ async function cmdSubmitPlan(parsed) {
   showToast('cmd-toast', 'Plan ' + data.id + ' dispatched' + agentLabel + ' (will chain → PRD → dispatch)', true);
 }
 
-async function cmdSubmitPrd(parsed) {
-  // Auto-generate PRD ID
-  const id = 'M' + String(Date.now()).slice(-4);
-  const res = await fetch('/api/prd-items', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      id,
-      name: parsed.title,
-      description: parsed.description || parsed.title,
-      priority: parsed.priority,
-      estimated_complexity: 'medium',
-      projects: parsed.projects || [],
-      rationale: '',
-    }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to add');
-  const projLabel = (parsed.projects || []).length > 0 ? ' (' + parsed.projects.join(', ') + ')' : '';
-  showToast('cmd-toast', 'PRD item ' + (data.id || id) + ' added' + projLabel, true);
-}
 // ─── Modal Q&A (Ask about document) ──────────────────────────────────────────
 
 let _modalDocContext = { title: '', content: '', selection: '' };
