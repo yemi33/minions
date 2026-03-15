@@ -2078,39 +2078,26 @@ function consolidateInbox(config) {
 // Spawns Claude (Haiku) to read all inbox notes + existing notes.md and produce
 // a smart, deduplicated, categorized digest. Falls back to regex if LLM fails.
 
-function consolidateWithLLM(items, existingNotes, files, config) {
-  _consolidationInFlight = true;
+function classifyInboxItem(name, content) {
+  const nameLower = (name || '').toLowerCase();
+  const contentLower = (content || '').toLowerCase();
+  if (nameLower.includes('review') || nameLower.includes('pr-') || nameLower.includes('pr4') || nameLower.includes('feedback')) return 'reviews';
+  if (nameLower.includes('build') || nameLower.includes('bt-') || contentLower.includes('build pass') || contentLower.includes('build fail') || contentLower.includes('lint')) return 'build-reports';
+  if (contentLower.includes('architecture') || contentLower.includes('design doc') || contentLower.includes('system design')) return 'architecture';
+  if (contentLower.includes('convention') || contentLower.includes('pattern') || contentLower.includes('always use') || contentLower.includes('best practice')) return 'conventions';
+  return 'project-notes';
+}
 
-  // Pre-classify items to generate KB paths for Haiku to reference
-  const kbPaths = items.map(item => {
-    const content = item.content || '';
-    const name = (item.name || '').toLowerCase();
-    const contentLower = content.toLowerCase();
-    let cat = 'project-notes';
-    if (name.includes('review') || name.includes('pr-') || name.includes('pr4') || name.includes('feedback')) cat = 'reviews';
-    else if (name.includes('build') || name.includes('bt-') || contentLower.includes('build pass') || contentLower.includes('build fail') || contentLower.includes('lint')) cat = 'build-reports';
-    else if (contentLower.includes('architecture') || contentLower.includes('design doc') || contentLower.includes('system design')) cat = 'architecture';
-    else if (contentLower.includes('convention') || contentLower.includes('pattern') || contentLower.includes('always use') || contentLower.includes('best practice')) cat = 'conventions';
-    const agentMatch = item.name.match(/^(\w+)-/);
-    const agent = agentMatch ? agentMatch[1] : 'unknown';
-    const titleMatch = content.match(/^#\s+(.+)/m);
-    const titleSlug = titleMatch ? titleMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50) : item.name.replace(/\.md$/, '');
-    return { file: item.name, category: cat, kbPath: `knowledge/${cat}/${dateStamp()}-${agent}-${titleSlug}.md` };
-  });
-
+function buildConsolidationPrompt(items, existingNotes, kbPaths) {
   const kbRefBlock = kbPaths.map(p => `- \`${p.file}\` → \`${p.kbPath}\``).join('\n');
-
-  // Build the prompt with all inbox notes
   const notesBlock = items.map(item =>
     `<note file="${item.name}">\n${(item.content || '').slice(0, 8000)}\n</note>`
   ).join('\n\n');
-
-  // Include tail of existing notes.md for dedup context
   const existingTail = existingNotes.length > 2000
     ? '...\n' + existingNotes.slice(-2000)
     : existingNotes;
 
-  const prompt = `You are a knowledge manager for a software engineering squad. Your job is to consolidate agent notes into team memory.
+  return `You are a knowledge manager for a software engineering squad. Your job is to consolidate agent notes into team memory.
 
 ## Inbox Notes to Process
 
@@ -2162,6 +2149,22 @@ Respond with ONLY the markdown below — no preamble, no explanation, no code fe
 _Processed N notes, M insights extracted, K duplicates removed._
 
 Use today's date: ${dateStamp()}`;
+}
+
+function consolidateWithLLM(items, existingNotes, files, config) {
+  _consolidationInFlight = true;
+
+  // Pre-classify items to generate KB paths for Haiku to reference
+  const kbPaths = items.map(item => {
+    const cat = classifyInboxItem(item.name, item.content);
+    const agentMatch = item.name.match(/^(\w+)-/);
+    const agent = agentMatch ? agentMatch[1] : 'unknown';
+    const titleMatch = (item.content || '').match(/^#\s+(.+)/m);
+    const titleSlug = titleMatch ? titleMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50) : item.name.replace(/\.md$/, '');
+    return { file: item.name, category: cat, kbPath: `knowledge/${cat}/${dateStamp()}-${agent}-${titleSlug}.md` };
+  });
+
+  const prompt = buildConsolidationPrompt(items, existingNotes, kbPaths);
 
   // Write prompt to temp file
   const promptPath = path.join(ENGINE_DIR, 'consolidate-prompt.md');
