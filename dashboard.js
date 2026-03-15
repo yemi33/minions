@@ -942,7 +942,7 @@ User command: ${body.message}`;
         spawnScript, promptPath, sysPath,
         '--output-format', 'text', '--max-turns', '1', '--model', 'haiku',
         '--permission-mode', 'bypassPermissions',
-      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, windowsHide: true });
 
       let stdout = '';
       let stderr = '';
@@ -1375,7 +1375,7 @@ Be concise. No preamble.`;
         spawnScript, promptPath, sysPath,
         '--output-format', 'text', '--max-turns', '1', '--model', 'haiku',
         '--permission-mode', 'bypassPermissions', '--verbose',
-      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, windowsHide: true });
 
       let stdout = '';
       let stderr = '';
@@ -1495,7 +1495,7 @@ ${isJson ? 'CRITICAL: The document section must be valid JSON. Do not add markdo
         spawnScript, promptPath, sysPath,
         '--output-format', 'text', '--max-turns', '1', '--model', 'haiku',
         '--permission-mode', 'bypassPermissions', '--verbose',
-      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, windowsHide: true });
 
       let stdout = '';
       let stderr = '';
@@ -1596,7 +1596,7 @@ Answer concisely and directly. Follow these rules:
         spawnScript, promptPath, sysPath,
         '--output-format', 'text', '--max-turns', '1', '--model', 'haiku',
         '--permission-mode', 'bypassPermissions', '--verbose',
-      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv });
+      ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: childEnv, windowsHide: true });
 
       let stdout = '';
       let stderr = '';
