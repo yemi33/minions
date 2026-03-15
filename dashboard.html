@@ -1921,10 +1921,6 @@ function cmdParseInput(raw) {
     } else {
       result.branchStrategy = 'parallel'; // default — items without depends_on get independent branches
     }
-  } else if (/^\/prd\b/i.test(text)) {
-    result.intent = 'plan';
-    text = text.replace(/^\/prd\s*/i, '');
-    result.branchStrategy = 'parallel';
   }
 
   // Extract @mentions

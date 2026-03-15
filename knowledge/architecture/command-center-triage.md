@@ -20,7 +20,7 @@ Haiku returns structured JSON:
   { intent, type, title, description, agents, priority, project, ... }
     |
     v
-Frontend routes to existing: cmdSubmitWorkItem / cmdSubmitNote / cmdSubmitPlan / cmdSubmitPrd
+Frontend routes to existing: cmdSubmitWorkItem / cmdSubmitNote / cmdSubmitPlan
     |
     v
 Existing API endpoints (/api/work-items, /api/notes, etc.) -- UNCHANGED
@@ -37,8 +37,7 @@ Existing API endpoints (/api/work-items, /api/notes, etc.) -- UNCHANGED
 |--------|---------|-----------|
 | `work-item` | Default. Types: ask, explore, fix, review, test, implement | `cmdSubmitWorkItem()` -> `/api/work-items` |
 | `note` | "remember", "note", "don't forget", `/note`, `/decide` | `cmdSubmitNote()` -> `/api/notes` |
-| `plan` | "plan", "design", "architect", `/plan` | `cmdSubmitPlan()` -> `/api/plan` |
-| `prd` | "prd", "backlog", `/prd` | `cmdSubmitPrd()` -> `/api/prd-items` |
+| `plan` | "plan", "design", "architect", "prd", `/plan` | `cmdSubmitPlan()` -> `/api/plan` |
 
 ## Context Sent to Haiku
 
@@ -55,7 +54,7 @@ Power user shortcuts are preserved in the Haiku system prompt rules:
 - `@everyone` / `@all` — fan-out
 - `#project` — tag project
 - `!high` / `!urgent` / `!low` — priority
-- `/plan`, `/note`, `/decide`, `/prd` — force intent
+- `/plan`, `/note`, `/decide` — force intent
 
 ## Fallback
 
@@ -93,12 +92,6 @@ build and test dallas's latest PR
 
 make a plan for adding progression UI to the cowork route --stack
 → { intent: "plan", branchStrategy: "shared-branch" }
-```
-
-**PRD items (product backlog):**
-```
-/prd Add feature flag gating for cowork route !high #office-bohemia
-→ { intent: "prd", title: "Add feature flag gating for cowork route", priority: "high", projects: ["office-bohemia"] }
 ```
 
 **Fan-out (parallel dispatch to all agents):**
