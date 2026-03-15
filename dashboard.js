@@ -178,60 +178,52 @@ function getPrdInfo() {
 
   const items = allPrdItems;
 
-  try {
-    const stat = fs.statSync(prdPath);
-    const data = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
-    const items = data.missing_features || [];
+  const byStatus = {};
+  items.forEach(item => {
+    const s = item.status || 'missing';
+    byStatus[s] = byStatus[s] || [];
+    byStatus[s].push({ id: item.id, name: item.name || item.title, priority: item.priority, complexity: item.estimated_complexity || item.size, status: s });
+  });
 
-    const byStatus = {};
-    items.forEach(item => {
-      const s = item.status || 'missing';
-      byStatus[s] = byStatus[s] || [];
-      byStatus[s].push({ id: item.id, name: item.name || item.title, priority: item.priority, complexity: item.estimated_complexity || item.size, status: s });
-    });
+  const complete = (byStatus['complete'] || []).length + (byStatus['completed'] || []).length + (byStatus['implemented'] || []).length;
+  const prCreated = (byStatus['pr-created'] || []).length;
+  const inProgress = (byStatus['in-progress'] || []).length + (byStatus['dispatched'] || []).length;
+  const planned = (byStatus['planned'] || []).length;
+  const missing = (byStatus['missing'] || []).length;
+  const total = items.length;
+  const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
-    const complete = (byStatus['complete'] || []).length + (byStatus['completed'] || []).length + (byStatus['implemented'] || []).length;
-    const prCreated = (byStatus['pr-created'] || []).length;
-    const inProgress = (byStatus['in-progress'] || []).length + (byStatus['dispatched'] || []).length;
-    const planned = (byStatus['planned'] || []).length;
-    const missing = (byStatus['missing'] || []).length;
-    const total = items.length;
-    const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
-
-    // Build PRD item → PR lookup from all project PRs
-    const allPrs = getPullRequests();
-    const prdToPr = {};
-    for (const pr of allPrs) {
-      for (const itemId of (pr.prdItems || [])) {
-        if (!prdToPr[itemId]) prdToPr[itemId] = [];
-        prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
-      }
+  // Build PRD item → PR lookup from all project PRs
+  const allPrs = getPullRequests();
+  const prdToPr = {};
+  for (const pr of allPrs) {
+    for (const itemId of (pr.prdItems || [])) {
+      if (!prdToPr[itemId]) prdToPr[itemId] = [];
+      prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
     }
-
-    const progress = {
-      total, complete, prCreated, inProgress, planned, missing, donePercent,
-      items: items.map(i => ({
-        id: i.id, name: i.name || i.title, priority: i.priority,
-        complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
-        projects: i.projects || [],
-        prs: prdToPr[i.id] || []
-      })),
-    };
-
-    const status = {
-      exists: true,
-      age: latestStat ? timeSince(latestStat.mtimeMs) : 'unknown',
-      existing: 0,
-      missing: items.filter(i => i.status === 'missing').length,
-      questions: 0,
-      summary: '',
-      missingList: items.filter(i => i.status === 'missing').map(f => ({ id: f.id, name: f.name || f.title, priority: f.priority, complexity: f.estimated_complexity || f.size })),
-    };
-
-    return { progress, status };
-  } catch {
-    return { progress: null, status: { exists: true, age: 'unknown', error: true } };
   }
+
+  const progress = {
+    total, complete, prCreated, inProgress, planned, missing, donePercent,
+    items: items.map(i => ({
+      id: i.id, name: i.name || i.title, priority: i.priority,
+      complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
+      projects: i.projects || [],
+      prs: prdToPr[i.id] || []
+    })),
+  };
+
+  const status = {
+    exists: true,
+    age: latestStat ? timeSince(latestStat.mtimeMs) : 'unknown',
+    existing: 0,
+    missing: items.filter(i => i.status === 'missing').length,
+    questions: 0,
+    summary: '',
+    missingList: items.filter(i => i.status === 'missing').map(f => ({ id: f.id, name: f.name || f.title, priority: f.priority, complexity: f.estimated_complexity || f.size })),
+  };
+
+  return { progress, status };
 }
 
 function getInbox() {
