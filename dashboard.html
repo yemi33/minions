@@ -2508,13 +2508,14 @@ function renderPlans(plans) {
       '</div>';
     } else if (isRevision) {
       actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
-    } else if (status === 'approved' || status === 'active') {
+    } else {
+      // All other statuses (approved, active, draft, completed) — always show View
       actions = '<div class="plan-card-actions"><button class="plan-btn" onclick="planView(\'' + escHtml(p.file) + '\')">View</button></div>';
     }
 
     return '<div class="plan-card ' + statusClass(status) + '">' +
       '<div class="plan-card-header">' +
-        '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + '</div>' +
+        '<div><div class="plan-card-title" style="cursor:pointer" onclick="planView(\'' + escHtml(p.file) + '\')">' + escHtml(p.summary || p.file) + '</div>' +
           '<div class="plan-card-meta">' +
             '<span style="font-weight:600;color:' + (needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
