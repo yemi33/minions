@@ -151,9 +151,45 @@ function getAgents() {
 }
 
 function getPrdInfo() {
-  // Squad-level PRD — single file at ~/.squad/prd.json
+  // Merge items from squad-level prd.json AND plan-generated PRDs in plans/*.json
   const prdPath = path.join(SQUAD_DIR, 'prd.json');
-  if (!fs.existsSync(prdPath)) return { progress: null, status: null };
+  const plansDir = path.join(SQUAD_DIR, 'plans');
+
+  // Collect all PRD items from all sources
+  let allPrdItems = [];
+  let prdExists = false;
+  let prdStat = null;
+
+  // Source 1: squad-level prd.json
+  if (fs.existsSync(prdPath)) {
+    prdExists = true;
+    try {
+      prdStat = fs.statSync(prdPath);
+      const data = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
+      (data.missing_features || []).forEach(f => allPrdItems.push({ ...f, _source: 'prd.json' }));
+    } catch {}
+  }
+
+  // Source 2: plans/*.json (plan-generated PRDs)
+  try {
+    const planFiles = fs.readdirSync(plansDir).filter(f => f.endsWith('.json'));
+    for (const pf of planFiles) {
+      try {
+        const plan = JSON.parse(fs.readFileSync(path.join(plansDir, pf), 'utf8'));
+        if (!plan.missing_features) continue;
+        prdExists = true;
+        if (!prdStat) try { prdStat = fs.statSync(path.join(plansDir, pf)); } catch {}
+        (plan.missing_features || []).forEach(f => allPrdItems.push({
+          ...f, _source: pf, _planStatus: plan.status || 'active',
+          _planSummary: plan.plan_summary || pf,
+        }));
+      } catch {}
+    }
+  } catch {}
+
+  if (!prdExists) return { progress: null, status: null };
+
+  const items = allPrdItems;
 
   try {
     const stat = fs.statSync(prdPath);
@@ -197,12 +233,12 @@ function getPrdInfo() {
 
     const status = {
       exists: true,
-      age: timeSince(stat.mtimeMs),
-      existing: data.existing_features?.length || 0,
-      missing: data.missing_features?.length || 0,
-      questions: data.open_questions?.length || 0,
-      summary: data.summary || '',
-      missingList: (data.missing_features || []).map(f => ({ id: f.id, name: f.name || f.title, priority: f.priority, complexity: f.estimated_complexity || f.size })),
+      age: prdStat ? timeSince(prdStat.mtimeMs) : 'unknown',
+      existing: 0,
+      missing: items.filter(i => i.status === 'missing').length,
+      questions: 0,
+      summary: '',
+      missingList: items.filter(i => i.status === 'missing').map(f => ({ id: f.id, name: f.name || f.title, priority: f.priority, complexity: f.estimated_complexity || f.size })),
     };
 
     return { progress, status };
@@ -909,37 +945,63 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/plans — list all plan files with status
+  // GET /api/plans — list all plan files (.json PRDs + .md raw plans)
   if (req.method === 'GET' && req.url === '/api/plans') {
     const plansDir = path.join(SQUAD_DIR, 'plans');
-    const files = safeReadDir(plansDir).filter(f => f.endsWith('.json'));
-    const plans = files.map(f => {
-      const plan = JSON.parse(safeRead(path.join(plansDir, f)) || '{}');
-      return {
-        file: f,
-        project: plan.project || '',
-        summary: plan.plan_summary || '',
-        status: plan.status || 'active',
-        branchStrategy: plan.branch_strategy || 'parallel',
-        featureBranch: plan.feature_branch || '',
-        itemCount: (plan.missing_features || []).length,
-        generatedBy: plan.generated_by || '',
-        generatedAt: plan.generated_at || '',
-        requiresApproval: plan.requires_approval || false,
-        revisionFeedback: plan.revision_feedback || null,
-      };
-    }).sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+    const allFiles = safeReadDir(plansDir).filter(f => f.endsWith('.json') || f.endsWith('.md'));
+    const plans = allFiles.map(f => {
+      const content = safeRead(path.join(plansDir, f)) || '';
+      const isJson = f.endsWith('.json');
+      if (isJson) {
+        try {
+          const plan = JSON.parse(content);
+          return {
+            file: f, format: 'prd',
+            project: plan.project || '',
+            summary: plan.plan_summary || '',
+            status: plan.status || 'active',
+            branchStrategy: plan.branch_strategy || 'parallel',
+            featureBranch: plan.feature_branch || '',
+            itemCount: (plan.missing_features || []).length,
+            generatedBy: plan.generated_by || '',
+            generatedAt: plan.generated_at || '',
+            requiresApproval: plan.requires_approval || false,
+            revisionFeedback: plan.revision_feedback || null,
+          };
+        } catch { return null; }
+      } else {
+        // .md raw plan — extract metadata from markdown
+        const titleMatch = content.match(/^#\s+(?:Plan:\s*)?(.+)/m);
+        const projectMatch = content.match(/\*\*Project:\*\*\s*(.+)/m);
+        const authorMatch = content.match(/\*\*Author:\*\*\s*(.+)/m);
+        const dateMatch = content.match(/\*\*Date:\*\*\s*(.+)/m);
+        return {
+          file: f, format: 'draft',
+          project: projectMatch ? projectMatch[1].trim() : '',
+          summary: titleMatch ? titleMatch[1].trim() : f.replace('.md', ''),
+          status: 'draft',
+          branchStrategy: '',
+          featureBranch: '',
+          itemCount: (content.match(/^\d+\.\s+\*\*/gm) || []).length,
+          generatedBy: authorMatch ? authorMatch[1].trim() : '',
+          generatedAt: dateMatch ? dateMatch[1].trim() : '',
+          requiresApproval: false,
+          revisionFeedback: null,
+        };
+      }
+    }).filter(Boolean).sort((a, b) => (b.generatedAt || '').localeCompare(a.generatedAt || ''));
     return jsonReply(res, 200, plans);
   }
 
-  // GET /api/plans/:file — read full plan JSON
+  // GET /api/plans/:file — read full plan (JSON or markdown)
   const planFileMatch = req.url.match(/^\/api\/plans\/([^?]+)$/);
   if (planFileMatch && req.method === 'GET') {
     const file = decodeURIComponent(planFileMatch[1]);
     if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
     const content = safeRead(path.join(SQUAD_DIR, 'plans', file));
     if (!content) return jsonReply(res, 404, { error: 'not found' });
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
+    res.setHeader('Content-Type', contentType + '; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content);
     return;
