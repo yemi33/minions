@@ -326,5 +326,35 @@
     "dispatched_at": "2026-03-15T05:41:40.330Z",
     "dispatched_to": "ripley",
     "completedAt": "2026-03-15T05:46:12.313Z"
+  },
+  {
+    "id": "W027",
+    "title": "Create PRD from Ripley's Plan",
+    "type": "plan",
+    "priority": "medium",
+    "description": "Take ripley's plan and break it into executable tasks. Reference: ripley's plan",
+    "status": "done",
+    "created": "2026-03-15T16:41:50.791Z",
+    "createdBy": "dashboard",
+    "chain": "plan-to-prd",
+    "branchStrategy": "parallel",
+    "_planFileName": "plan-w027-2026-03-15.md",
+    "dispatched_at": "2026-03-15T16:42:04.258Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-15T16:48:35.591Z"
+  },
+  {
+    "id": "W028",
+    "title": "Create PRD from Ripley's plan",
+    "type": "plan-to-prd",
+    "priority": "medium",
+    "description": "Convert Ripley's plan into PRD items and executable tasks",
+    "status": "failed",
+    "created": "2026-03-15T17:05:19.403Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-15T17:05:43.049Z",
+    "dispatched_to": "lambert",
+    "failReason": "Orphaned — no process, silent for 1488s",
+    "failedAt": "2026-03-15T17:31:57.293Z"
   }
 ]
