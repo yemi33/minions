@@ -827,8 +827,8 @@ const server = http.createServer(async (req, res) => {
         generated_by: 'dashboard',
         generated_at: new Date().toISOString().slice(0, 10),
         plan_summary: body.name,
-        status: 'awaiting-approval',
-        requires_approval: true,
+        status: 'approved',
+        requires_approval: false,
         branch_strategy: 'parallel',
         missing_features: [{
           id, name: body.name, description: body.description || '',

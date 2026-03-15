@@ -1155,14 +1155,14 @@ function chainPlanToPrd(dispatchItem, meta, config) {
   if (planFileName && fs.existsSync(path.join(planDir, planFileName))) {
     // Exact match from meta — no guessing
   } else {
-    // Fallback: find most recently modified .md file
+    // Fallback: find most recently modified plan file (.md or .json)
     const planFiles = fs.readdirSync(planDir)
-      .filter(f => f.endsWith('.md'))
+      .filter(f => f.endsWith('.md') || f.endsWith('.json'))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(planDir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     planFileName = planFiles[0]?.name;
     if (!planFileName) {
-      log('warn', `Plan chaining: no .md plan files found in plans/ after task ${dispatchItem.id}`);
+      log('warn', `Plan chaining: no plan files found in plans/ after task ${dispatchItem.id}`);
       return;
     }
     log('info', `Plan chaining: using mtime fallback — found ${planFileName}`);
@@ -1188,91 +1188,28 @@ function chainPlanToPrd(dispatchItem, meta, config) {
     return;
   }
 
-  // Resolve agent for plan-to-prd (typically Lambert)
-  const agentId = resolveAgent('plan-to-prd', config);
-  if (!agentId) {
-    // No agent available now — create a pending work item so engine picks it up on next tick
-    log('info', `Plan chaining: no agent available now, queuing plan-to-prd for next tick`);
-    const wiPath = path.join(SQUAD_DIR, 'work-items.json');
-    let items = [];
-    try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch {}
-    const maxNum = items.reduce((max, i) => {
-      const m = (i.id || '').match(/(\d+)$/);
-      return m ? Math.max(max, parseInt(m[1])) : max;
-    }, 0);
-    items.push({
-      id: 'W' + String(maxNum + 1).padStart(3, '0'),
-      title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
-      type: 'plan-to-prd',
-      priority: meta?.item?.priority || 'high',
-      description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
-      status: 'pending',
-      created: ts(),
-      createdBy: 'engine:chain',
-      project: targetProject.name,
-      planFile: planFile.name,
-    });
-    safeWrite(wiPath, items);
-    return;
-  }
-
-  // Build plan-to-prd vars and dispatch immediately
-  const vars = {
-    agent_id: agentId,
-    agent_name: config.agents[agentId]?.name || agentId,
-    agent_role: config.agents[agentId]?.role || '',
-    project_name: targetProject.name || 'Unknown',
-    project_path: targetProject.localPath || '',
-    main_branch: targetProject.mainBranch || 'main',
-    ado_org: targetProject.adoOrg || config.project?.adoOrg || 'Unknown',
-    ado_project: targetProject.adoProject || config.project?.adoProject || 'Unknown',
-    repo_name: targetProject.repoName || config.project?.repoName || 'Unknown',
-    team_root: SQUAD_DIR,
-    date: dateStamp(),
-    plan_content: planContent,
-    plan_summary: (meta?.item?.title || planFile.name).substring(0, 80),
-    project_name_lower: (targetProject.name || 'project').toLowerCase(),
-    branch_strategy_hint: meta?.item?.branchStrategy
-      ? `The user requested **${meta.item.branchStrategy}** strategy. Use this unless the analysis strongly suggests otherwise.`
-      : 'Choose the best strategy based on your analysis of item dependencies.',
-  };
-
-  if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
-
-  const prompt = renderPlaybook('plan-to-prd', vars);
-  if (!prompt) {
-    log('error', 'Plan chaining: could not render plan-to-prd playbook');
-    return;
-  }
-
-  const id = addToDispatch({
+  // Always queue as work item — let next tick handle dispatch (avoids nesting spawns inside proc.on('close'))
+  log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
+  const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+  let items = [];
+  try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch {}
+  const maxNum = items.reduce((max, i) => {
+    const m = (i.id || '').match(/(\d+)$/);
+    return m ? Math.max(max, parseInt(m[1])) : max;
+  }, 0);
+  items.push({
+    id: 'W' + String(maxNum + 1).padStart(3, '0'),
+    title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
     type: 'plan-to-prd',
-    agent: agentId,
-    agentName: config.agents[agentId]?.name,
-    agentRole: config.agents[agentId]?.role,
-    task: `[${targetProject.name}] Convert plan to PRD: ${vars.plan_summary}`,
-    prompt,
-    meta: {
-      source: 'chain',
-      chainedFrom: dispatchItem.id,
-      project: { name: targetProject.name, localPath: targetProject.localPath },
-      planFile: planFile.name,
-      planSummary: vars.plan_summary,
-    }
+    priority: meta?.item?.priority || 'high',
+    description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
+    status: 'pending',
+    created: ts(),
+    createdBy: 'engine:chain',
+    project: targetProject.name,
+    planFile: planFile.name,
   });
-
-  log('info', `Plan chaining: dispatched plan-to-prd ${id} → ${config.agents[agentId]?.name} (chained from ${dispatchItem.id})`);
-
-  // Spawn immediately if engine is running
-  const control = getControl();
-  if (control.state === 'running') {
-    const dispatch = getDispatch();
-    const item = dispatch.pending.find(d => d.id === id);
-    if (item) {
-      spawnAgent(item, config);
-      log('info', `Plan chaining: agent spawned immediately for ${id}`);
-    }
-  }
+  safeWrite(wiPath, items);
 }
 
 function updateWorkItemStatus(meta, status, reason) {
@@ -3188,10 +3125,11 @@ function materializePlansAsWorkItems(config) {
       if (planDerivedItems.length > 0) {
         const cycles = detectDependencyCycles(plan.missing_features);
         if (cycles.length > 0) {
-          log('warn', `Dependency cycle detected in plan ${file}: ${cycles.join(', ')} — clearing deps for cycling items`);
+          log('error', `Dependency cycle detected in plan ${file}: ${cycles.join(', ')} — marking cycling items as failed`);
           for (const wi of existingItems) {
             if (wi.sourcePlan === file && cycles.includes(wi.planItemId)) {
-              wi.depends_on = [];
+              wi.status = 'failed';
+              wi.failReason = `Dependency cycle detected: ${cycles.join(', ')}. Fix deps in plan and retry.`;
             }
           }
           safeWrite(wiPath, existingItems);
@@ -3786,7 +3724,10 @@ function discoverCentralWorkItems(config) {
         })
         .map(([id, info]) => ({ id, ...info }));
 
-      if (idleAgents.length === 0) continue;
+      if (idleAgents.length === 0) {
+        log('info', `Fan-out: all agents busy for ${item.id}, will retry next tick`);
+        continue; // Item stays pending, retried next tick
+      }
 
       const assignments = idleAgents.map((agent, i) => ({
         agent,
@@ -3842,7 +3783,10 @@ function discoverCentralWorkItems(config) {
           playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
         }
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
-        if (!prompt) continue;
+        if (!prompt) {
+          log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
+          continue;
+        }
 
         newWork.push({
           type: workType,
@@ -3940,7 +3884,11 @@ function discoverCentralWorkItems(config) {
         playbookName = typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
       }
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
-      if (!prompt) continue;
+      if (!prompt) {
+        log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
+        item.status = 'pending';
+        continue;
+      }
 
       newWork.push({
         type: workType,
