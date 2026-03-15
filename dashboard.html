@@ -1137,6 +1137,9 @@ function closeModal() {
   document.getElementById('modal').classList.remove('open');
   // Clear Q&A state
   _modalDocContext = { title: '', content: '', selection: '' };
+  _qaHistory = [];
+  _qaProcessing = false;
+  _qaQueue = [];
   document.getElementById('modal-qa-thread').innerHTML = '';
   document.getElementById('modal-qa-input').value = '';
   document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
@@ -2235,6 +2238,9 @@ async function cmdSubmitPrd(parsed) {
 
 let _modalDocContext = { title: '', content: '', selection: '' };
 let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
+let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{role:'assistant',text:''}]
+let _qaProcessing = false; // true while waiting for Haiku response
+let _qaQueue = []; // queued messages while processing
 
 // Track text selection anywhere in content areas for the floating "Ask about this" button
 document.addEventListener('mouseup', function(e) {
@@ -2311,7 +2317,7 @@ function clearQaSelection() {
   document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
 }
 
-async function modalSend() {
+function modalSend() {
   const input = document.getElementById('modal-qa-input');
   const message = input.value.trim();
   if (!message) return;
@@ -2330,22 +2336,41 @@ async function modalSend() {
   }
 
   const thread = document.getElementById('modal-qa-thread');
-  const btn = document.getElementById('modal-send-btn');
+  const selection = _modalDocContext.selection || '';
 
-  // Show message
+  // Show message in thread immediately
   let qHtml = '<div class="modal-qa-q">' + escHtml(message);
-  if (_modalDocContext.selection) {
-    qHtml += '<span class="selection-ref">Re: "' + escHtml(_modalDocContext.selection.slice(0, 100)) + ((_modalDocContext.selection.length > 100) ? '...' : '') + '"</span>';
+  if (selection) {
+    qHtml += '<span class="selection-ref">Re: "' + escHtml(selection.slice(0, 100)) + ((selection.length > 100) ? '...' : '') + '"</span>';
   }
   qHtml += '</div>';
   thread.innerHTML += qHtml;
+  thread.scrollTop = thread.scrollHeight;
+
+  // Clear input immediately so user can type next message
+  input.value = '';
+  _modalDocContext.selection = '';
+  document.getElementById('modal-qa-pill').style.display = 'none';
+
+  if (_qaProcessing) {
+    // Queue the message — show it as "queued" in the thread
+    _qaQueue.push({ message, selection });
+    thread.innerHTML += '<div class="modal-qa-loading" style="color:var(--muted);font-size:10px">Queued — will send after current response</div>';
+    thread.scrollTop = thread.scrollHeight;
+    return;
+  }
+
+  _processQaMessage(message, selection);
+}
+
+async function _processQaMessage(message, selection) {
+  const thread = document.getElementById('modal-qa-thread');
+  const btn = document.getElementById('modal-send-btn');
+  _qaProcessing = true;
 
   const loadingId = 'chat-loading-' + Date.now();
   thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '"><div class="dot-pulse"><span></span><span></span><span></span></div> Thinking...</div>';
   thread.scrollTop = thread.scrollHeight;
-
-  input.value = '';
-  btn.disabled = true;
 
   try {
     const res = await fetch('/api/doc-chat', {
@@ -2355,8 +2380,9 @@ async function modalSend() {
         message,
         document: _modalDocContext.content,
         title: _modalDocContext.title,
-        selection: _modalDocContext.selection || '',
+        selection: selection,
         filePath: _modalFilePath || null,
+        history: _qaHistory,
       }),
     });
     const data = await res.json();
@@ -2367,6 +2393,10 @@ async function modalSend() {
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
       const suffix = data.edited ? '\n\n✓ Document saved.' : '';
       thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + escHtml(data.answer + suffix) + '</div>';
+
+      // Track conversation history
+      _qaHistory.push({ role: 'user', text: message });
+      _qaHistory.push({ role: 'assistant', text: data.answer });
 
       // Refresh modal body if document was edited
       if (data.edited && data.content) {
@@ -2383,12 +2413,21 @@ async function modalSend() {
     thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '</div>';
   }
 
-  _modalDocContext.selection = '';
-  document.getElementById('modal-qa-pill').style.display = 'none';
-  input.placeholder = 'Ask or edit...';
-  btn.disabled = false;
+  _qaProcessing = false;
   thread.scrollTop = thread.scrollHeight;
-  input.focus();
+
+  // Process next queued message
+  if (_qaQueue.length > 0) {
+    const next = _qaQueue.shift();
+    // Remove the "Queued" indicator
+    const queuedEls = thread.querySelectorAll('.modal-qa-loading');
+    for (const el of queuedEls) {
+      if (el.textContent.includes('Queued')) { el.remove(); break; }
+    }
+    _processQaMessage(next.message, next.selection);
+  } else {
+    document.getElementById('modal-qa-input').focus();
+  }
 }
 
 // Override closeModal to clear Q&A state

@@ -1177,7 +1177,7 @@ ${currentContent.slice(0, 20000)}
 \`\`\`
 
 ${body.selection ? '## Highlighted Selection\n> ' + body.selection.slice(0, 1500) + '\n' : ''}
-
+${(body.history && body.history.length > 0) ? '## Conversation So Far\n\n' + body.history.map(h => (h.role === 'user' ? 'User: ' : 'Assistant: ') + h.text).join('\n\n') + '\n' : ''}
 ## User Message
 
 ${body.message}
