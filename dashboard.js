@@ -172,16 +172,7 @@ function getPrdInfo() {
     }
   } catch {}
 
-  // Also read legacy prd.json if it exists (backward compat)
-  const legacyPath = path.join(SQUAD_DIR, 'prd.json');
-  try {
-    if (fs.existsSync(legacyPath)) {
-      const data = JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-      (data.missing_features || []).forEach(f => allPrdItems.push({ ...f, _source: 'prd.json (legacy)' }));
-      const stat = fs.statSync(legacyPath);
-      if (!latestStat || stat.mtimeMs > latestStat.mtimeMs) latestStat = stat;
-    }
-  } catch {}
+  // Legacy prd.json removed — all PRD items now in plans/*.json
 
   if (allPrdItems.length === 0) return { progress: null, status: null };
 
@@ -294,29 +285,8 @@ function getPullRequests() {
 }
 
 function getArchivedPrds() {
-  const firstProject = PROJECTS[0];
-  const root = path.resolve(firstProject.localPath || path.resolve(SQUAD_DIR, '..'));
-  const prdSrc = firstProject.workSources?.prd || CONFIG.workSources?.prd || {};
-  const prdDir = path.dirname(path.resolve(root, prdSrc.path || 'docs/prd-gaps.json'));
-  const archiveDir = path.join(prdDir, 'archive');
-  return safeReadDir(archiveDir)
-    .filter(f => f.startsWith('prd-gaps') && f.endsWith('.json'))
-    .map(f => {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(archiveDir, f), 'utf8'));
-        const items = data.missing_features || [];
-        return {
-          file: f,
-          version: data.version || f.replace('prd-gaps-', '').replace('.json', ''),
-          summary: data.summary || '',
-          total: items.length,
-          existing_features: data.existing_features || [],
-          missing_features: items,
-          open_questions: data.open_questions || [],
-        };
-      } catch { return null; }
-    })
-    .filter(Boolean);
+  // All PRD items now in plans/*.json — no separate archive needed
+  return [];
 }
 
 function getEngineState() {

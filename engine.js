@@ -1784,24 +1784,28 @@ async function handlePostMerge(pr, project, config, newStatus) {
   // Only run remaining hooks for merged PRs (not abandoned)
   if (newStatus !== 'merged') return;
 
-  // 2. Update PRD item status to 'implemented' (squad-level PRD)
+  // 2. Update PRD item status to 'implemented' in plan files
   if (pr.prdItems?.length > 0) {
-    const prdPath = path.join(SQUAD_DIR, 'prd.json');
-    const prd = safeJson(prdPath);
-    if (prd?.missing_features) {
+    const plansDir = path.join(SQUAD_DIR, 'plans');
+    try {
+      const planFiles = fs.readdirSync(plansDir).filter(f => f.endsWith('.json'));
       let updated = 0;
-      for (const itemId of pr.prdItems) {
-        const feature = prd.missing_features.find(f => f.id === itemId);
-        if (feature && feature.status !== 'implemented') {
-          feature.status = 'implemented';
-          updated++;
+      for (const pf of planFiles) {
+        const plan = safeJson(path.join(plansDir, pf));
+        if (!plan?.missing_features) continue;
+        let changed = false;
+        for (const itemId of pr.prdItems) {
+          const feature = plan.missing_features.find(f => f.id === itemId);
+          if (feature && feature.status !== 'implemented') {
+            feature.status = 'implemented';
+            changed = true;
+            updated++;
+          }
         }
+        if (changed) safeWrite(path.join(plansDir, pf), plan);
       }
-      if (updated > 0) {
-        safeWrite(prdPath, prd);
-        log('info', `Post-merge: marked ${updated} PRD item(s) as implemented for ${pr.id}`);
-      }
-    }
+      if (updated > 0) log('info', `Post-merge: marked ${updated} PRD item(s) as implemented for ${pr.id}`);
+    } catch {}
   }
 
   // 3. Update agent metrics
@@ -2987,96 +2991,7 @@ function isAlreadyDispatched(key) {
   return recentCompleted.some(d => d.meta?.dispatchKey === key);
 }
 
-/**
- * Scan squad-level PRD (~/.squad/prd.json) for missing/planned items → queue implement tasks.
- * Items can span multiple projects via the `projects` array field.
- */
-function discoverFromPrd(config) {
-  const prdPath = path.join(SQUAD_DIR, 'prd.json');
-  const prd = safeJson(prdPath);
-  if (!prd) return [];
 
-  const cooldownMs = (config.workSources?.prd?.cooldownMinutes || 30) * 60 * 1000;
-  const statusFilter = config.workSources?.prd?.itemFilter?.status || ['missing', 'planned'];
-  const items = (prd.missing_features || []).filter(f => statusFilter.includes(f.status));
-  const newWork = [];
-  const skipped = { dispatched: 0, cooldown: 0, noAgent: 0, noProject: 0 };
-  const allProjects = config.projects || [];
-
-  for (const item of items) {
-    const key = `prd-squad-${item.id}`;
-    if (isAlreadyDispatched(key)) { skipped.dispatched++; continue; }
-    if (isOnCooldown(key, cooldownMs)) { skipped.cooldown++; continue; }
-
-    // Resolve target projects from item.projects array
-    const targetProjects = (item.projects || [])
-      .map(name => allProjects.find(p => p.name.toLowerCase() === name.toLowerCase()))
-      .filter(Boolean);
-    if (targetProjects.length === 0) { skipped.noProject++; continue; }
-
-    const workType = item.estimated_complexity === 'large' ? 'implement:large' : 'implement';
-    const agentId = resolveAgent(workType, config);
-    if (!agentId) { skipped.noAgent++; continue; }
-
-    // Primary project = first in the list (used for worktree, branch, PR)
-    const primary = targetProjects[0];
-    const root = path.resolve(primary.localPath);
-    const branchName = `feature/${item.id.toLowerCase()}-${item.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40)}`;
-
-    // Build related projects context for multi-project items
-    let relatedProjects = '';
-    if (targetProjects.length > 1) {
-      relatedProjects = targetProjects.map(p =>
-        `- **${p.name}** — ${path.resolve(p.localPath)} (${p.adoOrg}/${p.adoProject}/${p.repoName}, branch: ${p.mainBranch || 'main'})`
-      ).join('\n');
-    }
-
-    const vars = {
-      agent_id: agentId,
-      agent_name: config.agents[agentId]?.name || agentId,
-      agent_role: config.agents[agentId]?.role || 'Agent',
-      item_id: item.id,
-      item_name: item.name,
-      item_priority: item.priority || 'medium',
-      item_complexity: item.estimated_complexity || 'medium',
-      item_description: item.description || '',
-      branch_name: branchName,
-      project_path: root,
-      main_branch: primary.mainBranch || 'main',
-      worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', branchName),
-      commit_message: `feat(${item.id.toLowerCase()}): ${item.name}`,
-      team_root: SQUAD_DIR,
-      repo_id: primary.repositoryId || '',
-      project_name: targetProjects.map(p => p.name).join(', '),
-      ado_org: primary.adoOrg || 'Unknown',
-      ado_project: primary.adoProject || 'Unknown',
-      repo_name: primary.repoName || 'Unknown',
-      related_projects: relatedProjects,
-    };
-
-    const prompt = renderPlaybook('implement', vars);
-    if (!prompt) continue;
-
-    newWork.push({
-      type: workType,
-      agent: agentId,
-      agentName: config.agents[agentId]?.name,
-      agentRole: config.agents[agentId]?.role,
-      task: `[${vars.project_name}] Implement ${item.id}: ${item.name}`,
-      prompt,
-      meta: { dispatchKey: key, source: 'prd', branch: branchName, item, project: { name: primary.name, localPath: primary.localPath } }
-    });
-
-    setCooldown(key);
-  }
-
-  const skipTotal = skipped.dispatched + skipped.cooldown + skipped.noAgent + skipped.noProject;
-  if (skipTotal > 0) {
-    log('debug', `PRD discovery: skipped ${skipTotal} items (${skipped.dispatched} dispatched, ${skipped.cooldown} cooldown, ${skipped.noAgent} no agent, ${skipped.noProject} no project)`);
-  }
-
-  return newWork;
-}
 
 /**
  * Scan ~/.squad/plans/ for plan-generated PRD files → queue implement tasks.
@@ -3942,7 +3857,7 @@ function discoverWork(config) {
   }
 
   // Source 2: Squad-level PRD → implements (multi-project, called once outside project loop)
-  allImplements.push(...discoverFromPrd(config));
+  // PRD items now flow through plans/*.json → materializePlansAsWorkItems → discoverFromWorkItems
 
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
@@ -4474,7 +4389,7 @@ const commands = {
     });
 
     console.log(`Dispatched: ${id} → ${config.agents[agentId]?.name} (${agentId})`);
-    console.log('The agent will analyze your plan and generate docs/prd-gaps.json as a PR.');
+    console.log('The agent will analyze your plan and generate a PRD in plans/.');
 
     // Immediately dispatch if engine is running
     const control = getControl();
@@ -4619,7 +4534,7 @@ const commands = {
     console.log('\n=== Work Discovery (dry run) ===\n');
 
     materializePlansAsWorkItems(config);
-    const prdWork = discoverFromPrd(config);
+    // PRD discovery removed — all items flow through plans/*.json
     const prWork = discoverFromPrs(config);
     const workItemWork = discoverFromWorkItems(config);
 
