@@ -71,7 +71,8 @@
   .modal-qa-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .ask-selection-btn { display: none; position: fixed; z-index: 500; background: var(--blue); color: #fff; font-size: 11px; padding: 5px 12px; border-radius: 4px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
   .ask-selection-btn:hover { opacity: 0.9; }
-  .plan-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; }
+  .plan-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; transition: border-color 0.2s; }
+  .plan-card:hover { border-color: var(--blue); }
   .plan-card.awaiting { border-left: 3px solid var(--yellow, #d29922); }
   .plan-card.approved { border-left: 3px solid var(--green); }
   .plan-card.rejected { border-left: 3px solid var(--red); opacity: 0.6; }
