@@ -1656,23 +1656,32 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/skill?file=<name>.md&source=skills|project:<name>
+  // GET /api/skill?file=<name>&source=claude-code|project:<name>&dir=<path>
   if (req.method === 'GET' && req.url.startsWith('/api/skill?')) {
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
-    const source = params.get('source') || 'skills';
-    if (!file || file.includes('..') || file.includes('/') || file.includes('\\')) {
-      res.statusCode = 400; res.end('Invalid file'); return;
+    const dir = params.get('dir');
+    if (!file || file.includes('..')) { res.statusCode = 400; res.end('Invalid file'); return; }
+
+    let content = '';
+    if (dir) {
+      // Direct path from collectSkillFiles
+      const fullPath = path.join(dir.replace(/\//g, path.sep), file);
+      if (!fullPath.includes('..')) content = safeRead(fullPath) || '';
     }
-    let skillDir;
-    if (source.startsWith('project:')) {
-      const projName = source.replace('project:', '');
-      const proj = PROJECTS.find(p => p.name === projName);
-      skillDir = proj ? path.resolve(proj.localPath, '.claude', 'skills') : null;
-    } else {
-      skillDir = path.join(SQUAD_DIR, 'skills');
+    if (!content) {
+      // Fallback: search Claude Code skills, then project skills
+      const home = process.env.HOME || process.env.USERPROFILE || '';
+      const claudePath = path.join(home, '.claude', 'skills', file.replace('.md', '').replace('SKILL', ''), 'SKILL.md');
+      content = safeRead(claudePath) || '';
+      if (!content) {
+        const source = params.get('source') || '';
+        if (source.startsWith('project:')) {
+          const proj = PROJECTS.find(p => p.name === source.replace('project:', ''));
+          if (proj) content = safeRead(path.join(proj.localPath, '.claude', 'skills', file)) || '';
+        }
+      }
     }
-    const content = skillDir ? safeRead(path.join(skillDir, file)) : '';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content || 'Skill not found.');

@@ -707,13 +707,22 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
         }
       }
     } else {
-      const skillPath = path.join(SKILLS_DIR, filename);
+      // Write in Claude Code native format: ~/.claude/skills/<name>/SKILL.md
+      const claudeSkillsDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+      const skillDir = path.join(claudeSkillsDir, name.replace(/[^a-z0-9-]/g, '-'));
+      const skillPath = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillPath)) {
-        shared.safeWrite(skillPath, enrichedBlock);
-        e.log('info', `Extracted squad skill "${name}" from ${agentName} → ${filename}`);
+        // Convert to Claude Code format: only name + description in frontmatter
+        const description = m('description') || m('trigger') || `Auto-extracted skill from ${agentName}`;
+        const body = fmMatch[2] || '';
+        const ccContent = `---\nname: ${name}\ndescription: ${description}\n---\n\n${body.trim()}\n`;
+        if (!fs.existsSync(skillDir)) fs.mkdirSync(skillDir, { recursive: true });
+        shared.safeWrite(skillPath, ccContent);
+        e.log('info', `Extracted skill "${name}" from ${agentName} → ~/.claude/skills/${name.replace(/[^a-z0-9-]/g, '-')}/SKILL.md`);
       } else {
-        e.log('info', `Squad skill "${name}" already exists, skipping`);
+        e.log('info', `Skill "${name}" already exists, skipping`);
       }
+
     }
   }
 }

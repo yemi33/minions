@@ -58,7 +58,7 @@ If the task is purely exploratory (no deliverable requested), skip this step.
 - Use the appropriate MCP tools for PR creation — check available tools before starting.
 - Do NOT checkout branches in the main working tree — use worktrees.
 - Read `notes.md` for all team rules before starting.
-- If you discover a repeatable workflow, save it as a skill: squad-wide at `{{team_root}}/skills/<name>.md`, or project-specific at `<project>/.claude/skills/<name>.md` (requires PR)
+- If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it to ~/.claude/skills/)
 
 ## Team Decisions
 {{notes_content}}

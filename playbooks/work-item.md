@@ -65,7 +65,7 @@ Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{da
 - NEVER checkout branches in the main working tree — use worktrees
 - Use the repo host's MCP tools for PR creation — check available MCP tools before starting
 - Use PowerShell for build commands on Windows if applicable
-- If you discover a repeatable workflow, save it as a skill: squad-wide at `{{team_root}}/skills/<name>.md`, or project-specific at `<project>/.claude/skills/<name>.md` (requires PR)
+- If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it to ~/.claude/skills/)
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts during push or PR creation:
