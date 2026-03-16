@@ -1191,16 +1191,13 @@ function renderPrdProgress(prog) {
   let html = renderViewToggle() + activeKeys.map(renderGroup).join('');
 
   if (archivedKeys.length > 0) {
-    const prdOpen = window._archivedPrdOpen ? 'block' : 'none';
-    const arrow = window._archivedPrdOpen ? '&#9660;' : '&#9654;';
-    html += '<div style="margin-top:12px">' +
-      '<div onclick="window._archivedPrdOpen=!window._archivedPrdOpen;var el=document.getElementById(\'archived-prd\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';this.querySelector(\'span\').innerHTML=window._archivedPrdOpen?\'&#9660;\':\'&#9654;\'" ' +
-        'style="cursor:pointer;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;padding:4px 0">' +
-        '<span style="font-size:8px">' + arrow + '</span> Archived PRDs (' + archivedKeys.length + ')' +
-      '</div>' +
-      '<div id="archived-prd" style="display:' + prdOpen + '">' +
-        archivedKeys.map(renderGroup).join('') +
-      '</div>' +
+    // Store archived data for the modal
+    window._archivedPrdGroups = archivedKeys.map(k => grouped[k]);
+    window._archivedPrdRenderGroup = renderGroup;
+    html += '<div style="margin-top:8px;text-align:right">' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPrdModal()">' +
+        'View Archives (' + archivedKeys.length + ')' +
+      '</button>' +
     '</div>';
   }
 
@@ -1209,6 +1206,65 @@ function renderPrdProgress(prog) {
 
 let _prdItems = []; // cache for edit lookups
 function _cachePrdItems(prog) { _prdItems = prog?.items || []; }
+
+function openArchivedPrdModal() {
+  const groups = window._archivedPrdGroups || [];
+  const renderGroup = window._archivedPrdRenderGroup;
+  if (!groups.length || !renderGroup) return;
+
+  // If only one archived plan, show it directly
+  // If multiple, show a picker first
+  let html = '';
+  if (groups.length === 1) {
+    html = renderGroup(groups[0].file || Object.keys(groups[0])[0]);
+  } else {
+    // Picker: list archived plans, click to expand
+    html = '<div style="margin-bottom:12px;font-size:12px;color:var(--muted)">Select an archived PRD to view:</div>';
+    html += groups.map((g, i) => {
+      const done = g.items.filter(it => it.status === 'implemented' || it.status === 'complete').length;
+      const failed = g.items.filter(it => it.status === 'failed').length;
+      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
+        '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
+        '<div class="plan-card-meta">' +
+          (g.project ? '<span>' + escHtml(g.project) + '</span>' : '') +
+          '<span>' + g.items.length + ' items</span>' +
+          '<span style="color:var(--green)">' + done + ' done</span>' +
+          (failed ? '<span style="color:var(--red)">' + failed + ' failed</span>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  document.getElementById('modal-title').textContent = 'Archived PRDs';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
+}
+
+function showArchivedPrdDetail(idx) {
+  const groups = window._archivedPrdGroups || [];
+  const g = groups[idx];
+  if (!g) return;
+
+  // View mode toggle for archived
+  const isGraph = window._archivedPrdViewMode !== 'list';
+  const toggleHtml = '<div style="display:flex;gap:4px;margin-bottom:8px">' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'graph\';showArchivedPrdDetail(' + idx + ')">Graph</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'list\';showArchivedPrdDetail(' + idx + ')">List</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:auto" onclick="openArchivedPrdModal()">Back</button>' +
+  '</div>';
+
+  // Reuse the renderGroup logic — temporarily swap view mode
+  const prevMode = window._prdViewMode;
+  window._prdViewMode = isGraph ? 'graph' : 'list';
+  const renderGroup = window._archivedPrdRenderGroup;
+  const content = renderGroup ? renderGroup(g.file) : '<p>Error rendering</p>';
+  window._prdViewMode = prevMode;
+
+  document.getElementById('modal-title').textContent = g.summary || g.file;
+  document.getElementById('modal-body').innerHTML = toggleHtml + content;
+}
 
 async function prdItemEdit(source, itemId) {
   const item = _prdItems.find(i => i.source === source && i.id === itemId);
@@ -3422,20 +3478,46 @@ function renderPlans(plans) {
   let html = activePlans.map(renderPlanCard).join('');
 
   if (archivedPlans.length > 0) {
-    const plansOpen = window._archivedPlansOpen ? 'block' : 'none';
-    const arrow = window._archivedPlansOpen ? '&#9660;' : '&#9654;';
-    html += '<div style="margin-top:12px">' +
-      '<div onclick="window._archivedPlansOpen=!window._archivedPlansOpen;var el=document.getElementById(\'archived-plans\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';this.querySelector(\'span\').innerHTML=window._archivedPlansOpen?\'&#9660;\':\'&#9654;\'" ' +
-        'style="cursor:pointer;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;padding:4px 0">' +
-        '<span style="font-size:8px">' + arrow + '</span> Archived (' + archivedPlans.length + ')' +
-      '</div>' +
-      '<div id="archived-plans" style="display:' + plansOpen + '">' +
-        archivedPlans.map(renderPlanCard).join('') +
-      '</div>' +
+    window._archivedPlans = archivedPlans;
+    window._archivedPlanRenderer = renderPlanCard;
+    html += '<div style="margin-top:8px;text-align:right">' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPlansModal()">' +
+        'View Archives (' + archivedPlans.length + ')' +
+      '</button>' +
     '</div>';
   }
 
   el.innerHTML = html;
+}
+
+function openArchivedPlansModal() {
+  const plans = window._archivedPlans || [];
+  const render = window._archivedPlanRenderer;
+  if (!plans.length || !render) return;
+
+  const html = plans.map(p => {
+    const itemCount = p.itemCount || 0;
+    const completed = p.completedAt ? p.completedAt.slice(0, 10) : '';
+    return '<div class="plan-card" style="cursor:pointer;opacity:0.8" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+      '<div class="plan-card-header">' +
+        '<div><div class="plan-card-title" style="font-size:13px">' + escHtml(p.summary || p.file) + '</div>' +
+          '<div class="plan-card-meta">' +
+            '<span style="color:var(--green);font-weight:600">Completed</span>' +
+            (p.project ? '<span>' + escHtml(p.project) + '</span>' : '') +
+            '<span>' + itemCount + ' items</span>' +
+            (completed ? '<span>' + completed + '</span>' : '') +
+            (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  document.getElementById('modal-title').textContent = 'Archived Plans';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
 }
 
 async function planApprove(file) {
