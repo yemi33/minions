@@ -2001,7 +2001,13 @@ Use tools to dig deeper when the pre-loaded context isn't sufficient — e.g., r
       llm.trackEngineUsage('command-center', result.usage);
 
       if (result.code !== 0 || !result.text) {
-        return jsonReply(res, 200, { text: 'I had trouble processing that. Try again or rephrase.', actions: [] });
+        const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
+        const stderr = (result.stderr || '').slice(-300);
+        console.error(`[CC] LLM failed ${debugInfo}: ${stderr}`);
+        return jsonReply(res, 200, {
+          text: `I had trouble processing that ${debugInfo}. ${stderr ? 'Detail: ' + stderr.split('\n').pop() : 'Try again or rephrase.'}`,
+          actions: []
+        });
       }
 
       // Parse actions from ===ACTIONS=== delimiter at end of response
