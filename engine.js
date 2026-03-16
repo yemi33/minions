@@ -943,8 +943,8 @@ function areDependenciesMet(item, config) {
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
-    if (depItem.status === 'failed') return 'failed'; // Propagate failure
-    if (depItem.status !== 'done') return false;
+    if (depItem.status === 'failed' && (depItem._retryCount || 0) >= 3) return 'failed'; // Only cascade after retries exhausted
+    if (depItem.status !== 'done') return false; // Pending, dispatched, or retrying — wait
   }
   return true;
 }
@@ -1223,10 +1223,19 @@ function checkTimeouts(config) {
       const isActive = possibleKeys.some(k => activeKeys.has(k)) ||
         (dispatch.active || []).some(d => d.meta?.item?.id === item.id);
       if (!isActive) {
-        log('warn', `Reconcile: work item ${item.id} is "dispatched" but no active dispatch found — resetting to failed`);
-        item.status = 'failed';
-        item.failReason = 'Agent died or was killed';
-        item.failedAt = ts();
+        const retries = (item._retryCount || 0);
+        if (retries < 3) {
+          log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/3`);
+          item.status = 'pending';
+          item._retryCount = retries + 1;
+          delete item.dispatched_at;
+          delete item.dispatched_to;
+        } else {
+          log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
+          item.status = 'failed';
+          item.failReason = 'Agent died or was killed (3 retries exhausted)';
+          item.failedAt = ts();
+        }
         changed = true;
       }
     }

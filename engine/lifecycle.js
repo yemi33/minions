@@ -757,6 +757,27 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const { resultSummary, taskUsage } = parseAgentOutput(stdout);
 
   if (isSuccess && meta?.item?.id) updateWorkItemStatus(meta, 'done', '');
+  if (!isSuccess && meta?.item?.id) {
+    // Auto-retry: reset to pending if retries remain
+    const retries = (meta.item._retryCount || 0);
+    if (retries < 3) {
+      e.log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
+      updateWorkItemStatus(meta, 'pending', '');
+      // Increment retry counter on the source work item
+      try {
+        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+          ? path.join(e.SQUAD_DIR, 'work-items.json')
+          : meta.project?.localPath ? path.join(meta.project.localPath, '.squad', 'work-items.json') : null;
+        if (wiPath) {
+          const items = e.safeJson(wiPath) || [];
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) { wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to; shared.safeWrite(wiPath, items); }
+        }
+      } catch {}
+    } else {
+      updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+    }
+  }
   if (isSuccess && type === 'plan' && meta?.item?.chain === 'plan-to-prd') chainPlanToPrd(dispatchItem, meta, config);
   if (isSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 
