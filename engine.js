@@ -481,6 +481,45 @@ function buildAgentContext(agentId, config, project) {
     context += kbIndex + '\n';
   }
 
+  // Squad awareness: what's in flight, who's doing what, PR/work item state
+  const dispatch = getDispatch();
+  const activeItems = (dispatch.active || []).map(d =>
+    `- **${d.agent}**: ${d.type} — ${(d.task || '').slice(0, 100)}${d.agent === agentId ? ' ← (you)' : ''}`
+  );
+  if (activeItems.length > 0) {
+    context += `## Active Agents\n\n${activeItems.join('\n')}\n\n`;
+  }
+
+  // Recent completions (last 10) — so agents know what was just done
+  const recentCompleted = (dispatch.completed || []).slice(-10).reverse().map(d =>
+    `- **${d.agent}** ${d.result === 'success' ? 'completed' : 'failed'}: ${(d.task || '').slice(0, 80)}${d.resultSummary ? ' — ' + d.resultSummary.slice(0, 100) : ''}`
+  );
+  if (recentCompleted.length > 0) {
+    context += `## Recently Completed\n\n${recentCompleted.join('\n')}\n\n`;
+  }
+
+  // Active PRs across projects
+  const projects = getProjects(config);
+  const allPrs = [];
+  for (const p of projects) {
+    const prs = getPrs(p).filter(pr => pr.status === 'active');
+    for (const pr of prs) allPrs.push({ ...pr, _project: p.name });
+  }
+  if (allPrs.length > 0) {
+    const prLines = allPrs.map(pr =>
+      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${pr.reviewStatus || 'pending'}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}`
+    );
+    context += `## Active Pull Requests\n\n${prLines.join('\n')}\n\n`;
+  }
+
+  // Pending work items (so agents know what's queued)
+  const pendingItems = (dispatch.pending || []).slice(0, 15).map(d =>
+    `- ${d.type}: ${(d.task || '').slice(0, 80)}`
+  );
+  if (pendingItems.length > 0) {
+    context += `## Pending Work Queue (${(dispatch.pending || []).length} items)\n\n${pendingItems.join('\n')}${(dispatch.pending || []).length > 15 ? '\n- ... and ' + ((dispatch.pending || []).length - 15) + ' more' : ''}\n\n`;
+  }
+
   // Team notes (the big one — can be 50KB)
   if (notes) {
     context += `## Team Notes (MUST READ)\n\n${notes}\n\n`;
