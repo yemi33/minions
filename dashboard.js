@@ -595,6 +595,10 @@ ${ctx.activeDispatch}
 
 ## Rules
 
+0. CRITICAL: If the user is ASKING A QUESTION about the current state (why, what, which, how many,
+   what happened, what failed, what's blocking, status, progress, who is working on), use intent "answer".
+   Do NOT create a work item for questions. Only create work items when the user wants ACTION taken.
+   "Why did X fail?" = answer. "Fix X" = work-item. "What's blocking P011?" = answer. "Unblock P011" = work-item.
 1. Explicit prefixes override everything: /plan or /prd -> plan, /note or /decide -> note
 2. @mentions map to agent IDs. @everyone or @all -> fanout=true
 3. #tags map to project names from the project list above
