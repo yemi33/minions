@@ -150,7 +150,7 @@ function checkPlanCompletion(meta, config) {
 
     // Build per-project checkout commands: one worktree, merge all PR branches into it
     const checkoutBlocks = Object.entries(projectPrs).map(([name, { project: p, prs, mainBranch }]) => {
-      const wtPath = `${p.localPath}/../worktrees/verify-${planSlug}`;
+      const wtPath = `${p.localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
       const branches = prs.map(pr => pr.branch).filter(Boolean);
       const lines = [
         `# ${name} — merge ${branches.length} PR branch(es) into one worktree`,

@@ -592,7 +592,10 @@ function spawnAgent(dispatchItem, config) {
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
 
   if (branchName) {
-    worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', branchName);
+    // Unique worktree dir: project name + branch + dispatch uid suffix to avoid conflicts
+    const wtSuffix = id ? id.split('-').pop() : shared.uid();
+    const wtDirName = `${(project.name || 'default')}-${branchName}-${wtSuffix}`;
+    worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', wtDirName);
     try {
       if (!fs.existsSync(worktreePath)) {
         const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
@@ -1278,7 +1281,7 @@ function runCleanup(config, verbose = false) {
         // Match by directory name to branch (worktrees are named after branches)
         for (const branch of mergedBranches) {
           const branchSlug = branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
-          if (dir === branchSlug || dir === branch || branch.endsWith(dir)) {
+          if (dir === branchSlug || dir === branch || branch.endsWith(dir) || dir.includes(branchSlug)) {
             shouldClean = true;
             break;
           }
@@ -1856,7 +1859,7 @@ function discoverFromWorkItems(config, project) {
       scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
       branch_name: branchName,
       project_path: root,
-      worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', branchName),
+      worktree_path: path.resolve(root, config.engine?.worktreeRoot || '../worktrees', `${project?.name || 'default'}-${branchName}`),
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
       notes_content: '',
     };
