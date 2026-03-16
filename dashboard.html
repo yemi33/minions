@@ -1333,6 +1333,9 @@ function showArchivedPrdDetail(idx) {
 
   document.getElementById('modal-title').textContent = g.summary || g.file;
   document.getElementById('modal-body').innerHTML = toggleHtml + content;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
 }
 
 async function openVerifyGuide(file) {
