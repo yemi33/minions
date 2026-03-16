@@ -41,11 +41,19 @@ node ~/.squad/squad.js init
 ## Upgrading
 
 ```bash
+# Check if an update is available
+squad version
+
+# Update the npm package and apply changes
 npm update -g @yemi33/squad
 squad init --force
 ```
 
-This updates the engine, dashboard, and playbook files in `~/.squad/` while preserving your `config.json`, agent history, notes, and other runtime state. Only `.js` and `.html` files are overwritten; your customized `.md` files (charters, playbooks, routing) are kept.
+**What gets updated:** Engine code (`.js`, `.html`), new playbooks, new agent charters, new docs, `CHANGELOG.md`.
+
+**What's preserved:** Your `config.json`, agent history, notes, knowledge base, and any `.md` files you've customized (charters, playbooks, routing). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
+
+**What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
 
 ## Quick Start
 
@@ -109,7 +117,9 @@ squad work "Explore the codebase and document the architecture"
 
 | Command | Description |
 |---------|-------------|
-| `squad init` | Bootstrap `~/.squad/` then auto-scan for repos to add |
+| `squad init` | Bootstrap `~/.squad/` with default agents and config |
+| `squad init --force` | Upgrade engine code + add new files (preserves customizations) |
+| `squad version` | Show installed vs package version |
 | `squad scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
 | `squad add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
 | `squad remove <dir>` | Unlink a project |

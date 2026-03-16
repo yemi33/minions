@@ -1,40 +1,54 @@
 # Changelog
 
-## 0.1.x (2026-03-13)
+All notable changes to Squad are documented here. Versions are auto-published to npm on each sync.
 
-### npm Package & Distribution
-- **npm package `@yemi33/squad`** — install with `npm install -g @yemi33/squad` or `npx @yemi33/squad init`
-- **Unified CLI** (`bin/squad.js`) — single `squad` command for all operations: `squad init`, `squad start`, `squad dash`, `squad add`, `squad work`, etc.
-- **GitHub Action** — auto-publishes to npm on every push to master, with version bump from npm registry
-- **Sanitized distribution** — personal repo strips all session data (history, notes, decisions, work items, CLAUDE.md) for clean first-time user experience
-- **Hardcoded values removed** — no internal usernames, project names, or absolute paths in distributed code
+## 0.2.x (2026-03-15)
+
+### Upgrade System
+- **Smart upgrade** — `squad init --force` now copies new files, updates engine code, and preserves user customizations
+- **Version tracking** — `.squad-version` file tracks installed version for upgrade detection
+- **`squad version`** — shows installed vs package version, prompts to upgrade if outdated
+- **Upgrade summary** — shows what was updated, added, and preserved during upgrade
+- **New files auto-added** — new playbooks, charters, and docs added in updates are automatically installed
 
 ### Engine
 - **`/plan` command** — full pipeline: feature description → PRD items → agent dispatch across projects
-- **Shared feature branches** — dependency-aware dispatch ensures agents work on the same branch when tasks are related
-- **Human PR feedback loop** — `@squad` comments on PRs trigger agent fix tasks automatically
-- **Squad-level PRD** — multi-project PRD support, not just per-project
-- **`/ask` command** — ask questions via Command Center, get answers delivered to inbox
+- **Shared feature branches** — dependency-aware dispatch ensures agents work on the same branch
+- **Human PR feedback loop** — `@squad` comments on PRs trigger agent fix tasks
+- **Squad-level PRD** — multi-project PRD support
+- **`/ask` command** — ask questions via Command Center, get answers in inbox
 - **Auto-detect user questions** — drop `ask-*.md` files in inbox, engine routes to an agent
-- **Solo reviewer skip** — `@squad` keyword not required when you're the only reviewer on a PR
-- **decisions → notes rename** — consolidated knowledge base now uses `notes/` directory
+- **Solo reviewer skip** — `@squad` keyword not required when you're the only reviewer
+- **Knowledge base** — categorized agent learnings stored in `knowledge/` (architecture, conventions, reviews, etc.)
+- **Command Center triage** — natural language input auto-routed to the right command type
 - **Zombie engine elimination** — EPERM file lock fixes, stale PID detection, Windows-safe atomic writes
 - **ADO token auto-refresh** — handles expired Azure DevOps authentication tokens
-- **Output rotation** — agent output logs rotated to prevent disk bloat
 - **Cooldown system** — prevents re-dispatching recently completed work
 - **Post-merge cleanup** — automatically marks work items done when PRs merge
 - **Fan-out timeout** — configurable timeout for parallel multi-agent dispatches
-- **Idle agent alerts** — dashboard shows when agents have been idle too long
 
 ### Dashboard
 - **Responsive layout** — tablet and mobile breakpoints
-- **Mention popup improvements** — Tab cycling, wrap-around navigation, active highlight
+- **Mention popup** — Tab cycling, wrap-around navigation, repositioned below input
 - **Ghost-style send button** — cleaner Command Center UI
-- **Mention popup repositioned** — below input for better visibility
 - **Platform-aware launches** — browser and file manager commands adapt to OS
 - **Health check endpoint** — `/api/health` for monitoring
 
-### Documentation
-- Updated README with npm install instructions and unified CLI reference
-- Engine restart guide (`docs/engine-restart.md`)
-- Updated file layout, playbook table, and portability section
+### Distribution
+- **npm package `@yemi33/squad`** — install with `npm install -g @yemi33/squad`
+- **Unified CLI** — single `squad` command for all operations
+- **GitHub Action** — auto-publishes to npm on every push to master
+- **ADO integration docs** — Azure DevOps MCP server setup instructions in README
+
+## 0.1.0 (2026-03-11)
+
+### Initial Release
+- Five autonomous agents: Ripley (Lead), Dallas (Engineer), Lambert (Analyst), Rebecca (Architect), Ralph (Engineer)
+- Engine with 60s tick cycle, auto-discovery from PRs/PRDs/work items, priority-based dispatch
+- Web dashboard with live output streaming, agent cards, work items, PRD tracker, PR tracker
+- Playbooks: implement, review, fix, explore, test, build-and-test, plan-to-prd, work-item
+- Self-improvement loop: learnings inbox → consolidated notes, per-agent history, review feedback, quality metrics, auto-extracted skills
+- Git worktree workflow for all code changes
+- MCP server auto-sync from Claude Code settings
+- Fan-out dispatch for parallel multi-agent tasks
+- Heartbeat monitoring and automated cleanup

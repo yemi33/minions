@@ -37,10 +37,10 @@
     "playbooks/",
     "routing.md",
     "skills/README.md",
-    "skills/ado-pr-status-fetch.md",
     "squad.js",
     "team.md",
     "README.md",
-    "TODO.md"
+    "TODO.md",
+    "CHANGELOG.md"
   ]
 }
