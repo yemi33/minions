@@ -1279,11 +1279,12 @@ function openArchivedPrdModal() {
   const renderGroup = window._archivedPrdRenderGroup;
   if (!groups.length || !renderGroup) return;
 
-  // If only one archived plan, show it directly
+  // If only one archived plan, show detail directly
   // If multiple, show a picker first
   let html = '';
   if (groups.length === 1) {
-    html = renderGroup(groups[0].file || Object.keys(groups[0])[0]);
+    showArchivedPrdDetail(0);
+    return;
   } else {
     // Picker: list archived plans, click to expand
     html = '<div style="margin-bottom:12px;font-size:12px;color:var(--muted)">Select an archived PRD to view:</div>';
@@ -1337,7 +1338,8 @@ function showArchivedPrdDetail(idx) {
 async function openVerifyGuide(file) {
   try {
     const content = await fetch('/api/plans/' + encodeURIComponent(file)).then(r => r.text());
-    document.getElementById('modal-title').textContent = 'Manual Testing Guide';
+    document.getElementById('modal-title').innerHTML = 'Manual Testing Guide' +
+      ' <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px;vertical-align:middle" onclick="openArchivedPrdModal()">Back</button>';
     document.getElementById('modal-body').textContent = content;
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
