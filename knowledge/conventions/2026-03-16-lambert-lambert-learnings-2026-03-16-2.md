@@ -1,0 +1,53 @@
+---
+source: lambert-2026-03-16.md
+agent: lambert
+category: conventions
+date: 2026-03-16
+---
+
+# Lambert Learnings — 2026-03-16
+
+## PR-4972663: [E2E] Claude Cowork UX — office-bohemia (8 PRs merged)
+
+### Patterns Discovered
+
+1. **E2E integration PRs merge independent feature branches**: PR-4972663 merges 8 cowork PRs (feature gate, scaffold, protocol adapter, artifact preview, error handling, augloop annotations, loop component, shared tree) into `e2e/cowork-w025`. Cross-PR interface mismatches are expected and require a follow-up fix PR. (source: `git log master...FETCH_HEAD` showing merge commits like `64ae60bc`, `ea0c9d94`, `1130f4e2`, etc.)
+
+2. **Bebop cowork feature follows feature-first organization**: All cowork code under `apps/bebop/src/features/cowork/` with subdirectories: `atoms/`, `components/`, `hooks/`, `server/`, `serverFunctions/`, `types/`. No barrel files in the feature directory. (source: `apps/bebop/src/features/cowork/`)
+
+3. **Jotai state + dispatch pattern**: `connectionAtoms.ts` and `progressionAtoms.ts` use a sophisticated dispatch pattern — readonly action union types with a single dispatch atom that switches on action type. This is the Bebop-idiomatic alternative to Redux reducers. (source: `apps/bebop/src/features/cowork/atoms/connectionAtoms.ts`, `apps/bebop/src/features/cowork/atoms/progressionAtoms.ts`)
+
+4. **SharedTree schema with forward compatibility**: `coworkSchema.ts` uses `allowUnknownOptionalFields: true` on all schema objects, enabling schema evolution without breaking existing clients. Schema namespace: `com.microsoft.loopcomponent.cowork`, version: 1. (source: `packages/cowork-component/src/sharedTree/coworkSchema.ts`)
+
+5. **CoworkTreeAdapter dual-mode design**: Supports connected (SharedTree DDS) and local-only fallback modes. Uses EventEmitter for listener pattern with proper subscription cleanup via `deregisterCallbacks` array. (source: `packages/cowork-component/src/sharedTree/coworkTreeAdapter.ts`)
+
+### Gotchas
+
+- **Draft PRs cannot receive votes**: ADO returns `GitPullRequestDraftCannotVoteException` when attempting to vote on a draft PR. E2E PRs are often created as drafts. Must either publish the PR first or skip the vote step. (source: ADO REST API response for PR-4972663)
+
+- **Cross-PR import mismatch in streamingBridge.ts**: `streamingBridge.ts` imports `AugloopTransport`, `TransportConfig`, `TransportState` from `./augloopTransport`, but that file only exports `AugLoopAnnotationTransport`, `IAugLoopAnnotationProvider`, and `createAnnotationTransport`. This is a compilation-breaking integration gap from merging the annotation PR over the transport PR. (source: `apps/bebop/src/features/cowork/server/streamingBridge.ts:23-24`, `apps/bebop/src/features/cowork/server/augloopTransport.ts` exports)
+
+- **Dual feature gate with different keys**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` via `getFluidExperiencesSetting()`, while `_mainLayout.cowork.tsx` has a separate inline `isCoworkEnabled()` using `EnableBebopCowork` query param/localStorage. These are completely disconnected. (source: `apps/bebop/src/features/cowork/featureGates.ts:9`, `apps/bebop/src/routes/_mainLayout.cowork.tsx:18-40`)
+
+- **16 `as` type assertions violate CLAUDE.md guidelines**: 9 in `messageAdapter.ts` and 8 in `useCoworkStream.ts`. All are unsafe runtime casts that should use discriminated unions or type guards. (source: `apps/bebop/src/features/cowork/server/messageAdapter.ts:48,53,56,59,62,65,221,231,264`, `apps/bebop/src/features/cowork/hooks/useCoworkStream.ts:49,55,62,73,81,87,124,147`)
+
+- **Server functions are stubs**: `coworkSession.ts` has 3 TODO comments returning fake data — no actual OfficeAgent connection. Acceptable for demo but must be tracked. (source: `apps/bebop/src/features/cowork/serverFunctions/coworkSession.ts:27,40,56`)
+
+- **`as unknown as` double-cast in dependencies.ts**: `packages/cowork-component/src/dependencies.ts` lines 171, 175, 184 use `as unknown as` pattern for parent container delegation. Stronger code smell than single `as`. (source: `packages/cowork-component/src/dependencies.ts:171,175,184`)
+
+### Conventions to Follow
+
+- E2E integration branches should expect and document compilation errors from cross-PR merges
+- Feature gates should have a single source of truth — don't duplicate gate logic in route files
+- Mirrored protocol types should use string unions over enums (confirmed: `messageProtocol.ts` follows this correctly)
+- SharedTree schemas should set `allowUnknownOptionalFields: true` for forward compatibility
+
+### Review Summary
+
+- **Verdict**: APPROVE WITH SUGGESTIONS (vote: 5)
+- **Vote not submitted**: PR is in draft state — ADO blocks votes on draft PRs
+- **Review thread posted**: Thread ID 62197793
+- **Critical issue**: 1 (streamingBridge import mismatch — known cross-PR artifact)
+- **High issues**: 2 (16x `as` assertions; dual feature gate)
+- **Medium issues**: 2 (double-cast in dependencies.ts; stub server functions)
+- **Low issues**: 1 (Jest/Vite incompatibility in featureGates.test.ts)

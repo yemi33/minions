@@ -1,0 +1,169 @@
+---
+source: verify-2026-03-16.md
+agent: verify
+category: conventions
+date: 2026-03-16
+---
+
+# Manual Testing Guide
+
+**Date:** 2026-03-16 (re-verified)
+**Plan:** officeagent-2026-03-15.json — Claude Cowork UX in Bebop with OfficeAgent capabilities
+**Local Server:** http://localhost:3000/cowork?EnableBebopCowork=true
+**Restart Command (Bebop):** `cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15-ob/apps/bebop" && powershell.exe -Command "yarn dev:no-auth"`
+**Restart Command (Mock Server):** `cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15" && node .devtools/cowork-demo/dist/mock-transport/mock-augloop-server.js --scenario full_interactive --speed 0.5`
+
+## E2E Pull Requests
+
+- **PR-4972662** (OfficeAgent): https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4972662
+- **PR-4972663** (office-bohemia): https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663
+
+## Build Status
+
+| Project | Worktree Path | Build | Tests | Notes |
+|---------|--------------|-------|-------|-------|
+| OfficeAgent/message-protocol | `C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15` | PASS (3.71s) | 113 pass | Clean |
+| OfficeAgent/augloop-transport | `C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15` | PASS (3.41s) | 11 pass (1 suite fail) | Babel `import type` parse error in source tests — pre-existing |
+| OfficeAgent/cowork-demo | `C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15` | PASS | 49 pass | All 4 suites pass |
+| office-bohemia/Bebop | `C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15-ob` | FAIL (typecheck) | N/A | 17 TS errors in 5 cowork files from cross-PR integration; Vite dev mode works (esbuild skips type-check) |
+
+**Total tests: 173 pass** (message-protocol 113 + augloop-transport 11 + cowork-demo 49)
+
+## What to Test
+
+### P001: CoT + Ask-User Protocol Types
+**What changed:** New `ChainOfThoughtUpdatePayload`, `AskUserQuestionPayload`, `UserAnswerPayload` types in `@officeagent/message-protocol`
+**How to test:**
+1. Verify types compile: `cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15" && powershell.exe -Command "yarn workspace @officeagent/message-protocol build"`
+2. Run tests: `powershell.exe -Command "yarn workspace @officeagent/message-protocol test"`
+3. 113 tests should pass including 164 compile-time shape tests
+
+**Expected behavior:**
+- `CoTStreamEvent` discriminated union with `kind` field (step_started, step_completed, tool_use, thinking)
+- `Message<T>` for server→client, `ResponseMessage<T>` for client→server
+
+### P002: CoT WebSocket Streaming Handler
+**What changed:** `cot-stream-handler.ts` in `modules/api/src/websocket/handlers/`
+**How to test:**
+1. Handler registers in WebSocket router following 14-handler pattern
+2. Verify via cowork-demo mock server: start mock, connect from Bebop UI, observe CoT events streaming
+
+### P003: Ask-User-Question WebSocket Handler
+**What changed:** `ask-user-handler.ts` with bidirectional pause/resume lifecycle
+**How to test:**
+1. Start mock server with `--scenario ask_user`
+2. Open http://localhost:3000/cowork?EnableBebopCowork=true
+3. Send a message — mock server should send an ask-user question
+4. AskUserCard should appear with selectable option chips
+5. Select an option → card transitions to static answer summary
+
+### P004: AugLoop Transport Adapter
+**What changed:** `@officeagent/augloop-transport` module with exponential backoff + jitter reconnection
+**How to test:**
+1. Build: `powershell.exe -Command "yarn workspace @officeagent/augloop-transport build"`
+2. Test: `powershell.exe -Command "yarn workspace @officeagent/augloop-transport test"`
+3. 11 tests should pass
+
+### P005: Bebop Cowork Feature Gate
+**What changed:** Feature gate with three-level precedence: query param > localStorage > env var
+**How to test:**
+1. Navigate to http://localhost:3000/cowork (no param) → should redirect away (gate closed)
+2. Navigate to http://localhost:3000/cowork?EnableBebopCowork=true → three-panel layout appears
+3. Refresh without param → gate persists via localStorage
+4. Clear localStorage `EnableBebopCowork` key → gate closes again
+
+### P006: Cowork Feature Module Scaffold
+**What changed:** Three-panel layout under `apps/bebop/src/features/cowork/`
+**How to test:**
+1. Open http://localhost:3000/cowork?EnableBebopCowork=true
+2. Verify three panels visible: Chat (left), Progression (center), Artifacts (right)
+3. Panels should be responsive
+
+### P007: Mirrored Protocol Types (Bebop)
+**What changed:** `apps/bebop/src/features/cowork/types/messageProtocol.ts` mirrors OfficeAgent types
+**How to test:**
+1. Check file exists and uses string union types (not enums)
+2. All fields marked `readonly`
+3. `CoTStreamEvent` uses `kind` discriminant
+
+**Known issue:** 5 protocol type mismatches between Bebop and OfficeAgent wire format (SessionInit, FileInfo, Error payloads)
+
+### P008-P009: Progression Card & Protocol Adapter
+**What changed:** Progression step list with status icons, message adapter bridging OfficeAgent→Bebop state
+**How to test:**
+1. Start mock server with `--scenario full_interactive --speed 0.5`
+2. Open cowork page, send a message
+3. Observe progression steps appearing in center panel with status icons (checkmark/spinner/circle)
+
+### P010: Artifact Preview Panel
+**What changed:** Tabbed artifact display with sandboxed iframes and download buttons
+**How to test:**
+1. Run `full_interactive` scenario to completion
+2. Artifact tabs should appear in right panel
+3. Click tabs to switch between artifacts
+4. Download button should trigger file download
+
+### P011: Loop Component Wrapper
+**What changed:** `cowork-component` package wrapping cowork feature for Loop Component hosting
+**How to test:**
+1. Package exists at `packages/cowork-component/`
+2. Build should succeed (check for 0 test files — known gap)
+
+### P012: Host Integration Demo
+**What changed:** Mock transport and test fixtures in `.devtools/cowork-demo/`
+**How to test:**
+1. Run: `cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15" && powershell.exe -Command "yarn workspace @officeagent-tools/cowork-demo test"`
+2. 49 tests pass across 4 suites (fixtures, mock-augloop-server, host-environment, mock-token-provider)
+
+### P013: SharedTree DDS Schema
+**What changed:** Collaborative state schema with `allowUnknownOptionalFields: true` for forward compat
+**How to test:**
+1. CoworkTreeAdapter supports connected (SharedTree DDS) and local-only fallback modes
+2. Schema namespace: `com.microsoft.loopcomponent.cowork`, version 1
+
+### P014-P016: AugLoop Annotations, Telemetry, Error Handling
+**What changed:** Annotation integration, telemetry hooks, error boundary with connection resilience
+**How to test:**
+1. Open cowork page → useConnectionResilience should NOT cause input flashing (bug was fixed)
+2. Error states: disconnect mock server while connected → error boundary should display
+3. Reconnect mock server → should auto-reconnect
+
+### P017: OfficeAgent Cowork Flight Gate
+**What changed:** Flight-based feature gating via `OAGENT_FLIGHTS=cowork:true`
+**How to test:**
+1. Verify in registry that cowork features are gated behind flight flag
+
+## Integration Points
+
+1. **Mock AugLoop → Bebop UI**: WebSocket messages from mock server (ws://localhost:11040/ws) dispatch to Jotai atoms in Bebop. CoT events → chat panel, progression → step list, artifacts → artifact tabs.
+2. **Protocol type alignment**: Bebop mirrors OfficeAgent message types — 5 known mismatches need resolution before production.
+3. **Feature gate cascade**: Query param `EnableBebopCowork=true` → localStorage persistence → route access control.
+
+## Known Issues
+
+1. **17 TypeScript errors in office-bohemia** from cross-PR integration boundaries (streamingBridge.ts imports, useCoworkStream.ts atom references, CoworkErrorBoundary.tsx override modifier)
+2. **5 protocol type mismatches** between Bebop and OfficeAgent (SessionInit, SessionInitResponse, FileInfo, Error, CoT events)
+3. **Dual feature gate disconnect**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` vs route-level `EnableBebopCowork` query param
+4. **augloop-transport babel parse error** on source tests (pre-existing, needs `@babel/preset-typescript` update)
+5. **16 unsafe `as` type assertions** in messageAdapter.ts and useCoworkStream.ts
+6. **Jest/Vite incompatibility** in featureGates.test.ts (import.meta.env)
+7. **Mock server duplicate messages** in `full_interactive` scenario (low impact)
+8. **Demo WebSocket hook is NOT production code** — hardcoded `ws://localhost:11040`, must revert before merge
+
+## Quick Smoke Test
+
+1. **Start servers**: Run restart commands above (Bebop dev server + mock AugLoop server)
+2. **Open feature-gated page**: Navigate to http://localhost:3000/cowork?EnableBebopCowork=true
+3. **Verify three-panel layout**: Chat panel (left), progression panel (center), artifact panel (right)
+4. **Send a message**: Type in chat input, press Enter → observe CoT streaming in progression panel, ask-user card in chat
+5. **Interact with ask-user**: Select an option chip → card transitions to static answer → artifacts appear in right panel
+
+## Mock Server Scenarios
+
+| Scenario | Command suffix | Description |
+|----------|---------------|-------------|
+| `full_interactive` | `--scenario full_interactive --speed 0.5` | Full flow: ask-user → document creation |
+| `document_creation` | `--scenario document_creation` | Direct document creation |
+| `simple` | `--scenario simple` | Minimal response |
+| `error` | `--scenario error` | Error handling test |
+| `ask_user` | `--scenario ask_user` | Ask-user question only |

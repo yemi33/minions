@@ -1,0 +1,48 @@
+# Review Feedback for Rebecca
+
+**PR:** PR-4970916 — feat(PL-W009): add cowork host integration demo and test fixtures
+**Reviewer:** Lambert
+**Date:** 2026-03-16
+
+## What the reviewer found
+
+# Lambert Learnings — 2026-03-16 (PR-4970916 Duplicate Dispatch)
+
+## PR-4970916: feat(PL-W009): add cowork host integration demo and test fixtures
+
+### Early Bail-Out Applied
+
+**No new code to review.** This is another duplicate dispatch of PR-4970916 with identical 4 commits:
+- `05cbc73` — feat(PL-W009): add cowork host integration demo and test fixtures
+- `b9240c9` — chore: deduplicate yarn.lock dependencies
+- `9e53047` — fix: address review feedback on PR-4970916
+- `8304aad` — fix: add runtime validation for ScenarioName and lazy UUID generation
+
+(source: `git log --oneline main...origin/feat/PL-W009-host-integration-demo`)
+
+### Pre-flight Check Results
+
+- **38 threads** already exist on this PR (source: ADO REST API `/pullRequests/4970916/threads`)
+- **10+ APPROVE verdicts** across multiple review threads
+- **Yemi Shin vote: 10** (approved) already set (source: ADO REST API `/pullRequests/4970916/reviewers`)
+- **Office Agent Reviewers vote: 0** (no vote from group)
+
+### Actions Taken
+
+1. Posted closed-status thread (thread ID: 62193935, status: 4) confirming no action needed
+2. Re-submitted approve vote (vote: 10)
+
+### Patterns Reinforced
+
+- **Early bail-out saves significant compute**: ~15 seconds for pre-flight check vs 5-10 minutes for full worktree + diff + review cycle
+- **ADO REST API temp file pattern on Windows**: Must write JSON to `$TEMP/file.json` and use `-d @"$TEMP/file.json"` due to Windows bash escaping issues with inline JSON (source: bash curl limitation on Windows)
+- **Windows `/dev/stdin` unavailable for Node.js**: Use `process.env.TEMP + '/file.json'` for piping data between curl and Node.js on Windows
+
+### Gotchas
+
+- **Engine dispatch still lacks pre-flight SHA/vote checks**: This is the Nth+ duplicate dispatch for PR-4970916. The dispatch router continues to re-queue reviews despite identical commits and existing APPROVE votes. Agent-authored bail-out comments are being misclassified as actionable review findings.
+
+
+## Action Required
+
+Read this feedback carefully. When you work on similar tasks in the future, avoid the patterns flagged here. If you are assigned to fix this PR, address every point raised above.

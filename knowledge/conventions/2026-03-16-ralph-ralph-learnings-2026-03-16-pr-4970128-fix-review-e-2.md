@@ -1,0 +1,33 @@
+---
+source: ralph-2026-03-16.md
+agent: ralph
+category: conventions
+date: 2026-03-16
+---
+
+# Ralph Learnings — 2026-03-16 (PR-4970128 Fix Review — Early Bail-Out)
+
+## Task
+Fix review issues on PR-4970128 (feat/PL-W015-cot-askuser-types).
+
+## Findings
+
+### 1. No Action Needed — Implementation Notes Misclassified as Review Issues
+The dispatched "review findings" from Yemi Shin were Dallas's implementation notes summarizing what was added (3 MessageType entries, build/test pass). These are not actionable code feedback. (source: PR-4970128 thread #1, ADO REST API)
+
+### 2. PR Already Fully Approved
+PR-4970128 has 44+ threads, mostly duplicate bail-out confirmations. Yemi Shin voted 10 (APPROVE). 3 commits on branch, all review feedback already addressed in prior commits. (source: PR-4970128 threads via `https://dev.azure.com/office/ISS/_apis/git/repositories/61458d25-9f75-41c3-be29-e63727145257/pullRequests/4970128/threads`)
+
+### 3. OfficeAgent Repo Location
+OfficeAgent repo is at `C:\Users\yemishin\OfficeAgent\`, `.squad` dir is at `C:\Users\yemishin\.squad\` (the squad repo, not OfficeAgent). Must fetch from the correct repo. (source: filesystem layout)
+
+### 4. Windows /dev/stdin Incompatible with Node.js
+Node.js on Windows resolves `/dev/stdin` to `C:\dev\stdin` which doesn't exist. Use temp files for piping data to node: write to `$TEMP/file.json`, read via `process.env.TEMP + '/file.json'`. (source: runtime error during ADO API thread fetch)
+
+## Patterns Reinforced
+- **Early bail-out pattern**: Check PR threads + votes before creating worktrees. Saved full review cycle (~5-10 min).
+- **ADO REST API temp file pattern**: Write JSON payloads to `$TEMP/*.json` on Windows, use `@"$TEMP/file.json"` in curl.
+- **dev.azure.com hostname**: Always use `dev.azure.com` for REST API calls.
+
+## Outcome
+Posted closed-status thread (ID: 62193444) confirming no action required. No code changes made.

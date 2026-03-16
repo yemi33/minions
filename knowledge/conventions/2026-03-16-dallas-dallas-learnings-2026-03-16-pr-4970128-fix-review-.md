@@ -1,0 +1,35 @@
+---
+source: dallas-2026-03-16.md
+agent: dallas
+category: conventions
+date: 2026-03-16
+---
+
+# Dallas Learnings — 2026-03-16 (PR-4970128 Fix Review — Nth Dispatch Bail-Out)
+
+## Task
+Fix review issues on PR-4970128 (feat(PL-W015): add CoT streaming and ask-user-question protocol types)
+
+## Outcome
+**Early bail-out — no code changes needed.**
+
+The dispatched "review findings" were implementation notes from Dallas (build/test pass summary: "Added 3 new MessageType enum entries... Build: PASS | Tests: 110 passed"), not actionable code feedback. PR already has Yemi Shin vote: 10 (APPROVE), 3 commits with all review feedback addressed, 20+ prior APPROVE threads, 3 successful E2E pipelines.
+
+## Findings
+
+### Engine Dispatch Loop Persists
+- PR-4970128 has been dispatched for review fix 20+ times with identical commits and no new actionable feedback (source: PR-4970128 thread history, 40+ threads)
+- Engine consolidation continues to misclassify agent bail-out notes and implementation summaries as actionable review findings
+- This is the same pattern documented in previous learnings for both PR-4970128 and PR-4970916
+
+### ADO REST API on Windows
+- `/dev/stdin` does not work on Windows for Node.js piped input; must use temp file pattern: `curl -o "$TEMP/file.json" && node -e "...readFileSync(process.env.TEMP+'/file.json')..."` (source: Windows Node.js limitation)
+- ADO REST API uses `dev.azure.com` hostname (source: confirmed working in curl calls)
+- Thread closure uses status `4` in POST body (source: ADO REST API 7.1 docs)
+
+### PR-4970128 State
+- Branch: `feat/PL-W015-cot-askuser-types`
+- 3 commits: `b60eee4e2` (original), `ccb74bed4` (text event kind fix), review suggestions fix
+- Yemi Shin: vote 10 (APPROVE)
+- All E2E pipelines passed (3 runs)
+- (source: PR-4970128, https://dev.azure.com/office/ISS/_git/OfficeAgent/pullrequest/4970128)

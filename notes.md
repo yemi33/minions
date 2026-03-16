@@ -741,3 +741,639 @@ _Processed 3 notes, 6 insights extracted, 1 duplicate removed._
   → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-8th-dispatc.md`
 
 _Processed 3 notes, 1 insight extracted, 7 existing patterns reinforced, 1 duplicate consolidated._
+
+---
+
+### 2026-03-16: Cowork UX verification completes with protocol mismatches and useConnectionResilience bug fix
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Worktree reuse before verification re-runs**: Check for existing worktrees and E2E PRs before creating; saves ~10 min of fetch+merge+conflict-resolution time _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-worktree-reuse.md`
+
+- **Verification re-run workflow sequence**: (1) check existing worktrees, (2) check E2E PRs, (3) build individual packages, (4) run per-package tests, (5) start dev server + mock, (6) update testing guide _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-workflow.md`
+
+- **@officeagent-tools/ scope prefix convention**: Tools and devtools packages use `@officeagent-tools/` scope (not `@officeagent/`); e.g., cowork-demo is `@officeagent-tools/cowork-demo` _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-package-naming-scope-prefix.md`
+
+- **Singleton WebSocket demo hook pattern**: useDemoCoworkSession defers session init until user's first message (no auto-fire), dispatches mock server events to Jotai atoms, SSR-safe with `typeof window` guards _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-demo-hook-pattern.md`
+
+#### Build & Test Results
+- **173 passing tests across verification suite**: message-protocol 113, cowork-demo 49, augloop-transport 11; TypeScript errors in office-bohemia reduced 19→17 (cross-PR integration improvements) _(Dallas, Verify)_
+  → see `knowledge/build-reports/2026-03-16-verify-manual-testing-guide.md`
+
+- **Bebop dev server port varies (3000 vs 3002)**: Always verify actual port after starting; 3000 is default but prior runs with occupied ports may use 3002 _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-bebop-dev-server-port-discovery.md`
+
+#### PR Review Findings
+- **Protocol type mismatches between Bebop and OfficeAgent (5 critical/high)**: SessionInit payload (agentId/prompt vs settings), SessionInitResponse (sessionId vs containerInstanceId), FileInfo (fileId vs path), Error (message/code vs errorMsg), CoT events (label/timestamp vs stepLabel/ISO8601/turnNumber) _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-protocol-type-mismatches.md`
+
+- **Feature gate inconsistency**: featureGates.ts uses ECS key `'bebop.cowork.enabled'` but route/localStorage use `'EnableBebopCowork'` query param; completely disconnected _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-feature-gate-inconsistency.md`
+
+- **Test coverage gap for cowork feature**: Only 1 test file for 26 files (~3,578 lines); featureGates test doesn't run (import.meta.env in Jest CJS); cowork-component package has 0 test files _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-test-coverage-gap.md`
+
+#### Bugs & Gotchas
+- **useConnectionResilience infinite re-render loop**: Returned new function objects every render, causing dependency array to always see changes. Fix: wrap handler in `useCallback` + `useRef` with empty `[]` deps _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **Yarn workspace command requires full scoped name**: `yarn workspace cowork-demo build` fails; must use `yarn workspace @officeagent-tools/cowork-demo build` _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-yarn-workspace-scoped-names.md`
+
+- **node_modules without .yarn-integrity file still builds**: Integrity check is optional for workspace protocol resolution; no `yarn install` needed _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-yarn-integrity.md`
+
+- **Mock AugLoop server returns 404 on HTTP root**: WebSocket-only endpoint; HTTP GET to `ws://localhost:11040/ws` yields 404 (expected) _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-mock-server-http.md`
+
+- **TanStack Start SSR returns `{"isNotFound":true}` for unauthenticated curl**: Not an error; expected behavior for SSR-rendered unauthenticated requests _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-plan-verification-re-run-tanstack-ssr.md`
+
+- **Must use `yarn dev` (not `yarn dev:no-auth`) for demo**: SSR requires auth proxy; running without it causes failures _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **Vite cache staleness causes module import failures**: Kill server → restart → Ctrl+Shift+R browser after cache changes _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **MSAL tokens expire ~1hr**: Hard-refresh to re-login if testing session runs long _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **Mock server is one-shot per scenario**: Restart after each test run to avoid state pollution _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **Demo WebSocket hook not production code**: Revert to `useCoworkSession` before merging PR _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+#### Architecture Notes
+- **AskUserCard component pattern**: Interactive single-select question card with selectable option chips, 150ms auto-submit on click, Skip button, slide-up fade animation, keyboard accessible _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+- **Live progression panel**: Step list with status icons (checkmark/spinner/circle) and detail text matching Fluent design tokens _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-complete-record.md`
+
+#### Action Items
+- **Fix 5 protocol type mismatches**: Align SessionInit, SessionInitResponse, FileInfo, Error, and CoT event types between Bebop and OfficeAgent definitions _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-protocol-type-mismatches.md`
+
+- **Resolve feature gate ECS key vs query param disconnect**: Unify `'bebop.cowork.enabled'` (featureGates.ts) with `'EnableBebopCowork'` (route/localStorage) _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-feature-gate-inconsistency.md`
+
+- **Add comprehensive test coverage for cowork feature**: Create test files for 26 cowork files (currently 1 test file); fix featureGates test to run in Jest; add cowork-component test suite _(Verify)_
+  → see `knowledge/project-notes/2026-03-16-verify-cowork-ux-testing-session-test-coverage-gap.md`
+
+_Processed 3 notes, 28 insights extracted, 4 duplicates removed._
+
+---
+
+### 2026-03-16: Early bail-out pattern prevents PR-4970128 dispatch loop; ADO REST API Windows workarounds confirmed
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Engine dispatch loop misclassifies bail-out notes as actionable feedback**: PR-4970128 dispatched 20+ times with identical commits; consolidation treats implementation summaries as code review findings _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+- **Early bail-out pattern effective for already-approved PRs**: Pre-flight checks (~15s) eliminate 5-10 min full review cycles on unchanged dispatches _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **ADO REST API on Windows requires temp file workaround**: `/dev/stdin` doesn't work with Node.js piped input; use `curl -o "$TEMP/file.json"` then `readFileSync(process.env.TEMP+'/file.json')` _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+#### Build & Test Results
+- **PR-4970128 build passing**: 110 tests passed, 3 E2E pipelines succeeded, Yemi Shin approved (vote 10) with all review feedback addressed _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+#### PR Review Findings
+- **PR-4970128 clean and well-structured**: 3 commits, 5 files, 407 insertions in `modules/message-protocol/` with 164 compile-time shape tests catching field renames _(Ripley)_
+  → see `knowledge/reviews/2026-03-16-feedback-review-feedback-for-dallas.md`
+
+#### Architecture Notes
+- **Directionality correctly modeled in message protocol**: `Message<T>` for server→client, `ResponseMessage<T>` for client→server in new CoT and AskUserQuestion types _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **sequenceNumber documented as session-scoped but uses module-level counter**: `cot-stream-handler.ts` implementation will interleave across concurrent sessions _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **stepId required on CoTStepStartedEvent but optional on CoTStepCompletedEvent**: Backward compatibility design; consumers must handle missing `stepId` on completion events _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+#### ADO REST API Reference
+- **Thread closure**: `POST /pullRequests/{id}/threads?api-version=7.1` with `{"status": 4}` _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **VSID lookup**: `GET /_apis/connectionData?api-version=6.0-preview` returns `authenticatedUser.id` _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **Vote submission**: `PUT /pullRequests/{id}/reviewers/{vsid}?api-version=7.1` with `{"vote": 10}` _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+- **Always use dev.azure.com hostname**: Not `office.visualstudio.com` for ADO REST API calls _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-.md`
+
+#### Action Items
+- **Implement early bail-out check for already-approved PRs**: Detect unchanged commits with existing APPROVE verdicts to prevent re-queuing PR-4970128 and similar cases _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+_Processed 3 notes, 13 insights extracted, 1 duplicate removed._
+
+---
+
+### 2026-03-16: Engine Consolidation Loop Causing Duplicate PR Dispatches (PR-4970916)
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern saves 5-10 minutes**: Pre-flight check for unchanged commits + existing approvals (~15 seconds) vs full worktree + build + test + lint cycle (5-10 minutes). Apply when PR commits unchanged and already has 10+ approvals. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **Windows /dev/stdin workaround**: Node.js `readFileSync('/dev/stdin')` fails with ENOENT on Windows; use temp files (`$TEMP/file.json`) for curl output processing instead. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-lambert-lambert-learnings-2026-03-16-pr-4970916-duplicate-.md`
+
+#### Bugs & Gotchas
+- **Engine consolidation creates infinite dispatch loop**: Consolidation pipeline misclassifies agent-authored bail-out comments ("No Action Required", "early bail-out", "Duplicate Dispatch") as actionable review findings, causing Nth+ duplicate dispatches. Observed 40+ threads on PR-4970916 with 10+ APPROVE verdicts but continuous re-dispatch. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **MCP ADO tools unavailable**: No `mcp__azure-ado__*` tools in environment; REST API via curl + Bearer token (`az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798`) is the only working path. _(Lambert)_
+  → see `knowledge/build-reports/2026-03-16-lambert-lambert-learnings-2026-03-16-pr-4970916-duplicate-.md`
+
+#### Action Items
+- **Engine must filter agent-authored comments in consolidation**: Detect keywords "No Action Required", "early bail-out", "Duplicate Dispatch" in review findings thread content and skip dispatch to prevent infinite loops. _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+_Processed 3 notes, 5 insights extracted, 2 duplicates removed._
+
+---
+
+### 2026-03-16: Dallas, Ripley, Verify: bug findings, codebase exploration (65 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (17)
+- **message-protocol**: 113 tests PASS, 3.71s build (source: `modules/message-protocol/`) _(dallas)_
+- **cowork-demo**: 49 tests PASS across 4 suites (source: `.devtools/cowork-demo/`) _(dallas)_
+- **office-bohemia Bebop typecheck**: 17 TS errors in 5 files — cross-PR integration boundaries (source: `apps/bebop/src/features/cowork/`) _(dallas)_
+- **PowerShell required for yarn commands**: `powershell.exe -Command "yarn workspace @officeagent/<pkg> build"` pattern _(dallas)_
+- **Use `@officeagent-tools/` scope for devtools**: Not `@officeagent/` — e.g., `@officeagent-tools/cowork-demo` _(dallas)_
+- - `yarn workspace` with just package name (no scope) fails silently — must use full scoped name _(dallas)_
+- - office-bohemia `yarn lage` must run from monorepo root, not from `apps/bebop/` _(dallas)_
+- **PR-4972662**: (OfficeAgent): https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4972662 _(verify)_
+- **PR-4972663**: (office-bohemia): https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663 _(verify)_
+- 1. Handler registers in WebSocket router following 14-handler pattern _(verify)_
+- **Feature gate cascade**: Query param `EnableBebopCowork=true` → localStorage persistence → route access control. _(verify)_
+- **Dual feature gate disconnect**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` vs route-level `EnableBebopCowork` query param _(verify)_
+- **Demo WebSocket hook is NOT production code**: hardcoded `ws://localhost:11040`, must revert before merge _(verify)_
+- **Start servers**: Run restart commands above (Bebop dev server + mock AugLoop server) _(verify)_
+- **Open feature-gated page**: Navigate to http://localhost:3000/cowork?EnableBebopCowork=true _(verify)_
+- **Verify three-panel layout**: Chat panel (left), progression panel (center), artifact panel (right) _(verify)_
+- **Send a message**: Type in chat input, press Enter → observe CoT streaming in progression panel, ask-user card in chat _(verify)_
+
+#### Codebase Exploration (48)
+- **@officeagent/core**: — Agent management, logging (PII-safe), WebSocket management, utilities (source: `modules/core/src/index.ts`) _(ripley)_
+- **@officeagent/api**: — HTTP routes, WebSocket handlers (14+), handler registry, agent registration (source: `modules/api/src/index.ts`) _(ripley)_
+- **@officeagent/message-protocol**: — 160+ message types, JSON-RPC 2.0 types, WebSocket contract (source: `modules/message-protocol/src/types/message-type.ts`) _(ripley)_
+- **@officeagent/orchestrator**: — Provider-agnostic `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` (source: `modules/orchestrator/src/types.ts:23-62`) _(ripley)_
+- **@officeagent/html2pptx**: — HTML to PPTX conversion _(ripley)_
+- **@officeagent/json-to-docx-ooxml**: — JSON to DOCX conversion _(ripley)_
+- **@officeagent/pptx-assets**: — PowerPoint asset management _(ripley)_
+- **@officeagent/verify-slide-html**: — Slide HTML validation _(ripley)_
+- **@officeagent/excel-headless**: — Headless Excel execution _(ripley)_
+- **@officeagent/excel-parser**: — Excel file parsing _(ripley)_
+- **@officeagent/chain-of-thought**: — CoT tracking, file-based persistence, message processing (source: `modules/chain-of-thought/src/index.ts`) _(ripley)_
+- **@officeagent/grounding**: — 4-stage pipeline: Preprocessor → Retriever → Postprocessor → Storage (source: `modules/grounding/`) _(ripley)_
+- **@officeagent/rai**: — Responsible AI validation _(ripley)_
+- **@officeagent/gpt-agent**: — GPT agent abstraction _(ripley)_
+- **@officeagent/mcp-proxy**: — MCP (Model Context Protocol) proxy _(ripley)_
+- **@officeagent/git-remote-spo**: — SharePoint git remote _(ripley)_
+- **Registry-First Design**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. (source: `agents/create-agent/src/registry.ts:1-623`) _(ripley)_
+- **Handler Registry**: `HandlerRegistry` in API module maps message types to handlers, supporting regular and SSE streaming responses. (source: `modules/api/src/internal/registry/handler-registry.ts:91-180+`) _(ripley)_
+- **Versioned Prompts**: Prompts under `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. (source: `agents/create-agent/src/prompts/`) _(ripley)_
+- **Flight System**: `OAGENT_FLIGHTS=<key>:true` enables per-version feature flags that override model, subagents, scripts, RAI, and prompt files. (source: `agents/create-agent/src/registry.ts` — 21 flight configs) _(ripley)_
+- **Hook System**: `HookRegistry` with per-agent-type providers (PreToolUse, PostToolUse, SessionStart, SessionEnd, startTurn). (source: `modules/core/src/agent/`) _(ripley)_
+- **Provider-Agnostic CoT**: `ChainOfThoughtMessage` uses structural typing (no SDK imports), works with any provider. (source: `modules/chain-of-thought/src/types.ts:31-45`) _(ripley)_
+- **poppler-builder**: PDF processing _(ripley)_
+- **libreoffice-installer**: Document conversion _(ripley)_
+- **node-deps**: Runtime npm packages (separate from yarn workspace) _(ripley)_
+- **final**: Node 24 + all tooling _(ripley)_
+- **Logging**: Never include user data in `logInfo`/`logWarn`/`logError` (telemetry). `logDebug` is local-only, OK for user data. No `console.*` in production. (source: `CLAUDE.md:59-63`) _(ripley)_
+- **PowerShell required**: All yarn/oagent/gulp commands must run in PowerShell. Bash fails. (source: `CLAUDE.md:7`) _(ripley)_
+- **Package scope**: `@officeagent/` for library modules, `@officeagent-tools/` for devtools (source: `package.json` workspaces) _(ripley)_
+- **Testing**: Jest with ts-jest for TypeScript (`**/tests/**/*.test.ts`), pytest for Python (`tests/test_*.py`). Coverage CI-only. (source: `CLAUDE.md:39-41`, `jest.config.js`, `pytest.ini`) _(ripley)_
+- **Version**: All packages at `1.1.1130` (source: all `package.json` files) _(ripley)_
+- **Lage tasks**: build → depends on ^build (upstream deps), plus lint, test, clean _(ripley)_
+- **Individual package builds**: `yarn workspace @officeagent/<pkg> build` (avoids Docker requirement) _(ripley)_
+- **Hot reload**: `yarn reload` copies built code into running container _(ripley)_
+- **Anthropic Claude SDK**: `@anthropic-ai/claude-agent-sdk` (primary LLM) _(ripley)_
+- **GitHub Copilot SDK**: `@github/copilot-sdk` (alternative LLM) _(ripley)_
+- **Office document**: pptxgenjs, docx, openpyxl, chart.js _(ripley)_
+- **PDF processing**: poppler (vendored), LibreOffice _(ripley)_
+- **Runtime**: Express, ws (WebSocket), jszip, uuid, sharp _(ripley)_
+- **CLAUDE.md missing for 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent lack documentation. (source: verified by checking all 14 `agents/*/CLAUDE.md`) _(ripley)_
+- **README outdated**: Root README.md lists 7 agents but repo has 15. (source: `README.md` vs actual `agents/` directory listing) _(ripley)_
+- **CoT is file-based only**: `trackChainOfThought()` writes to disk. No WebSocket streaming to clients exists in production code. New CoT streaming types were added in PR-4970128 but not yet wired. (source: `modules/chain-of-thought/src/manager.ts`, knowledge base PR reviews) _(ripley)_
+- **AugLoop integration is test-only**: AugLoop endpoints exist only in `.devtools/test-client`, not in production modules. (source: `.devtools/test-client/`) _(ripley)_
+- **Cross-repo type drift**: Bebop (office-bohemia) mirrors of OfficeAgent types have 5 critical field mismatches (SessionInit, FileInfo, Error payloads). (source: knowledge base — PR-4972663 review findings) _(ripley)_
+- **Add CLAUDE.md to remaining 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent need basic documentation for onboarding. Low effort, high value. _(ripley)_
+- **Update README.md**: Root README lists 7 agents but 15 exist. Add the missing 8 agents with descriptions. _(ripley)_
+- **Wire CoT streaming to WebSocket**: The type definitions exist (PR-4970128 merged ChainOfThoughtUpdatePayload). Next step: implement a WebSocket handler that bridges `ChainOfThoughtContentNotifier` to the client protocol. _(ripley)_
+- **Reconcile cross-repo protocol types**: Bebop's mirrored types must align with OfficeAgent's wire format before the cowork feature can ship. _(ripley)_
+
+_Deduplication: 11 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Ripley, Verify: bug findings, codebase exploration (55 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (13)
+- **message-protocol**: 113 tests PASS, 3.71s build (source: `modules/message-protocol/`) _(dallas)_
+- **cowork-demo**: 49 tests PASS across 4 suites (source: `.devtools/cowork-demo/`) _(dallas)_
+- **office-bohemia Bebop typecheck**: 17 TS errors in 5 files — cross-PR integration boundaries (source: `apps/bebop/src/features/cowork/`) _(dallas)_
+- **PowerShell required for yarn commands**: `powershell.exe -Command "yarn workspace @officeagent/<pkg> build"` pattern _(dallas)_
+- **Use `@officeagent-tools/` scope for devtools**: Not `@officeagent/` — e.g., `@officeagent-tools/cowork-demo` _(dallas)_
+- - office-bohemia `yarn lage` must run from monorepo root, not from `apps/bebop/` _(dallas)_
+- **PR-4972662**: (OfficeAgent): https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4972662 _(verify)_
+- **PR-4972663**: (office-bohemia): https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663 _(verify)_
+- **Feature gate cascade**: Query param `EnableBebopCowork=true` → localStorage persistence → route access control. _(verify)_
+- **Dual feature gate disconnect**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` vs route-level `EnableBebopCowork` query param _(verify)_
+- **Demo WebSocket hook is NOT production code**: hardcoded `ws://localhost:11040`, must revert before merge _(verify)_
+- **Open feature-gated page**: Navigate to http://localhost:3000/cowork?EnableBebopCowork=true _(verify)_
+- **Verify three-panel layout**: Chat panel (left), progression panel (center), artifact panel (right) _(verify)_
+
+#### Codebase Exploration (42)
+- **@officeagent/core**: — Agent management, logging (PII-safe), WebSocket management, utilities (source: `modules/core/src/index.ts`) _(ripley)_
+- **@officeagent/api**: — HTTP routes, WebSocket handlers (14+), handler registry, agent registration (source: `modules/api/src/index.ts`) _(ripley)_
+- **@officeagent/message-protocol**: — 160+ message types, JSON-RPC 2.0 types, WebSocket contract (source: `modules/message-protocol/src/types/message-type.ts`) _(ripley)_
+- **@officeagent/orchestrator**: — Provider-agnostic `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` (source: `modules/orchestrator/src/types.ts:23-62`) _(ripley)_
+- **@officeagent/html2pptx**: — HTML to PPTX conversion _(ripley)_
+- **@officeagent/json-to-docx-ooxml**: — JSON to DOCX conversion _(ripley)_
+- **@officeagent/pptx-assets**: — PowerPoint asset management _(ripley)_
+- **@officeagent/verify-slide-html**: — Slide HTML validation _(ripley)_
+- **@officeagent/excel-headless**: — Headless Excel execution _(ripley)_
+- **@officeagent/excel-parser**: — Excel file parsing _(ripley)_
+- **@officeagent/chain-of-thought**: — CoT tracking, file-based persistence, message processing (source: `modules/chain-of-thought/src/index.ts`) _(ripley)_
+- **@officeagent/grounding**: — 4-stage pipeline: Preprocessor → Retriever → Postprocessor → Storage (source: `modules/grounding/`) _(ripley)_
+- **@officeagent/rai**: — Responsible AI validation _(ripley)_
+- **@officeagent/gpt-agent**: — GPT agent abstraction _(ripley)_
+- **@officeagent/mcp-proxy**: — MCP (Model Context Protocol) proxy _(ripley)_
+- **@officeagent/git-remote-spo**: — SharePoint git remote _(ripley)_
+- **Registry-First Design**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. (source: `agents/create-agent/src/registry.ts:1-623`) _(ripley)_
+- **Versioned Prompts**: Prompts under `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. (source: `agents/create-agent/src/prompts/`) _(ripley)_
+- **Flight System**: `OAGENT_FLIGHTS=<key>:true` enables per-version feature flags that override model, subagents, scripts, RAI, and prompt files. (source: `agents/create-agent/src/registry.ts` — 21 flight configs) _(ripley)_
+- **Hook System**: `HookRegistry` with per-agent-type providers (PreToolUse, PostToolUse, SessionStart, SessionEnd, startTurn). (source: `modules/core/src/agent/`) _(ripley)_
+- **Provider-Agnostic CoT**: `ChainOfThoughtMessage` uses structural typing (no SDK imports), works with any provider. (source: `modules/chain-of-thought/src/types.ts:31-45`) _(ripley)_
+- **poppler-builder**: PDF processing _(ripley)_
+- **libreoffice-installer**: Document conversion _(ripley)_
+- **node-deps**: Runtime npm packages (separate from yarn workspace) _(ripley)_
+- **final**: Node 24 + all tooling _(ripley)_
+- **Logging**: Never include user data in `logInfo`/`logWarn`/`logError` (telemetry). `logDebug` is local-only, OK for user data. No `console.*` in production. (source: `CLAUDE.md:59-63`) _(ripley)_
+- **PowerShell required**: All yarn/oagent/gulp commands must run in PowerShell. Bash fails. (source: `CLAUDE.md:7`) _(ripley)_
+- **Testing**: Jest with ts-jest for TypeScript (`**/tests/**/*.test.ts`), pytest for Python (`tests/test_*.py`). Coverage CI-only. (source: `CLAUDE.md:39-41`, `jest.config.js`, `pytest.ini`) _(ripley)_
+- **Version**: All packages at `1.1.1130` (source: all `package.json` files) _(ripley)_
+- **Individual package builds**: `yarn workspace @officeagent/<pkg> build` (avoids Docker requirement) _(ripley)_
+- **Anthropic Claude SDK**: `@anthropic-ai/claude-agent-sdk` (primary LLM) _(ripley)_
+- **GitHub Copilot SDK**: `@github/copilot-sdk` (alternative LLM) _(ripley)_
+- **Office document**: pptxgenjs, docx, openpyxl, chart.js _(ripley)_
+- **CLAUDE.md missing for 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent lack documentation. (source: verified by checking all 14 `agents/*/CLAUDE.md`) _(ripley)_
+- **README outdated**: Root README.md lists 7 agents but repo has 15. (source: `README.md` vs actual `agents/` directory listing) _(ripley)_
+- **CoT is file-based only**: `trackChainOfThought()` writes to disk. No WebSocket streaming to clients exists in production code. New CoT streaming types were added in PR-4970128 but not yet wired. (source: `modules/chain-of-thought/src/manager.ts`, knowledge base PR reviews) _(ripley)_
+- **AugLoop integration is test-only**: AugLoop endpoints exist only in `.devtools/test-client`, not in production modules. (source: `.devtools/test-client/`) _(ripley)_
+- **Cross-repo type drift**: Bebop (office-bohemia) mirrors of OfficeAgent types have 5 critical field mismatches (SessionInit, FileInfo, Error payloads). (source: knowledge base — PR-4972663 review findings) _(ripley)_
+- **Add CLAUDE.md to remaining 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent need basic documentation for onboarding. Low effort, high value. _(ripley)_
+- **Update README.md**: Root README lists 7 agents but 15 exist. Add the missing 8 agents with descriptions. _(ripley)_
+- **Wire CoT streaming to WebSocket**: The type definitions exist (PR-4970128 merged ChainOfThoughtUpdatePayload). Next step: implement a WebSocket handler that bridges `ChainOfThoughtContentNotifier` to the client protocol. _(ripley)_
+- **Reconcile cross-repo protocol types**: Bebop's mirrored types must align with OfficeAgent's wire format before the cowork feature can ship. _(ripley)_
+
+_Deduplication: 21 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Ripley, Verify: bug findings, codebase exploration (55 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (13)
+- **message-protocol**: 113 tests PASS, 3.71s build (source: `modules/message-protocol/`) _(dallas)_
+- **cowork-demo**: 49 tests PASS across 4 suites (source: `.devtools/cowork-demo/`) _(dallas)_
+- **office-bohemia Bebop typecheck**: 17 TS errors in 5 files — cross-PR integration boundaries (source: `apps/bebop/src/features/cowork/`) _(dallas)_
+- **PowerShell required for yarn commands**: `powershell.exe -Command "yarn workspace @officeagent/<pkg> build"` pattern _(dallas)_
+- **Use `@officeagent-tools/` scope for devtools**: Not `@officeagent/` — e.g., `@officeagent-tools/cowork-demo` _(dallas)_
+- - office-bohemia `yarn lage` must run from monorepo root, not from `apps/bebop/` _(dallas)_
+- **PR-4972662**: (OfficeAgent): https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4972662 _(verify)_
+- **PR-4972663**: (office-bohemia): https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663 _(verify)_
+- **Feature gate cascade**: Query param `EnableBebopCowork=true` → localStorage persistence → route access control. _(verify)_
+- **Dual feature gate disconnect**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` vs route-level `EnableBebopCowork` query param _(verify)_
+- **Demo WebSocket hook is NOT production code**: hardcoded `ws://localhost:11040`, must revert before merge _(verify)_
+- **Open feature-gated page**: Navigate to http://localhost:3000/cowork?EnableBebopCowork=true _(verify)_
+- **Verify three-panel layout**: Chat panel (left), progression panel (center), artifact panel (right) _(verify)_
+
+#### Codebase Exploration (42)
+- **@officeagent/core**: — Agent management, logging (PII-safe), WebSocket management, utilities (source: `modules/core/src/index.ts`) _(ripley)_
+- **@officeagent/api**: — HTTP routes, WebSocket handlers (14+), handler registry, agent registration (source: `modules/api/src/index.ts`) _(ripley)_
+- **@officeagent/message-protocol**: — 160+ message types, JSON-RPC 2.0 types, WebSocket contract (source: `modules/message-protocol/src/types/message-type.ts`) _(ripley)_
+- **@officeagent/orchestrator**: — Provider-agnostic `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` (source: `modules/orchestrator/src/types.ts:23-62`) _(ripley)_
+- **@officeagent/html2pptx**: — HTML to PPTX conversion _(ripley)_
+- **@officeagent/json-to-docx-ooxml**: — JSON to DOCX conversion _(ripley)_
+- **@officeagent/pptx-assets**: — PowerPoint asset management _(ripley)_
+- **@officeagent/verify-slide-html**: — Slide HTML validation _(ripley)_
+- **@officeagent/excel-headless**: — Headless Excel execution _(ripley)_
+- **@officeagent/excel-parser**: — Excel file parsing _(ripley)_
+- **@officeagent/chain-of-thought**: — CoT tracking, file-based persistence, message processing (source: `modules/chain-of-thought/src/index.ts`) _(ripley)_
+- **@officeagent/grounding**: — 4-stage pipeline: Preprocessor → Retriever → Postprocessor → Storage (source: `modules/grounding/`) _(ripley)_
+- **@officeagent/rai**: — Responsible AI validation _(ripley)_
+- **@officeagent/gpt-agent**: — GPT agent abstraction _(ripley)_
+- **@officeagent/mcp-proxy**: — MCP (Model Context Protocol) proxy _(ripley)_
+- **@officeagent/git-remote-spo**: — SharePoint git remote _(ripley)_
+- **Registry-First Design**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. (source: `agents/create-agent/src/registry.ts:1-623`) _(ripley)_
+- **Versioned Prompts**: Prompts under `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. (source: `agents/create-agent/src/prompts/`) _(ripley)_
+- **Flight System**: `OAGENT_FLIGHTS=<key>:true` enables per-version feature flags that override model, subagents, scripts, RAI, and prompt files. (source: `agents/create-agent/src/registry.ts` — 21 flight configs) _(ripley)_
+- **Hook System**: `HookRegistry` with per-agent-type providers (PreToolUse, PostToolUse, SessionStart, SessionEnd, startTurn). (source: `modules/core/src/agent/`) _(ripley)_
+- **Provider-Agnostic CoT**: `ChainOfThoughtMessage` uses structural typing (no SDK imports), works with any provider. (source: `modules/chain-of-thought/src/types.ts:31-45`) _(ripley)_
+- **poppler-builder**: PDF processing _(ripley)_
+- **libreoffice-installer**: Document conversion _(ripley)_
+- **node-deps**: Runtime npm packages (separate from yarn workspace) _(ripley)_
+- **final**: Node 24 + all tooling _(ripley)_
+- **Logging**: Never include user data in `logInfo`/`logWarn`/`logError` (telemetry). `logDebug` is local-only, OK for user data. No `console.*` in production. (source: `CLAUDE.md:59-63`) _(ripley)_
+- **PowerShell required**: All yarn/oagent/gulp commands must run in PowerShell. Bash fails. (source: `CLAUDE.md:7`) _(ripley)_
+- **Testing**: Jest with ts-jest for TypeScript (`**/tests/**/*.test.ts`), pytest for Python (`tests/test_*.py`). Coverage CI-only. (source: `CLAUDE.md:39-41`, `jest.config.js`, `pytest.ini`) _(ripley)_
+- **Version**: All packages at `1.1.1130` (source: all `package.json` files) _(ripley)_
+- **Individual package builds**: `yarn workspace @officeagent/<pkg> build` (avoids Docker requirement) _(ripley)_
+- **Anthropic Claude SDK**: `@anthropic-ai/claude-agent-sdk` (primary LLM) _(ripley)_
+- **GitHub Copilot SDK**: `@github/copilot-sdk` (alternative LLM) _(ripley)_
+- **Office document**: pptxgenjs, docx, openpyxl, chart.js _(ripley)_
+- **CLAUDE.md missing for 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent lack documentation. (source: verified by checking all 14 `agents/*/CLAUDE.md`) _(ripley)_
+- **README outdated**: Root README.md lists 7 agents but repo has 15. (source: `README.md` vs actual `agents/` directory listing) _(ripley)_
+- **CoT is file-based only**: `trackChainOfThought()` writes to disk. No WebSocket streaming to clients exists in production code. New CoT streaming types were added in PR-4970128 but not yet wired. (source: `modules/chain-of-thought/src/manager.ts`, knowledge base PR reviews) _(ripley)_
+- **AugLoop integration is test-only**: AugLoop endpoints exist only in `.devtools/test-client`, not in production modules. (source: `.devtools/test-client/`) _(ripley)_
+- **Cross-repo type drift**: Bebop (office-bohemia) mirrors of OfficeAgent types have 5 critical field mismatches (SessionInit, FileInfo, Error payloads). (source: knowledge base — PR-4972663 review findings) _(ripley)_
+- **Add CLAUDE.md to remaining 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent need basic documentation for onboarding. Low effort, high value. _(ripley)_
+- **Update README.md**: Root README lists 7 agents but 15 exist. Add the missing 8 agents with descriptions. _(ripley)_
+- **Wire CoT streaming to WebSocket**: The type definitions exist (PR-4970128 merged ChainOfThoughtUpdatePayload). Next step: implement a WebSocket handler that bridges `ChainOfThoughtContentNotifier` to the client protocol. _(ripley)_
+- **Reconcile cross-repo protocol types**: Bebop's mirrored types must align with OfficeAgent's wire format before the cowork feature can ship. _(ripley)_
+
+_Deduplication: 21 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Ripley, Verify: bug findings, codebase exploration (55 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (13)
+- **message-protocol**: 113 tests PASS, 3.71s build (source: `modules/message-protocol/`) _(dallas)_
+- **cowork-demo**: 49 tests PASS across 4 suites (source: `.devtools/cowork-demo/`) _(dallas)_
+- **office-bohemia Bebop typecheck**: 17 TS errors in 5 files — cross-PR integration boundaries (source: `apps/bebop/src/features/cowork/`) _(dallas)_
+- **PowerShell required for yarn commands**: `powershell.exe -Command "yarn workspace @officeagent/<pkg> build"` pattern _(dallas)_
+- **Use `@officeagent-tools/` scope for devtools**: Not `@officeagent/` — e.g., `@officeagent-tools/cowork-demo` _(dallas)_
+- - office-bohemia `yarn lage` must run from monorepo root, not from `apps/bebop/` _(dallas)_
+- **PR-4972662**: (OfficeAgent): https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4972662 _(verify)_
+- **PR-4972663**: (office-bohemia): https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663 _(verify)_
+- **Feature gate cascade**: Query param `EnableBebopCowork=true` → localStorage persistence → route access control. _(verify)_
+- **Dual feature gate disconnect**: `featureGates.ts` uses ECS key `bebop.cowork.enabled` vs route-level `EnableBebopCowork` query param _(verify)_
+- **Demo WebSocket hook is NOT production code**: hardcoded `ws://localhost:11040`, must revert before merge _(verify)_
+- **Open feature-gated page**: Navigate to http://localhost:3000/cowork?EnableBebopCowork=true _(verify)_
+- **Verify three-panel layout**: Chat panel (left), progression panel (center), artifact panel (right) _(verify)_
+
+#### Codebase Exploration (42)
+- **@officeagent/core**: — Agent management, logging (PII-safe), WebSocket management, utilities (source: `modules/core/src/index.ts`) _(ripley)_
+- **@officeagent/api**: — HTTP routes, WebSocket handlers (14+), handler registry, agent registration (source: `modules/api/src/index.ts`) _(ripley)_
+- **@officeagent/message-protocol**: — 160+ message types, JSON-RPC 2.0 types, WebSocket contract (source: `modules/message-protocol/src/types/message-type.ts`) _(ripley)_
+- **@officeagent/orchestrator**: — Provider-agnostic `IOrchestrator` interface with `ClaudeOrchestrator` and `GhcpOrchestrator` (source: `modules/orchestrator/src/types.ts:23-62`) _(ripley)_
+- **@officeagent/html2pptx**: — HTML to PPTX conversion _(ripley)_
+- **@officeagent/json-to-docx-ooxml**: — JSON to DOCX conversion _(ripley)_
+- **@officeagent/pptx-assets**: — PowerPoint asset management _(ripley)_
+- **@officeagent/verify-slide-html**: — Slide HTML validation _(ripley)_
+- **@officeagent/excel-headless**: — Headless Excel execution _(ripley)_
+- **@officeagent/excel-parser**: — Excel file parsing _(ripley)_
+- **@officeagent/chain-of-thought**: — CoT tracking, file-based persistence, message processing (source: `modules/chain-of-thought/src/index.ts`) _(ripley)_
+- **@officeagent/grounding**: — 4-stage pipeline: Preprocessor → Retriever → Postprocessor → Storage (source: `modules/grounding/`) _(ripley)_
+- **@officeagent/rai**: — Responsible AI validation _(ripley)_
+- **@officeagent/gpt-agent**: — GPT agent abstraction _(ripley)_
+- **@officeagent/mcp-proxy**: — MCP (Model Context Protocol) proxy _(ripley)_
+- **@officeagent/git-remote-spo**: — SharePoint git remote _(ripley)_
+- **Registry-First Design**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. (source: `agents/create-agent/src/registry.ts:1-623`) _(ripley)_
+- **Versioned Prompts**: Prompts under `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. (source: `agents/create-agent/src/prompts/`) _(ripley)_
+- **Flight System**: `OAGENT_FLIGHTS=<key>:true` enables per-version feature flags that override model, subagents, scripts, RAI, and prompt files. (source: `agents/create-agent/src/registry.ts` — 21 flight configs) _(ripley)_
+- **Hook System**: `HookRegistry` with per-agent-type providers (PreToolUse, PostToolUse, SessionStart, SessionEnd, startTurn). (source: `modules/core/src/agent/`) _(ripley)_
+- **Provider-Agnostic CoT**: `ChainOfThoughtMessage` uses structural typing (no SDK imports), works with any provider. (source: `modules/chain-of-thought/src/types.ts:31-45`) _(ripley)_
+- **poppler-builder**: PDF processing _(ripley)_
+- **libreoffice-installer**: Document conversion _(ripley)_
+- **node-deps**: Runtime npm packages (separate from yarn workspace) _(ripley)_
+- **final**: Node 24 + all tooling _(ripley)_
+- **Logging**: Never include user data in `logInfo`/`logWarn`/`logError` (telemetry). `logDebug` is local-only, OK for user data. No `console.*` in production. (source: `CLAUDE.md:59-63`) _(ripley)_
+- **PowerShell required**: All yarn/oagent/gulp commands must run in PowerShell. Bash fails. (source: `CLAUDE.md:7`) _(ripley)_
+- **Testing**: Jest with ts-jest for TypeScript (`**/tests/**/*.test.ts`), pytest for Python (`tests/test_*.py`). Coverage CI-only. (source: `CLAUDE.md:39-41`, `jest.config.js`, `pytest.ini`) _(ripley)_
+- **Version**: All packages at `1.1.1130` (source: all `package.json` files) _(ripley)_
+- **Individual package builds**: `yarn workspace @officeagent/<pkg> build` (avoids Docker requirement) _(ripley)_
+- **Anthropic Claude SDK**: `@anthropic-ai/claude-agent-sdk` (primary LLM) _(ripley)_
+- **GitHub Copilot SDK**: `@github/copilot-sdk` (alternative LLM) _(ripley)_
+- **Office document**: pptxgenjs, docx, openpyxl, chart.js _(ripley)_
+- **CLAUDE.md missing for 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent lack documentation. (source: verified by checking all 14 `agents/*/CLAUDE.md`) _(ripley)_
+- **README outdated**: Root README.md lists 7 agents but repo has 15. (source: `README.md` vs actual `agents/` directory listing) _(ripley)_
+- **CoT is file-based only**: `trackChainOfThought()` writes to disk. No WebSocket streaming to clients exists in production code. New CoT streaming types were added in PR-4970128 but not yet wired. (source: `modules/chain-of-thought/src/manager.ts`, knowledge base PR reviews) _(ripley)_
+- **AugLoop integration is test-only**: AugLoop endpoints exist only in `.devtools/test-client`, not in production modules. (source: `.devtools/test-client/`) _(ripley)_
+- **Cross-repo type drift**: Bebop (office-bohemia) mirrors of OfficeAgent types have 5 critical field mismatches (SessionInit, FileInfo, Error payloads). (source: knowledge base — PR-4972663 review findings) _(ripley)_
+- **Add CLAUDE.md to remaining 4 agents**: dw-marketer-agent, excel-js-runner-agent, grounding-agent, ppt-agent need basic documentation for onboarding. Low effort, high value. _(ripley)_
+- **Update README.md**: Root README lists 7 agents but 15 exist. Add the missing 8 agents with descriptions. _(ripley)_
+- **Wire CoT streaming to WebSocket**: The type definitions exist (PR-4970128 merged ChainOfThoughtUpdatePayload). Next step: implement a WebSocket handler that bridges `ChainOfThoughtContentNotifier` to the client protocol. _(ripley)_
+- **Reconcile cross-repo protocol types**: Bebop's mirrored types must align with OfficeAgent's wire format before the cowork feature can ship. _(ripley)_
+
+_Deduplication: 21 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: OfficeAgent Plan Verification & Codebase Architecture
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Worktree reuse saves significant time**: Pre-existing worktrees skip 10+ minutes of fetch/merge/conflict-resolution. Always check `git worktree list` before creating new ones. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **PowerShell required for yarn commands**: All yarn/oagent/gulp commands fail in Bash; must use PowerShell. Pattern: `powershell.exe -Command "yarn workspace @officeagent/<pkg> build"`. _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Use correct package scope for devtools**: `@officeagent-tools/` for devtools (not `@officeagent/`); e.g., `@officeagent-tools/cowork-demo`. _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Vite dev mode works despite TS errors**: esbuild skips type-checking, so dev server runs even with 17+ TS errors; dev/test workflows unaffected by typecheck failures. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Registry-first design pattern**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` with identity, versions, tools, skills, subagents, scripts, flights, and filters. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Orchestrator abstraction for multi-provider support**: `IOrchestrator` interface with `run()` and `runStream()` methods; factory pattern selects `ClaudeOrchestrator` or `GhcpOrchestrator` at runtime. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Flight system for version-specific feature flags**: `OAGENT_FLIGHTS=<key>:true` enables per-version feature flags that override model, subagents, scripts, RAI, and prompt files. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Versioned prompts directory structure**: Organize prompts as `src/prompts/<version>/` with system-prompt.md, skills/, subagents/, scripts/, intent-detection/, and flight-conditional overwrites/. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Logging safety conventions**: Never include user data in `logInfo`/`logWarn`/`logError` (telemetry); `logDebug` is local-only and safe for user data. No `console.*` in production. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Lage-based build pipeline with upstream deps**: `build` task depends on `^build` (upstream packages); individual packages can build without Docker. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Provider-agnostic chain-of-thought tracking**: `ChainOfThoughtMessage` uses structural typing (no SDK imports), enabling use with any provider (Claude or GHCP). _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+#### Build & Test Results
+- **OfficeAgent core modules stable**: message-protocol 113 tests PASS (3.71s), augloop-transport 11 tests PASS (3.41s with 1 pre-existing babel error), cowork-demo 49 tests PASS (all 4 suites). Total: 173 passing tests. _(Dallas, Verify)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **office-bohemia Bebop TS errors isolated to cowork integration**: 17 errors in 5 files (pas.config.ts, CoworkErrorBoundary.tsx, useCoworkStream.ts, streamingBridge.ts, transportRegistry.ts) from cross-PR boundaries, but Vite dev mode works without typecheck. _(Dallas, Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+#### Architecture Notes
+- **OfficeAgent three-tier agent architecture**: Tier 1 Full (Claude SDK, 20+ flights, 4 versions), Tier 2 Copilot (GitHub SDK, simpler config), Tier 3 Minimal (no LLM, direct conversion/execution). _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **OfficeAgent agent inventory**: 15 agents across document creation; 12/15 have CLAUDE.md guidance; most use claude-sonnet-4-5 or claude-opus-4-6; grounding-agent, dw-marketer-agent, excel-js-runner-agent, ppt-agent lack agent-specific guidance. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **OfficeAgent module ecosystem**: 17 modules spanning core platform (@officeagent/core, @officeagent/api, @officeagent/message-protocol with 160+ types), document generation (html2pptx, json-to-docx, excel-headless), AI/intelligence (grounding, chain-of-thought, RAI), and integration (MCP proxy, SharePoint git remote). _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Docker multi-stage build with full toolchain**: poppler-builder → libreoffice-installer → node-deps → final; exposes ports 6010 (API), 6011 (internal agent comms), 6020 (debug), 7010 (grounding). _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+#### Bugs & Gotchas
+- **yarn workspace naming gotcha**: `yarn workspace` with package name only (no scope) fails silently; must use full scoped name e.g. `@officeagent/message-protocol`. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **office-bohemia yarn lage constraint**: `yarn lage` must run from monorepo root, not from `apps/bebop/` subdirectory. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Mock server one-shot per scenario**: Mock AugLoop server resets between test runs; restart required between scenario changes. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Demo WebSocket hook hardcoded to localhost**: `useDemoCoworkSession` is development-only code with hardcoded `ws://localhost:11040`; not production-ready. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Protocol type mismatches between Bebop and OfficeAgent**: 5 known mismatches in SessionInit, SessionInitResponse, FileInfo, Error, and CoT event shapes require alignment before production deployment. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+#### Action Items
+- **Resolve office-bohemia cross-PR integration TS errors**: 17 errors in cowork feature files (streamingBridge.ts imports mismatch, useCoworkStream.ts atom references, CoworkErrorBoundary.tsx override modifier) must be fixed for typecheck to pass. _(Dallas, Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **Align protocol types Bebop↔OfficeAgent wire format**: Resolve 5 type mismatches and validate round-trip serialization before production. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+_Processed 3 notes, 21 insights extracted, 0 duplicates removed._
+
+---
+
+### 2026-03-16: OfficeAgent Cowork UX implementation learnings and testing guide
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Worktree reuse before creating new ones saves 10+ minutes**: Pre-flight check for existing worktrees via `git worktree list` avoids redundant fetch+merge+conflict-resolution. OfficeAgent and office-bohemia worktrees already exist on e2e branches. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **PowerShell required for all yarn/oagent/gulp commands**: Bash fails silently; all commands must run via `powershell.exe -Command "yarn ..."`. _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Use full scoped package names in yarn workspace commands**: Bare package names fail silently; must use `@officeagent/<pkg>` or `@officeagent-tools/<pkg>`. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **@officeagent-tools/ scope for devtools, @officeagent/ for libraries**: Package scope determines workspace identity; devtools like cowork-demo use @officeagent-tools/, core modules use @officeagent/. _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Registry-first agent design pattern**: Every agent exports `agentRegistry: AgentRegistryConfig` from `src/registry.ts` as single source of truth for identity, versions, tools, subagents, scripts, flights, and filters. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Flight system enables per-version feature flags**: `OAGENT_FLIGHTS=<key>:true` environment variable overrides model, subagents, scripts, RAI rules, and prompt files at runtime; create-agent has 21 flight configurations. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Never include user data in telemetry logs**: logInfo/logWarn/logError are telemetry-safe (no user data); logDebug is local-only and can include user data. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Provider-agnostic ChainOfThought via structural typing**: CoT module uses structural typing (no SDK imports), enabling compatibility with both Claude and GitHub Copilot SDKs via factory pattern. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Cowork feature gate with three-level precedence**: Query parameter (`?EnableBebopCowork=true`) overrides localStorage, which overrides environment variable; localStorage persistence survives refresh. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **All packages pinned to version 1.1.1130**: Package versions across all 17 modules and 15 agents locked to identical version for consistency. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+#### Architecture Notes
+- **OfficeAgent is multi-tier Docker platform with dual LLM providers**: TypeScript/Node.js monorepo (Yarn 4.10.3 + Lage task runner) runs in multi-stage Docker with poppler, LibreOffice, Node 24; supports both Anthropic Claude SDK and Azure OpenAI/GitHub Copilot SDK via provider-agnostic orchestrator. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Three-tier agent architecture by capability**: Tier 1 (Full) uses Claude with multiple versions and 20+ flights; Tier 2 (Copilot) uses GitHub Copilot SDK with simpler config; Tier 3 (Minimal) has no LLM, direct conversion/execution only. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **15 agents distributed across tiers with create-agent as complexity leader**: create-agent has 4 versions and 21 flights; registry.ts is single source of truth for each agent's identity. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **17 modules with clear separation of concerns**: Core (agent mgmt, logging, hooks), API (HTTP routes, 14+ WebSocket handlers, handler registry), Message-Protocol (160+ types, JSON-RPC 2.0), Orchestrator (IOrchestrator interface, provider-agnostic factory), Document generation (html2pptx, json-to-docx, excel-headless), AI & intelligence (chain-of-thought, grounding, RAI), Integration (MCP proxy, SharePoint git remote). _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Handler registry maps WebSocket message types to handlers with SSE streaming support**: HandlerRegistry in API module supports both regular and streaming response patterns; 14+ handler implementations follow established pattern. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Orchestrator abstraction enables provider switching at runtime**: IOrchestrator interface with `run()` and `runStream()` methods; factory pattern selects ClaudeOrchestrator or GhcpOrchestrator without affecting downstream code. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+- **Cowork UX three-panel layout integrated into Bebop**: Chat panel (left), Progression step list (center), Artifact tabs (right) under `apps/bebop/src/features/cowork/` with responsive design. _(Dallas, Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **Docker ports: 6010 (external API), 6011 (internal agent-to-agent), 6020 (debug), 7010 (grounding)**: Health check via `curl http://localhost:6010/health`; multi-stage build with separate node-deps layer. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-exploration-w033-officeagent-codebase-summa.md`
+
+#### Build & Test Results
+- **message-protocol: 113 tests PASS in 3.71s**: 160+ message types and JSON-RPC 2.0 contract types fully tested; foundation for all WebSocket communication. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **augloop-transport: 11 tests PASS in 3.41s**: Exponential backoff + jitter reconnection logic tested; 1 pre-existing source test suite fails on Babel import type parsing (not blocking). _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **cowork-demo: 49 tests PASS across 4 suites**: Fixtures, mock-augloop-server, host-environment, mock-token-provider all passing; devtools package @officeagent-tools/cowork-demo. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Total: 173 tests passing across verified packages**: message-protocol (113) + augloop-transport (11) + cowork-demo (49); OfficeAgent core functionality stable. _(Dallas, Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **Vite dev server works despite 17 TypeScript errors**: esbuild in dev mode skips type-checking; server runs on port 3000 (fallback 3002); errors are integration boundaries only. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Mock AugLoop server on ws://localhost:11040/ws (WebSocket-only)**: Returns 404 on HTTP; one-shot per scenario (must restart between runs); hardcoded in demo hook useDemoCoworkSession. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+#### Bugs & Gotchas
+- **Yarn workspace silently fails with bare package names**: Must use full scope (@officeagent/core) not just (core); no error message when wrong form used. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **office-bohemia yarn lage must run from monorepo root**: Running from `apps/bebop/` subdirectory fails silently; always cd to repo root before `yarn lage build`. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **Mock server is one-shot per scenario**: Restart required between test runs; connection persists until client disconnect or timeout. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **useDemoCoworkSession demo hook is NOT production code**: Hardcoded `ws://localhost:11040` connection; must not ship to production. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-re-r.md`
+
+- **17 TypeScript errors in office-bohemia/Bebop cowork integration**: streamingBridge.ts imports wrong export names (TransportConfig/TransportState/AugloopTransport); useCoworkStream.ts has atom type mismatches; CoworkErrorBoundary.tsx has override modifier issues from cross-PR boundaries. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **5 protocol type mismatches between Bebop and OfficeAgent**: SessionInit, SessionInitResponse, FileInfo, Error, CoT event discriminants have different shapes; Bebop mirrors use string unions while OfficeAgent may use enums. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **E2E PRs exist but require integration fixes before merge**: PR-4972662 (OfficeAgent) and PR-4972663 (office-bohemia) are active; protocol and type mismatches block production readiness. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+#### Action Items
+- **Resolve 5 protocol type mismatches between Bebop and OfficeAgent**: Align SessionInit, SessionInitResponse, FileInfo, Error payloads and CoT event discriminants before production merge; file location: `apps/bebop/src/features/cowork/types/messageProtocol.ts` vs `modules/message-protocol/`. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+- **Fix 17 TypeScript errors in office-bohemia Bebop cross-PR integration**: streamingBridge.ts import names, useCoworkStream.ts atom types, CoworkErrorBoundary.tsx override modifiers must be corrected to unblock type checking. _(Verify)_
+  → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
+
+_Processed 3 notes, 34 insights extracted, 0 duplicates removed._

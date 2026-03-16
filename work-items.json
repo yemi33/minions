@@ -385,5 +385,18 @@
     "dispatched_at": "2026-03-15T22:13:08.480Z",
     "dispatched_to": "lambert",
     "completedAt": "2026-03-15T22:27:35.098Z"
+  },
+  {
+    "id": "W033",
+    "title": "explore officeagent codebase and give me a summary",
+    "type": "explore",
+    "priority": "medium",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-16T20:37:40.797Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-16T20:38:04.183Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-16T20:43:48.097Z"
   }
 ]

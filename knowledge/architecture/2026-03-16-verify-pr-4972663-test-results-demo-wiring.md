@@ -1,0 +1,171 @@
+---
+source: verify-results-2026-03-16.md
+agent: verify
+category: architecture
+date: 2026-03-16
+---
+
+# PR 4972663 Test Results & Demo Wiring
+
+**Date:** 2026-03-16
+**PR:** [PR 4972663](https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4972663) — [E2E] Claude Cowork UX — office-bohemia (8 PRs merged)
+**Author:** Yemi Shin | **Branch:** `e2e/cowork-w025` → `master`
+
+---
+
+## Test Results Summary
+
+### Unit Tests — 173/173 PASS
+
+| Suite | Result | Count |
+|---|---|---|
+| `@officeagent/message-protocol` | PASS | 113/113 |
+| `@officeagent-tools/cowork-demo` | PASS | 49/49 |
+| `@officeagent/augloop-transport` (compiled) | PASS | 11/11 |
+
+### UI Smoke Tests — 5/5 PASS
+
+Tested via Playwright (Chromium) through HTTPS auth proxy at `https://m365.cloud.dev.microsoft:3001/bebop/`.
+
+| Test | Result |
+|---|---|
+| Bebop homepage loads | PASS |
+| `/cowork` without gate → redirects to `/` | PASS |
+| `/cowork?EnableBebopCowork=on` → shows CoworkLayout | PASS |
+| `localStorage` gate persistence | PASS |
+| Three-panel content (chat, progression, artifact) | PASS |
+
+---
+
+## Bug Found & Fixed: Input Box Flashing
+
+**Symptom:** Chat input placeholder rapidly toggled between "Connecting..." and "Type a message..."
+
+**Root cause:** Infinite re-render loop in `useConnectionResilience`. The hook returned new function objects on every render (no `useCallback`). `CoworkLayout` had a `useEffect` depending on `[connect, disconnect]`, so it re-fired every render, called `connect()` again, updated `connectionStatusAtom`, triggered another render — infinite loop.
+
+**Fix (2 files in OB worktree):**
+- `apps/bebop/src/features/cowork/hooks/useConnectionResilience.ts` — stored config callbacks in `useRef`s, wrapped all returned functions with `useCallback` for stable identity
+- `apps/bebop/src/features/cowork/components/CoworkLayout/CoworkLayout.tsx` — changed mount effect to `[]` deps
+
+**Verified:** Playwright monitoring showed 0 placeholder oscillations over 5 seconds after fix.
+
+---
+
+## Demo Wiring: Mock Server → Bebop Chat
+
+Wired the Bebop cowork UI to the OfficeAgent mock AugLoop server so the full UX can be exercised locally.
+
+### How to Run
+
+**Terminal 1 — Start mock AugLoop server:**
+```bash
+cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15/.devtools/cowork-demo"
+npx ts-node src/demo-server.ts --scenario=full_interactive --speed=0.5
+```
+Server runs at `ws://localhost:11040/ws`.
+
+**Terminal 2 — Start Bebop with auth proxy:**
+```bash
+cd "C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15-ob/apps/bebop"
+yarn dev
+```
+Opens at `https://m365.cloud.dev.microsoft:3001/bebop/` (requires MSAL login on first visit).
+
+**Browser:**
+Navigate to `https://m365.cloud.dev.microsoft:3001/bebop/cowork?EnableBebopCowork=on`
+Type any message and hit Send.
+
+### Architecture
+
+```
+Browser (Bebop)                    Mock Server (OfficeAgent)
+─────────────────                  ─────────────────────────
+CoworkLayout                       ws://localhost:11040/ws
+  │                                  │
+  ├─ useDemoCoworkSession()          │
+  │   ├─ connect() ──WebSocket──►    │  onConnection
+  │   │   sends session_init ───►    │    picks scenario (full_interactive)
+  │   │   ◄── session_init_resp ◄─   │
+  │   │   sets connectionStatus      │
+  │   │   = 'connected'              │
+  │   │                              │
+  │   │   (scenario auto-starts)     │
+  │   │   ◄── ask_user_question ◄─   │  "What format for the report?"
+  │   │   → appends agent msg        │
+  │   │                              │
+  ├─ CoworkChatPanel                 │
+  │   │  user types + clicks Send    │
+  │   │                              │
+  │   ├─ send() ── user_answer ──►   │  receives answer
+  │   │                              │  starts document_creation scenario
+  │   │   ◄── ppt_agent_cot ◄────   │  CoT: "Analyzing the request..."
+  │   │   ◄── query_status ◄─────   │  progression: "Researching topic"
+  │   │   ◄── ppt_agent_cot ◄────   │  CoT: "[create_document_outline]"
+  │   │   ◄── query_status ◄─────   │  progression: "Creating outline"
+  │   │   ◄── ppt_agent_cot ◄────   │  CoT: "[write_section]"
+  │   │   ◄── query_status ◄─────   │  progression: "Generating document"
+  │   │   ◄── query_status ◄─────   │  progression: "Finalizing"
+  │   │   ◄── artifact_ready ◄───   │  "Q3_2026_Quarterly_Report.docx"
+  │   │   → adds artifact + shows   │
+  │   │     artifacts panel          │
+```
+
+### Key Files Created/Modified (OB worktree)
+
+| File | Change |
+|---|---|
+| `hooks/useDemoCoworkSession.ts` | **NEW** — Singleton WebSocket hook connecting to mock server. Dispatches messages to Jotai atoms. |
+| `hooks/useConnectionResilience.ts` | **MODIFIED** — Added `useCallback` + `useRef` pattern to fix infinite re-render loop. |
+| `components/CoworkLayout/CoworkLayout.tsx` | **MODIFIED** — Swapped `useCoworkSession` for `useDemoCoworkSession`. Added live progression step rendering. |
+| `components/CoworkLayout/CoworkLayout.module.css` | **MODIFIED** — Added CSS for `.stepList`, `.stepItem`, `.stepStatus`, `.stepLabel`, `.stepDetail`. |
+| `components/CoworkChatPanel/CoworkChatPanel.tsx` | **MODIFIED** — Swapped `useCoworkSession` for `useDemoCoworkSession`. Fixed `send` vs `sendMessage` mismatch. |
+
+### How It Works
+
+1. **`useDemoCoworkSession`** opens a module-level singleton WebSocket to `ws://localhost:11040/ws`
+2. On open, sends `session_init` with a UUID → mock server responds with `session_init_response`
+3. Hook sets `connectionStatusAtom` to `'connected'` → input enables
+4. Mock server's `full_interactive` scenario auto-sends an ask-user question
+5. User types a message → `send()` sends `user_answer` over WebSocket
+6. Mock server runs `document_creation` sequence: 7 CoT events + 9 progression steps + 1 artifact, each with `delay_ms` timings (halved at 0.5x speed)
+7. Incoming messages dispatch to Jotai atoms:
+   - `ppt_agent_cot` → `appendChatMessageAtom` (agent messages in chat)
+   - `query_status.progression` → `progressionStepsAtom` (step list with status icons)
+   - `query_status.ask_user_question` → `appendChatMessageAtom` (question as agent msg)
+   - `query_status.artifact_ready` → `artifactsAtom` + `artifactsPanelVisibleAtom`
+8. UI components read atoms via `useAtomValue` and render updates
+
+### Available Scenarios
+
+Start the mock server with `--scenario=SCENARIO`:
+
+| Scenario | What It Does |
+|---|---|
+| `full_interactive` | Ask-user question → wait for answer → full document creation (recommended) |
+| `document_creation` | CoT + progression + artifact (no user interaction) |
+| `simple` | Minimal 2-event CoT only |
+| `error` | CoT + progression with mid-stream failure |
+| `ask_user` | Just the interactive question/answer sequence |
+
+Speed: `--speed=0.5` runs at 2x speed (delays halved). Default is 1.0.
+
+---
+
+## Known Issues
+
+| # | Issue | Severity |
+|---|---|---|
+| 1 | `vite dev` (no-auth) non-functional for UI testing — SSR auth middleware returns JSON 404. Must use `yarn dev` with auth proxy. | HIGH |
+| 2 | Feature gate dual implementation — `featureGates.ts` (ECS) and route's `isCoworkEnabled()` (query param/localStorage) are disconnected. | MEDIUM |
+| 3 | Protocol type drift — Bebop types have critical structural mismatches with OfficeAgent (SessionInit, FileInfo, Error payloads). | HIGH |
+| 4 | Only 1 test file for entire cowork feature (26 files) — and it doesn't run (`import.meta.env` in Jest CJS). | MEDIUM |
+| 5 | Duplicate chat messages — `full_interactive` scenario sends the ask-user question fixture twice. Mock server quirk. | LOW |
+| 6 | React duplicate key warnings — mock server reuses message IDs across scenario replays. | LOW |
+| 7 | Bebop typecheck: 19 errors in 6 cowork files from merging 8 independent branches. | HIGH |
+
+---
+
+## Full Test Report
+
+Detailed report saved at:
+`C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15-ob/test-report-pr4972663.md`
