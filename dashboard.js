@@ -1566,56 +1566,93 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/revise-and-regenerate — use LLM to revise plan JSON, then regenerate work items
+  // POST /api/plans/revise-and-regenerate — revise the SOURCE PLAN (.md), then dispatch plan-to-prd
   if (req.method === 'POST' && req.url === '/api/plans/revise-and-regenerate') {
     try {
       const body = await readBody(req);
       if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
-      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const currentContent = safeRead(planPath);
-      if (!currentContent) return jsonReply(res, 404, { error: 'could not read plan file' });
 
-      // Use steerDocument to modify the plan
-      const result = await llm.steerDocument({
-        instruction: body.instruction,
-        filePath: 'plans/' + body.source,
-        content: currentContent,
-        selection: body.selection || '',
-        isJson: body.source.endsWith('.json'),
-      });
+      // Find the source plan .md file for this PRD
+      // Convention: PRD JSON references plan via plan_summary containing the work item ID,
+      // or the .md file has a matching name prefix
+      const prdPath = path.join(SQUAD_DIR, 'plans', body.source);
+      if (!fs.existsSync(prdPath)) return jsonReply(res, 404, { error: 'PRD file not found' });
 
-      if (!result.updated) {
-        return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false, reset: 0, kept: 0, new: 0 });
-      }
-
-      // Validate JSON if applicable
-      if (body.source.endsWith('.json')) {
-        try { JSON.parse(result.content); } catch (e) {
-          return jsonReply(res, 200, { ok: true, answer: result.answer + '\n\n(JSON validation failed — not saved: ' + e.message + ')', updated: false, reset: 0, kept: 0, new: 0 });
+      // Look for corresponding .md plan file
+      let sourcePlanFile = null;
+      const planFiles = safeReadDir(path.join(SQUAD_DIR, 'plans')).filter(f => f.endsWith('.md'));
+      if (body.sourcePlan) {
+        // Explicit source plan provided
+        sourcePlanFile = body.sourcePlan;
+      } else {
+        // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
+        const prd = JSON.parse(safeRead(prdPath) || '{}');
+        if (prd.source_plan) {
+          sourcePlanFile = prd.source_plan;
+        } else {
+          // Match by prefix: officeagent-2026-03-15.json → plan-*officeagent* or plan-w025*.md
+          const prdBase = body.source.replace('.json', '');
+          for (const f of planFiles) {
+            // Check if plan file mentions the same project or was created around same time
+            const content = safeRead(path.join(SQUAD_DIR, 'plans', f)) || '';
+            if (content.includes(prd.project || '___nomatch___') || content.includes(prd.plan_summary?.slice(0, 40) || '___nomatch___')) {
+              sourcePlanFile = f;
+              break;
+            }
+          }
+          // Last resort: most recent .md plan
+          if (!sourcePlanFile && planFiles.length > 0) {
+            sourcePlanFile = planFiles.sort((a, b) => {
+              try { return fs.statSync(path.join(SQUAD_DIR, 'plans', b)).mtimeMs - fs.statSync(path.join(SQUAD_DIR, 'plans', a)).mtimeMs; } catch { return 0; }
+            })[0];
+          }
         }
       }
 
-      // Save the updated plan
-      safeWrite(planPath, result.content);
+      if (!sourcePlanFile) {
+        return jsonReply(res, 404, { error: 'No source plan (.md) found for this PRD. You can edit the PRD JSON directly using "Edit Plan".' });
+      }
 
-      // Now regenerate: reset pending/failed work items
-      const plan = JSON.parse(body.source.endsWith('.json') ? result.content : '{"missing_features":[]}');
-      const planItems = plan.missing_features || [];
-      let reset = 0, kept = 0, newCount = 0;
-      const deletedItemIds = [];
+      const sourcePlanPath = path.join(SQUAD_DIR, 'plans', sourcePlanFile);
+      const planContent = safeRead(sourcePlanPath);
+      if (!planContent) return jsonReply(res, 404, { error: 'Source plan file not readable: ' + sourcePlanFile });
+
+      // Step 1: Steer the source plan with the user's instruction
+      const result = await llm.steerDocument({
+        instruction: body.instruction,
+        filePath: 'plans/' + sourcePlanFile,
+        content: planContent,
+        selection: body.selection || '',
+        isJson: false,
+      });
+
+      if (!result.updated) {
+        return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false });
+      }
+
+      // Save the revised plan
+      safeWrite(sourcePlanPath, result.content);
+
+      // Step 2: Pause the old PRD so it stops materializing items
+      const prd = JSON.parse(safeRead(prdPath) || '{}');
+      prd.status = 'revision-requested';
+      prd.revision_feedback = body.instruction;
+      prd.revisionRequestedAt = new Date().toISOString();
+      safeWrite(prdPath, prd);
+
+      // Step 3: Clean up pending/failed work items from old PRD
+      let reset = 0, kept = 0;
       const wiPaths = [{ path: path.join(SQUAD_DIR, 'work-items.json'), label: 'central' }];
       for (const proj of PROJECTS) {
         wiPaths.push({ path: path.join(proj.localPath, '.squad', 'work-items.json'), label: proj.name });
       }
-      const materializedPlanItemIds = new Set();
+      const deletedItemIds = [];
       for (const wiInfo of wiPaths) {
         try {
           const items = JSON.parse(fs.readFileSync(wiInfo.path, 'utf8'));
           const filtered = [];
           for (const w of items) {
             if (w.sourcePlan === body.source) {
-              materializedPlanItemIds.add(w.sourcePlanItem);
               if (w.status === 'pending' || w.status === 'failed') {
                 reset++;
                 deletedItemIds.push(w.sourcePlanItem);
@@ -1630,9 +1667,6 @@ const server = http.createServer(async (req, res) => {
           if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
         } catch {}
       }
-      for (const pi of planItems) {
-        if (!materializedPlanItemIds.has(pi.id)) newCount++;
-      }
       for (const itemId of deletedItemIds) {
         cleanDispatchEntries(d =>
           (d.meta?.item?.sourcePlan === body.source && d.meta?.item?.sourcePlanItem === itemId) ||
@@ -1640,7 +1674,39 @@ const server = http.createServer(async (req, res) => {
         );
       }
 
-      return jsonReply(res, 200, { ok: true, answer: result.answer, updated: true, content: result.content, reset, kept, new: newCount });
+      // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
+      const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+      let centralItems = [];
+      try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
+      const maxNum = centralItems.reduce(function(max, i) {
+        const m = (i.id || '').match(/(\d+)$/);
+        return m ? Math.max(max, parseInt(m[1])) : max;
+      }, 0);
+      const wiId = 'W' + String(maxNum + 1).padStart(3, '0');
+      centralItems.push({
+        id: wiId,
+        title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
+        type: 'plan-to-prd',
+        priority: 'high',
+        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`plans/${body.source}\`. Set status to "approved".\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'dashboard:revise-and-regenerate',
+        project: prd.project || '',
+        planFile: sourcePlanFile,
+      });
+      safeWrite(centralWiPath, centralItems);
+
+      return jsonReply(res, 200, {
+        ok: true,
+        answer: result.answer,
+        updated: true,
+        sourcePlan: sourcePlanFile,
+        prdPaused: true,
+        reset,
+        kept,
+        workItemId: wiId,
+      });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 

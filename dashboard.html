@@ -1304,11 +1304,11 @@ async function planOpenInDocChat(file) {
   } catch (e) { alert('Error opening plan: ' + e.message); }
 }
 
-// Feature 4: Revise plan with AI instruction and regenerate work items
+// Revise source plan (.md) with AI, then dispatch plan-to-prd to regenerate PRD
 async function planRevisePRD(source) {
-  const instruction = prompt('What changes do you want to make to this plan?\n\nExamples:\n- "Change P009 to use a different approach"\n- "Add a new item P018 for caching"\n- "Remove P003 and update dependencies"');
+  const instruction = prompt('How should the plan change?\n\nThis will:\n1. AI-revise the source plan (.md)\n2. Pause the current PRD\n3. Clean up pending/failed work items\n4. Dispatch an agent to regenerate the PRD\n\nExamples:\n- "Use a simpler approach for the protocol adapter"\n- "Split P009 into smaller pieces"\n- "Remove the SharedTree requirement, use Jotai only"');
   if (!instruction || !instruction.trim()) return;
-  showToast('cmd-toast', 'Revising plan with AI...', true);
+  showToast('cmd-toast', 'Revising source plan...', true);
   try {
     const res = await fetch('/api/plans/revise-and-regenerate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1318,7 +1318,10 @@ async function planRevisePRD(source) {
     if (res.ok && d.ok) {
       if (d.updated) {
         refresh();
-        showToast('cmd-toast', 'Plan revised: ' + d.reset + ' reset, ' + d.kept + ' kept, ' + d.new + ' new. ' + (d.answer || '').slice(0, 100), true);
+        const msg = 'Plan revised (' + d.sourcePlan + '). ' + d.reset + ' items reset, ' + d.kept + ' kept. ' +
+          (d.workItemId ? d.workItemId + ' dispatched to regenerate PRD.' : '') +
+          ' ' + (d.answer || '').slice(0, 80);
+        showToast('cmd-toast', msg, true);
       } else {
         showToast('cmd-toast', d.answer || 'No changes made', false);
       }
