@@ -3225,6 +3225,8 @@ function _initQaSession() {
     document.getElementById('qa-clear-btn').style.display = 'block';
   } else {
     _qaHistory = [];
+    document.getElementById('modal-qa-thread').innerHTML = '';
+    document.getElementById('qa-clear-btn').style.display = 'none';
   }
 }
 
