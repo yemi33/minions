@@ -155,6 +155,13 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   const timeout = setTimeout(() => {
     e.log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
     try { proc.kill('SIGTERM'); } catch {}
+    // Safety: if process doesn't exit within 10s after SIGTERM, force-reset the flag
+    setTimeout(() => {
+      if (_consolidationInFlight) {
+        _consolidationInFlight = false;
+        e.log('warn', 'Consolidation flag force-reset after SIGTERM timeout');
+      }
+    }, 10000);
   }, 180000);
 
   proc.on('close', (code) => {
