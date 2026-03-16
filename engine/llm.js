@@ -46,7 +46,7 @@ function trackEngineUsage(category, usage) {
 
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
-function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1 } = {}) {
+function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '' } = {}) {
   return new Promise((resolve) => {
     const id = uid();
     const promptPath = path.join(ENGINE_DIR, `${label}-prompt-${id}.md`);
@@ -55,11 +55,16 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
     safeWrite(sysPath, sysPromptText);
 
     const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-    const proc = runFile(process.execPath, [
+    const args = [
       spawnScript, promptPath, sysPath,
       '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
-      '--permission-mode', 'bypassPermissions', '--verbose',
-    ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+      '--verbose',
+    ];
+    if (allowedTools) {
+      args.push('--allowedTools', allowedTools);
+    }
+    args.push('--permission-mode', 'bypassPermissions');
+    const proc = runFile(process.execPath, args, { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
 
     let stdout = '';
     let stderr = '';

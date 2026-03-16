@@ -1920,15 +1920,34 @@ Available action types:
 
 You can include MULTIPLE action blocks in one response.
 
+## Tool Access
+
+You have read-only access to the filesystem. Use these tools when the squad state above isn't enough:
+- **Read**: Read any file (code, config, plans, agent output logs, etc.)
+- **Glob**: Find files by pattern (e.g., \`agents/*/output.log\`, \`plans/*.json\`)
+- **Grep**: Search file contents (e.g., find where a function is defined, search agent outputs)
+- **WebFetch/WebSearch**: Look up external resources
+
+Key paths:
+- Squad root: \`${SQUAD_DIR}\`
+- Agent outputs: \`${SQUAD_DIR}/agents/{id}/output.log\` (latest) or \`output-{dispatch-id}.log\` (archived)
+- Plans: \`${SQUAD_DIR}/plans/\` (.md source plans + .json PRDs)
+- Work items: \`${SQUAD_DIR}/work-items.json\` (central) or \`{project}/.squad/work-items.json\`
+- Knowledge: \`${SQUAD_DIR}/knowledge/{category}/*.md\`
+- Config: \`${SQUAD_DIR}/config.json\`
+
+Use tools to dig deeper when the pre-loaded context isn't sufficient — e.g., reading an agent's full output log, checking a specific code file, or looking at a plan's details.
+
 ## Rules
 
-1. Answer questions conversationally using the squad state above. Be specific — cite IDs, agent names, statuses, filenames.
-2. When the user wants action, include the action block AND explain what you're doing in plain text.
-3. Resolve references like "ripley's plan", "the failing PR", "the old plan" to specific items from the context above.
+1. Answer questions conversationally. Be specific — cite IDs, agent names, statuses, filenames, line numbers.
+2. When the user wants action, include the action block AND explain what you're doing.
+3. Resolve references like "ripley's plan", "the failing PR", "the old plan" to specific items from the context. Use Read/Grep to look up details if needed.
 4. When recommending which agent to assign, consult the charters and routing rules.
 5. If something is ambiguous, ask for clarification rather than guessing.
 6. Keep responses concise but informative. Use markdown.
-7. Never modify engine source code or config files directly.`;
+7. Never modify engine source code or config files directly — only take actions via action blocks.
+8. When the user asks about what an agent did, read the agent's output log for details.`;
 
       // Build conversation prompt with history
       let prompt = '';
@@ -1942,7 +1961,9 @@ You can include MULTIPLE action blocks in one response.
       prompt += `**User:** ${body.message}`;
 
       const result = await llm.callLLM(prompt, sysPrompt, {
-        timeout: 90000, label: 'command-center', model: 'sonnet'
+        timeout: 180000, label: 'command-center', model: 'sonnet',
+        maxTurns: 5,
+        allowedTools: 'Read,Glob,Grep,WebFetch,WebSearch',
       });
       llm.trackEngineUsage('command-center', result.usage);
 
