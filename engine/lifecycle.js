@@ -223,22 +223,6 @@ function updateWorkItemStatus(meta, status, reason) {
   const itemId = meta.item?.id;
   if (!itemId) return;
 
-  if (meta.source === 'plan' && meta.planFile) {
-    const planPath = path.join(e.PLANS_DIR, meta.planFile);
-    const plan = e.safeJson(planPath);
-    if (plan?.missing_features) {
-      const feature = plan.missing_features.find(f => f.id === itemId);
-      if (feature) {
-        feature.status = status === 'done' ? 'implemented' : status === 'failed' ? 'failed' : feature.status;
-        if (status === 'done') feature.implementedAt = e.ts();
-        if (status === 'failed' && reason) feature.failReason = reason;
-        shared.safeWrite(planPath, plan);
-        e.log('info', `Plan item ${itemId} (${meta.planFile}) → ${feature.status}`);
-      }
-    }
-    return;
-  }
-
   let wiPath;
   if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
     wiPath = path.join(e.SQUAD_DIR, 'work-items.json');
@@ -297,32 +281,7 @@ function updateWorkItemStatus(meta, status, reason) {
     shared.safeWrite(wiPath, items);
     e.log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
 
-    // Sync back to PRD: update plan JSON item status when a materialized work item completes
-    if (target && target.sourcePlan && target.sourcePlanItem) {
-      try {
-        const planPath = path.join(e.PLANS_DIR, target.sourcePlan);
-        const plan = e.safeJson(planPath);
-        if (plan?.missing_features) {
-          const feature = plan.missing_features.find(f => f.id === target.sourcePlanItem);
-          if (feature) {
-            const oldStatus = feature.status;
-            if (status === 'done') {
-              feature.status = 'implemented';
-              feature.implementedAt = e.ts();
-            } else if (status === 'failed') {
-              feature.status = 'failed';
-              if (reason) feature.failReason = reason;
-            } else if (status === 'dispatched' || status === 'in-progress') {
-              feature.status = 'in-progress';
-            }
-            if (feature.status !== oldStatus) {
-              shared.safeWrite(planPath, plan);
-              e.log('info', `PRD sync: ${target.sourcePlan} item ${target.sourcePlanItem} → ${feature.status}`);
-            }
-          }
-        }
-      } catch {}
-    }
+    // PRD item status is derived from work items at read time (getPrdInfo) — no sync needed
   }
 }
 

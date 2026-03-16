@@ -1885,22 +1885,6 @@ function discoverFromWorkItems(config, project) {
     item.dispatched_at = ts();
     item.dispatched_to = agentId;
 
-    // Sync PRD item to in-progress when dispatched
-    if (item.sourcePlan && item.sourcePlanItem) {
-      try {
-        const planPath = path.join(PLANS_DIR, item.sourcePlan);
-        const plan = safeJson(planPath);
-        if (plan?.missing_features) {
-          const feature = plan.missing_features.find(f => f.id === item.sourcePlanItem);
-          if (feature && feature.status === 'missing') {
-            feature.status = 'in-progress';
-            feature.dispatchedAt = ts();
-            safeWrite(planPath, plan);
-          }
-        }
-      } catch {}
-    }
-
     newWork.push({
       type: workType,
       agent: agentId,

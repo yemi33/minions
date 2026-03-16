@@ -754,24 +754,6 @@ const server = http.createServer(async (req, res) => {
         }
       } catch {}
 
-      // Sync PRD item back to 'missing' if this work item came from a plan
-      if (item.sourcePlan && item.sourcePlanItem) {
-        try {
-          const planPath = path.join(SQUAD_DIR, 'plans', item.sourcePlan);
-          const plan = JSON.parse(safeRead(planPath) || '{}');
-          if (plan.missing_features) {
-            const feature = plan.missing_features.find(f => f.id === item.sourcePlanItem);
-            if (feature && feature.status !== 'missing') {
-              feature.status = 'missing';
-              delete feature.failReason;
-              delete feature.implementedAt;
-              delete feature.dispatchedAt;
-              safeWrite(planPath, plan);
-            }
-          }
-        } catch {}
-      }
-
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -803,48 +785,18 @@ const server = http.createServer(async (req, res) => {
 
       const item = items[idx];
 
-      // Kill running agent process if dispatched
-      if (item.dispatched_to) {
-        const agentDir = path.join(SQUAD_DIR, 'agents', item.dispatched_to);
-        const statusPath = path.join(agentDir, 'status.json');
-        try {
-          const status = JSON.parse(safeRead(statusPath) || '{}');
-          if (status.pid) {
-            try { process.kill(status.pid, 'SIGTERM'); } catch {}
-          }
-          // Reset agent to idle
-          status.status = 'idle';
-          delete status.currentTask;
-          delete status.dispatched;
-          safeWrite(statusPath, status);
-        } catch {}
-      }
-
       // Remove item from work-items file
       items.splice(idx, 1);
       safeWrite(wiPath, items);
 
-      // Clear dispatch entries (pending, active, completed + fan-out)
-      const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
-      try {
-        const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
-        const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
-        const dispatchKey = sourcePrefix + id;
-        let changed = false;
-        for (const queue of ['pending', 'active', 'completed']) {
-          if (dispatch[queue]) {
-            const before = dispatch[queue].length;
-            dispatch[queue] = dispatch[queue].filter(d =>
-              d.meta?.dispatchKey !== dispatchKey &&
-              (!d.meta?.parentKey || d.meta.parentKey !== dispatchKey)
-            );
-            if (dispatch[queue].length !== before) changed = true;
-          }
-        }
-        if (changed) {
-          safeWrite(dispatchPath, dispatch);
-        }
-      } catch {}
+      // Clean dispatch entries + kill running agent
+      const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
+      const dispatchKey = sourcePrefix + id;
+      cleanDispatchEntries(d =>
+        d.meta?.dispatchKey === dispatchKey ||
+        (d.meta?.parentKey && d.meta.parentKey === dispatchKey) ||
+        d.meta?.item?.id === id
+      );
 
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -885,6 +837,13 @@ const server = http.createServer(async (req, res) => {
       archive.push(item);
       safeWrite(archivePath, archive);
       safeWrite(wiPath, items);
+
+      // Clean dispatch entries for archived item
+      const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
+      cleanDispatchEntries(d =>
+        d.meta?.dispatchKey === sourcePrefix + id ||
+        d.meta?.item?.id === id
+      );
 
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
