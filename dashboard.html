@@ -947,7 +947,7 @@ function renderPrdProgress(prog) {
       '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
     '</div>';
 
-    return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + bar + '</div>';
+    return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + '<div style="margin-top:8px">' + bar + '</div></div>';
   }
 
   const statusBadge = (s) => {
