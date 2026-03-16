@@ -12,34 +12,91 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Bump version from npm registry and publish
+      - name: Bump version, update changelog, and publish
         run: |
           # Get the latest published version from npm (or default to 0.1.0)
           CURRENT=$(npm view @yemi33/squad version 2>/dev/null || echo "0.1.0")
           echo "Current npm version: $CURRENT"
 
-          # Bump patch: 0.1.1 → 0.1.2, etc.
+          # Bump patch
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
           NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
           echo "Publishing version: $NEXT"
+          TODAY=$(date +%Y-%m-%d)
 
-          # Update package.json with the new version
+          # Update package.json
           node -e "const p=require('./package.json'); p.version='$NEXT'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
+
+          # Generate changelog entry from changed files
+          # Compare against the last [skip ci] commit (previous publish) or fall back to HEAD~1
+          LAST_PUBLISH=$(git log --oneline --grep='\[skip ci\]' -1 --format='%H' 2>/dev/null || echo "")
+          if [ -n "$LAST_PUBLISH" ]; then
+            CHANGED=$(git diff --name-only "$LAST_PUBLISH" HEAD -- . ':!package.json' 2>/dev/null || echo "")
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- . ':!package.json' 2>/dev/null || echo "")
+          fi
+
+          # Categorize changes
+          ENGINE_CHANGES=""
+          DASHBOARD_CHANGES=""
+          PLAYBOOK_CHANGES=""
+          AGENT_CHANGES=""
+          DOC_CHANGES=""
+          OTHER_CHANGES=""
+
+          for f in $CHANGED; do
+            name=$(basename "$f")
+            case "$f" in
+              engine.js|engine/*) ENGINE_CHANGES="$ENGINE_CHANGES\n- \`$f\`" ;;
+              dashboard.*) DASHBOARD_CHANGES="$DASHBOARD_CHANGES\n- \`$f\`" ;;
+              playbooks/*) PLAYBOOK_CHANGES="$PLAYBOOK_CHANGES\n- \`$name\`" ;;
+              agents/*/charter.md) AGENT_CHANGES="$AGENT_CHANGES\n- \`$f\`" ;;
+              docs/*|README.md|CHANGELOG.md) DOC_CHANGES="$DOC_CHANGES\n- \`$name\`" ;;
+              bin/*|squad.js|config.template.json|routing.md|team.md|skills/*) OTHER_CHANGES="$OTHER_CHANGES\n- \`$f\`" ;;
+            esac
+          done
+
+          # Build changelog entry
+          ENTRY="## $NEXT ($TODAY)\n"
+          [ -n "$ENGINE_CHANGES" ] && ENTRY="$ENTRY\n### Engine$ENGINE_CHANGES\n"
+          [ -n "$DASHBOARD_CHANGES" ] && ENTRY="$ENTRY\n### Dashboard$DASHBOARD_CHANGES\n"
+          [ -n "$PLAYBOOK_CHANGES" ] && ENTRY="$ENTRY\n### Playbooks$PLAYBOOK_CHANGES\n"
+          [ -n "$AGENT_CHANGES" ] && ENTRY="$ENTRY\n### Agents$AGENT_CHANGES\n"
+          [ -n "$DOC_CHANGES" ] && ENTRY="$ENTRY\n### Documentation$DOC_CHANGES\n"
+          [ -n "$OTHER_CHANGES" ] && ENTRY="$ENTRY\n### Other$OTHER_CHANGES\n"
+
+          # Only add entry if there are actual changes
+          if [ -n "$ENGINE_CHANGES$DASHBOARD_CHANGES$PLAYBOOK_CHANGES$AGENT_CHANGES$DOC_CHANGES$OTHER_CHANGES" ]; then
+            # Insert after the first line (# Changelog header + description)
+            node -e "
+              const fs = require('fs');
+              const cl = fs.readFileSync('CHANGELOG.md', 'utf8');
+              const entry = '$(echo -e "$ENTRY")';
+              // Insert after the header paragraph (first blank line after line 1)
+              const idx = cl.indexOf('\n\n');
+              if (idx !== -1) {
+                const updated = cl.slice(0, idx + 2) + entry + '\n' + cl.slice(idx + 2);
+                fs.writeFileSync('CHANGELOG.md', updated);
+              }
+            "
+          fi
 
           # Publish
           npm publish --access public
 
-          # Commit the version bump back to the repo
+          # Commit version bump + changelog back to repo
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json
-          git commit -m "chore: bump version to $NEXT [skip ci]"
+          git add package.json CHANGELOG.md
+          git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
           git push
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
