@@ -158,12 +158,32 @@ function getPrdInfo() {
   const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
   // Build PRD item → PR lookup from all project PRs
+  // PRs reference work item IDs (PL-W017), not PRD item IDs (P007)
+  // So also build a work item ID → PRD item ID mapping
+  const wiToPlanItem = {};
+  for (const project of PROJECTS) {
+    try {
+      const wiPath = path.join(project.localPath, '.squad', 'work-items.json');
+      const workItems = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      for (const wi of workItems) {
+        if (wi.sourcePlanItem) wiToPlanItem[wi.id] = wi.sourcePlanItem;
+      }
+    } catch {}
+  }
+
   const allPrs = getPullRequests();
   const prdToPr = {};
   for (const pr of allPrs) {
     for (const itemId of (pr.prdItems || [])) {
+      // Direct match (if prdItems contains PRD item IDs)
       if (!prdToPr[itemId]) prdToPr[itemId] = [];
       prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
+      // Indirect match: work item ID → PRD item ID
+      const planItemId = wiToPlanItem[itemId];
+      if (planItemId && planItemId !== itemId) {
+        if (!prdToPr[planItemId]) prdToPr[planItemId] = [];
+        prdToPr[planItemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
+      }
     }
   }
 
