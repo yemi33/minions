@@ -320,7 +320,9 @@ async function reconcilePrs(config) {
       // Try to extract work item ID from branch name (e.g., work/PL-W005 -> PL-W005)
       const wiMatch = branch.match(/(PL-W\d+)/i);
       const linkedItemId = wiMatch ? wiMatch[1].toUpperCase() : null;
+      // Validate work item exists — only link if confirmed
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
+      const confirmedItemId = linkedItem ? linkedItemId : null;
 
       const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
 
@@ -333,12 +335,12 @@ async function reconcilePrs(config) {
         status: 'active',
         created: (adoPr.creationDate || '').slice(0, 10) || e.dateStamp(),
         url: prUrl,
-        prdItems: linkedItemId ? [linkedItemId] : [],
+        prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
       existingIds.add(prId);
       projectAdded++;
 
-      e.log('info', `PR reconciliation: added ${prId} (branch: ${branch}${linkedItemId ? ', linked to ' + linkedItemId : ''}) to ${project.name}`);
+      e.log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
     if (projectAdded > 0) {

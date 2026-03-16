@@ -830,7 +830,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (isSuccess) prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large') && prsCreatedCount === 0 && meta?.item?.id) {
+  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     let existingPrFound = false;
