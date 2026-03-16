@@ -112,15 +112,62 @@ A minimal 5-step checklist to verify the core functionality:
 5. ...
 ```
 
+## Step 6: Create E2E Pull Requests
+
+For each project that has changes, create a single **aggregate PR** that combines all the plan's branches into one. This gives the human reviewer a single diff showing the full picture of everything built.
+
+For each project worktree:
+
+1. You're already in the worktree with all branches merged. Push this combined branch:
+   ```bash
+   cd <worktree-path>
+   git checkout -b e2e/<plan-slug>
+   git push origin e2e/<plan-slug>
+   ```
+
+2. Create a PR targeting the project's main branch using `mcp__azure-ado__repo_create_pull_request` (or `gh pr create` for GitHub):
+   - **Title:** `[E2E] <plan summary>`
+   - **Description:** Include:
+     - The plan summary
+     - List of all individual PRs that are merged into this branch
+     - The testing guide (copy from Step 5)
+     - Build/test status from Step 2-3
+   - **Target branch:** the project's main branch (e.g., `main` or `master`)
+   - **Do NOT auto-complete** — this is for review only
+   - **Mark as draft** if the option is available
+
+3. Add the E2E PR to the project's `.squad/pull-requests.json`:
+   ```bash
+   node -e "
+   const fs = require('fs');
+   const p = '<project-path>/.squad/pull-requests.json';
+   const prs = JSON.parse(fs.readFileSync(p, 'utf8'));
+   prs.push({
+     id: 'PR-<number>',
+     title: '[E2E] <plan summary>',
+     agent: '{{agent_name}}',
+     branch: 'e2e/<plan-slug>',
+     reviewStatus: 'pending',
+     status: 'active',
+     created: new Date().toISOString().slice(0,10),
+     url: '<pr-url>',
+     prdItems: []
+   });
+   fs.writeFileSync(p, JSON.stringify(prs, null, 2));
+   "
+   ```
+
+4. Note the E2E PR URLs in the testing guide.
+
 ## Rules
 
 - Base testing steps on the **acceptance criteria** from each plan item
 - Include **concrete steps** — URLs, buttons to click, inputs to type, expected visual results
 - If a project doesn't build, still document what SHOULD be testable once fixed
-- Do NOT create PRs or push commits
 - Do NOT fix code — only report issues
 - Leave all worktrees in place for the user to inspect
 - The local server MUST keep running after your process exits
 - Use absolute paths everywhere so the user can copy-paste commands
+- E2E PRs are for review only — do NOT auto-complete or merge them
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
