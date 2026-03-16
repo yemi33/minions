@@ -1115,6 +1115,9 @@ function renderPrdProgress(prog) {
             (agent ? '<span style="font-size:8px;color:var(--muted)">' + escHtml(agent) + '</span>' : '') +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
           '</div>' +
+          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
+            return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:none" title="' + escHtml(pr.title || '') + '">PR ' + escHtml(pr.id) + '</a>';
+          }).join(' ') + '</div>' : '') +
         '</div>';
       }
       html += '</div>';
