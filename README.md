@@ -38,6 +38,15 @@ git clone https://github.com/yemi33/squad.git ~/.squad
 node ~/.squad/squad.js init
 ```
 
+## Upgrading
+
+```bash
+npm update -g @yemi33/squad
+squad init --force
+```
+
+This updates the engine, dashboard, and playbook files in `~/.squad/` while preserving your `config.json`, agent history, notes, and other runtime state. Only `.js` and `.html` files are overwritten; your customized `.md` files (charters, playbooks, routing) are kept.
+
 ## Quick Start
 
 ```bash
