@@ -739,6 +739,24 @@ const server = http.createServer(async (req, res) => {
         }
       } catch {}
 
+      // Sync PRD item back to 'missing' if this work item came from a plan
+      if (item.sourcePlan && item.sourcePlanItem) {
+        try {
+          const planPath = path.join(SQUAD_DIR, 'plans', item.sourcePlan);
+          const plan = JSON.parse(safeRead(planPath) || '{}');
+          if (plan.missing_features) {
+            const feature = plan.missing_features.find(f => f.id === item.sourcePlanItem);
+            if (feature && feature.status !== 'missing') {
+              feature.status = 'missing';
+              delete feature.failReason;
+              delete feature.implementedAt;
+              delete feature.dispatchedAt;
+              safeWrite(planPath, plan);
+            }
+          }
+        } catch {}
+      }
+
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
