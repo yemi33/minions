@@ -4,11 +4,10 @@
  * Both engine.js and dashboard.js require() this module.
  */
 
-const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeWrite, safeUnlink, cleanChildEnv, parseStreamJsonOutput } = shared;
+const { safeRead, safeWrite, safeUnlink, runFile, cleanChildEnv, parseStreamJsonOutput } = shared;
 
 const SQUAD_DIR = path.resolve(__dirname, '..');
 const ENGINE_DIR = __dirname;
@@ -56,11 +55,11 @@ function callHaiku(promptText, sysPromptText, { timeout = 60000, label = 'llm' }
     safeWrite(sysPath, sysPromptText);
 
     const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-    const proc = spawn(process.execPath, [
+    const proc = runFile(process.execPath, [
       spawnScript, promptPath, sysPath,
       '--output-format', 'stream-json', '--max-turns', '1', '--model', 'haiku',
       '--permission-mode', 'bypassPermissions', '--verbose',
-    ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv(), windowsHide: true });
+    ], { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
 
     let stdout = '';
     let stderr = '';

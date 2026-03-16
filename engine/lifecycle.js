@@ -5,8 +5,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const shared = require('./shared');
+const { execSilent } = shared;
 const { trackEngineUsage } = require('./llm');
 
 let _engine = null;
@@ -557,7 +557,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
     for (const p of [wtPath, btPath]) {
       if (fs.existsSync(p)) {
         try {
-          execSync(`git worktree remove "${p}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000, windowsHide: true });
+          execSilent(`git worktree remove "${p}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
           e.log('info', `Cleaned up worktree: ${p}`);
         } catch (err) { e.log('warn', `Failed to remove worktree ${p}: ${err.message}`); }
       }

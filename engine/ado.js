@@ -3,9 +3,8 @@
  * Extracted from engine.js: ADO token management, PR status polling, human comment polling.
  */
 
-const { execSync } = require('child_process');
 const shared = require('./shared');
-const { getAdoOrgBase } = shared;
+const { exec, getAdoOrgBase } = shared;
 
 // Lazy require to avoid circular dependency
 let _engine = null;
@@ -23,9 +22,8 @@ function getAdoToken() {
     return _adoTokenCache.token;
   }
   try {
-    const token = execSync('azureauth ado token --output token', {
-      timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true
-    }).trim();
+    const token = exec('azureauth ado token --output token', {
+      timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']    }).trim();
     if (token && token.startsWith('eyJ')) {
       _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
       return token;

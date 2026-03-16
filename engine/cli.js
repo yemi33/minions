@@ -79,7 +79,7 @@ const commands = {
     e.loadCooldowns();
 
     // Re-attach to surviving agent processes from previous session
-    const { execSync } = require('child_process');
+    const { exec } = require('./shared');
     const dispatch = e.getDispatch();
     const activeOnStart = (dispatch.active || []);
     if (activeOnStart.length > 0) {
@@ -111,7 +111,7 @@ const commands = {
         if (agentPid && agentPid > 0) {
           try {
             if (process.platform === 'win32') {
-              const out = execSync(`tasklist /FI "PID eq ${agentPid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+              const out = exec(`tasklist /FI "PID eq ${agentPid}" /NH`, { encoding: 'utf8', timeout: 3000 });
               if (!out.includes(String(agentPid))) agentPid = null;
             } else {
               process.kill(agentPid, 0);

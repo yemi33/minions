@@ -6,10 +6,9 @@
  * Usage: node spawn-agent.js <prompt-file> <sysprompt-file> [claude-args...]
  */
 
-const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { cleanChildEnv } = require('./shared');
+const { exec, runFile, cleanChildEnv } = require('./shared');
 
 const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
 
@@ -37,8 +36,8 @@ for (const p of searchPaths) {
 // Fallback: parse the shell wrapper
 if (!claudeBin) {
   try {
-    const which = execSync('bash -c "which claude"', { encoding: 'utf8', env, windowsHide: true }).trim();
-    const wrapper = execSync(`bash -c "cat '${which}'"`, { encoding: 'utf8', env, windowsHide: true });
+    const which = exec('bash -c "which claude"', { encoding: 'utf8', env }).trim();
+    const wrapper = exec(`bash -c "cat '${which}'"`, { encoding: 'utf8', env });
     const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);
     if (m) {
       const basedir = path.dirname(which.replace(/^\/c\//, 'C:/').replace(/\//g, path.sep));
@@ -67,7 +66,8 @@ if (!claudeBin) {
 let actualArgs = cliArgs;
 try {
   // Test: does claude support --system-prompt-file?
-  const testResult = require('child_process').spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  const { spawnSync } = require('child_process');
+  const testResult = spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   if (!(testResult.stdout || '').includes('system-prompt-file')) {
     // Not supported — fall back to inline but safe: use --append-system-prompt with chunking
     // or just inline if under 30KB
@@ -88,10 +88,9 @@ try {
   // If help check fails, try file approach anyway
 }
 
-const proc = spawn(process.execPath, [claudeBin, ...actualArgs], {
+const proc = runFile(process.execPath, [claudeBin, ...actualArgs], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env,
-  windowsHide: true
+  env
 });
 
 fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`);

@@ -6,8 +6,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 const shared = require('./shared');
+const { runFile } = shared;
 const { trackEngineUsage } = require('./llm');
 
 // Lazy require to avoid circular dependency
@@ -140,11 +140,10 @@ function consolidateWithLLM(items, existingNotes, files, config) {
 
   e.log('info', 'Spawning Haiku for LLM consolidation...');
 
-  const proc = spawn(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
+  const proc = runFile(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
     cwd: e.SQUAD_DIR,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: shared.cleanChildEnv(),
-    windowsHide: true
+    env: shared.cleanChildEnv()
   });
 
   let stdout = '';
