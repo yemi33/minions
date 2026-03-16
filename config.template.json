@@ -1,19 +1,35 @@
 {
-  "project": {
-    "name": "YOUR_PROJECT_NAME",
-    "repoHost": "ado",
-    "repositoryId": "YOUR_REPO_ID",
-    "adoOrg": "YOUR_ORG",
-    "adoProject": "YOUR_PROJECT",
-    "repoName": "YOUR_REPO_NAME",
-    "mainBranch": "main",
-    "prUrlBase": ""
-  },
+  "projects": [
+    {
+      "name": "YOUR_PROJECT_NAME",
+      "localPath": "/path/to/your/project",
+      "repoHost": "ado",
+      "repositoryId": "YOUR_REPO_ID",
+      "adoOrg": "YOUR_ORG",
+      "adoProject": "YOUR_PROJECT",
+      "repoName": "YOUR_REPO_NAME",
+      "mainBranch": "main",
+      "prUrlBase": "",
+      "workSources": {
+        "pullRequests": {
+          "enabled": true,
+          "path": ".squad/pull-requests.json",
+          "cooldownMinutes": 30
+        },
+        "workItems": {
+          "enabled": true,
+          "path": ".squad/work-items.json",
+          "cooldownMinutes": 0
+        }
+      }
+    }
+  ],
   "engine": {
     "tickInterval": 60000,
     "maxConcurrent": 3,
     "inboxConsolidateThreshold": 5,
-    "agentTimeout": 600000,
+    "agentTimeout": 18000000,
+    "heartbeatTimeout": 300000,
     "maxTurns": 100,
     "worktreeRoot": "../worktrees"
   },
@@ -21,27 +37,6 @@
     "binary": "claude",
     "outputFormat": "json",
     "allowedTools": "Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch"
-  },
-  "workSources": {
-    "prd": {
-      "enabled": true,
-      "path": "docs/prd-gaps.json",
-      "description": "PRD gap analysis — missing features become implement tasks",
-      "itemFilter": { "status": ["missing", "planned"] },
-      "cooldownMinutes": 30
-    },
-    "pullRequests": {
-      "enabled": true,
-      "path": ".squad/pull-requests.json",
-      "description": "PR tracker — pending PRs become review tasks, changes-requested become fix tasks",
-      "cooldownMinutes": 30
-    },
-    "workItems": {
-      "enabled": true,
-      "path": ".squad/work-items.json",
-      "description": "Manual work items queue — arbitrary tasks added by the coordinator",
-      "cooldownMinutes": 0
-    }
   },
   "agents": {
     "ripley":  { "name": "Ripley",  "emoji": "🏗️",  "role": "Lead / Explorer", "skills": ["architecture", "codebase-exploration", "design-review"] },

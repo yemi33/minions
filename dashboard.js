@@ -282,22 +282,17 @@ function getNotes() {
 function getPullRequests() {
   const allPrs = [];
   for (const project of PROJECTS) {
-    const root = path.resolve(project.localPath || path.resolve(SQUAD_DIR, '..'));
-    const prSrc = project.workSources?.pullRequests || CONFIG.workSources?.pullRequests || {};
-    const prPath = path.resolve(root, prSrc.path || '.squad/pull-requests.json');
-    const prFile = safeRead(prPath);
-    if (!prFile) continue;
-    try {
-      const prs = JSON.parse(prFile);
-      const base = project.prUrlBase || CONFIG.prUrlBase || '';
-      for (const pr of prs) {
-        if (!pr.url && base && pr.id) {
-          pr.url = base + String(pr.id).replace('PR-', '');
-        }
-        pr._project = project.name || 'Project';
-        allPrs.push(pr);
+    const prPath = shared.projectPrPath(project);
+    const prs = shared.safeJson(prPath);
+    if (!prs) continue;
+    const base = project.prUrlBase || '';
+    for (const pr of prs) {
+      if (!pr.url && base && pr.id) {
+        pr.url = base + String(pr.id).replace('PR-', '');
       }
-    } catch {}
+      pr._project = project.name || 'Project';
+      allPrs.push(pr);
+    }
   }
   // Sort by created date descending
   allPrs.sort((a, b) => (b.created || '').localeCompare(a.created || ''));

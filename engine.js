@@ -97,7 +97,7 @@ function logTs() { return new Date().toLocaleTimeString(); }
 function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
 const safeJson = shared.safeJson;
-const safeRead = (p) => shared.safeRead(p) || '';  // engine.js historically returns '' not null
+const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 
 function log(level, msg, meta = {}) {
@@ -240,9 +240,7 @@ function getKnowledgeBaseIndex() {
 
 function getPrs(project) {
   if (project) {
-    const prPath = project.workSources?.pullRequests?.path;
-    if (prPath) return safeJson(path.resolve(projectRoot(project), prPath)) || [];
-    return safeJson(path.join(projectRoot(project), '.squad', 'pull-requests.json')) || [];
+    return safeJson(shared.projectPrPath(project)) || [];
   }
   // Fallback: try all projects
   const config = getConfig();

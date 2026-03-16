@@ -54,16 +54,14 @@ async function adoFetch(url, token, _retried = false) {
   return JSON.parse(text);
 }
 
-// ─── PR Status Polling ───────────────────────────────────────────────────────
+// ─── Shared PR Polling Loop ──────────────────────────────────────────────────
 
-async function pollPrStatus(config) {
+/**
+ * Iterate active PRs across all projects. Calls `callback(project, pr, prNum, orgBase)`
+ * for each active PR. If callback returns truthy, the PR file is saved after the project loop.
+ */
+async function forEachActivePr(config, token, callback) {
   const e = engine();
-  const token = getAdoToken();
-  if (!token) {
-    e.log('warn', 'Skipping PR status poll — no ADO token available');
-    return;
-  }
-
   const projects = shared.getProjects(config);
   let totalUpdated = 0;
 
@@ -82,95 +80,115 @@ async function pollPrStatus(config) {
 
       try {
         const orgBase = getAdoOrgBase(project);
-        const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}`;
-
-        const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
-
-        let newStatus = pr.status;
-        if (prData.status === 'completed') newStatus = 'merged';
-        else if (prData.status === 'abandoned') newStatus = 'abandoned';
-        else if (prData.status === 'active') newStatus = 'active';
-
-        if (pr.status !== newStatus) {
-          e.log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
-          pr.status = newStatus;
-          projectUpdated++;
-
-          if (newStatus === 'merged' || newStatus === 'abandoned') {
-            await engine().handlePostMerge(pr, project, config, newStatus);
-          }
-        }
-
-        const reviewers = prData.reviewers || [];
-        const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
-        let newReviewStatus = pr.reviewStatus || 'pending';
-        if (votes.length > 0) {
-          if (votes.some(v => v === -10)) newReviewStatus = 'changes-requested';
-          else if (votes.some(v => v >= 5)) newReviewStatus = 'approved';
-          else if (votes.some(v => v === -5)) newReviewStatus = 'waiting';
-          else newReviewStatus = 'pending';
-        }
-
-        if (pr.reviewStatus !== newReviewStatus) {
-          e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
-          pr.reviewStatus = newReviewStatus;
-          projectUpdated++;
-        }
-
-        if (newStatus !== 'active') continue;
-
-        const statusData = await adoFetch(`${repoBase}/statuses?api-version=7.1`, token);
-
-        const latest = new Map();
-        for (const s of statusData.value || []) {
-          const key = (s.context?.genre || '') + '/' + (s.context?.name || '');
-          if (!latest.has(key)) latest.set(key, s);
-        }
-
-        const buildStatuses = [...latest.values()].filter(s => {
-          const ctx = ((s.context?.genre || '') + '/' + (s.context?.name || '')).toLowerCase();
-          return ctx.includes('codecoverage') || ctx.includes('build') ||
-                 ctx.includes('deploy') || ctx.includes('ci/');
-        });
-
-        let buildStatus = 'none';
-        let buildFailReason = '';
-
-        if (buildStatuses.length > 0) {
-          const states = buildStatuses.map(s => s.state).filter(Boolean);
-          const hasFailed = states.some(s => s === 'failed' || s === 'error');
-          const allDone = states.every(s => s === 'succeeded' || s === 'notApplicable');
-          const hasQueued = buildStatuses.some(s => !s.state);
-
-          if (hasFailed) {
-            buildStatus = 'failing';
-            const failed = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
-            buildFailReason = failed?.description || failed?.context?.name || 'Build failed';
-          } else if (allDone && !hasQueued) {
-            buildStatus = 'passing';
-          } else {
-            buildStatus = 'running';
-          }
-        }
-
-        if (pr.buildStatus !== buildStatus) {
-          e.log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
-          pr.buildStatus = buildStatus;
-          if (buildFailReason) pr.buildFailReason = buildFailReason;
-          else delete pr.buildFailReason;
-          projectUpdated++;
-        }
+        const updated = await callback(project, pr, prNum, orgBase);
+        if (updated) projectUpdated++;
       } catch (err) {
-        e.log('warn', `Failed to poll status for ${pr.id}: ${err.message}`);
+        e.log('warn', `Failed to process ${pr.id}: ${err.message}`);
       }
     }
 
     if (projectUpdated > 0) {
-      const prPath = shared.projectPrPath(project);
-      shared.safeWrite(prPath, prs);
+      shared.safeWrite(shared.projectPrPath(project), prs);
       totalUpdated += projectUpdated;
     }
   }
+
+  return totalUpdated;
+}
+
+// ─── PR Status Polling ───────────────────────────────────────────────────────
+
+async function pollPrStatus(config) {
+  const e = engine();
+  const token = getAdoToken();
+  if (!token) {
+    e.log('warn', 'Skipping PR status poll — no ADO token available');
+    return;
+  }
+
+  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
+    const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}`;
+    let updated = false;
+
+    const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
+
+    let newStatus = pr.status;
+    if (prData.status === 'completed') newStatus = 'merged';
+    else if (prData.status === 'abandoned') newStatus = 'abandoned';
+    else if (prData.status === 'active') newStatus = 'active';
+
+    if (pr.status !== newStatus) {
+      e.log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
+      pr.status = newStatus;
+      updated = true;
+
+      if (newStatus === 'merged' || newStatus === 'abandoned') {
+        await engine().handlePostMerge(pr, project, config, newStatus);
+      }
+    }
+
+    const reviewers = prData.reviewers || [];
+    const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
+    let newReviewStatus = pr.reviewStatus || 'pending';
+    if (votes.length > 0) {
+      if (votes.some(v => v === -10)) newReviewStatus = 'changes-requested';
+      else if (votes.some(v => v >= 5)) newReviewStatus = 'approved';
+      else if (votes.some(v => v === -5)) newReviewStatus = 'waiting';
+      else newReviewStatus = 'pending';
+    }
+
+    if (pr.reviewStatus !== newReviewStatus) {
+      e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
+      pr.reviewStatus = newReviewStatus;
+      updated = true;
+    }
+
+    if (newStatus !== 'active') return updated;
+
+    const statusData = await adoFetch(`${repoBase}/statuses?api-version=7.1`, token);
+
+    const latest = new Map();
+    for (const s of statusData.value || []) {
+      const key = (s.context?.genre || '') + '/' + (s.context?.name || '');
+      if (!latest.has(key)) latest.set(key, s);
+    }
+
+    const buildStatuses = [...latest.values()].filter(s => {
+      const ctx = ((s.context?.genre || '') + '/' + (s.context?.name || '')).toLowerCase();
+      return ctx.includes('codecoverage') || ctx.includes('build') ||
+             ctx.includes('deploy') || ctx.includes('ci/');
+    });
+
+    let buildStatus = 'none';
+    let buildFailReason = '';
+
+    if (buildStatuses.length > 0) {
+      const states = buildStatuses.map(s => s.state).filter(Boolean);
+      const hasFailed = states.some(s => s === 'failed' || s === 'error');
+      const allDone = states.every(s => s === 'succeeded' || s === 'notApplicable');
+      const hasQueued = buildStatuses.some(s => !s.state);
+
+      if (hasFailed) {
+        buildStatus = 'failing';
+        const failed = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
+        buildFailReason = failed?.description || failed?.context?.name || 'Build failed';
+      } else if (allDone && !hasQueued) {
+        buildStatus = 'passing';
+      } else {
+        buildStatus = 'running';
+      }
+    }
+
+    if (pr.buildStatus !== buildStatus) {
+      e.log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+      pr.buildStatus = buildStatus;
+      if (buildFailReason) pr.buildFailReason = buildFailReason;
+      else delete pr.buildFailReason;
+      updated = true;
+    }
+
+    return updated;
+  });
 
   if (totalUpdated > 0) {
     e.log('info', `PR status poll: updated ${totalUpdated} PR(s)`);
@@ -184,86 +202,59 @@ async function pollPrHumanComments(config) {
   const token = getAdoToken();
   if (!token) return;
 
-  const projects = shared.getProjects(config);
-  let totalUpdated = 0;
+  const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
+    const threadsUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}/threads?api-version=7.1`;
+    const threadsData = await adoFetch(threadsUrl, token);
+    const threads = threadsData.value || [];
 
-  for (const project of projects) {
-    if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
+    const allHumanAuthors = new Set();
+    for (const thread of threads) {
+      for (const comment of (thread.comments || [])) {
+        if (!comment.content || comment.commentType === 'system') continue;
+        if (/\bSquad\s*\(/i.test(comment.content)) continue;
+        allHumanAuthors.add(comment.author?.uniqueName || comment.author?.displayName || '');
+      }
+    }
+    const soloReviewer = allHumanAuthors.size <= 1;
 
-    const prs = e.getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === 'active');
-    if (activePrs.length === 0) continue;
+    const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const newHumanComments = [];
 
-    let projectUpdated = 0;
+    for (const thread of threads) {
+      for (const comment of (thread.comments || [])) {
+        if (!comment.content || comment.commentType === 'system') continue;
+        if (/\bSquad\s*\(/i.test(comment.content)) continue;
+        if (!(comment.publishedDate && comment.publishedDate > cutoff)) continue;
 
-    for (const pr of activePrs) {
-      const prNum = (pr.id || '').replace('PR-', '');
-      if (!prNum) continue;
+        if (!soloReviewer && !/@squad\b/i.test(comment.content)) continue;
 
-      try {
-        const orgBase = getAdoOrgBase(project);
-        const threadsUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}/threads?api-version=7.1`;
-        const threadsData = await adoFetch(threadsUrl, token);
-        const threads = threadsData.value || [];
-
-        const allHumanAuthors = new Set();
-        for (const thread of threads) {
-          for (const comment of (thread.comments || [])) {
-            if (!comment.content || comment.commentType === 'system') continue;
-            if (/\bSquad\s*\(/i.test(comment.content)) continue;
-            allHumanAuthors.add(comment.author?.uniqueName || comment.author?.displayName || '');
-          }
-        }
-        const soloReviewer = allHumanAuthors.size <= 1;
-
-        const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
-        const newHumanComments = [];
-
-        for (const thread of threads) {
-          for (const comment of (thread.comments || [])) {
-            if (!comment.content || comment.commentType === 'system') continue;
-            if (/\bSquad\s*\(/i.test(comment.content)) continue;
-            if (!(comment.publishedDate && comment.publishedDate > cutoff)) continue;
-
-            if (!soloReviewer && !/@squad\b/i.test(comment.content)) continue;
-
-            newHumanComments.push({
-              threadId: thread.id,
-              commentId: comment.id,
-              author: comment.author?.displayName || 'Human',
-              content: comment.content,
-              date: comment.publishedDate
-            });
-          }
-        }
-
-        if (newHumanComments.length === 0) continue;
-
-        newHumanComments.sort((a, b) => a.date.localeCompare(b.date));
-        const feedbackContent = newHumanComments
-          .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
-          .join('\n\n---\n\n');
-        const latestDate = newHumanComments[newHumanComments.length - 1].date;
-
-        pr.humanFeedback = {
-          lastProcessedCommentDate: latestDate,
-          pendingFix: true,
-          feedbackContent
-        };
-
-        e.log('info', `PR ${pr.id}: found ${newHumanComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
-        projectUpdated++;
-      } catch (err) {
-        e.log('warn', `Failed to poll comments for ${pr.id}: ${err.message}`);
+        newHumanComments.push({
+          threadId: thread.id,
+          commentId: comment.id,
+          author: comment.author?.displayName || 'Human',
+          content: comment.content,
+          date: comment.publishedDate
+        });
       }
     }
 
-    if (projectUpdated > 0) {
-      const prPath = shared.projectPrPath(project);
-      shared.safeWrite(prPath, prs);
-      totalUpdated += projectUpdated;
-    }
-  }
+    if (newHumanComments.length === 0) return false;
+
+    newHumanComments.sort((a, b) => a.date.localeCompare(b.date));
+    const feedbackContent = newHumanComments
+      .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
+      .join('\n\n---\n\n');
+    const latestDate = newHumanComments[newHumanComments.length - 1].date;
+
+    pr.humanFeedback = {
+      lastProcessedCommentDate: latestDate,
+      pendingFix: true,
+      feedbackContent
+    };
+
+    e.log('info', `PR ${pr.id}: found ${newHumanComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
+    return true;
+  });
 
   if (totalUpdated > 0) {
     e.log('info', `PR comment poll: found human feedback on ${totalUpdated} PR(s)`);

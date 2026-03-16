@@ -11,7 +11,7 @@ const SQUAD_DIR = path.resolve(__dirname, '..');
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
 function safeRead(p) {
-  try { return fs.readFileSync(p, 'utf8'); } catch { return null; }
+  try { return fs.readFileSync(p, 'utf8'); } catch { return ''; }
 }
 
 function safeReadDir(dir) {
@@ -143,6 +143,36 @@ function classifyInboxItem(name, content) {
   return 'project-notes';
 }
 
+// ── Engine Defaults ─────────────────────────────────────────────────────────
+// Single source of truth for engine configuration defaults.
+// Used by: engine.js, squad.js (init), config.template.json is manually kept in sync.
+
+const ENGINE_DEFAULTS = {
+  tickInterval: 60000,
+  maxConcurrent: 3,
+  inboxConsolidateThreshold: 5,
+  agentTimeout: 18000000,  // 5h
+  heartbeatTimeout: 300000, // 5min
+  maxTurns: 100,
+  worktreeRoot: '../worktrees',
+  idleAlertMinutes: 15,
+  fanOutTimeout: null, // falls back to agentTimeout
+};
+
+const DEFAULT_AGENTS = {
+  ripley:  { name: 'Ripley',  emoji: '\u{1F3D7}\uFE0F',  role: 'Lead / Explorer', skills: ['architecture', 'codebase-exploration', 'design-review'] },
+  dallas:  { name: 'Dallas',  emoji: '\u{1F527}',  role: 'Engineer', skills: ['implementation', 'typescript', 'docker', 'testing'] },
+  lambert: { name: 'Lambert', emoji: '\u{1F4CA}',  role: 'Analyst', skills: ['gap-analysis', 'requirements', 'documentation'] },
+  rebecca: { name: 'Rebecca', emoji: '\u{1F9E0}',  role: 'Architect', skills: ['system-design', 'api-design', 'scalability', 'implementation'] },
+  ralph:   { name: 'Ralph',   emoji: '\u2699\uFE0F',   role: 'Engineer', skills: ['implementation', 'bug-fixes', 'testing', 'scaffolding'] },
+};
+
+const DEFAULT_CLAUDE = {
+  binary: 'claude',
+  outputFormat: 'json',
+  allowedTools: 'Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch',
+};
+
 // ── Project Helpers ──────────────────────────────────────────────────────────
 
 function getProjects(config) {
@@ -235,6 +265,9 @@ module.exports = {
   parseStreamJsonOutput,
   KB_CATEGORIES,
   classifyInboxItem,
+  ENGINE_DEFAULTS,
+  DEFAULT_AGENTS,
+  DEFAULT_CLAUDE,
   getProjects,
   projectRoot,
   projectWorkItemsPath,

@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const { execSync } = require('child_process');
+const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = require('./engine/shared');
 
 const SQUAD_HOME = __dirname;
 const CONFIG_PATH = path.join(SQUAD_HOME, 'config.json');
@@ -408,16 +409,10 @@ const [cmd, ...rest] = process.argv.slice(2);
 async function initSquad() {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
-  if (!config.engine) config.engine = { tickInterval: 60000, staleThreshold: 1800000, maxConcurrent: 3, inboxConsolidateThreshold: 5, agentTimeout: 600000, maxTurns: 100 };
-  if (!config.claude) config.claude = { binary: 'claude', outputFormat: 'json', allowedTools: 'Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch' };
+  if (!config.engine) config.engine = { ...ENGINE_DEFAULTS };
+  if (!config.claude) config.claude = { ...DEFAULT_CLAUDE };
   if (!config.agents || Object.keys(config.agents).length === 0) {
-    config.agents = {
-      ripley:  { name: 'Ripley',  emoji: '🏗️',  role: 'Lead / Explorer', skills: ['architecture', 'codebase-exploration', 'design-review'] },
-      dallas:  { name: 'Dallas',  emoji: '🔧',  role: 'Engineer', skills: ['implementation', 'typescript', 'docker', 'testing'] },
-      lambert: { name: 'Lambert', emoji: '📊',  role: 'Analyst', skills: ['gap-analysis', 'requirements', 'documentation'] },
-      rebecca: { name: 'Rebecca', emoji: '🧠',  role: 'Architect', skills: ['system-design', 'api-design', 'scalability', 'implementation'] },
-      ralph:   { name: 'Ralph',   emoji: '⚙️',   role: 'Engineer', skills: ['implementation', 'bug-fixes', 'testing', 'scaffolding'] },
-    };
+    config.agents = { ...DEFAULT_AGENTS };
   }
   saveConfig(config);
   console.log(`\n  Squad initialized at ${SQUAD_HOME}`);
