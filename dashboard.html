@@ -2260,6 +2260,18 @@ function cmdParseInput(raw) {
     type: '',             // work item type (auto-detected)
   };
 
+  // Detect /stop, /cancel, /kill
+  if (/^\/(?:stop|cancel|kill)\b/i.test(text) || /^(stop|cancel|kill|abort|halt)\s+/i.test(text)) {
+    result.intent = 'cancel';
+    text = text.replace(/^\/(?:stop|cancel|kill)\s*/i, '').replace(/^(stop|cancel|kill|abort|halt)\s+/i, '').trim();
+    // Try to resolve agent name from remaining text
+    var cancelAgent = cmdAgents.find(function(a) { return text.toLowerCase().includes(a.id) || text.toLowerCase().includes(a.name.toLowerCase()); });
+    if (cancelAgent) result.agents = [cancelAgent.id];
+    result.cancelTask = text;
+    result.title = 'Cancel: ' + text;
+    return result;
+  }
+
   // Detect /decide, /note, or natural "remember" keyword
   const rememberPattern = /^(remember|remember that|don't forget|note that|keep in mind)\b/i;
   if (/^\/decide\b/i.test(text) || /^\/note\b/i.test(text) || rememberPattern.test(text)) {
@@ -2582,19 +2594,64 @@ function cmdKeyDown(e) {
 // Triage via Haiku LLM, fallback to regex parser
 let _lastTriageExchange = null; // { userMessage, response } for follow-up context
 
+// Feature 2: Client-side instant status answers
+function tryClientSideAnswer(raw) {
+  var t = raw.toLowerCase().trim();
+  var statusRe = /^(what('s| is| are) (everyone|the squad|the team|agents?|all agents?) doing|squad status|status$|team status|agent status|who('s| is) (working|busy|idle|free|available)|what('s| is) (active|running|happening|going on)|any(one|body) (working|busy|idle|free)|show (me )?status)/;
+  if (!statusRe.test(t)) return null;
+  var working = (agentData || []).filter(function(a) { return a.status === 'working'; });
+  var idle = (agentData || []).filter(function(a) { return a.status !== 'working'; });
+  var lines = [];
+  if (working.length > 0) {
+    lines.push('Working (' + working.length + '):');
+    working.forEach(function(a) { lines.push('  ' + a.emoji + ' ' + a.name + ' — ' + (a.currentTask || a.lastAction || 'working').slice(0, 80)); });
+  }
+  if (idle.length > 0) {
+    lines.push('Idle (' + idle.length + '): ' + idle.map(function(a) { return a.name; }).join(', '));
+  }
+  var disp = window._lastDispatch || {};
+  lines.push('Dispatch: ' + ((disp.active || []).length) + ' active, ' + ((disp.pending || []).length) + ' pending');
+  return { intent: 'answer', answer: lines.join('\n') };
+}
+
+// Feature 3: Skip Haiku for unambiguous intents
+function canSkipHaiku(raw) {
+  var t = raw.trim();
+  // Explicit slash commands — regex parser handles perfectly
+  if (/^\/(?:plan|note|decide|prd|stop|cancel|kill)\b/i.test(t)) return true;
+  // @agent + clear action — no ambiguity about who or what
+  if (/^@\w+\s+\S/.test(t) && !_lastTriageExchange) return true;
+  // Natural "remember" keywords — always a note
+  if (/^(remember|don't forget|note that|keep in mind)\b/i.test(t)) return true;
+  // Short imperative with clear verb and no references to existing items
+  if (!_lastTriageExchange && /^(fix|implement|add|create|build|test|explore|investigate|run|deploy|refactor)\s+/i.test(t) && t.length < 150 && !/\b(the plan|ripley's|dallas's|rebecca's|lambert's|ralph's|failed|wave|that)\b/i.test(t)) return true;
+  return false;
+}
+
 async function cmdTriageAndSubmit(raw) {
+  // Tier 1: Instant client-side answer (no network)
+  var clientAnswer = tryClientSideAnswer(raw);
+  if (clientAnswer) return clientAnswer;
+
+  // Tier 2: Regex fast-path for unambiguous intents (no Haiku wait)
+  if (canSkipHaiku(raw)) {
+    _lastTriageExchange = null;
+    return cmdParseInput(raw);
+  }
+
+  // Tier 3: Haiku LLM triage for ambiguous / contextual inputs
   try {
-    const body = { message: raw };
+    var body = { message: raw };
     if (_lastTriageExchange) body.previousExchange = _lastTriageExchange;
-    const resp = await fetch('/api/triage', {
+    var resp = await fetch('/api/triage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(50000),
     });
     if (resp.ok) {
-      const parsed = await resp.json();
-      if (parsed.intent && (parsed.title || parsed.answer)) {
+      var parsed = await resp.json();
+      if (parsed.intent && (parsed.title || parsed.answer || parsed.retryIds || parsed.agents)) {
         _lastTriageExchange = { userMessage: raw, response: parsed };
         return parsed;
       }
@@ -2651,12 +2708,14 @@ async function cmdSubmit() {
   }
   clearTimeout(slowTimer);
 
-  const intentLabels = { 'work-item': 'Creating work item...', note: 'Saving note...', plan: 'Creating plan...', prd: 'Creating PRD item...', retry: 'Retrying work items...', answer: 'Got it!' };
+  const intentLabels = { 'work-item': 'Creating work item...', note: 'Saving note...', plan: 'Creating plan...', prd: 'Creating PRD item...', retry: 'Retrying work items...', answer: 'Got it!', cancel: 'Cancelling...' };
   cmdProgress(intentLabels[parsed.intent] || 'Processing...', elapsed());
 
   try {
     if (parsed.intent === 'answer') {
       cmdShowAnswer(parsed.answer || parsed.title || 'No answer');
+    } else if (parsed.intent === 'cancel') {
+      await cmdSubmitCancel(parsed);
     } else if (parsed.intent === 'retry') {
       await cmdSubmitRetry(parsed);
     } else if (parsed.intent === 'note') {
@@ -2716,6 +2775,28 @@ function cmdShowAnswer(text) {
 
 function cmdDismissAnswer() {
   document.getElementById('cmd-answer').style.display = 'none';
+}
+
+async function cmdSubmitCancel(parsed) {
+  var body = {};
+  if (parsed.agents && parsed.agents.length > 0) body.agent = parsed.agents[0];
+  else if (parsed.cancelTask) body.task = parsed.cancelTask;
+  else { showToast('cmd-toast', 'Specify an agent or task to cancel', false); return; }
+  try {
+    var res = await fetch('/api/agents/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    var data = await res.json();
+    if (res.ok && data.cancelled && data.cancelled.length > 0) {
+      showToast('cmd-toast', 'Cancelled ' + data.cancelled.map(function(c) { return c.agent; }).join(', '), true);
+      refresh();
+    } else if (res.ok) {
+      showToast('cmd-toast', 'No active agent found matching that', false);
+    } else {
+      showToast('cmd-toast', 'Cancel failed: ' + (data.error || 'unknown'), false);
+    }
+  } catch (e) { showToast('cmd-toast', 'Cancel error: ' + e.message, false); }
 }
 
 async function cmdSubmitRetry(parsed) {

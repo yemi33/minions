@@ -604,6 +604,9 @@ ${ctx.activeDispatch}
 - "work-item" with type "plan-to-prd": Convert an EXISTING plan into PRD items / executable tasks.
   Use when the user references a plan that already exists on disk (check plans list above).
   Keywords: create PRD from, convert plan to PRD, execute the plan, implement the plan, break down the plan
+- "cancel": Stop/cancel/kill a running agent or active task.
+  Keywords: stop, cancel, kill, abort, halt
+  Include the agent ID in "agents" field. If targeting by task name, include "cancelTask" with a substring.
 - "retry": Retry/restart/rerun existing failed or stuck work items. Do NOT create new work items.
   Keywords: retry, restart, rerun, redo, try again, re-dispatch, reset
   Include the work item IDs to retry in the "retryIds" field. Match from the work items list above.
@@ -641,7 +644,7 @@ ${ctx.activeDispatch}
 
 Respond with ONLY a JSON object, no markdown fences, no explanation:
 {
-  "intent": "work-item|note|plan|retry|answer",
+  "intent": "work-item|note|plan|retry|answer|cancel",
   "title": "concise action title",
   "description": "additional context, resolved references",
   "type": "ask|explore|fix|review|test|implement|plan-to-prd",
@@ -651,6 +654,7 @@ Respond with ONLY a JSON object, no markdown fences, no explanation:
   "project": "project-name or empty string",
   "projects": [],
   "branchStrategy": "parallel",
+  "cancelTask": "task substring", // only for intent "cancel"
   "retryIds": ["work-item-id"], // only for intent "retry"
   "answer": "text response" // only for intent "answer"
 }`;
@@ -1076,6 +1080,51 @@ const server = http.createServer(async (req, res) => {
         (d.meta?.item?.sourcePlan === body.source && d.meta?.item?.sourcePlanItem === body.itemId) ||
         (d.meta?.item?.planItemId === body.itemId && d.meta?.item?.sourcePlan === body.source)
       );
+
+      return jsonReply(res, 200, { ok: true, cancelled });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/agents/cancel — cancel an active agent by ID or task substring
+  if (req.method === 'POST' && req.url === '/api/agents/cancel') {
+    try {
+      const body = await readBody(req);
+      const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+      const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+      const active = dispatch.active || [];
+      const cancelled = [];
+
+      for (const d of active) {
+        const matchAgent = body.agent && d.agent === body.agent;
+        const matchTask = body.task && (d.task || '').toLowerCase().includes((body.task || '').toLowerCase());
+        if (!matchAgent && !matchTask) continue;
+
+        // Kill agent process
+        const statusPath = path.join(SQUAD_DIR, 'agents', d.agent, 'status.json');
+        try {
+          const status = JSON.parse(safeRead(statusPath) || '{}');
+          if (status.pid) {
+            if (process.platform === 'win32') {
+              try { require('child_process').execSync('taskkill /PID ' + status.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch {}
+            } else {
+              try { process.kill(status.pid, 'SIGTERM'); } catch {}
+            }
+          }
+          status.status = 'idle';
+          delete status.currentTask;
+          delete status.dispatched;
+          safeWrite(statusPath, status);
+        } catch {}
+
+        cancelled.push({ agent: d.agent, task: d.task });
+      }
+
+      // Remove cancelled from active dispatch
+      if (cancelled.length > 0) {
+        const cancelledIds = new Set(cancelled.map(c => c.agent));
+        dispatch.active = active.filter(d => !cancelledIds.has(d.agent));
+        safeWrite(dispatchPath, dispatch);
+      }
 
       return jsonReply(res, 200, { ok: true, cancelled });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
