@@ -1003,11 +1003,18 @@ function renderPrdProgress(prog) {
     const wiLabel = wi ? '<span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)" title="Work item: ' + escHtml(wi.id) + '">' +
       escHtml(wi.id) + (wi.dispatched_to ? ' → ' + escHtml(wi.dispatched_to) : '') + '</span>' : '';
 
+    // Requeue button for failed items
+    const canRequeue = wi && (wi.status === 'failed' || i.status === 'failed');
+    const requeueBtn = canRequeue
+      ? '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>'
+      : '';
+
     return '<div class="prd-item-row" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
       wiLabel +
+      requeueBtn +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
@@ -1121,6 +1128,7 @@ function renderPrdProgress(prog) {
           '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
             '<span class="prd-item-priority ' + (i.priority || '') + '" style="font-size:8px;padding:1px 4px">' + escHtml(i.priority || '') + '</span>' +
             (agent ? '<span style="font-size:8px;color:var(--muted)">' + escHtml(agent) + '</span>' : '') +
+            (i.status === 'failed' && wi[i.id] ? '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi[i.id].id) + '\',\'' + escHtml(wi[i.id]._source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>' : '') +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
           '</div>' +
           ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
@@ -1226,6 +1234,17 @@ async function prdItemRemove(source, itemId) {
       body: JSON.stringify({ source, itemId })
     });
     if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item removed', true); }
+    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdItemRequeue(workItemId, source) {
+  try {
+    const res = await fetch('/api/work-items/retry', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: workItemId, source })
+    });
+    if (res.ok) { refresh(); showToast('cmd-toast', workItemId + ' requeued', true); }
     else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
   } catch (e) { alert('Error: ' + e.message); }
 }
