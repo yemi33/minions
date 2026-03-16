@@ -622,15 +622,10 @@
       <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
     </div>
     <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
-    <div class="cmd-meta" id="cmd-meta"></div>
+    <div class="cmd-meta" id="cmd-meta" style="display:none"></div>
     <div class="cmd-hints">
-      <span><code>@agent</code> assign</span>
-      <span><code>@everyone</code> fan-out</span>
-      <span><code>#project</code> target</span>
-      <span><code>!high</code> / <code>!low</code> priority</span>
-      <span><code>/plan</code> feature plan</span>
-      <span><code>/note</code> team note</span>
-      <span>or just type a task</span>
+      <span style="color:var(--blue);font-weight:600">Command Center</span>
+      <span>Ask anything, dispatch work, manage plans — powered by Sonnet</span>
       <button class="cmd-history-btn" onclick="cmdShowHistory()">Past Commands</button>
     </div>
     <div class="cmd-progress" id="cmd-progress">
