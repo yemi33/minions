@@ -61,7 +61,9 @@ If found:
 
 ## Step 5: Write the Manual Testing Guide
 
-Create: `{{team_root}}/notes/inbox/verify-{{date}}.md`
+Create the testing guide in TWO locations:
+1. **Permanent location** (linked from dashboard): `{{team_root}}/prd/verify-{{date}}.md`
+2. **Inbox copy** (for team consolidation): `{{team_root}}/notes/inbox/verify-{{date}}.md`
 
 Structure:
 

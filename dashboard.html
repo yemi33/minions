@@ -1204,12 +1204,21 @@ function renderPrdProgress(prog) {
     e2eByPlan[planKey].push(pr);
   }
 
+  // Find testing guides in prd/ (verify-*.md files)
+  const verifyGuides = (window._lastStatus?.verifyGuides || []);
+  const guideByPlan = {};
+  for (const g of verifyGuides) {
+    guideByPlan[g.planFile] = g;
+  }
+
   function renderE2eSection(planFile) {
     const prs = e2eByPlan[planFile] || e2eByPlan['_unlinked'] || [];
-    if (prs.length === 0) return '';
-    return '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">' +
-      '<div style="font-size:10px;font-weight:600;color:var(--blue);margin-bottom:4px">E2E Aggregate PRs</div>' +
-      prs.map(pr => {
+    const guide = guideByPlan[planFile];
+    if (prs.length === 0 && !guide) return '';
+    let html = '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">';
+    if (prs.length > 0) {
+      html += '<div style="font-size:10px;font-weight:600;color:var(--blue);margin-bottom:4px">E2E Aggregate PRs</div>';
+      html += prs.map(pr => {
         const statusColor = pr.status === 'active' ? 'var(--green)' : pr.status === 'merged' ? 'var(--purple)' : 'var(--muted)';
         return '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:11px">' +
           '<span style="color:' + statusColor + ';font-size:8px;font-weight:600;padding:1px 4px;border:1px solid;border-radius:3px">' + escHtml(pr.status || 'active') + '</span>' +
@@ -1217,8 +1226,17 @@ function renderPrdProgress(prog) {
           '<span style="color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(pr.title || '') + '</span>' +
           '<span style="color:var(--muted);font-size:9px">' + escHtml(pr._project || '') + '</span>' +
         '</div>';
-      }).join('') +
-    '</div>';
+      }).join('');
+    }
+    if (guide) {
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:' + (prs.length ? '4px' : '0') + ' 0 0;font-size:11px">' +
+        '<span style="font-size:8px;color:var(--green);font-weight:600;padding:1px 4px;border:1px solid var(--green);border-radius:3px">GUIDE</span>' +
+        '<span onclick="openVerifyGuide(\'' + escHtml(guide.file) + '\')" style="color:var(--blue);cursor:pointer;text-decoration:underline;font-weight:500">Manual Testing Guide</span>' +
+        '<span style="color:var(--muted);font-size:9px">Build instructions, test steps, known issues</span>' +
+      '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   const activeKeys = keys.filter(k => !grouped[k].archived);
@@ -1314,6 +1332,19 @@ function showArchivedPrdDetail(idx) {
 
   document.getElementById('modal-title').textContent = g.summary || g.file;
   document.getElementById('modal-body').innerHTML = toggleHtml + content;
+}
+
+async function openVerifyGuide(file) {
+  try {
+    const content = await fetch('/api/plans/' + encodeURIComponent(file)).then(r => r.text());
+    document.getElementById('modal-title').textContent = 'Manual Testing Guide';
+    document.getElementById('modal-body').textContent = content;
+    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    _modalDocContext = { title: 'Manual Testing Guide', content, selection: '' };
+    _modalFilePath = 'prd/' + file;
+    document.getElementById('modal').classList.add('open');
+  } catch (e) { alert('Failed to load guide: ' + e.message); }
 }
 
 async function triggerVerify(file) {

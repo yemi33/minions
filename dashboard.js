@@ -48,6 +48,23 @@ const HTML = HTML_RAW.replace('Squad Mission Control', `Squad Mission Control â€
 
 // -- Data Collectors (most moved to engine/queries.js) --
 
+function getVerifyGuides() {
+  const prdDir = path.join(SQUAD_DIR, 'prd');
+  const guides = [];
+  for (const dir of [prdDir, path.join(prdDir, 'archive')]) {
+    try {
+      const files = safeReadDir(dir).filter(f => f.startsWith('verify-') && f.endsWith('.md'));
+      for (const f of files) {
+        // Match guide to plan: verify-officeagent-2026-03-15.md â†’ officeagent-2026-03-15.json
+        const planSlug = f.replace('verify-', '').replace('.md', '');
+        const planFile = planSlug + '.json';
+        guides.push({ file: f, planFile, path: path.relative(SQUAD_DIR, path.join(dir, f)).replace(/\\/g, '/') });
+      }
+    } catch {}
+  }
+  return guides;
+}
+
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
@@ -74,6 +91,7 @@ function getStatus() {
     notes: getNotesWithMeta(),
     prd: prdInfo.status,
     pullRequests: getPullRequests(),
+    verifyGuides: getVerifyGuides(),
     archivedPrds: getArchivedPrds(),
     engine: getEngineState(),
     dispatch: getDispatchQueue(),
@@ -970,8 +988,11 @@ const server = http.createServer(async (req, res) => {
     const file = decodeURIComponent(planFileMatch[1]);
     if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
     let content = safeRead(resolvePlanPath(file));
-    // Fallback: check the other directory (legacy compat)
-    if (!content) content = safeRead(path.join(file.endsWith('.json') ? PLANS_DIR : PRD_DIR, file));
+    // Fallback: check all directories (prd/, plans/, archives)
+    if (!content) content = safeRead(path.join(PRD_DIR, file));
+    if (!content) content = safeRead(path.join(PLANS_DIR, file));
+    if (!content) content = safeRead(path.join(PRD_DIR, 'archive', file));
+    if (!content) content = safeRead(path.join(PLANS_DIR, 'archive', file));
     if (!content) return jsonReply(res, 404, { error: 'not found' });
     const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
     res.setHeader('Content-Type', contentType + '; charset=utf-8');
