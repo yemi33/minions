@@ -1090,11 +1090,11 @@ function renderPrdProgress(prog) {
     };
 
     const wi = wiByPlanItem;
-    let html = '<div style="display:flex;gap:12px;overflow-x:auto;padding:8px;min-height:120px">';
+    let html = '<div style="display:flex;gap:8px;padding:8px;min-height:120px">';
     for (let d = 0; d <= maxDepth; d++) {
       const col = columns[d] || [];
       const colLabel = d === 0 ? 'Root' : 'Wave ' + d;
-      html += '<div style="min-width:180px;flex-shrink:0">' +
+      html += '<div style="flex:1;min-width:0">' +
         '<div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;text-align:center">' + colLabel + '</div>';
       for (const i of col) {
         const borderColor = statusColor(i.status);
@@ -1121,7 +1121,7 @@ function renderPrdProgress(prog) {
         '</div>';
       }
       html += '</div>';
-      if (d < maxDepth) html += '<div style="display:flex;align-items:center;color:var(--border);font-size:18px;flex-shrink:0">&#x2192;</div>';
+      if (d < maxDepth) html += '<div style="display:flex;align-items:center;color:var(--border);font-size:14px;padding:0 2px">&#x2192;</div>';
     }
     html += '</div>';
     return html;
