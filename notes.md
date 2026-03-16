@@ -1377,3 +1377,230 @@ _Processed 3 notes, 21 insights extracted, 0 duplicates removed._
   → see `knowledge/conventions/2026-03-16-verify-manual-testing-guide.md`
 
 _Processed 3 notes, 34 insights extracted, 0 duplicates removed._
+
+---
+
+### 2026-03-16: Dallas, Feedback, Lambert: bug findings, PR reviews (9 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (2)
+- - This is the Nth+3 application of this pattern on PR-4970916 alone (source: PR-4970916 thread history) _(dallas)_
+- **Engine must filter agent-authored bail-out comments from review findings**: The consolidation pipeline continues to misclassify "No Action Required" notes as actionable human feedback, causing infinite dispatch loops _(dallas)_
+
+#### PR Review Findings (7)
+- **Directionality modeled via Message vs ResponseMessage**: Server→client messages use `Message<T>` (e.g., `AskUserQuestionMessage`), client→server uses `ResponseMessage<T>` (e.g., `UserAnswerMessage`). This follows the existing protocol convention established in `modules/message-protocol/src/type... _(feedback, lambert)_
+- **Compile-time shape tests as drift protection**: 164 lines of tests create typed object literals with explicit type annotations — if any field is renamed in the interface, the test fails at compile time. This is the strongest defense against silent wire-format drift in cross-repo mirrored types.... _(feedback, lambert)_
+- **Intentional alignment with PptAgentCotContentType**: The `text` and `thinking` event kinds in `CoTStreamEventKind` intentionally mirror `PptAgentCotContentType` values from `agents/ppt-agent/messages.ts`. File header documents this explicitly as "overlap by design" for future unification. (sour... _(feedback, lambert)_
+- **Three-tier CoT type hierarchy confirmed**: WorkspaceChainOfThoughtPayload (batch), PptAgentCotPayload (typed batch), ChainOfThoughtUpdatePayload (incremental streaming). This PR adds the third tier. (source: `modules/message-protocol/src/types/chain-of-thought-stream.ts:1-10`, existing types in... _(feedback, lambert)_
+- **stepId optionality asymmetry**: `stepId` is required on `CoTStepStartedEvent` but optional on `CoTStepCompletedEvent`. Handler implementations (PL-W001) must handle missing `stepId` on completion events. (source: `modules/message-protocol/src/types/chain-of-thought-stream.ts:58,67`) _(feedback, lambert)_
+- **sequenceNumber scope**: Documented as session-scoped but the handler implementation (not in this PR) needs per-session counters. A module-level counter would interleave across concurrent sessions. (source: `modules/message-protocol/src/types/chain-of-thought-stream.ts:130`) _(feedback, lambert)_
+- - Always use `dev.azure.com` hostname, not `office.visualstudio.com` _(feedback, lambert)_
+
+_Deduplication: 13 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Feedback, Lambert: bug findings, PR reviews (7 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (2)
+- - This is the Nth+3 application of this pattern on PR-4970916 alone (source: PR-4970916 thread history) _(dallas)_
+- **Engine must filter agent-authored bail-out comments from review findings**: The consolidation pipeline continues to misclassify "No Action Required" notes as actionable human feedback, causing infinite dispatch loops _(dallas)_
+
+#### PR Review Findings (5)
+- **Directionality modeled via Message vs ResponseMessage**: Server→client messages use `Message<T>` (e.g., `AskUserQuestionMessage`), client→server uses `ResponseMessage<T>` (e.g., `UserAnswerMessage`). This follows the existing protocol convention established in `modules/message-protocol/src/type... _(feedback, lambert)_
+- **Compile-time shape tests as drift protection**: 164 lines of tests create typed object literals with explicit type annotations — if any field is renamed in the interface, the test fails at compile time. This is the strongest defense against silent wire-format drift in cross-repo mirrored types.... _(feedback, lambert)_
+- **Three-tier CoT type hierarchy confirmed**: WorkspaceChainOfThoughtPayload (batch), PptAgentCotPayload (typed batch), ChainOfThoughtUpdatePayload (incremental streaming). This PR adds the third tier. (source: `modules/message-protocol/src/types/chain-of-thought-stream.ts:1-10`, existing types in... _(feedback, lambert)_
+- **sequenceNumber scope**: Documented as session-scoped but the handler implementation (not in this PR) needs per-session counters. A module-level counter would interleave across concurrent sessions. (source: `modules/message-protocol/src/types/chain-of-thought-stream.ts:130`) _(feedback, lambert)_
+- - Always use `dev.azure.com` hostname, not `office.visualstudio.com` _(feedback, lambert)_
+
+_Deduplication: 15 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: CoT streaming patterns and systematic dispatch consolidation bugs
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern is systematic across multiple PRs**: Check commits + existing votes via ADO REST API (~15s) prevents 5-10 min review cycles; applied to both PR-4970916 and PR-4970128 _(Dallas, Lambert)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **CoT stream event discriminated union pattern**: `CoTStreamEvent` uses `kind` field as discriminant across 6 event types (`step_started`, `step_completed`, `tool_use`, `thinking`, `text`, `ask_user_question`), enabling exhaustive `switch` patterns without type assertions _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Directionality modeled via Message vs ResponseMessage**: Server→client messages use `Message<T>`, client→server uses `ResponseMessage<T>`, following protocol convention from `core.ts` _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Compile-time shape tests as drift protection**: 164 lines of typed object literals with explicit annotations prevent silent wire-format drift in cross-repo mirrored types _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Intentional alignment with PptAgentCotContentType**: `text` and `thinking` event kinds mirror existing types from `agents/ppt-agent/messages.ts`, documented as "overlap by design" for future unification _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Bugs & Gotchas
+- **stepId optionality asymmetry**: Required on `CoTStepStartedEvent` but optional on `CoTStepCompletedEvent`; handlers (PL-W001) must accommodate missing values _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **sequenceNumber scope underdefined**: Documented as session-scoped but handler needs per-session counters; module-level counter would interleave across concurrent sessions _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Architecture Notes
+- **Three-tier CoT type hierarchy confirmed**: WorkspaceChainOfThoughtPayload (batch), PptAgentCotPayload (typed batch), ChainOfThoughtUpdatePayload (incremental streaming) _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **ADO REST API Windows quirks**: Write JSON to `$TEMP/file.json` with `curl -d`, always use `dev.azure.com`, POST `{"status": 4}` for thread closure, GET `/_apis/connectionData?api-version=6.0-preview` for VSID lookup _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Action Items
+- **Engine must filter agent-authored bail-out comments from review findings**: Consolidation pipeline misclassifies "No Action Required" notes as actionable feedback, causing infinite dispatch loops on the same PR _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+_Processed 3 notes, 9 insights extracted, 1 duplicate removed._
+
+---
+
+### 2026-03-16: Engine consolidation loop affecting multiple PRs + CoT streaming protocol patterns
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern**: Pre-flight check of review content (read findings → detect keywords like "No Action Required" → post closed thread → exit) saves 5-10 minutes per dispatch vs full review cycle. Applied successfully Nth+3 times across PRs. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **CoT stream event discriminated union**: `CoTStreamEvent` uses `kind` field as discriminant across 6 event types (`step_started`, `step_completed`, `tool_use`, `thinking`, `text`, `ask_user_question`), enabling exhaustive switch patterns without type assertions. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Directionality modeled via Message vs ResponseMessage**: Server→client messages use `Message<T>` (e.g., `AskUserQuestionMessage`), client→server uses `ResponseMessage<T>` (e.g., `UserAnswerMessage`), following existing protocol convention from `modules/message-protocol/src/types/core.ts`. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Compile-time shape tests as drift protection**: 164 lines of typed object literals with explicit type annotations fail at compile time if any field is renamed in the interface—strongest defense against silent wire-format drift in cross-repo mirrored types. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **Intentional alignment with PptAgentCotContentType**: The `text` and `thinking` event kinds in `CoTStreamEventKind` intentionally mirror `PptAgentCotContentType` values from `agents/ppt-agent/messages.ts`; file header documents this as "overlap by design" for future unification. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Bugs & Gotchas
+- **Engine consolidation misclassifies agent bail-out notes as actionable feedback**: PR-4970916 and PR-4970128 both re-dispatched repeatedly due to prior agent notes ("No Action Required", "Duplicate Dispatch") misclassified as human reviewer feedback by consolidation pipeline, causing infinite dispatch loops. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **stepId optionality asymmetry**: `stepId` is required on `CoTStepStartedEvent` but optional on `CoTStepCompletedEvent`; handler implementations (PL-W001) must handle missing `stepId` on completion events. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+- **sequenceNumber scope requires per-session counters**: Documented as session-scoped but handler implementation needs per-session counters; a module-level counter would interleave across concurrent sessions. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Architecture Notes
+- **Three-tier CoT type hierarchy confirmed**: WorkspaceChainOfThoughtPayload (batch) → PptAgentCotPayload (typed batch) → ChainOfThoughtUpdatePayload (incremental streaming); PR-4970128 adds the third tier. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16.md`
+
+#### Action Items
+- **Engine must filter agent-authored bail-out comments from review findings**: Consolidation pipeline needs logic to detect and exclude agent's own "No Action Required" bail-out notes from being re-classified as actionable human feedback in subsequent dispatch cycles. _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **ADO REST API reference for Windows**: Write JSON to `$TEMP/file.json` + use `curl -d @"$TEMP/file.json"` (inline JSON fails on Windows bash); always use `dev.azure.com` hostname; thread closure POST `{"status": 4}`; vote submission PUT with `{"vote": 10}`; VSID lookup via `GET /_apis/connectionData?api-version=6.0-preview`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-16-feedback-review-feedback-for-dallas.md`
+
+_Processed 3 notes, 10 insights extracted, 2 duplicates removed._
+
+---
+
+### 2026-03-16: Dallas, Feedback, Lambert: bug findings, PR reviews (9 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (4)
+- Dispatched to fix review findings on PR-4970916 (`feat/PL-W009-host-integration-demo`). The "findings" were my own prior bail-out note ("No Action Required — Duplicate Dispatch (Nth+3)"), not actionable code feedback. Applied early bail-out pattern. _(dallas)_
+- - Full review cycle avoided: worktree creation + git fetch + build + test + lint (5-10 minutes) (source: established pattern from prior dispatches) _(dallas)_
+- - Always use `dev.azure.com` hostname, not `office.visualstudio.com` (source: successful API call to `https://dev.azure.com/office/ISS/_apis/git/repositories/61458d25-9f75-41c3-be29-e63727145257/pullRequests/4970916/threads`) _(dallas)_
+- **Engine must filter agent-authored bail-out comments from review findings**: Detect keywords "No Action Required", "early bail-out", "Duplicate Dispatch" in review findings and skip dispatch to prevent infinite loops _(dallas)_
+
+#### PR Review Findings (5)
+- **Early bail-out for duplicate dispatches**: Pre-flight check of commit SHAs + existing thread count is the correct approach. (source: PR-4970916 threads API response showing 47 threads, 28 with APPROVE content) _(feedback, lambert)_
+- **ADO REST API temp file pattern on Windows**: Must write JSON payloads to `$TEMP/filename.json` and use `-d @"$TEMP/filename.json"` for curl POST requests. `/dev/stdin` causes ENOENT on Windows Node.js. (source: curl commands in this session) _(feedback, lambert)_
+- **VSID retrieval for vote submission**: `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview` returns `authenticatedUser.id` = `1c41d604-e345-64a9-a731-c823f28f9ca8` for the current user. (source: ADO connectionData API response) _(feedback, lambert)_
+- **Engine consolidation loop persists**: This is the Nth+ dispatch for PR-4970916 with zero new commits. The engine's consolidation pipeline continues to misclassify agent-authored bail-out comments as actionable review findings. (source: 47 threads on PR-4970916, most are bail-out notes from vari... _(feedback, lambert)_
+- **MCP ADO tools still unavailable**: `mcp__azure-ado__*` tools not found in tool search. REST API via curl + Bearer token remains the only working path for ADO operations. (source: ToolSearch returned "No matching deferred tools found") _(feedback, lambert)_
+
+_Deduplication: 9 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Feedback, Lambert: bug findings, PR reviews (8 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (3)
+- Dispatched to fix review findings on PR-4970916 (`feat/PL-W009-host-integration-demo`). The "findings" were my own prior bail-out note ("No Action Required — Duplicate Dispatch (Nth+3)"), not actionable code feedback. Applied early bail-out pattern. _(dallas)_
+- - Always use `dev.azure.com` hostname, not `office.visualstudio.com` (source: successful API call to `https://dev.azure.com/office/ISS/_apis/git/repositories/61458d25-9f75-41c3-be29-e63727145257/pullRequests/4970916/threads`) _(dallas)_
+- **Engine must filter agent-authored bail-out comments from review findings**: Detect keywords "No Action Required", "early bail-out", "Duplicate Dispatch" in review findings and skip dispatch to prevent infinite loops _(dallas)_
+
+#### PR Review Findings (5)
+- **Early bail-out for duplicate dispatches**: Pre-flight check of commit SHAs + existing thread count is the correct approach. (source: PR-4970916 threads API response showing 47 threads, 28 with APPROVE content) _(feedback, lambert)_
+- **ADO REST API temp file pattern on Windows**: Must write JSON payloads to `$TEMP/filename.json` and use `-d @"$TEMP/filename.json"` for curl POST requests. `/dev/stdin` causes ENOENT on Windows Node.js. (source: curl commands in this session) _(feedback, lambert)_
+- **VSID retrieval for vote submission**: `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview` returns `authenticatedUser.id` = `1c41d604-e345-64a9-a731-c823f28f9ca8` for the current user. (source: ADO connectionData API response) _(feedback, lambert)_
+- **Engine consolidation loop persists**: This is the Nth+ dispatch for PR-4970916 with zero new commits. The engine's consolidation pipeline continues to misclassify agent-authored bail-out comments as actionable review findings. (source: 47 threads on PR-4970916, most are bail-out notes from vari... _(feedback, lambert)_
+- **MCP ADO tools still unavailable**: `mcp__azure-ado__*` tools not found in tool search. REST API via curl + Bearer token remains the only working path for ADO operations. (source: ToolSearch returned "No matching deferred tools found") _(feedback, lambert)_
+
+_Deduplication: 10 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: Dallas, Feedback, Lambert: bug findings, PR reviews (8 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (3)
+- Dispatched to fix review findings on PR-4970916 (`feat/PL-W009-host-integration-demo`). The "findings" were my own prior bail-out note ("No Action Required — Duplicate Dispatch (Nth+3)"), not actionable code feedback. Applied early bail-out pattern. _(dallas)_
+- - Always use `dev.azure.com` hostname, not `office.visualstudio.com` (source: successful API call to `https://dev.azure.com/office/ISS/_apis/git/repositories/61458d25-9f75-41c3-be29-e63727145257/pullRequests/4970916/threads`) _(dallas)_
+- **Engine must filter agent-authored bail-out comments from review findings**: Detect keywords "No Action Required", "early bail-out", "Duplicate Dispatch" in review findings and skip dispatch to prevent infinite loops _(dallas)_
+
+#### PR Review Findings (5)
+- **Early bail-out for duplicate dispatches**: Pre-flight check of commit SHAs + existing thread count is the correct approach. (source: PR-4970916 threads API response showing 47 threads, 28 with APPROVE content) _(feedback, lambert)_
+- **ADO REST API temp file pattern on Windows**: Must write JSON payloads to `$TEMP/filename.json` and use `-d @"$TEMP/filename.json"` for curl POST requests. `/dev/stdin` causes ENOENT on Windows Node.js. (source: curl commands in this session) _(feedback, lambert)_
+- **VSID retrieval for vote submission**: `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview` returns `authenticatedUser.id` = `1c41d604-e345-64a9-a731-c823f28f9ca8` for the current user. (source: ADO connectionData API response) _(feedback, lambert)_
+- **Engine consolidation loop persists**: This is the Nth+ dispatch for PR-4970916 with zero new commits. The engine's consolidation pipeline continues to misclassify agent-authored bail-out comments as actionable review findings. (source: 47 threads on PR-4970916, most are bail-out notes from vari... _(feedback, lambert)_
+- **MCP ADO tools still unavailable**: `mcp__azure-ado__*` tools not found in tool search. REST API via curl + Bearer token remains the only working path for ADO operations. (source: ToolSearch returned "No matching deferred tools found") _(feedback, lambert)_
+
+_Deduplication: 10 duplicate(s) removed._
+
+
+---
+
+### 2026-03-16: PR-4970916 Early Bail-Out Pattern Effectiveness & Consolidation Loop Persistence
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern for duplicate/unchanged PRs saves 5-10 minutes per dispatch**: Pre-flight validation (git fetch + git log to verify commit SHAs ~5s, ADO threads API check ~5s) + post closed-status thread (status:4) + resubmit approval vote (vote:10) completes in ~15s total vs standard 5-10 minute review cycle. Effective when commits unchanged and existing threads exceed 10. _(Dallas, Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16-pr-4970916-duplicate-.md`
+
+#### Bugs & Gotchas
+- **Engine consolidation loop persists in practice**: PR-4970916 re-dispatched Nth+4 time with identical 4 commits (05cbc73, b9240c9, 9e53047, 8304aad); PR contains 47 total threads with 28+ APPROVE-related threads; consolidation pipeline continues to misclassify agent-authored bail-out keywords ("No Action Required", "early bail-out", "Duplicate Dispatch") as actionable human feedback, creating infinite dispatch cycles. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+_Processed 3 notes, 2 insights extracted, 8 duplicates removed._
+
+---
+
+### 2026-03-16: Consolidation loop severity quantified; early bail-out time savings documented
+
+**By:** Engine (LLM-consolidated)
+
+#### Bugs & Gotchas
+- **Consolidation loop persists at Nth+4 dispatch**: PR-4970916 re-dispatched with identical 4 commits (`05cbc73`, `b9240c9`, `9e53047`, `8304aad`) and 47 threads (28 with APPROVE verdicts); zero new code since original review indicates engine consolidation pipeline continues to misclassify agent bail-out comments as actionable feedback. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+- **MCP ADO tools unavailable — REST API only**: `mcp__azure-ado__*` tools not discoverable; curl + Bearer token + `dev.azure.com` remains the sole working path for ADO operations. _(Lambert)_
+  → see `knowledge/conventions/2026-03-16-lambert-lambert-learnings-2026-03-16-pr-4970916-duplicate-.md`
+
+#### Patterns & Conventions
+- **Early bail-out saves 5–10 minutes per dispatch**: Pre-flight check (commit SHA verification + thread count, ~15s) avoids full review cycle (worktree creation, build, test, lint); pattern confirmed effective and scalable. _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+#### Action Items
+- **Engine consolidation pipeline must filter self-authored bail-out comments**: Add keyword detection ("No Action Required", "early bail-out", "Duplicate Dispatch") to exclude agent-authored notes from being re-classified as human feedback in subsequent dispatch cycles. _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
+
+_Processed 3 notes, 3 insights extracted, 0 duplicates removed._

@@ -1,0 +1,49 @@
+---
+source: dallas-2026-03-16.md
+agent: dallas
+category: conventions
+date: 2026-03-16
+---
+
+# Dallas Learnings — 2026-03-16 (Plan Verification Re-run #8)
+
+## Task
+Re-verification of Claude Cowork UX plan (officeagent-2026-03-15.json) — all 17 items complete across 14 PRs in 2 repos.
+
+## Key Findings
+
+### Worktree Reuse Saves All Setup Time
+Both verification worktrees already existed from previous runs:
+- **OfficeAgent**: `C:/Users/yemishin/worktrees/verify-officeagent-2026-03-15` (branch `e2e/cowork-w025`) (source: `git worktree list`)
+- **office-bohemia**: `C:/Users/yemishin/worktrees/verify-bohemia-2026-03-15` (branch `e2e/cowork-w025`) (source: `git worktree list`)
+
+Pre-flight check for existing worktrees saved ~10 minutes of fetch+merge+conflict-resolution.
+
+### Test Results Stable — 173 Passing
+- **message-protocol**: 113 tests PASS (4.77s) (source: `modules/message-protocol/tests/`)
+- **cowork-demo**: 49 tests PASS across 4 suites (24.85s) (source: `.devtools/cowork-demo/tests/`)
+- **augloop-transport**: 11 tests PASS, 1 suite fail (pre-existing babel error) (source: `modules/augloop-transport/tests/`)
+
+### Both Servers Running
+- Bebop dev server on http://localhost:3000 (HTTP 302 = auth redirect, expected)
+- Mock AugLoop server on ws://localhost:11040/ws (HTTP 404 on root = expected, WebSocket-only)
+
+### E2E PRs Active
+- **PR-4972662** (OfficeAgent): ACTIVE — `[E2E] Claude Cowork UX — OfficeAgent (7 PRs merged)` (source: ADO REST API)
+- **PR-4972663** (office-bohemia): ACTIVE — `[E2E] Claude Cowork UX — office-bohemia (8 PRs merged)` (source: ADO REST API)
+
+### Known Issues (Unchanged from Previous Runs)
+1. 17 TypeScript errors in office-bohemia from cross-PR integration boundaries (source: `apps/bebop/src/features/cowork/`)
+2. 5 protocol type mismatches between Bebop and OfficeAgent wire format (source: knowledge base)
+3. augloop-transport babel parse error in source tests (source: `modules/augloop-transport/src/tests/`)
+4. Demo WebSocket hook hardcoded to localhost — not production code (source: `apps/bebop/src/features/cowork/hooks/useDemoCoworkSession.ts`)
+
+## Conventions Reinforced
+- **ADO REST API on Windows**: Must write JSON to temp file (`$TEMP/file.json`) and use `-o` flag instead of piping to `/dev/stdin` (source: Windows bash limitation)
+- **PowerShell for yarn commands**: All yarn/oagent/gulp commands must use PowerShell (source: `CLAUDE.md:7`)
+- **Full scoped package names**: `yarn workspace @officeagent/message-protocol test` not `yarn workspace message-protocol test` (source: Yarn 4.10.3 workspace resolution)
+
+## Testing Guide
+Updated and copied to both locations:
+- Permanent: `C:\Users\yemishin\.squad\prd\guides\verify-2026-03-16.md`
+- Inbox: `C:\Users\yemishin\.squad\notes\inbox\verify-2026-03-16.md`
