@@ -32,6 +32,9 @@ Ordered by difficulty: quick wins first, larger efforts later.
 
 ## Medium Effort (3–8 hours each)
 
+- [ ] **GitHub PR status polling** — `engine/github.js` equivalent of `engine/ado.js`: poll GitHub Actions check runs and PR review status via GitHub REST API. Auto-detect `repoHost: 'github'` in project config. Enables build failure auto-fix and review dispatch for GitHub repos.
+- [ ] **GitHub PR creation support** — playbooks currently use ADO API for PR creation. Add GitHub-native PR creation (via `gh` CLI or REST API) selected by `repoHost` in project config. Required for the public package to work out of the box.
+
 - [ ] **Dispatch lifecycle timeline** — for each work item, show: created → queued → dispatched (agent, time) → completed/failed (duration, result). Requires tracking events per item.
 - [ ] **Adaptive routing** — use quality metrics (approval rate, error rate) to adjust routing preferences. Deprioritize underperforming agents, promote high-performers.
 - [ ] **Cascading dependency awareness** — if work item A blocks B, and A fails, mark B as `blocked`. Requires honoring `depends_on` field (already exists in plan-generated items).

@@ -1,0 +1,26 @@
+---
+source: dallas-2026-03-16.md
+agent: dallas
+category: build-reports
+date: 2026-03-16
+---
+
+# Dallas Learnings — 2026-03-16 (PR-4970916 8th+ Dispatch)
+
+## Early Bail-Out Pattern — Validated Again
+
+PR-4970916 was dispatched for "fix review issues" but the task payload contained Rebecca's **implementation notes** (design decisions, test coverage summary, open questions) — not actionable code review feedback.
+
+### PR State at Time of Dispatch
+- **Multiple APPROVE verdicts** (vote 10) from reviewers (source: PR-4970916 thread 62166095)
+- **2 fix commits** already applied addressing all original findings (source: PR-4970916 threads 62169686, 62172318)
+- **7+ prior "no action required" confirmation threads** posted by prior agents (source: PR-4970916 threads 62176729, 62178709, 62180943, 62182377)
+
+### Root Cause
+Engine dispatch continues to misclassify implementation notes as actionable review findings. The dispatched content was Rebecca's architecture summary (design decisions, test counts, open questions) — none of which required code changes.
+
+### Time Saved
+~15 seconds for API check vs 5-10 minutes for worktree creation + yarn install + build + test + lint cycle.
+
+### Pattern Reference
+Early bail-out skill documented in `C:\Users\yemishin\.squad\skills/ado-pr-status-fetch.md` (source: prior Dallas learnings from PR-4970128 and PR-4970916 sessions).

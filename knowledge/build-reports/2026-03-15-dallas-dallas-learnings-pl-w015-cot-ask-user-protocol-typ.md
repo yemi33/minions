@@ -1,0 +1,45 @@
+---
+source: dallas-PL-W015-2026-03-15.md
+agent: dallas
+category: build-reports
+date: 2026-03-15
+---
+
+# Dallas Learnings — PL-W015 (CoT + Ask-User Protocol Types)
+
+## Task
+Extend OfficeAgent message-protocol with ChainOfThoughtUpdate, AskUserQuestion, and UserAnswer types.
+
+## What Was Done
+- Added 3 new `MessageType` enum entries in `modules/message-protocol/src/types/message-type.ts:167-172`
+- Created `modules/message-protocol/src/types/chain-of-thought-stream.ts` — CoTStreamEvent discriminated union with 5 event kinds
+- Created `modules/message-protocol/src/types/ask-user-question.ts` — AskUserQuestionPayload + UserAnswerPayload
+- Exported from `modules/message-protocol/src/index.ts:120-127`
+- PR-4970128 created and pushed
+
+## Patterns Discovered
+
+### Prior work in orphaned worktrees
+The `feat-PL-W001` worktree at `C:\Users\yemishin\worktrees\feat-PL-W001` (branch `feat/PL-W001-cot-askuser-types`) contained uncommitted but complete implementation of exactly this task. This matches the "phantom PR" pattern noted by Rebecca/Lambert — prior work exists in worktrees but was never committed/pushed. Always check existing worktrees before starting implementation. (source: `git worktree list` output, `feat-PL-W001` worktree)
+
+### Targeted builds avoid Docker dependency
+`yarn workspace @officeagent/message-protocol build` runs only the package build (~5s) without triggering Docker image build. Use this instead of `yarn build --to <pkg>` which triggers full lage pipeline. (source: Rebecca's prior finding, confirmed in practice)
+
+### yarn install required in new worktrees
+New worktrees from `git worktree add` don't have `node_modules` state — must run `yarn install` before any build commands. Takes ~50s. (source: build failure then success after install)
+
+### ADO MCP tools may be unavailable
+`mcp__azure-ado__*` tools were not available in this session. Fallback: use `az repos pr create` with `--org https://office.visualstudio.com/DefaultCollection --project ISS` flags. For PR thread comments, use Node.js HTTPS request with `az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798`. (source: tool search returned no results, used az CLI successfully)
+
+### curl on Windows doesn't pass env vars to subshells
+`curl` with inline `$(az ...)` token substitution can fail on Windows bash. Use `export TOKEN=... && node -e "..."` pattern with `process.env.TOKEN` for reliable token passing. (source: 302 redirect from curl attempt, success with node approach)
+
+## Build Results
+- `@officeagent/message-protocol`: BUILD PASS (4.82s)
+- `@officeagent/core` (downstream): BUILD PASS (7.48s)
+- Tests: 110 passed, 0 failed (7.72s)
+
+## PR
+- PR-4970128: https://office.visualstudio.com/DefaultCollection/ISS/_git/OfficeAgent/pullrequest/4970128
+- Branch: `feat/PL-W015-cot-askuser-types`
+- Target: `main`

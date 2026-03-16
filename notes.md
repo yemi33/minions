@@ -497,3 +497,247 @@ _Processed 4 notes, 25 insights extracted, 5 duplicates removed._
   → see `knowledge/build-reports/2026-03-15-rebecca-rebecca-bt-4970115-2026-03-15.md`
 
 _Processed 3 notes, 16 insights extracted, 2 duplicates removed._
+
+---
+
+### 2026-03-16: Early bail-out pattern for PR review fixes—validated 6-7 times with skill template
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out for PR review fixes**: Check PR thread history for APPROVE verdicts and fix commits via ADO REST API; if all issues resolved, post closed-status thread (status: 4) and exit instead of full review—saves ~15 seconds vs 5–10 minutes for worktree + build + test + lint. _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-7th-dispatc.md`
+
+- **Early bail-out prevents 6–7 redundant reviews**: On PR-4970916, checking thread history for existing APPROVE verdicts and fix commits saved 6–7 redundant review cycles. _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+#### Action Items
+- **PR-review-fix-early-bailout skill template**: Provided with ADO token retrieval, PR thread fetch, APPROVE verdict/fix-commit checks, and closed-status thread posting for resolved issues. _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-7th-dispatc.md`
+
+_Processed 3 notes, 3 insights extracted, 4 duplicates removed._
+
+---
+
+### 2026-03-16: Engine dispatch misclassifies implementation notes as review issues; Windows ADO API gotcha identified
+
+**By:** Engine (LLM-consolidated)
+
+#### Bugs & Gotchas
+- **Engine dispatch repeatedly re-dispatches resolved PRs**: PR-4970128 received 8+ dispatches despite all review threads APPROVE+closed and commit SHAs unchanged, indicating dispatch logic lacks pre-flight checks for review state. _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+- **Engine misclassifies implementation notes as actionable review issues**: PR-4970128 "review findings" were build/test pass summaries, not code feedback, suggesting consolidation/triage needs to filter technical notes from actual review feedback. _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-nth-.md`
+
+- **ADO curl JSON on Windows bash requires temp file**: Inline JSON with special characters fails; must write to `$TEMP/file.json` and use `-d @"$TEMP/file.json"` due to shell escaping. _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-fix-review-.md`
+
+- **MCP ADO tools may be unavailable**: REST API via curl + Bearer token (`az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798`) is reliable fallback. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-nth-.md`
+
+#### Architecture Notes
+- **Engine dispatch needs pre-flight checks**: Before queuing review work, check existing reviewer votes via ADO API and compare commit SHAs against previously reviewed state to avoid re-dispatching unchanged code. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-review-nth-.md`
+
+#### Action Items
+- Add commit SHA tracking to `engine/dispatch.json` and implement pre-flight vote/SHA checks in dispatch router before queuing review items.
+- Improve `consolidation.js` classification to filter build/test summaries from actionable review findings.
+
+_Processed 3 notes, 5 insights extracted, 4 duplicates removed._
+
+---
+
+### 2026-03-16: Early bail-out patterns and ADO REST API conventions for duplicate PR reviews
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern for duplicate reviews**: Before initiating full worktree creation, check existing reviewer votes and commit SHAs via ADO API; saves ~15 seconds vs 5–10 minutes for build+test+lint cycle _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-8th-dispatc.md`
+
+- **Convention for re-dispatched reviews with no new commits**: Post a closed-status thread (status 4) confirming no action needed and re-submit your approval vote to prevent confusion and rework _(Ripley)_
+  → see `knowledge/reviews/2026-03-16-feedback-review-feedback-for-rebecca.md`
+
+- **ADO API hostname requirement**: Always use `dev.azure.com` in REST API calls, not `office.visualstudio.com`, to ensure correct API routing _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+#### Architecture Notes
+- **ADO REST API patterns for review pre-flight checks**: Thread closure via status `4` for "no action needed" confirmations; VSID retrieval via `GET /_apis/connectionData?api-version=6.0-preview`; vote submission via `PUT /pullRequests/{id}/reviewers/{vsid}` with `{"vote": 10}` _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+- **Duplicate dispatch problem confirmed on second PR**: PR-4970916 at 8th+ review cycle with identical 4 commits (`05cbc73`, `b9240c9`, `9e53047`, `8304aad`) since first review, reinforcing that engine dispatch router needs pre-flight vote and commit SHA validation _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+_Processed 3 notes, 5 insights extracted, 3 duplicates removed._
+
+---
+
+### 2026-03-16: Chain-of-thought streaming and ask-user protocol architecture; duplicate review dispatch validation gaps
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Windows bash path format**: Use POSIX format `/c/Users/yemishin/.squad` not Windows format `C:\Users\yemishin\.squad` in bash commands _(Dallas)_
+  → see `knowledge/conventions/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970128-review-fix-.md`
+
+#### Architecture Notes
+- **Three-tier CoT type system**: WorkspaceChainOfThoughtPayload (batch), PptAgentCotPayload (typed batch), ChainOfThoughtUpdatePayload (incremental streaming) _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-re-review-d.md`
+
+- **Ask-user protocol direction modeling**: AskUserQuestionMessage = Message<T> (server→client), UserAnswerMessage = ResponseMessage<T> (client→server) _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-re-review-d.md`
+
+- **Compile-time shape tests**: Objects with explicit type annotations catch field renames at compile time _(Ripley)_
+  → see `knowledge/architecture/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970128-re-review-d.md`
+
+_Processed 3 notes, 4 insights extracted, 3 duplicates removed._
+
+---
+
+### 2026-03-16: OfficeAgent PRD milestone and duplicate review dispatch validation gaps remain unresolved
+
+**By:** Engine (LLM-consolidated)
+
+#### Build & Test Results
+- **OfficeAgent Cowork feature PRD completed**: 17 items delivered across 14 pull requests, including CoT streaming protocol, ask-user-question bidirectional handler, AugLoop transport adapter, Bebop client integration, collaborative SharedTree schema, and feature gates _(Engine)_
+  → see `knowledge/project-notes/2026-03-16-prd-prd-completed-claude-cowork-ux-in-bebop-with-offic.md`
+
+#### Patterns & Conventions
+- **Early commit-check bail-out pattern quantified**: Checking commit SHAs via `git log --oneline` (~15s) instead of full review cycle (5-10 min) has saved compute 5+ times on PR-4970916 alone _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+#### Action Items
+- **Duplicate dispatch validation remains unimplemented despite recurrence**: PR-4970916 re-dispatched for review #5+ with identical 4 commits (`05cbc73`, `b9240c9`, `9e53047`, `8304aad`); engine dispatch router must validate existing reviewer votes and unchanged commit SHAs before queuing _(Ripley)_
+  → see `knowledge/build-reports/2026-03-16-ripley-ripley-learnings-2026-03-16-pr-4970916-review-dupl.md`
+
+_Processed 3 notes, 3 insights extracted, 1 duplicate removed._
+
+---
+
+### 2026-03-16: Cross-PR merge integration gaps, office-bohemia build conventions, and worktree git operations
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **office-bohemia main branch is `master` not `main`**: Use `git fetch origin ... master` and `git worktree add ... --detach origin/master` when setting up office-bohemia worktrees _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Lage build pipeline uses `transpile` and `typecheck` tasks, not `build`**: Correct command is `yarn lage transpile typecheck --to @bebopjs/bebop`, NOT `yarn build` (returns "no targets found") _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Individual OfficeAgent packages use `yarn workspace` builds to avoid Docker**: Use `yarn workspace @officeagent/<pkg> build` instead of full `yarn build` which requires Docker Desktop _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Vite dev mode bypasses auth-proxy**: Use `yarn dev:no-auth` for local testing without authentication _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **ADO REST API uses dev.azure.com hostname**: Not office.visualstudio.com; write JSON to temp file for curl requests on Windows (e.g., `-d @"$TEMP/file.json"`) _(Ralph)_
+  → see `knowledge/build-reports/2026-03-16-ralph-ralph-learnings-2026-03-16-pr-4970916-duplicate-di.md`
+
+#### Build & Test Results
+- **OfficeAgent message-protocol clean**: Build passes, 113 tests pass, no lint issues _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **OfficeAgent augloop-transport mostly clean**: Build passes, 11 compiled dist tests pass; source tests have babel `import type` parse error (2 lint warnings on unused vars) _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **OfficeAgent cowork-demo all tests pass**: 49 tests across 4 suites (fixtures, mock-augloop-server, host-environment, mock-token-provider) _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **OfficeAgent core module fails with 4 TS read-only errors**: `tests/websocket/websocket-manager.test.ts` assigns to read-only `readyState` property; fix exists on branch `user/jakubk/excel-agent-cli` but hasn't merged to main _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **office-bohemia Bebop Vite dev server works despite 19 TS errors**: esbuild skips type-checking in dev mode, server serves on port 3002 even with cross-PR type mismatches _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+#### Bugs & Gotchas
+- **Cross-PR merge integration produces 19 TypeScript errors in 6 cowork files**: Merging 8 independent office-bohemia PRs creates interface mismatches at integration boundaries; specific conflicts: `streamingBridge.ts` imports renamed `TransportConfig`/`TransportState`/`AugloopTransport` from augloop-annotations PR, `useCoworkStream.ts` references atoms renamed in scaffold PR, `CoworkErrorBoundary.tsx` needs TS 5.9 `override` modifier _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **@types/ws version conflict cascades across OfficeAgent packages**: Root `package.json` and `modules/api/node_modules` have different @types/ws versions, breaking API module build even after core is fixed _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **office-bohemia Jest cannot parse `import.meta.env` in tests**: CJS Jest environment doesn't support Vite-specific APIs; requires Vitest or ESM-compatible transform (affects `featureGates.test.ts`) _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **augloop-transport babel config incomplete for `import type` syntax**: Source `.ts` tests fail with babel SyntaxError; needs `@babel/plugin-syntax-import-assertions` or `@babel/preset-typescript` with `onlyRemoveTypeImports: true` _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Stale local branches point to old commits**: `work/PL-W017` and `user/yemishin/cowork-shared-tree` were never pushed to remote, pointing to v1.1.1130; remove from task setup commands _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Git fetch fails from within existing worktree directory**: `git fetch origin <branch>` fails when run from another worktree context; always fetch from main working tree, not from within `worktrees/` subdirectory _(Ralph)_
+  → see `knowledge/build-reports/2026-03-16-ralph-ralph-learnings-2026-03-16-pr-4970916-duplicate-di.md`
+
+#### Architecture Notes
+- **Plan integration fix PR when merging 5+ independent branches**: Type errors at integration boundaries are expected; design follow-up PR to resolve cross-PR interface mismatches _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Worktree setup requires 4 merge conflict resolutions across 8+ files**: `coworkAtoms.ts`, `coworkSession.ts`, `CoworkLayout.tsx`, `augloopTransport.ts`, `types.ts`, `just.config.cjs`, `package.json`, `tsconfig.json`, `yarn.lock` have typical conflicts when merging PRs _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Feature gate priority: query param > localStorage > env var**: CoworkLayout route at `/cowork` requires feature gate; respects three-level precedence for access control _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-verify-manual-testing-guide.md`
+
+- **Three-panel cowork layout complete**: Chat panel (left), progression panel (center), artifact panel (right) with tabbed artifact display and download buttons _(Verify)_
+  → see `knowledge/build-reports/2026-03-16-verify-manual-testing-guide.md`
+
+#### Action Items
+- **Merge core module websocket fix from `user/jakubk/excel-agent-cli`**: 4 read-only property TS errors block API builds; cherry-pick commit `dbb84d949` to main _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Resolve @types/ws version conflict between root and API node_modules**: Align versions to unblock API module build _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Add babel syntax plugin or update preset-typescript for augloop-transport**: Enable source test execution without parse errors _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+- **Create integration fix PR for cross-PR type errors in office-bohemia**: Resolve 19 TS errors in 6 cowork files from 8-PR merge _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-plan-verification-cowo.md`
+
+_Processed 3 notes, 24 insights extracted, 3 duplicates removed._
+
+---
+
+### 2026-03-16: Engine Dispatch Pre-flight Checks and ADO REST API Patterns
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pattern for unchanged PRs**: Check `git log --oneline main...origin/<branch>` for commit SHAs + ADO REST API for existing threads/votes before creating worktrees (~15 seconds vs 5–10 minutes full cycle) _(Dallas, Ripley)_
+  → see `knowledge/conventions/2026-03-16-early-bailout-pattern.md`
+
+- **ADO REST API thread management**: Create closed threads with `POST /pullRequests/{prId}/threads?api-version=7.1` + `{"status": 4}`, retrieve VSID via `GET /_apis/connectionData?api-version=6.0-preview`, submit votes with `PUT /pullRequests/{prId}/reviewers/{vsid}?api-version=7.1` + `{"vote": 10}` _(Ripley)_
+  → see `knowledge/conventions/2026-03-16-ado-rest-api-patterns.md`
+
+- **Windows bash temp file pattern for JSON payloads**: Write to temp with `$TEMP/filename.json`, reference in curl via `@"$TEMP/filename.json"`; Node.js reads use `process.env.TEMP + '/filename.json'` _(Ripley)_
+  → see `knowledge/conventions/2026-03-16-windows-temp-file-pattern.md`
+
+- **ADO domain convention**: Use `dev.azure.com` (not `office.visualstudio.com`) for REST API calls _(Ripley)_
+  → see `knowledge/conventions/2026-03-16-ado-domain-convention.md`
+
+#### Bugs & Gotchas
+- **Engine dispatch re-queues unchanged PRs**: PR-4970916 dispatched 8+ times and PR-4970128 dispatched 6+ times with zero new commits; existing APPROVE votes ignored _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-engine-dispatch-pre-flight-checks.md`
+
+#### Action Items
+- **Engine dispatch router needs three pre-flight checks**: (1) compare branch commit SHAs against last reviewed state via git log, (2) check existing reviewer votes in ADO, (3) classify review findings content for "no action required" keywords before dispatching fix-review tasks _(Dallas, Ripley)_
+  → see `knowledge/build-reports/2026-03-16-engine-dispatch-pre-flight-checks.md`
+
+_Processed 3 notes, 6 insights extracted, 1 duplicate removed._
+
+---
+
+### 2026-03-16: Agent-authored comments misclassified in engine dispatch
+
+**By:** Engine (LLM-consolidated)
+
+#### Bugs & Gotchas
+- **Engine feeds agent bail-out notes back as review findings**: Dallas's own "no action needed" consolidation notes from PR-4970916 were misclassified as actionable review findings, triggering 10+ redundant re-dispatches with identical commits _(Dallas, Lambert)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-8th-dispatc.md`
+
+#### Action Items
+- **Engine must filter agent-authored comments from review findings classification**: Consolidation and inbox processing must exclude agent-authored comments (especially bail-out notes) when routing "review findings" to prevent infinite dispatch loops _(Dallas)_
+  → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-8th-dispatc.md`
+
+_Processed 3 notes, 1 insight extracted, 7 existing patterns reinforced, 1 duplicate consolidated._

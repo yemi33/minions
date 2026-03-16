@@ -1,0 +1,136 @@
+{
+  "timestamp": "2026-03-16T04:06:51.389Z",
+  "passed": 32,
+  "failed": 0,
+  "skipped": 0,
+  "results": [
+    {
+      "name": "GET /api/status returns full state",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /api/health returns health check",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /api/plans returns array",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /api/plans only returns .md files",
+      "status": "PASS"
+    },
+    {
+      "name": "GET /api/knowledge returns object",
+      "status": "PASS"
+    },
+    {
+      "name": "CORS preflight returns 204",
+      "status": "PASS"
+    },
+    {
+      "name": "Path traversal blocked on plans",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/work-items creates item",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/work-items rejects empty title",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/work-items/retry resets status",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/work-items/delete removes item",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plan creates plan work item with chain",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plans/execute queues plan-to-prd for .md",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plans/execute rejects .json",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plans/execute deduplicates",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plans/pause sets awaiting-approval",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/plans/delete cascades to work items",
+      "status": "PASS"
+    },
+    {
+      "name": "PRD status derived from work items (not plan JSON)",
+      "status": "PASS"
+    },
+    {
+      "name": "PRD items include depends_on field",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/prd-items/update modifies plan JSON",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/prd-items/remove deletes item from plan",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/notes creates inbox file",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/inbox/delete removes file",
+      "status": "PASS"
+    },
+    {
+      "name": "POST /api/inbox/delete rejects path traversal",
+      "status": "PASS"
+    },
+    {
+      "name": "Dispatch queue has valid structure",
+      "status": "PASS"
+    },
+    {
+      "name": "No orphaned dispatch entries (items exist for active dispatches)",
+      "status": "PASS"
+    },
+    {
+      "name": "Completed dispatches capped at 100",
+      "status": "PASS"
+    },
+    {
+      "name": "config.json is valid",
+      "status": "PASS"
+    },
+    {
+      "name": "All agent status.json files are valid",
+      "status": "PASS"
+    },
+    {
+      "name": "All plan JSON files are valid",
+      "status": "PASS"
+    },
+    {
+      "name": "Metrics JSON is valid",
+      "status": "PASS"
+    },
+    {
+      "name": "PRD item status matches work item status",
+      "status": "PASS"
+    }
+  ]
+}

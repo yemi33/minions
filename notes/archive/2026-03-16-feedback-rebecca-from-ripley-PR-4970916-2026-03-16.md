@@ -1,0 +1,59 @@
+# Review Feedback for Rebecca
+
+**PR:** PR-4970916 — feat(PL-W009): add cowork host integration demo and test fixtures
+**Reviewer:** Ripley
+**Date:** 2026-03-16
+
+## What the reviewer found
+
+# Ripley Learnings — 2026-03-16 (PR-4970916 Review)
+
+## Task
+Review PR-4970916: feat(PL-W009): add cowork host integration demo and test fixtures
+
+## Verdict
+**APPROVE** (vote: 10)
+
+## Findings
+
+### MessageType Enum Values Verified
+All six MessageType references in cowork-demo match source:
+- `SessionInit = 'session_init'` (source: modules/message-protocol/src/types/message-type.ts:16)
+- `SessionInitResponse = 'session_init_response'` (source: message-type.ts:17)
+- `PptAgentCot = 'ppt_agent_cot'` (source: message-type.ts:164)
+- `QueryStatus = 'query_status'` (source: message-type.ts:93)
+- `Ping = 'ping'` (source: message-type.ts:13)
+- `Pong = 'pong'` (source: message-type.ts:14)
+
+### PptAgentCotPayload Wire Format Verified
+Fixture fields (`contentType`, `content`, `turnNumber`, `toolName`) match source at `modules/message-protocol/src/types/agents/ppt-agent/messages.ts:286-295` exactly.
+
+### Timer Leak Fix Confirmed
+The `full_interactive` scenario in `mock-augloop-server.ts` uses `wrappedResolve` pattern to clear timeout timer when user answers before 30s timeout. (source: PR-4970916 commit 9e530474e)
+
+### Review Feedback Already Applied
+PR has 3 commits: initial feat, yarn.lock dedup, and review feedback fix. Previous review by Ralph was APPROVE.
+
+### Patterns Observed
+- `.devtools/` packages use `@officeagent-tools/` scope (source: .devtools/cowork-demo/package.json)
+- `console.*` logging is allowed in `.devtools/` packages — production logging rules don't apply (source: CLAUDE.md logging rules)
+- Mock AugLoop server correctly targets port 11040 matching dev endpoint (source: .devtools/test-client/src/augloop-client.ts)
+- Canned fixture pattern uses `readonly` interface fields with `delay_ms` timing hints (source: .devtools/cowork-demo/src/fixtures/cot-events.ts)
+- Host environment presets cover 4 scenarios: standalone, iframe_word, iframe_teams, iframe_generic (source: .devtools/cowork-demo/src/mock-transport/host-environment.ts)
+
+### Gotchas
+- `as ScenarioName` cast in demo-server.ts line 39 — acceptable in dev tooling but lacks runtime validation (source: .devtools/cowork-demo/src/demo-server.ts:39)
+- `DEFAULT_OPTIONS` in mock-token-provider.ts calls `uuidv4()` at module load time for userId — default changes per import (source: .devtools/cowork-demo/src/mock-transport/mock-token-provider.ts:36)
+- Ask-user events wrapped in QueryStatus with documented TODO to update when PL-W001 lands (source: .devtools/cowork-demo/src/fixtures/ask-user-events.ts:77-80)
+- yarn.lock has ~1,600 lines of changes from Babel dependency dedup — may conflict with other in-flight PRs (source: PR-4970916 commit b9240c9f8)
+
+### ADO API Patterns
+- Windows `/dev/stdin` doesn't work for piping — must use `$TEMP/file.json` with `process.env.TEMP` in Node.js (source: PR review workflow)
+- `az devops invoke --in-file` works with `/tmp/` path on Windows bash but Node.js requires `$TEMP` env var expansion
+- VSID retrieval: GET `/_apis/connectionData?api-version=6.0-preview` → `authenticatedUser.id`
+- Reviewer vote: PUT `/pullRequests/{prId}/reviewers/{vsid}?api-version=7.1` with `{"vote": 10}`
+
+
+## Action Required
+
+Read this feedback carefully. When you work on similar tasks in the future, avoid the patterns flagged here. If you are assigned to fix this PR, address every point raised above.
