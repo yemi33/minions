@@ -1175,6 +1175,19 @@ const server = http.createServer(async (req, res) => {
     return jsonReply(res, 200, plans);
   }
 
+  // GET /api/plans/archive/:file — read archived plan
+  const archiveFileMatch = req.url.match(/^\/api\/plans\/archive\/([^?]+)$/);
+  if (archiveFileMatch && req.method === 'GET') {
+    const file = decodeURIComponent(archiveFileMatch[1]);
+    if (file.includes('..')) return jsonReply(res, 400, { error: 'invalid' });
+    const content = safeRead(path.join(SQUAD_DIR, 'plans', 'archive', file));
+    if (!content) return jsonReply(res, 404, { error: 'not found' });
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.end(content);
+    return;
+  }
+
   // GET /api/plans/:file — read full plan (JSON or markdown)
   const planFileMatch = req.url.match(/^\/api\/plans\/([^?]+)$/);
   if (planFileMatch && req.method === 'GET') {
