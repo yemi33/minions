@@ -83,7 +83,7 @@ async function forEachActivePr(config, token, callback) {
         const updated = await callback(project, pr, prNum, orgBase);
         if (updated) projectUpdated++;
       } catch (err) {
-        e.log('warn', `Failed to process ${pr.id}: ${err.message}`);
+        engine().log('warn', `Failed to process ${pr.id}: ${err.message}`);
       }
     }
 
