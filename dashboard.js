@@ -916,7 +916,7 @@ const server = http.createServer(async (req, res) => {
     );
     const plans = [];
     for (const { dir, archived } of dirs) {
-      const allFiles = safeReadDir(dir).filter(f => f.endsWith('.json') || f.endsWith('.md'));
+      const allFiles = safeReadDir(dir).filter(f => (f.endsWith('.json') || f.endsWith('.md')) && !f.startsWith('verify-'));
       for (const f of allFiles) {
         const content = safeRead(path.join(dir, f)) || '';
         const isJson = f.endsWith('.json');
