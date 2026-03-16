@@ -400,23 +400,31 @@ function getPrdInfo(config) {
   let allPrdItems = [];
   let latestStat = null;
 
-  try {
-    const planFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.json'));
-    for (const pf of planFiles) {
-      try {
-        const plan = JSON.parse(fs.readFileSync(path.join(PLANS_DIR, pf), 'utf8'));
-        if (!plan.missing_features) continue;
-        const stat = fs.statSync(path.join(PLANS_DIR, pf));
-        if (!latestStat || stat.mtimeMs > latestStat.mtimeMs) latestStat = stat;
-        for (const f of plan.missing_features) {
-          allPrdItems.push({
-            ...f, _source: pf, _planStatus: plan.status || 'active',
-            _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
-          });
-        }
-      } catch {}
-    }
-  } catch {}
+  // Scan active plans and archived plans (completed PRDs still need to show progress)
+  const planDirs = [
+    { dir: PLANS_DIR, archived: false },
+    { dir: path.join(PLANS_DIR, 'archive'), archived: true },
+  ];
+  for (const { dir, archived } of planDirs) {
+    try {
+      const planFiles = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+      for (const pf of planFiles) {
+        try {
+          const plan = JSON.parse(fs.readFileSync(path.join(dir, pf), 'utf8'));
+          if (!plan.missing_features) continue;
+          const stat = fs.statSync(path.join(dir, pf));
+          if (!latestStat || stat.mtimeMs > latestStat.mtimeMs) latestStat = stat;
+          for (const f of plan.missing_features) {
+            allPrdItems.push({
+              ...f, _source: pf, _planStatus: plan.status || 'active',
+              _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
+              _archived: archived,
+            });
+          }
+        } catch {}
+      }
+    } catch {}
+  }
 
   if (allPrdItems.length === 0) return { progress: null, status: null };
 
