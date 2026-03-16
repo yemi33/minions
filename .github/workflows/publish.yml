@@ -35,12 +35,14 @@ jobs:
           # Update package.json
           node -e "const p=require('./package.json'); p.version='$NEXT'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')"
 
-          # Find changed files since last publish
+          # Find changed files: compare against the last [skip ci] commit (previous publish)
+          # Only include files that EXIST in the current tree (excludes stripped files)
           LAST_PUBLISH=$(git log --oneline --grep='\[skip ci\]' -1 --format='%H' 2>/dev/null || echo "")
           if [ -n "$LAST_PUBLISH" ]; then
-            git diff --name-only "$LAST_PUBLISH" HEAD -- . ':!package.json' > /tmp/changed_files.txt 2>/dev/null || true
+            git diff --name-only --diff-filter=ACMR "$LAST_PUBLISH" HEAD -- . ':!package.json' ':!CHANGELOG.md' > /tmp/changed_files.txt 2>/dev/null || true
           else
-            git diff --name-only HEAD~1 HEAD -- . ':!package.json' > /tmp/changed_files.txt 2>/dev/null || true
+            # First publish — list all tracked files as "changed"
+            git ls-files -- . ':!package.json' ':!CHANGELOG.md' ':!.gitignore' ':!.npmignore' ':!LICENSE' ':!notes/' > /tmp/changed_files.txt 2>/dev/null || true
           fi
 
           # Write changelog update script to a temp file (avoids shell escaping)
@@ -58,9 +60,13 @@ jobs:
             else if (f.startsWith('dashboard')) cats.Dashboard.push(f);
             else if (f.startsWith('playbooks/')) cats.Playbooks.push(name);
             else if (/^agents\/.*\/charter\.md$/.test(f)) cats.Agents.push(f);
-            else if (f.startsWith('docs/') || f === 'README.md' || f === 'CHANGELOG.md') cats.Documentation.push(name);
-            else if (f !== '.gitignore' && f !== '.npmignore') cats.Other.push(f);
+            else if (f.startsWith('docs/') || f === 'README.md') cats.Documentation.push(name);
+            else if (f !== '.gitignore' && f !== '.npmignore' && f !== 'LICENSE' && !f.startsWith('notes/')) cats.Other.push(f);
           }
+
+          // Only create entry if there are categorized changes
+          const total = Object.values(cats).reduce((s, a) => s + a.length, 0);
+          if (total === 0) process.exit(0);
 
           let entry = `## ${version} (${date})\n\n`;
           for (const [cat, files] of Object.entries(cats)) {
@@ -75,7 +81,7 @@ jobs:
           const idx = cl.indexOf('\n\n');
           if (idx !== -1) {
             fs.writeFileSync('CHANGELOG.md', cl.slice(0, idx + 2) + entry + cl.slice(idx + 2));
-            console.log('Changelog updated with ' + changed.length + ' changed files');
+            console.log('Changelog updated with ' + total + ' changed files');
           }
           SCRIPT
 
