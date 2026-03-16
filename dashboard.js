@@ -1838,7 +1838,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       const agentCharters = Object.keys(config.agents || {}).map(id => {
         const charter = safeRead(path.join(SQUAD_DIR, 'agents', id, 'charter.md'));
-        return charter ? `#### ${id}\n${charter.slice(0, 1500)}` : '';
+        return charter ? `#### ${id}\n${charter.slice(0, 600)}` : '';
       }).filter(Boolean).join('\n\n');
 
       const routing = safeRead(path.join(SQUAD_DIR, 'routing.md')) || '(no routing.md)';
@@ -1985,7 +1985,7 @@ Use tools to dig deeper when the pre-loaded context isn't sufficient — e.g., r
       prompt += `**User:** ${body.message}`;
 
       const result = await llm.callLLM(prompt, sysPrompt, {
-        timeout: 180000, label: 'command-center', model: 'sonnet',
+        timeout: 300000, label: 'command-center', model: 'sonnet',
         maxTurns: 5,
         allowedTools: 'Read,Glob,Grep,WebFetch,WebSearch',
       });
