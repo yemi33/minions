@@ -1191,12 +1191,14 @@ function renderPrdProgress(prog) {
   let html = renderViewToggle() + activeKeys.map(renderGroup).join('');
 
   if (archivedKeys.length > 0) {
+    const prdOpen = window._archivedPrdOpen ? 'block' : 'none';
+    const arrow = window._archivedPrdOpen ? '&#9660;' : '&#9654;';
     html += '<div style="margin-top:12px">' +
-      '<div onclick="document.getElementById(\'archived-prd\').style.display=document.getElementById(\'archived-prd\').style.display===\'none\'?\'block\':\'none\'" ' +
+      '<div onclick="window._archivedPrdOpen=!window._archivedPrdOpen;var el=document.getElementById(\'archived-prd\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';this.querySelector(\'span\').innerHTML=window._archivedPrdOpen?\'&#9660;\':\'&#9654;\'" ' +
         'style="cursor:pointer;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;padding:4px 0">' +
-        '<span style="font-size:8px">&#9654;</span> Archived PRDs (' + archivedKeys.length + ')' +
+        '<span style="font-size:8px">' + arrow + '</span> Archived PRDs (' + archivedKeys.length + ')' +
       '</div>' +
-      '<div id="archived-prd" style="display:none">' +
+      '<div id="archived-prd" style="display:' + prdOpen + '">' +
         archivedKeys.map(renderGroup).join('') +
       '</div>' +
     '</div>';
@@ -3420,12 +3422,14 @@ function renderPlans(plans) {
   let html = activePlans.map(renderPlanCard).join('');
 
   if (archivedPlans.length > 0) {
+    const plansOpen = window._archivedPlansOpen ? 'block' : 'none';
+    const arrow = window._archivedPlansOpen ? '&#9660;' : '&#9654;';
     html += '<div style="margin-top:12px">' +
-      '<div onclick="document.getElementById(\'archived-plans\').style.display=document.getElementById(\'archived-plans\').style.display===\'none\'?\'block\':\'none\'" ' +
+      '<div onclick="window._archivedPlansOpen=!window._archivedPlansOpen;var el=document.getElementById(\'archived-plans\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';this.querySelector(\'span\').innerHTML=window._archivedPlansOpen?\'&#9660;\':\'&#9654;\'" ' +
         'style="cursor:pointer;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;padding:4px 0">' +
-        '<span style="font-size:8px">&#9654;</span> Archived (' + archivedPlans.length + ')' +
+        '<span style="font-size:8px">' + arrow + '</span> Archived (' + archivedPlans.length + ')' +
       '</div>' +
-      '<div id="archived-plans" style="display:none">' +
+      '<div id="archived-plans" style="display:' + plansOpen + '">' +
         archivedPlans.map(renderPlanCard).join('') +
       '</div>' +
     '</div>';
