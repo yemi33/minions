@@ -582,6 +582,7 @@
   <div style="display:flex;align-items:center;gap:8px;">
     <span class="engine-badge stopped" id="engine-badge">STOPPED</span>
     <div class="timestamp" id="ts">—</div>
+    <button onclick="openSettings()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--muted);padding:4px;line-height:1" title="Settings">&#9881;</button>
   </div>
 </header>
 
@@ -3797,6 +3798,128 @@ function timeSinceStr(date) {
   if (s < 3600) return Math.floor(s / 60) + 'm ago';
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
+}
+
+// ── Settings Panel ──────────────────────────────────────────────────────────
+
+async function openSettings() {
+  let data;
+  try {
+    const res = await fetch('/api/settings');
+    data = await res.json();
+  } catch (e) { showToast('cmd-toast', 'Failed to load settings: ' + e.message, false); return; }
+
+  const e = data.engine || {};
+  const c = data.claude || {};
+  const agents = data.agents || {};
+
+  const agentRows = Object.entries(agents).map(function([id, a]) {
+    return '<tr>' +
+      '<td style="font-weight:600">' + escHtml(a.emoji || '') + ' ' + escHtml(a.name || id) + '</td>' +
+      '<td><input data-agent="' + escHtml(id) + '" data-field="role" value="' + escHtml(a.role || '') + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
+      '<td><input data-agent="' + escHtml(id) + '" data-field="skills" value="' + escHtml((a.skills || []).join(', ')) + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
+    '</tr>';
+  }).join('');
+
+  const html = '<div style="padding:8px 0;max-height:70vh;overflow-y:auto">' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Engine</h3>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+      settingsField('Tick Interval', 'set-tickInterval', e.tickInterval || 60000, 'ms', 'How often the engine runs discovery + dispatch') +
+      settingsField('Max Concurrent Agents', 'set-maxConcurrent', e.maxConcurrent || 3, '', 'Max agents working simultaneously') +
+      settingsField('Consolidation Threshold', 'set-inboxConsolidateThreshold', e.inboxConsolidateThreshold || 5, 'notes', 'Inbox notes before auto-consolidation') +
+      settingsField('Agent Timeout', 'set-agentTimeout', e.agentTimeout || 18000000, 'ms', 'Kill agent after this duration') +
+      settingsField('Max Turns', 'set-maxTurns', e.maxTurns || 100, '', 'Claude CLI --max-turns per agent') +
+      settingsField('Heartbeat Timeout', 'set-heartbeatTimeout', e.heartbeatTimeout || 300000, 'ms', 'No output = dead after this') +
+    '</div>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+      settingsField('Output Format', 'set-outputFormat', c.outputFormat || 'stream-json', '', '') +
+      settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Comma-separated (empty = all)') +
+    '</div>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
+    '<table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11px">' +
+      '<tr style="text-align:left;color:var(--muted)"><th style="padding:4px">Agent</th><th style="padding:4px">Role</th><th style="padding:4px">Skills</th></tr>' +
+      agentRows +
+    '</table>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
+    '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
+
+    '<div style="display:flex;gap:8px;margin-top:12px">' +
+      '<button class="plan-btn approve" onclick="saveSettings()">Save</button>' +
+      '<button class="plan-btn" onclick="closeModal()">Cancel</button>' +
+      '<span id="settings-status" style="font-size:11px;color:var(--muted);align-self:center"></span>' +
+    '</div>' +
+  '</div>';
+
+  document.getElementById('modal-title').textContent = 'Settings';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = '';
+  document.getElementById('modal-body').style.whiteSpace = '';
+  document.getElementById('modal').classList.add('open');
+}
+
+function settingsField(label, id, value, unit, hint) {
+  return '<div>' +
+    '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">' + escHtml(label) + (unit ? ' <span style="opacity:0.6">(' + escHtml(unit) + ')</span>' : '') + '</label>' +
+    '<input id="' + id + '" value="' + escHtml(String(value)) + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+    (hint ? '<div style="font-size:9px;color:var(--muted);margin-top:1px">' + escHtml(hint) + '</div>' : '') +
+  '</div>';
+}
+
+async function saveSettings() {
+  const status = document.getElementById('settings-status');
+  status.textContent = 'Saving...';
+  status.style.color = 'var(--blue)';
+
+  try {
+    const enginePayload = {
+      tickInterval: document.getElementById('set-tickInterval').value,
+      maxConcurrent: document.getElementById('set-maxConcurrent').value,
+      inboxConsolidateThreshold: document.getElementById('set-inboxConsolidateThreshold').value,
+      agentTimeout: document.getElementById('set-agentTimeout').value,
+      maxTurns: document.getElementById('set-maxTurns').value,
+      heartbeatTimeout: document.getElementById('set-heartbeatTimeout').value,
+    };
+
+    const claudePayload = {
+      outputFormat: document.getElementById('set-outputFormat').value,
+      allowedTools: document.getElementById('set-allowedTools').value,
+    };
+
+    const agentsPayload = {};
+    document.querySelectorAll('[data-agent][data-field]').forEach(function(el) {
+      const id = el.dataset.agent;
+      const field = el.dataset.field;
+      if (!agentsPayload[id]) agentsPayload[id] = {};
+      agentsPayload[id][field] = el.value;
+    });
+
+    // Save config
+    const res = await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload })
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error);
+
+    // Save routing separately
+    const routing = document.getElementById('set-routing').value;
+    const rRes = await fetch('/api/settings/routing', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: routing })
+    });
+    if (!rRes.ok) { const d = await rRes.json(); throw new Error(d.error); }
+
+    status.textContent = 'Saved. Restart engine for full effect.';
+    status.style.color = 'var(--green)';
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
 }
 </script>
 </body>

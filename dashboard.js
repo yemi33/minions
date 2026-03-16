@@ -1679,6 +1679,66 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // GET /api/settings — return current engine + claude + routing config
+  if (req.method === 'GET' && req.url === '/api/settings') {
+    try {
+      const config = queries.getConfig();
+      const routing = safeRead(path.join(SQUAD_DIR, 'routing.md')) || '';
+      return jsonReply(res, 200, {
+        engine: config.engine || {},
+        claude: config.claude || {},
+        agents: config.agents || {},
+        routing,
+      });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
+  // POST /api/settings — update engine + claude + agent config
+  if (req.method === 'POST' && req.url === '/api/settings') {
+    try {
+      const body = await readBody(req);
+      const configPath = path.join(SQUAD_DIR, 'config.json');
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+      if (body.engine) {
+        // Validate and apply engine settings
+        const e = body.engine;
+        if (e.tickInterval !== undefined) config.engine.tickInterval = Math.max(10000, Number(e.tickInterval) || 60000);
+        if (e.maxConcurrent !== undefined) config.engine.maxConcurrent = Math.max(1, Math.min(10, Number(e.maxConcurrent) || 3));
+        if (e.inboxConsolidateThreshold !== undefined) config.engine.inboxConsolidateThreshold = Math.max(1, Number(e.inboxConsolidateThreshold) || 5);
+        if (e.agentTimeout !== undefined) config.engine.agentTimeout = Math.max(60000, Number(e.agentTimeout) || 18000000);
+        if (e.maxTurns !== undefined) config.engine.maxTurns = Math.max(5, Math.min(500, Number(e.maxTurns) || 100));
+        if (e.heartbeatTimeout !== undefined) config.engine.heartbeatTimeout = Math.max(60000, Number(e.heartbeatTimeout) || 300000);
+      }
+
+      if (body.claude) {
+        if (body.claude.allowedTools !== undefined) config.claude.allowedTools = String(body.claude.allowedTools);
+        if (body.claude.outputFormat !== undefined) config.claude.outputFormat = String(body.claude.outputFormat);
+      }
+
+      if (body.agents) {
+        for (const [id, updates] of Object.entries(body.agents)) {
+          if (!config.agents[id]) continue;
+          if (updates.role !== undefined) config.agents[id].role = String(updates.role);
+          if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
+        }
+      }
+
+      safeWrite(configPath, config);
+      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Restart engine for changes to take full effect.' });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
+  // POST /api/settings/routing — update routing.md
+  if (req.method === 'POST' && req.url === '/api/settings/routing') {
+    try {
+      const body = await readBody(req);
+      if (!body.content) return jsonReply(res, 400, { error: 'content required' });
+      safeWrite(path.join(SQUAD_DIR, 'routing.md'), body.content);
+      return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   // GET /api/health — lightweight health check for monitoring
   if (req.method === 'GET' && req.url === '/api/health') {
     const engine = getEngineState();
