@@ -142,24 +142,11 @@ function getPrdInfo() {
 
   const items = allPrdItems;
 
-  const byStatus = {};
-  items.forEach(item => {
-    const s = item.status || 'missing';
-    byStatus[s] = byStatus[s] || [];
-    byStatus[s].push({ id: item.id, name: item.name || item.title, priority: item.priority, complexity: item.estimated_complexity || item.size, status: s });
-  });
-
-  const complete = (byStatus['complete'] || []).length + (byStatus['completed'] || []).length + (byStatus['implemented'] || []).length;
-  const prCreated = (byStatus['pr-created'] || []).length;
-  const inProgress = (byStatus['in-progress'] || []).length + (byStatus['dispatched'] || []).length;
-  const planned = (byStatus['planned'] || []).length;
-  const missing = (byStatus['missing'] || []).length;
   const total = items.length;
-  const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
-  // Build PRD item → PR lookup from all project PRs
-  // PRs reference work item IDs (PL-W017), not PRD item IDs (P007)
-  // So also build a work item ID → PRD item ID mapping
+  // Build work item lookups: PRD item → work item status (single source of truth)
+  // and work item ID → PRD item ID (for PR linking)
+  const wiByPlanKey = {}; // key: "sourcePlan:sourcePlanItem" → work item
   const wiToPlanItem = {};
   for (const project of PROJECTS) {
     try {
@@ -167,9 +154,37 @@ function getPrdInfo() {
       const workItems = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
       for (const wi of workItems) {
         if (wi.sourcePlanItem) wiToPlanItem[wi.id] = wi.sourcePlanItem;
+        if (wi.sourcePlan && wi.sourcePlanItem) {
+          wiByPlanKey[wi.sourcePlan + ':' + wi.sourcePlanItem] = wi;
+        }
       }
     } catch {}
   }
+
+  // Override PRD item status from work items (work items are the source of truth)
+  for (const item of items) {
+    const wi = wiByPlanKey[item._source + ':' + item.id];
+    if (wi) {
+      if (wi.status === 'done') item.status = 'implemented';
+      else if (wi.status === 'failed') item.status = 'failed';
+      else if (wi.status === 'dispatched') item.status = 'in-progress';
+      else if (wi.status === 'pending') item.status = 'missing';
+    }
+  }
+
+  // Recompute status counts after override
+  const byStatus = {};
+  items.forEach(item => {
+    const s = item.status || 'missing';
+    byStatus[s] = byStatus[s] || [];
+    byStatus[s].push(item);
+  });
+  const complete = (byStatus['complete'] || []).length + (byStatus['completed'] || []).length + (byStatus['implemented'] || []).length;
+  const prCreated = (byStatus['pr-created'] || []).length;
+  const inProgress = (byStatus['in-progress'] || []).length + (byStatus['dispatched'] || []).length;
+  const planned = (byStatus['planned'] || []).length;
+  const missing = (byStatus['missing'] || []).length;
+  const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
   const allPrs = getPullRequests();
   const prdToPr = {};
