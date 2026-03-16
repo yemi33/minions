@@ -288,12 +288,9 @@ function getAgentErrorRate(agentId) {
 }
 
 function isAgentIdle(agentId) {
-  const status = getAgentStatus(agentId);
-  if (!['idle', 'done', 'completed'].includes(status.status)) return false;
-  // Also check dispatch queue — agent may have been assigned but status.json not yet updated
+  // Dispatch queue is the single source of truth for agent availability
   const dispatch = safeJson(DISPATCH_PATH) || {};
-  const hasActive = (dispatch.active || []).some(d => d.agent === agentId);
-  return !hasActive;
+  return !(dispatch.active || []).some(d => d.agent === agentId);
 }
 
 // Track agents claimed during a single discovery pass to distribute work
