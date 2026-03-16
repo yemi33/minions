@@ -120,7 +120,98 @@ function checkPlanCompletion(meta, config) {
     }
   }
 
-  // 4. Archive: move PRD to plans/archive/
+  // 4. Create verification work item (build, test, start webapp, write testing guide)
+  const existingVerify = workItems.find(w => w.sourcePlan === planFile && w.planItemId === 'VERIFY');
+  if (!existingVerify && doneItems.length > 0) {
+    const verifyId = shared.nextWorkItemId(workItems, 'PL-W');
+    const planSlug = planFile.replace('.json', '');
+
+    // Group PRs by project — one worktree per project with all branches merged in
+    const projectPrs = {}; // projectName -> { project, prs: [], mainBranch }
+    for (const p of projects) {
+      const prs = (e.safeJson(path.join(p.localPath, '.squad', 'pull-requests.json')) || [])
+        .filter(pr => pr.status === 'active' && (pr.prdItems || []).some(id =>
+          doneItems.find(w => w.sourcePlanItem === id || w.id === id)));
+      if (prs.length > 0) {
+        projectPrs[p.name] = { project: p, prs, mainBranch: p.mainBranch || 'main' };
+      }
+    }
+
+    // Build per-project checkout commands: one worktree, merge all PR branches into it
+    const checkoutBlocks = Object.entries(projectPrs).map(([name, { project: p, prs, mainBranch }]) => {
+      const wtPath = `${p.localPath}/../worktrees/verify-${planSlug}`;
+      const branches = prs.map(pr => pr.branch).filter(Boolean);
+      const lines = [
+        `# ${name} — merge ${branches.length} PR branch(es) into one worktree`,
+        `cd "${p.localPath}"`,
+        `git fetch origin ${branches.map(b => `"${b}"`).join(' ')} "${mainBranch}"`,
+        `git worktree add "${wtPath}" "origin/${mainBranch}" 2>/dev/null || (cd "${wtPath}" && git checkout "${mainBranch}" && git pull origin "${mainBranch}")`,
+        `cd "${wtPath}"`,
+        ...branches.map(b => `git merge "origin/${b}" --no-edit  # ${prs.find(pr => pr.branch === b)?.id || b}`),
+      ];
+      return lines.join('\n');
+    }).join('\n\n');
+
+    // Build completed items summary with acceptance criteria
+    const itemsWithCriteria = doneItems.map(w => {
+      const planItem = plan.missing_features?.find(f => f.id === w.sourcePlanItem);
+      const criteria = (planItem?.acceptance_criteria || []).map(c => `  - ${c}`).join('\n');
+      return `### ${w.sourcePlanItem}: ${w.title.replace('Implement: ', '')}\n${criteria ? '**Acceptance Criteria:**\n' + criteria : ''}`;
+    }).join('\n\n');
+
+    const prSummary = uniquePrs.map(pr =>
+      `- ${pr.id}: ${pr.title || ''} (branch: \`${pr.branch || '?'}\`) ${pr.url || ''}`
+    ).join('\n');
+
+    // List projects and their worktree paths for the agent
+    const projectWorktrees = Object.entries(projectPrs).map(([name, { project: p }]) =>
+      `- **${name}**: \`${p.localPath}/../worktrees/verify-${planSlug}\``
+    ).join('\n');
+
+    const description = [
+      `Verification task for completed plan \`${planFile}\`.`,
+      ``,
+      `## Projects & Worktrees`,
+      ``,
+      `Each project gets ONE worktree with all PR branches merged in:`,
+      projectWorktrees,
+      ``,
+      `## Setup Commands`,
+      ``,
+      `\`\`\`bash`,
+      checkoutBlocks,
+      `\`\`\``,
+      ``,
+      `If any merge conflicts occur, resolve them (prefer the PR branch changes).`,
+      `After setup, build and test from the worktree paths above.`,
+      ``,
+      `## Completed Items`,
+      ``,
+      itemsWithCriteria,
+      ``,
+      `## Pull Requests`,
+      ``,
+      prSummary,
+    ].join('\n');
+
+    workItems.push({
+      id: verifyId,
+      title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
+      type: 'verify',
+      priority: 'high',
+      description,
+      status: 'pending',
+      created: e.ts(),
+      createdBy: 'engine:plan-verification',
+      sourcePlan: planFile,
+      planItemId: 'VERIFY',
+      project: projectName,
+    });
+    shared.safeWrite(wiPath, workItems);
+    e.log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+  }
+
+  // 5. Archive: move PRD to plans/archive/
   const archiveDir = path.join(e.PLANS_DIR, 'archive');
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
   shared.safeWrite(planPath, plan); // save completed status first
