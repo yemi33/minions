@@ -184,9 +184,7 @@ function resolveAgent(workType, config, authorAgent = null) {
 
   if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
 
-  // Last resort: allow already-claimed agents (better than not dispatching)
-  if (preferred && agents[preferred] && isAgentIdle(preferred)) return preferred;
-  if (fallback && agents[fallback] && isAgentIdle(fallback)) return fallback;
+  // No idle agent available — return null, item stays pending until next tick
   return null;
 }
 
