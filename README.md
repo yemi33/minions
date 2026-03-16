@@ -184,7 +184,11 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
 - **Shares workflows** — agents create reusable skills (Claude Code-compatible) that all other agents can follow
 - **Supports cross-repo tasks** — a single work item can span multiple repositories
 - **Fan-out dispatch** — broad tasks can be split across all idle agents in parallel, each assigned a project
-- **Auto-syncs PRs** — engine scans agent output for PR URLs and updates project trackers automatically
+- **Auto-syncs PRs** — engine scans agent output for PR URLs and updates project trackers automatically. PR reconciliation sweep catches any missed PRs from ADO.
+- **Human feedback on PRs** — comment on any ADO PR to trigger agent fix tasks. `@squad` keyword required when multiple humans are commenting; optional when you're the only reviewer.
+- **Dependency-aware spawning** — when a work item depends on others, the engine merges dependency PR branches into the worktree before the agent starts
+- **Plan verification** — when all PRD items complete, engine auto-dispatches a verify task that builds all repos, starts the webapp, and writes a manual testing guide
+- **PRD modification** — edit plans via doc-chat in the modal, then "Generate PRD" to regenerate. Dashboard supports regenerating, retrying failed items, and syncing edits to pending work items.
 - **Auto-extracts skills** — agents write ` ```skill ` blocks in output; engine auto-extracts them
 - **Heartbeat monitoring** — detects dead/hung agents via output file activity, not just timeouts
 - **Auto-cleanup** — stale temp files, orphaned worktrees, zombie processes cleaned every 10 minutes
@@ -198,9 +202,10 @@ The web dashboard at `http://localhost:7331` provides:
 - **Squad Members** — agent cards with status and result summary, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
 - **Work Items** — paginated table with status, source, type, priority, assigned agent, linked PRs, fan-out badges, and retry button for failed items
-- **Plans** — plan approval UI with Approve / Discuss & Revise / Reject
+- **Plans** — plan approval UI with Approve / Discuss & Revise / Reject. Click to open in doc-chat modal for natural language editing; "Generate PRD" button appears after edits.
 - **Knowledge Base** — browsable by category with inline Q&A (Haiku-powered)
-- **Token Usage** — per-agent and per-day token tracking
+- **PRD Progress** — dependency graph view, per-item retry button, "Edit PRD" and "Regenerate" actions. Failed items show green retry button.
+- **Token Usage** — per-agent and per-day token tracking, plus engine Haiku usage (triage, consolidation, doc-chat)
 - **Pull Requests** — paginated PR tracker sorted by date, with review/build/merge status
 - **Skills** — agent-created reusable workflows (squad-wide + project-specific), click to view full content
 - **Notes Inbox + Team Notes** — learnings and team rules, editable from dashboard modal
@@ -317,10 +322,13 @@ The engine discovers work from 5 sources, in priority order:
 | Priority | Source | Dispatch Type |
 |----------|--------|---------------|
 | 1 | PRs with changes-requested | `fix` |
-| 2 | PRs pending review | `review` |
-| 3 | Plan items (`plans/*.json`, approved) | `implement` |
-| 4 | Per-project work items | item's `type` |
-| 5 | Central work items | item's `type` |
+| 2 | PRs with human `@squad` feedback | `fix` |
+| 3 | PRs with build failures | `fix` |
+| 4 | PRs pending review | `review` |
+| 5 | PRs needing build/test verification | `test` |
+| 6 | Plan items (`plans/*.json`, approved) | `implement` |
+| 7 | Per-project work items | item's `type` |
+| 8 | Central work items | item's `type` |
 
 Each item passes through: dedup (checks pending, active, AND recently completed), cooldown, and agent availability gates. See `docs/auto-discovery.md` for the full pipeline.
 
@@ -353,14 +361,16 @@ No bash or shell involved — Node spawns Node directly. Prompts with special ch
 When an agent finishes:
 1. Output saved to `agents/<name>/output.log`
 2. Agent status updated (done/error)
-3. Work item status updated (done/failed)
-4. PRs auto-synced from output → project's `pull-requests.json`
-5. Agent history updated (last 20 tasks)
-6. Quality metrics updated
-7. Review feedback created for PR authors (if review task)
-8. Learnings checked in `notes/inbox/`
-9. Skills auto-extracted from ` ```skill ` blocks in output
-10. Temp files cleaned up
+3. Work item status updated (done/failed, with auto-retry up to 3x)
+4. PRs auto-synced from output → correct project's `pull-requests.json` (per-URL matching)
+5. "No PR" detection — implement/fix tasks that complete without creating a PR get flagged (`noPr: true`)
+6. Plan completion check — if all PRD items done, creates verification task + archives plan
+7. Agent history updated (last 20 tasks)
+8. Quality metrics updated (tokens, cost, approval rates)
+9. Review feedback created for PR authors (if review task)
+10. Learnings checked in `notes/inbox/`
+11. Skills auto-extracted from ` ```skill ` blocks in output
+12. Temp files cleaned up
 
 ## Team
 
@@ -389,6 +399,7 @@ Routing rules in `routing.md`. Charters in `agents/{name}/charter.md`. Both are 
 | `plan.md` | Generate a plan from user request |
 | `implement-shared.md` | Implement on a shared branch (multiple agents) |
 | `ask.md` | Answer a question about the codebase |
+| `verify.md` | Plan completion: build all repos, start webapp, write testing guide |
 
 All playbooks use `{{template_variables}}` filled from project config. The `work-item.md` playbook uses `{{scope_section}}` to inject project-specific or multi-project context. Playbooks are fully customizable — edit them to match your workflow.
 
@@ -493,12 +504,19 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
   squad.js               <- Project management: init, add, remove, list
   engine.js              <- Engine daemon
   engine/
+    shared.js            <- Shared utilities: IO, process spawning, config helpers
+    queries.js           <- Read-only state queries (agents, PRs, work items, metrics)
+    cli.js               <- CLI command handlers (start, stop, status, plan, etc.)
+    lifecycle.js          <- Post-completion hooks, plan chaining, PR sync, metrics
+    consolidation.js     <- Haiku-powered inbox consolidation, knowledge base
+    ado.js               <- ADO token management, PR polling, PR reconciliation
+    llm.js               <- Shared Haiku wrapper (triage, doc-chat, steer, ask-about)
     spawn-agent.js       <- Agent spawn wrapper (resolves claude cli.js)
     ado-mcp-wrapper.js   <- ADO MCP authentication wrapper
     control.json         <- running/paused/stopped (runtime)
     dispatch.json        <- pending/active/completed queue (runtime)
     log.json             <- Audit trail, capped at 500 (runtime)
-    metrics.json         <- Per-agent quality metrics (runtime)
+    metrics.json         <- Per-agent quality metrics + engine Haiku usage (runtime)
   dashboard.js           <- Web dashboard server
   dashboard.html         <- Dashboard UI (single-file)
   config.json            <- projects[], agents, engine, claude settings
@@ -522,6 +540,7 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
     plan.md              <- Generate a plan from user request
     implement-shared.md  <- Implement on a shared branch
     ask.md               <- Answer a question about the codebase
+    verify.md            <- Plan verification: build, test, start webapp, testing guide
   skills/
     README.md            <- Skill format guide
     <name>.md            <- Agent-created reusable workflows
@@ -540,6 +559,7 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
   docs/
     auto-discovery.md    <- Auto-discovery pipeline docs
     self-improvement.md  <- Self-improvement loop docs
+    plan-lifecycle.md    <- Full plan pipeline: plan → PRD → implement → verify
 
 Each linked project keeps locally:
   <project>/.squad/
