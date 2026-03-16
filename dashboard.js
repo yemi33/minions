@@ -167,8 +167,32 @@ function getPrdInfo() {
     }
   }
 
+  // Compute timing per source plan from materialized work items
+  const planTimings = {};
+  for (const project of PROJECTS) {
+    const wiPath = path.join(project.localPath, '.squad', 'work-items.json');
+    try {
+      const workItems = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      for (const wi of workItems) {
+        if (!wi.sourcePlan) continue;
+        if (!planTimings[wi.sourcePlan]) planTimings[wi.sourcePlan] = { firstDispatched: null, lastCompleted: null, allDone: true };
+        const t = planTimings[wi.sourcePlan];
+        if (wi.dispatched_at) {
+          const d = new Date(wi.dispatched_at).getTime();
+          if (!t.firstDispatched || d < t.firstDispatched) t.firstDispatched = d;
+        }
+        if (wi.completedAt) {
+          const c = new Date(wi.completedAt).getTime();
+          if (!t.lastCompleted || c > t.lastCompleted) t.lastCompleted = c;
+        }
+        if (wi.status !== 'done') t.allDone = false;
+      }
+    } catch {}
+  }
+
   const progress = {
     total, complete, prCreated, inProgress, planned, missing, donePercent,
+    planTimings,
     items: items.map(i => ({
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',

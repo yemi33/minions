@@ -1009,16 +1009,43 @@ function renderPrdProgress(prog) {
   };
 
   const keys = Object.keys(grouped);
+  const formatDuration = (ms) => {
+    if (!ms || ms < 0) return '';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + (m % 60) + 'm';
+    const d = Math.floor(h / 24);
+    return d + 'd ' + (h % 24) + 'h';
+  };
+
+  const timings = prog.planTimings || {};
+
   const renderGroupHeader = (g) => {
     const done = g.items.filter(i => i.status === 'complete' || i.status === 'implemented').length;
     const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
+
+    // Runtime: from first dispatch to last completion (or now if still running)
+    const t = timings[g.file];
+    let runtimeLabel = '';
+    if (t && t.firstDispatched) {
+      const end = t.allDone && t.lastCompleted ? t.lastCompleted : Date.now();
+      const elapsed = end - t.firstDispatched;
+      const icon = t.allDone ? '&#x2713;' : '&#x23F1;';
+      runtimeLabel = '<span style="color:' + (t.allDone ? 'var(--green)' : 'var(--yellow)') + ';font-weight:400;font-size:10px">' +
+        icon + ' ' + formatDuration(elapsed) + (t.allDone ? '' : ' elapsed') + '</span>';
+    }
+
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       (g.project ? '<span class="prd-project-badge">' + escHtml(g.project) + '</span>' : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
       '<span style="color:var(--muted);font-weight:400;font-size:10px">' + g.items.length + ' items' +
         (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
       '</span>' +
+      runtimeLabel +
       '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto" title="' + escHtml(g.file) + '">' + escHtml(g.file) + '</span>' +
     '</div>';
   };
