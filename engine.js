@@ -2297,13 +2297,13 @@ async function tickInner() {
   // 2.6. Poll ADO for full PR status: build, review, merge (every 6 ticks = ~3 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
   if (tickCount % 6 === 0) {
-    try { await pollPrStatus(config); } catch (e) { log('warn', `PR status poll error: ${e.message}`); }
+    try { await pollPrStatus(config); } catch (err) { log('warn', `PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
   }
 
   // 2.7. Poll PR threads for human @squad comments (every 12 ticks = ~6 minutes)
   if (tickCount % 12 === 0) {
-    try { await pollPrHumanComments(config); } catch (e) { log('warn', `PR comment poll error: ${e.message}`); }
-    try { await reconcilePrs(config); } catch (e) { log('warn', `PR reconciliation error: ${e.message}`); }
+    try { await pollPrHumanComments(config); } catch (err) { log('warn', `PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await reconcilePrs(config); } catch (err) { log('warn', `PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
   }
 
   // 3. Discover new work from sources
