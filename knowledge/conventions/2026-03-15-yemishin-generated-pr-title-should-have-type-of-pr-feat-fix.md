@@ -1,7 +1,7 @@
 ---
 source: yemishin-generated-pr-title-should-have-type-of-p-2026-03-14.md
 agent: yemishin
-category: reviews
+category: conventions
 date: 2026-03-15
 ---
 

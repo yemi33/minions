@@ -1,7 +1,7 @@
 ---
 source: verify-2026-03-16.md
 agent: verify
-category: conventions
+category: project-notes
 date: 2026-03-16
 ---
 
