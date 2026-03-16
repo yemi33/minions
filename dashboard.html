@@ -3100,17 +3100,31 @@ async function _processQaMessage(message, selection) {
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
 
-        // If this is a plan .md file, show "Generate PRD" button
+        // If this is a plan .md file, show PRD generation options
         if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
           const planFile = _modalFilePath.replace('plans/', '');
           const existingBtn = document.getElementById('qa-generate-prd-btn');
           if (!existingBtn) {
+            // Check if there's an existing PRD for this plan's project
+            const allPlans = window._lastStatus?.plans || [];
+            const mdPlan = allPlans.find(p => p.file === planFile);
+            const project = mdPlan?.project || '';
+            const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
+
             const btn = document.createElement('div');
             btn.id = 'qa-generate-prd-btn';
-            btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;align-items:center;gap:8px;cursor:pointer';
-            btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px">Plan updated</span>' +
-              '<button onclick="qaGeneratePrd(\'' + planFile.replace(/'/g, "\\'") + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Generate PRD from this</button>' +
-              '<span style="color:var(--muted);font-size:10px">Dispatches an agent to create/update PRD items</span>';
+            btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
+            const esc = planFile.replace(/'/g, "\\'");
+            if (existingPrd) {
+              btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">Plan updated — existing PRD found</span>' +
+                '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--orange);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Pause existing PRD, clean pending items, regenerate from revised plan">Replace existing PRD</button>' +
+                '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Keep existing PRD running, create a new PRD from this plan">New PRD (keep current)</button>' +
+                '<span style="color:var(--muted);font-size:10px">Replace discards pending items. New PRD keeps current work running.</span>';
+            } else {
+              btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px">Plan updated</span>' +
+                '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Generate PRD from this</button>' +
+                '<span style="color:var(--muted);font-size:10px">Dispatches an agent to create PRD items</span>';
+            }
             thread.appendChild(btn);
           }
         }
@@ -3349,14 +3363,13 @@ async function planApprove(file) {
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
-async function qaGeneratePrd(planFile) {
-  // Find if there's an existing PRD for this plan's project
+// Replace existing PRD: pause old, clean pending items, regenerate from revised plan
+async function qaReplacePrd(planFile) {
   const allPlans = window._lastStatus?.plans || [];
   const mdPlan = allPlans.find(p => p.file === planFile);
   const project = mdPlan?.project || '';
   const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
 
-  // If PRD exists, regenerate (clean up pending/failed items first)
   if (existingPrd) {
     try {
       await fetch('/api/plans/regenerate', {
@@ -3364,7 +3377,6 @@ async function qaGeneratePrd(planFile) {
         body: JSON.stringify({ source: existingPrd.file })
       });
     } catch {}
-    // Pause the old PRD
     try {
       await fetch('/api/plans/pause', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3373,12 +3385,22 @@ async function qaGeneratePrd(planFile) {
     } catch {}
   }
 
-  // Dispatch plan-to-prd
   planExecute(planFile, project, null);
 
-  // Remove the button
   const btn = document.getElementById('qa-generate-prd-btn');
-  if (btn) btn.innerHTML = '<span style="color:var(--green);font-size:12px">PRD generation dispatched — agent will create items from the revised plan.</span>';
+  if (btn) btn.innerHTML = '<span style="color:var(--orange);font-size:12px">Replacing PRD — old items paused, agent regenerating from revised plan.</span>';
+}
+
+// New PRD: keep existing PRD running, create fresh PRD from revised plan
+async function qaNewPrd(planFile) {
+  const allPlans = window._lastStatus?.plans || [];
+  const mdPlan = allPlans.find(p => p.file === planFile);
+  const project = mdPlan?.project || '';
+
+  planExecute(planFile, project, null);
+
+  const btn = document.getElementById('qa-generate-prd-btn');
+  if (btn) btn.innerHTML = '<span style="color:var(--green);font-size:12px">New PRD dispatched — existing work continues, agent creating fresh PRD from revised plan.</span>';
 }
 
 async function planExecute(file, project, btn) {
