@@ -639,6 +639,43 @@ const { runPostCompletionHooks, updateWorkItemStatus, handlePostMerge, checkPlan
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 
+// Resolve dependency plan item IDs to their PR branches
+function resolveDependencyBranches(depIds, sourcePlan, project, config) {
+  const results = []; // [{ branch, prId }]
+  if (!depIds?.length) return results;
+
+  const projects = shared.getProjects(config);
+
+  // Find work items for each dependency plan item
+  const depWorkItems = [];
+  for (const p of projects) {
+    const wiPath = shared.projectWorkItemsPath(p);
+    const items = safeJson(wiPath) || [];
+    for (const wi of items) {
+      if (wi.sourcePlan === sourcePlan && depIds.includes(wi.sourcePlanItem)) {
+        depWorkItems.push(wi);
+      }
+    }
+  }
+
+  // Find PR branches for each dependency work item
+  for (const p of projects) {
+    const prPath = shared.projectPrPath(p);
+    const prs = safeJson(prPath) || [];
+    for (const pr of prs) {
+      if (!pr.branch || pr.status !== 'active') continue;
+      const linked = (pr.prdItems || []).some(id =>
+        depWorkItems.find(w => w.id === id || w.sourcePlanItem === id)
+      );
+      if (linked && !results.find(r => r.branch === pr.branch)) {
+        results.push({ branch: pr.branch, prId: pr.id });
+      }
+    }
+  }
+
+  return results;
+}
+
 function spawnAgent(dispatchItem, config) {
   const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
   const claudeConfig = config.claude || {};
@@ -683,6 +720,25 @@ function spawnAgent(dispatchItem, config) {
         log('info', `Pulling latest on shared branch ${branchName}`);
         try { execSync(`git pull origin "${branchName}"`, { cwd: worktreePath, stdio: 'pipe' }); } catch {}
       }
+      // Merge dependency PR branches into worktree if this item has depends_on
+      const depIds = meta?.item?.depends_on || [];
+      if (depIds.length > 0 && worktreePath && fs.existsSync(worktreePath)) {
+        try {
+          const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
+          for (const { branch: depBranch, prId } of depBranches) {
+            try {
+              execSync(`git fetch origin "${depBranch}"`, { cwd: rootDir, stdio: 'pipe' });
+              execSync(`git merge "origin/${depBranch}" --no-edit`, { cwd: worktreePath, stdio: 'pipe' });
+              log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
+            } catch (mergeErr) {
+              log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
+            }
+          }
+        } catch (e) {
+          log('warn', `Could not resolve dependency branches for ${branchName}: ${e.message}`);
+        }
+      }
+
       cwd = worktreePath;
     } catch (err) {
       log('error', `Failed to create worktree for ${branchName}: ${err.message}`);
