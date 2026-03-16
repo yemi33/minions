@@ -2404,8 +2404,8 @@ async function tickInner() {
 
   const slotsAvailable = maxConcurrent - activeCount;
 
-  // Priority dispatch: fixes > reviews > plan-to-prd > implement > other
-  const typePriority = { fix: 0, ask: 1, review: 1, test: 2, plan: 3, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
+  // Priority dispatch: fixes > reviews > plan-to-prd > implement > verify > other
+  const typePriority = { fix: 0, ask: 1, review: 1, test: 2, verify: 2, plan: 3, 'plan-to-prd': 3, 'implement:large': 4, implement: 5 };
   const itemPriority = { high: 0, medium: 1, low: 2 };
   dispatch.pending.sort((a, b) => {
     const ta = typePriority[a.type] ?? 5, tb = typePriority[b.type] ?? 5;
