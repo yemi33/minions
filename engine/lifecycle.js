@@ -222,7 +222,7 @@ function checkPlanCompletion(meta, config) {
     e.log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
-  // 5. Archive: move PRD to plans/archive/
+  // 5. Archive: move PRD and source plan to plans/archive/
   const archiveDir = path.join(PLANS_DIR, 'archive');
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
   shared.safeWrite(planPath, plan); // save completed status first
@@ -231,9 +231,24 @@ function checkPlanCompletion(meta, config) {
     e.log('info', `Archived completed PRD: plans/archive/${planFile}`);
   } catch (err) {
     e.log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
-    // Still save the completed status even if archive fails
     shared.safeWrite(planPath, plan);
   }
+
+  // Also archive the source .md plan if it exists
+  try {
+    const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
+    for (const md of mdFiles) {
+      const mdContent = shared.safeRead(path.join(PLANS_DIR, md)) || '';
+      // Match by project name or plan summary appearing in the .md content
+      if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
+        try {
+          fs.renameSync(path.join(PLANS_DIR, md), path.join(archiveDir, md));
+          e.log('info', `Archived source plan: plans/archive/${md}`);
+        } catch {}
+        break;
+      }
+    }
+  } catch {}
 
   e.log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }
