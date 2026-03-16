@@ -646,6 +646,9 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     m.tasksCompleted++;
     if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
     if (dispatchItem.type === 'review') m.reviewsDone++;
+  } else if (result === 'retry') {
+    // Auto-retry: count cost but not as a final outcome
+    m.tasksRetried = (m.tasksRetried || 0) + 1;
   } else {
     m.tasksErrored++;
   }
@@ -748,7 +751,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (isSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
   updateAgentHistory(agentId, dispatchItem, result);
-  updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount);
+  // Don't count auto-retries as errors in metrics — only count final outcomes
+  const isAutoRetry = !isSuccess && meta?.item?.id && (meta.item._retryCount || 0) < 3;
+  const metricsResult = isAutoRetry ? 'retry' : result;
+  updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount);
 
   return { resultSummary, taskUsage };
 }
