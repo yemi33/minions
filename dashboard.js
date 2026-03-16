@@ -1991,15 +1991,15 @@ Use tools to dig deeper when the pre-loaded context isn't sufficient — e.g., r
         return jsonReply(res, 200, { text: 'I had trouble processing that. Try again or rephrase.', actions: [] });
       }
 
-      // Parse action blocks from response
+      // Parse action blocks from response (flexible: handles ```action, ``` action, extra backticks/whitespace)
       const actions = [];
-      const actionRegex = /```action\n([\s\S]*?)```/g;
+      const actionRegex = /`{3,}\s*action\s*\r?\n([\s\S]*?)`{3,}/g;
       let match;
       while ((match = actionRegex.exec(result.text)) !== null) {
         try { actions.push(JSON.parse(match[1].trim())); } catch {}
       }
       // Clean action blocks from display text
-      const displayText = result.text.replace(/```action\n[\s\S]*?```\n?/g, '').trim();
+      const displayText = result.text.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
 
       return jsonReply(res, 200, { text: displayText, actions });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
