@@ -37,7 +37,7 @@ const IDENTITY_DIR = path.join(SQUAD_DIR, 'identity');
 
 // Re-export from queries for internal use (avoid changing every call site)
 const { CONFIG_PATH, NOTES_PATH, AGENTS_DIR, ENGINE_DIR, CONTROL_PATH,
-  DISPATCH_PATH, LOG_PATH, INBOX_DIR, KNOWLEDGE_DIR, PLANS_DIR } = queries;
+  DISPATCH_PATH, LOG_PATH, INBOX_DIR, KNOWLEDGE_DIR, PLANS_DIR, PRD_DIR } = queries;
 
 // ─── Multi-Project Support ──────────────────────────────────────────────────
 // Config can have either:
@@ -1455,32 +1455,51 @@ function isAlreadyDispatched(key) {
  * Plans write to the target project's work-items.json — picked up by discoverFromWorkItems next tick.
  */
 function materializePlansAsWorkItems(config) {
-  if (!fs.existsSync(PLANS_DIR)) return;
+  if (!fs.existsSync(PRD_DIR)) { try { fs.mkdirSync(PRD_DIR, { recursive: true }); } catch {} }
 
   // Enforce: PRDs must be .json — auto-rename .md files that contain valid PRD JSON
-  try {
-    const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
-    for (const mf of mdFiles) {
+  // Check both prd/ and plans/ (agents may still write JSON to plans/)
+  for (const checkDir of [PRD_DIR, PLANS_DIR]) {
+    if (!fs.existsSync(checkDir)) continue;
+    try {
+      const mdFiles = fs.readdirSync(checkDir).filter(f => f.endsWith('.md'));
+      for (const mf of mdFiles) {
+        try {
+          const content = fs.readFileSync(path.join(checkDir, mf), 'utf8').trim();
+          // Strip markdown code fences if agent wrapped JSON in them
+          const stripped = content.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
+          const parsed = JSON.parse(stripped);
+          if (parsed.missing_features) {
+            const jsonName = mf.replace(/\.md$/, '.json');
+            fs.writeFileSync(path.join(PRD_DIR, jsonName), JSON.stringify(parsed, null, 2));
+            fs.unlinkSync(path.join(checkDir, mf));
+            log('info', `Plan enforcement: moved ${mf} → prd/${jsonName} (PRDs must be .json in prd/)`);
+          }
+        } catch {} // Not JSON — it's a proper plan .md, leave it
+      }
+    } catch {}
+    // Also migrate any .json PRD files from plans/ to prd/
+    if (checkDir === PLANS_DIR) {
       try {
-        const content = fs.readFileSync(path.join(PLANS_DIR, mf), 'utf8').trim();
-        // Strip markdown code fences if agent wrapped JSON in them
-        const stripped = content.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '').trim();
-        const parsed = JSON.parse(stripped);
-        if (parsed.missing_features) {
-          const jsonName = mf.replace(/\.md$/, '.json');
-          fs.writeFileSync(path.join(PLANS_DIR, jsonName), JSON.stringify(parsed, null, 2));
-          fs.unlinkSync(path.join(PLANS_DIR, mf));
-          log('info', `Plan enforcement: renamed ${mf} → ${jsonName} (PRDs must be .json)`);
+        const jsonInPlans = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.json'));
+        for (const jf of jsonInPlans) {
+          try {
+            const parsed = safeJson(path.join(PLANS_DIR, jf));
+            if (parsed?.missing_features) {
+              fs.renameSync(path.join(PLANS_DIR, jf), path.join(PRD_DIR, jf));
+              log('info', `Auto-migrated PRD ${jf} from plans/ to prd/`);
+            }
+          } catch {}
         }
-      } catch {} // Not JSON — it's a proper plan .md, leave it
+      } catch {}
     }
-  } catch {}
+  }
 
   let planFiles;
-  try { planFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.json')); } catch { return; }
+  try { planFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); } catch { return; }
 
   for (const file of planFiles) {
-    const plan = safeJson(path.join(PLANS_DIR, file));
+    const plan = safeJson(path.join(PRD_DIR, file));
     if (!plan?.missing_features) continue;
 
     // Human approval gate: plans start as 'awaiting-approval' and must be approved before work begins
@@ -2143,6 +2162,7 @@ function discoverCentralWorkItems(config) {
       // Inject plan-to-prd variables — read the plan file content for the playbook
       if (workType === 'plan-to-prd' && item.planFile) {
         if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
+        if (!fs.existsSync(PRD_DIR)) fs.mkdirSync(PRD_DIR, { recursive: true });
         const planPath = path.join(PLANS_DIR, item.planFile);
         try {
           vars.plan_content = fs.readFileSync(planPath, 'utf8');
@@ -2352,7 +2372,7 @@ async function tickInner() {
 
 module.exports = {
   // Paths
-  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLAYBOOKS_DIR, PLANS_DIR,
+  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLAYBOOKS_DIR, PLANS_DIR, PRD_DIR,
   CONTROL_PATH, DISPATCH_PATH, LOG_PATH, INBOX_DIR, KNOWLEDGE_DIR, ARCHIVE_DIR,
   IDENTITY_DIR, CONFIG_PATH, ROUTING_PATH, NOTES_PATH, SKILLS_DIR,
 

@@ -10,7 +10,7 @@ const { safeRead, safeJson, safeWrite, execSilent, projectPrPath } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getAgentStatus,
-  SQUAD_DIR, ENGINE_DIR, PLANS_DIR, INBOX_DIR, AGENTS_DIR, SKILLS_DIR } = queries;
+  SQUAD_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR, SKILLS_DIR } = queries;
 
 // Lazy require — only for log(), ts(), dateStamp() and engine-specific functions
 let _engine = null;
@@ -24,7 +24,7 @@ function checkPlanCompletion(meta, config) {
   const e = engine();
   const planFile = meta.item?.sourcePlan;
   if (!planFile) return;
-  const planPath = path.join(PLANS_DIR, planFile);
+  const planPath = path.join(PRD_DIR, planFile);
   const plan = safeJson(planPath);
   if (!plan?.missing_features) return;
   if (plan.status === 'completed') return;
@@ -222,19 +222,21 @@ function checkPlanCompletion(meta, config) {
     e.log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
-  // 5. Archive: move PRD and source plan to plans/archive/
-  const archiveDir = path.join(PLANS_DIR, 'archive');
-  if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+  // 5. Archive: move PRD .json to prd/archive/ and source .md plan to plans/archive/
+  const prdArchiveDir = path.join(PRD_DIR, 'archive');
+  if (!fs.existsSync(prdArchiveDir)) fs.mkdirSync(prdArchiveDir, { recursive: true });
   shared.safeWrite(planPath, plan); // save completed status first
   try {
-    fs.renameSync(planPath, path.join(archiveDir, planFile));
-    e.log('info', `Archived completed PRD: plans/archive/${planFile}`);
+    fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
+    e.log('info', `Archived completed PRD: prd/archive/${planFile}`);
   } catch (err) {
     e.log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
     shared.safeWrite(planPath, plan);
   }
 
   // Also archive the source .md plan if it exists
+  const planArchiveDir = path.join(PLANS_DIR, 'archive');
+  if (!fs.existsSync(planArchiveDir)) fs.mkdirSync(planArchiveDir, { recursive: true });
   try {
     const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
     for (const md of mdFiles) {
@@ -242,7 +244,7 @@ function checkPlanCompletion(meta, config) {
       // Match by project name or plan summary appearing in the .md content
       if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
         try {
-          fs.renameSync(path.join(PLANS_DIR, md), path.join(archiveDir, md));
+          fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
           e.log('info', `Archived source plan: plans/archive/${md}`);
         } catch {}
         break;
@@ -277,7 +279,10 @@ function chainPlanToPrd(dispatchItem, meta, config) {
 
   if (planFileName.endsWith('.json')) {
     const mdName = planFileName.replace(/\.json$/, '.md');
-    const jsonPath = path.join(planDir, planFileName);
+    // Check plans/ first, then prd/ for .json files
+    const jsonPath = fs.existsSync(path.join(planDir, planFileName))
+      ? path.join(planDir, planFileName)
+      : path.join(SQUAD_DIR, 'prd', planFileName);
     const mdPath = path.join(planDir, mdName);
     try {
       const content = fs.readFileSync(jsonPath, 'utf8');
@@ -289,7 +294,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
       }
     } catch {
       try {
-        fs.renameSync(jsonPath, path.join(planDir, mdName));
+        if (fs.existsSync(jsonPath)) fs.renameSync(jsonPath, path.join(planDir, mdName));
         planFileName = mdName;
         e.log('info', `Plan chaining: renamed to .md (not valid JSON)`);
       } catch {}
@@ -593,12 +598,12 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (newStatus !== 'merged') return;
 
   if (pr.prdItems?.length > 0) {
-    const plansDir = path.join(SQUAD_DIR, 'plans');
+    const prdDir = path.join(SQUAD_DIR, 'prd');
     try {
-      const planFiles = fs.readdirSync(plansDir).filter(f => f.endsWith('.json'));
+      const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
       for (const pf of planFiles) {
-        const plan = safeJson(path.join(plansDir, pf));
+        const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
         let changed = false;
         for (const itemId of pr.prdItems) {
@@ -609,7 +614,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
             updated++;
           }
         }
-        if (changed) shared.safeWrite(path.join(plansDir, pf), plan);
+        if (changed) shared.safeWrite(path.join(prdDir, pf), plan);
       }
       if (updated > 0) e.log('info', `Post-merge: marked ${updated} PRD item(s) as implemented for ${pr.id}`);
     } catch {}

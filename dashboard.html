@@ -1412,7 +1412,7 @@ async function planOpenInDocChat(file) {
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
     _modalDocContext = { title: title, content: text, selection: '' };
-    _modalFilePath = 'plans/' + file;
+    _modalFilePath = (file.endsWith('.json') ? 'prd/' : 'plans/') + file;
     document.getElementById('modal').classList.add('open');
   } catch (e) { alert('Error opening plan: ' + e.message); }
 }
@@ -3748,7 +3748,7 @@ async function planView(file) {
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
     _modalDocContext = { title, content: text, selection: '' };
-    _modalFilePath = 'plans/' + file;
+    _modalFilePath = (file.endsWith('.json') ? 'prd/' : 'plans/') + file;
     // steer btn removed — unified send
     document.getElementById('modal').classList.add('open');
   } catch (e) { console.error(e); }

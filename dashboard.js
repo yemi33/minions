@@ -17,12 +17,20 @@ const { safeRead, safeReadDir, safeWrite, getProjects: _getProjects } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
-  SQUAD_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH } = queries;
+  SQUAD_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH, PRD_DIR } = queries;
 
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 const CONFIG = queries.getConfig();
 const PROJECTS = _getProjects(CONFIG);
 const projectNames = PROJECTS.map(p => p.name || 'Project').join(' + ');
+
+const PLANS_DIR = path.join(SQUAD_DIR, 'plans');
+
+// Resolve a plan/PRD file path: .json files live in prd/, .md files in plans/
+function resolvePlanPath(file) {
+  if (file.endsWith('.json')) return path.join(PRD_DIR, file);
+  return path.join(PLANS_DIR, file);
+}
 
 const HTML_RAW = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
 const HTML = HTML_RAW.replace('Squad Mission Control', `Squad Mission Control — ${projectNames}`);
@@ -108,14 +116,13 @@ function getTriageContext() {
   } catch {}
   const wi = [...centralWi, ...projectWi].join('\n') + recentErrors;
 
-  // Plans (with summary, author, project, status)
-  const plansDir = path.join(SQUAD_DIR, 'plans');
+  // Plans (with summary, author, project, status) — PRDs are in prd/
   let plans = '';
   try {
-    plans = safeReadDir(plansDir).filter(f => f.endsWith('.json'))
+    plans = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'))
       .map(f => {
         try {
-          const plan = JSON.parse(safeRead(path.join(plansDir, f)) || '{}');
+          const plan = JSON.parse(safeRead(path.join(PRD_DIR, f)) || '{}');
           const author = plan.generatedBy || plan.generated_by || '';
           const summary = (plan.plan_summary || '').slice(0, 80);
           const status = plan.status || 'unknown';
@@ -548,14 +555,13 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/prd-items — create a PRD item as a plan file in plans/ (auto-approved)
+  // POST /api/prd-items — create a PRD item as a plan file in prd/ (auto-approved)
   if (req.method === 'POST' && req.url === '/api/prd-items') {
     try {
       const body = await readBody(req);
       if (!body.name || !body.name.trim()) return jsonReply(res, 400, { error: 'name is required' });
 
-      const plansDir = path.join(SQUAD_DIR, 'plans');
-      if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
+      if (!fs.existsSync(PRD_DIR)) fs.mkdirSync(PRD_DIR, { recursive: true });
 
       const id = body.id || ('M' + String(Date.now()).slice(-4));
       const planFile = 'manual-' + shared.uid() + '.json';
@@ -575,7 +581,7 @@ const server = http.createServer(async (req, res) => {
         }],
         open_questions: [],
       };
-      safeWrite(path.join(plansDir, planFile), plan);
+      safeWrite(path.join(PRD_DIR, planFile), plan);
       return jsonReply(res, 200, { ok: true, id, file: planFile });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -585,7 +591,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
       const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
       const item = (plan.missing_features || []).find(f => f.id === body.itemId);
@@ -632,7 +638,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
       const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
       const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
@@ -819,13 +825,13 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/plans — list plan files (.md drafts + .json PRDs) from active + archive
+  // GET /api/plans — list plan files (.md drafts from plans/ + .json PRDs from prd/)
   if (req.method === 'GET' && req.url === '/api/plans') {
-    const plansDir = path.join(SQUAD_DIR, 'plans');
-    const archiveDir = path.join(plansDir, 'archive');
     const dirs = [
-      { dir: plansDir, archived: false },
-      { dir: archiveDir, archived: true },
+      { dir: PLANS_DIR, archived: false },
+      { dir: path.join(PLANS_DIR, 'archive'), archived: true },
+      { dir: PRD_DIR, archived: false },
+      { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
     const centralWi = JSON.parse(safeRead(path.join(SQUAD_DIR, 'work-items.json')) || '[]');
@@ -883,25 +889,32 @@ const server = http.createServer(async (req, res) => {
     return jsonReply(res, 200, plans);
   }
 
-  // GET /api/plans/archive/:file — read archived plan
+  // GET /api/plans/archive/:file — read archived plan (checks prd/archive/ and plans/archive/)
   const archiveFileMatch = req.url.match(/^\/api\/plans\/archive\/([^?]+)$/);
   if (archiveFileMatch && req.method === 'GET') {
     const file = decodeURIComponent(archiveFileMatch[1]);
     if (file.includes('..')) return jsonReply(res, 400, { error: 'invalid' });
-    const content = safeRead(path.join(SQUAD_DIR, 'plans', 'archive', file));
+    // Check prd/archive/ first for .json, then plans/archive/ for .md
+    const archiveDir = file.endsWith('.json') ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
+    let content = safeRead(path.join(archiveDir, file));
+    // Fallback: check the other archive dir
+    if (!content) content = safeRead(path.join(file.endsWith('.json') ? path.join(PLANS_DIR, 'archive') : path.join(PRD_DIR, 'archive'), file));
     if (!content) return jsonReply(res, 404, { error: 'not found' });
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
+    res.setHeader('Content-Type', contentType + '; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content);
     return;
   }
 
-  // GET /api/plans/:file — read full plan (JSON or markdown)
+  // GET /api/plans/:file — read full plan (JSON from prd/ or markdown from plans/)
   const planFileMatch = req.url.match(/^\/api\/plans\/([^?]+)$/);
   if (planFileMatch && req.method === 'GET') {
     const file = decodeURIComponent(planFileMatch[1]);
     if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
-    const content = safeRead(path.join(SQUAD_DIR, 'plans', file));
+    let content = safeRead(resolvePlanPath(file));
+    // Fallback: check the other directory (legacy compat)
+    if (!content) content = safeRead(path.join(file.endsWith('.json') ? PLANS_DIR : PRD_DIR, file));
     if (!content) return jsonReply(res, 404, { error: 'not found' });
     const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
     res.setHeader('Content-Type', contentType + '; charset=utf-8');
@@ -915,7 +928,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       const plan = JSON.parse(safeRead(planPath) || '{}');
       plan.status = 'approved';
       plan.approvedAt = new Date().toISOString();
@@ -930,7 +943,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       const plan = JSON.parse(safeRead(planPath) || '{}');
       plan.status = 'awaiting-approval';
       plan.pausedAt = new Date().toISOString();
@@ -974,7 +987,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       const plan = JSON.parse(safeRead(planPath) || '{}');
       plan.status = 'rejected';
       plan.rejectedAt = new Date().toISOString();
@@ -990,7 +1003,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.source) return jsonReply(res, 400, { error: 'source required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
       const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
       const planItems = plan.missing_features || [];
@@ -1058,7 +1071,7 @@ const server = http.createServer(async (req, res) => {
       if (body.file.includes('..') || body.file.includes('/') || body.file.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid filename' });
       }
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
       fs.unlinkSync(planPath);
 
@@ -1095,7 +1108,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       const plan = JSON.parse(safeRead(planPath) || '{}');
       plan.status = 'revision-requested';
       plan.revision_feedback = body.feedback;
@@ -1116,7 +1129,7 @@ const server = http.createServer(async (req, res) => {
       items.push({
         id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
         type: 'plan-to-prd', priority: 'high',
-        description: 'Revision requested on plan file: plans/' + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
+        description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
         status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
         project: plan.project || '',
         planFile: body.file,
@@ -1135,12 +1148,12 @@ const server = http.createServer(async (req, res) => {
       // Find the source plan .md file for this PRD
       // Convention: PRD JSON references plan via plan_summary containing the work item ID,
       // or the .md file has a matching name prefix
-      const prdPath = path.join(SQUAD_DIR, 'plans', body.source);
+      const prdPath = path.join(PRD_DIR, body.source);
       if (!fs.existsSync(prdPath)) return jsonReply(res, 404, { error: 'PRD file not found' });
 
       // Look for corresponding .md plan file
       let sourcePlanFile = null;
-      const planFiles = safeReadDir(path.join(SQUAD_DIR, 'plans')).filter(f => f.endsWith('.md'));
+      const planFiles = safeReadDir(PLANS_DIR).filter(f => f.endsWith('.md'));
       if (body.sourcePlan) {
         // Explicit source plan provided
         sourcePlanFile = body.sourcePlan;
@@ -1154,7 +1167,7 @@ const server = http.createServer(async (req, res) => {
           const prdBase = body.source.replace('.json', '');
           for (const f of planFiles) {
             // Check if plan file mentions the same project or was created around same time
-            const content = safeRead(path.join(SQUAD_DIR, 'plans', f)) || '';
+            const content = safeRead(path.join(PLANS_DIR, f)) || '';
             if (content.includes(prd.project || '___nomatch___') || content.includes(prd.plan_summary?.slice(0, 40) || '___nomatch___')) {
               sourcePlanFile = f;
               break;
@@ -1163,7 +1176,7 @@ const server = http.createServer(async (req, res) => {
           // Last resort: most recent .md plan
           if (!sourcePlanFile && planFiles.length > 0) {
             sourcePlanFile = planFiles.sort((a, b) => {
-              try { return fs.statSync(path.join(SQUAD_DIR, 'plans', b)).mtimeMs - fs.statSync(path.join(SQUAD_DIR, 'plans', a)).mtimeMs; } catch { return 0; }
+              try { return fs.statSync(path.join(PLANS_DIR, b)).mtimeMs - fs.statSync(path.join(PLANS_DIR, a)).mtimeMs; } catch { return 0; }
             })[0];
           }
         }
@@ -1173,7 +1186,7 @@ const server = http.createServer(async (req, res) => {
         return jsonReply(res, 404, { error: 'No source plan (.md) found for this PRD. You can edit the PRD JSON directly using "Edit Plan".' });
       }
 
-      const sourcePlanPath = path.join(SQUAD_DIR, 'plans', sourcePlanFile);
+      const sourcePlanPath = path.join(PLANS_DIR, sourcePlanFile);
       const planContent = safeRead(sourcePlanPath);
       if (!planContent) return jsonReply(res, 404, { error: 'Source plan file not readable: ' + sourcePlanFile });
 
@@ -1248,7 +1261,7 @@ const server = http.createServer(async (req, res) => {
         title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
         type: 'plan-to-prd',
         priority: 'high',
-        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`plans/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
+        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
         status: 'pending',
         created: new Date().toISOString(),
         createdBy: 'dashboard:revise-and-regenerate',
@@ -1275,7 +1288,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = resolvePlanPath(body.file);
       const planContent = safeRead(planPath);
       if (!planContent) return jsonReply(res, 404, { error: 'plan not found' });
 

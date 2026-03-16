@@ -9,7 +9,7 @@ const shared = require('./shared');
 const { safeRead, safeJson, safeWrite } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus, setAgentStatus,
-  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
+  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
 
 // Lazy require — only for engine-specific functions (log, ts, tick, addToDispatch, etc.)
 let _engine = null;
@@ -182,7 +182,8 @@ const commands = {
         );
         if (donePlanChains.length > 0 && !hasPlanToPrd) {
           const planDir = path.join(SQUAD_DIR, 'plans');
-          const jsonFiles = fs.existsSync(planDir) ? fs.readdirSync(planDir).filter(f => f.endsWith('.json')) : [];
+          const prdDir = path.join(SQUAD_DIR, 'prd');
+          const jsonFiles = fs.existsSync(prdDir) ? fs.readdirSync(prdDir).filter(f => f.endsWith('.json')) : [];
           const mdFiles = fs.existsSync(planDir) ? fs.readdirSync(planDir).filter(f => f.endsWith('.md')) : [];
 
           for (const planItem of donePlanChains) {
@@ -220,9 +221,10 @@ const commands = {
         const pendingPlanToPrd = centralItems.filter(w => w.type === 'plan-to-prd' && w.status === 'pending');
         if (pendingPlanToPrd.length === 0) {
           const planDir = path.join(SQUAD_DIR, 'plans');
+          const prdDir = path.join(SQUAD_DIR, 'prd');
           if (fs.existsSync(planDir)) {
             const mdFiles = fs.readdirSync(planDir).filter(f => f.endsWith('.md'));
-            const jsonFiles = fs.readdirSync(planDir).filter(f => f.endsWith('.json'));
+            const jsonFiles = fs.existsSync(prdDir) ? fs.readdirSync(prdDir).filter(f => f.endsWith('.json')) : [];
             for (const md of mdFiles) {
               const base = md.replace(/\.md$/, '');
               const hasJson = jsonFiles.some(j => j.includes(base) || j.includes(base.replace(/^plan-/, '')));
@@ -573,7 +575,7 @@ const commands = {
     });
 
     console.log(`Dispatched: ${id} → ${config.agents[agentId]?.name} (${agentId})`);
-    console.log('The agent will analyze your plan and generate a PRD in plans/.');
+    console.log('The agent will analyze your plan and generate a PRD in prd/.');
 
     const control = getControl();
     if (control.state === 'running') {

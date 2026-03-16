@@ -22,7 +22,7 @@ A user has provided a plan. Analyze it against the codebase and produce a struct
 
 ## Output
 
-Write the PRD to: `{{team_root}}/plans/{{project_name_lower}}-{{date}}.json`
+Write the PRD to: `{{team_root}}/prd/{{project_name_lower}}-{{date}}.json`
 
 **If that file already exists**, append a counter: `{{project_name_lower}}-{{date}}-2.json`, `-3.json`, etc. Do NOT overwrite an existing PRD file — the engine tracks work items by filename.
 
@@ -89,7 +89,7 @@ Rules for items:
 
 ## Important
 
-- Write ONLY the single `.json` PRD file to `{{team_root}}/plans/` — do NOT write any `.md` files there
+- Write ONLY the single `.json` PRD file to `{{team_root}}/prd/` — do NOT write any `.md` files there
 - Do NOT create a git branch, worktree, or PR — this playbook writes squad-internal state only
 - Do NOT modify any files in the project repo
 - The engine will dispatch implementation agents automatically once the JSON file exists

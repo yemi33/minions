@@ -18,6 +18,7 @@ const AGENTS_DIR = path.join(SQUAD_DIR, 'agents');
 const ENGINE_DIR = path.join(SQUAD_DIR, 'engine');
 const INBOX_DIR = path.join(SQUAD_DIR, 'notes', 'inbox');
 const PLANS_DIR = path.join(SQUAD_DIR, 'plans');
+const PRD_DIR = path.join(SQUAD_DIR, 'prd');
 const SKILLS_DIR = path.join(SQUAD_DIR, 'skills');
 const KNOWLEDGE_DIR = path.join(SQUAD_DIR, 'knowledge');
 const ARCHIVE_DIR = path.join(SQUAD_DIR, 'notes', 'archive');
@@ -400,10 +401,10 @@ function getPrdInfo(config) {
   let allPrdItems = [];
   let latestStat = null;
 
-  // Scan active plans and archived plans (completed PRDs still need to show progress)
+  // Scan active PRDs and archived PRDs (completed PRDs still need to show progress)
   const planDirs = [
-    { dir: PLANS_DIR, archived: false },
-    { dir: path.join(PLANS_DIR, 'archive'), archived: true },
+    { dir: PRD_DIR, archived: false },
+    { dir: path.join(PRD_DIR, 'archive'), archived: true },
   ];
   for (const { dir, archived } of planDirs) {
     try {
@@ -519,7 +520,7 @@ function getPrdInfo(config) {
 
 module.exports = {
   // Paths (for modules that need direct access)
-  SQUAD_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, PLANS_DIR, SKILLS_DIR, KNOWLEDGE_DIR, ARCHIVE_DIR,
+  SQUAD_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, PLANS_DIR, PRD_DIR, SKILLS_DIR, KNOWLEDGE_DIR, ARCHIVE_DIR,
   CONFIG_PATH, CONTROL_PATH, DISPATCH_PATH, LOG_PATH, NOTES_PATH,
 
   // Helpers
