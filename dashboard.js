@@ -1034,7 +1034,31 @@ const server = http.createServer(async (req, res) => {
       if (body.status !== undefined) item.status = body.status;
 
       safeWrite(planPath, plan);
-      return jsonReply(res, 200, { ok: true, item });
+
+      // Feature 3: Sync edits to materialized work item if still pending
+      let workItemSynced = false;
+      const wiSyncPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      for (const proj of PROJECTS) {
+        wiSyncPaths.push(path.join(proj.localPath, '.squad', 'work-items.json'));
+      }
+      for (const wiPath of wiSyncPaths) {
+        try {
+          const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+          const wi = items.find(w => w.sourcePlan === body.source && w.sourcePlanItem === body.itemId);
+          if (wi && wi.status === 'pending') {
+            if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
+            if (body.description !== undefined) wi.description = body.description;
+            if (body.priority !== undefined) wi.priority = body.priority;
+            if (body.estimated_complexity !== undefined) {
+              wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+            }
+            safeWrite(wiPath, items);
+            workItemSynced = true;
+          }
+        } catch {}
+      }
+
+      return jsonReply(res, 200, { ok: true, item, workItemSynced });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -1401,6 +1425,71 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/plans/regenerate — reset pending/failed work items for a plan so they re-materialize
+  if (req.method === 'POST' && req.url === '/api/plans/regenerate') {
+    try {
+      const body = await readBody(req);
+      if (!body.source) return jsonReply(res, 400, { error: 'source required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
+      const plan = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+      const planItems = plan.missing_features || [];
+
+      let reset = 0, kept = 0, newCount = 0;
+      const deletedItemIds = [];
+
+      // Scan all work item sources for materialized items from this plan
+      const wiPaths = [{ path: path.join(SQUAD_DIR, 'work-items.json'), label: 'central' }];
+      for (const proj of PROJECTS) {
+        wiPaths.push({ path: path.join(proj.localPath, '.squad', 'work-items.json'), label: proj.name });
+      }
+
+      // Track which plan items have materialized work items
+      const materializedPlanItemIds = new Set();
+
+      for (const wiInfo of wiPaths) {
+        try {
+          const items = JSON.parse(fs.readFileSync(wiInfo.path, 'utf8'));
+          const filtered = [];
+          for (const w of items) {
+            if (w.sourcePlan === body.source) {
+              materializedPlanItemIds.add(w.sourcePlanItem);
+              if (w.status === 'pending' || w.status === 'failed') {
+                // Delete — will re-materialize on next tick with updated plan data
+                reset++;
+                deletedItemIds.push(w.sourcePlanItem);
+              } else {
+                // dispatched or done — leave alone
+                kept++;
+                filtered.push(w);
+              }
+            } else {
+              filtered.push(w);
+            }
+          }
+          if (filtered.length < items.length) {
+            safeWrite(wiInfo.path, filtered);
+          }
+        } catch {}
+      }
+
+      // Count plan items that have no work item yet (will auto-materialize)
+      for (const pi of planItems) {
+        if (!materializedPlanItemIds.has(pi.id)) newCount++;
+      }
+
+      // Clean dispatch entries for deleted items
+      for (const itemId of deletedItemIds) {
+        cleanDispatchEntries(d =>
+          (d.meta?.item?.sourcePlan === body.source && d.meta?.item?.sourcePlanItem === itemId) ||
+          (d.meta?.item?.planItemId === itemId && d.meta?.item?.sourcePlan === body.source)
+        );
+      }
+
+      return jsonReply(res, 200, { ok: true, reset, kept, new: newCount });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/plans/delete — delete a plan file
   if (req.method === 'POST' && req.url === '/api/plans/delete') {
     try {
@@ -1475,6 +1564,84 @@ const server = http.createServer(async (req, res) => {
       safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, status: 'revision-requested', workItemId: id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // POST /api/plans/revise-and-regenerate — use LLM to revise plan JSON, then regenerate work items
+  if (req.method === 'POST' && req.url === '/api/plans/revise-and-regenerate') {
+    try {
+      const body = await readBody(req);
+      if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
+      const planPath = path.join(SQUAD_DIR, 'plans', body.source);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
+      const currentContent = safeRead(planPath);
+      if (!currentContent) return jsonReply(res, 404, { error: 'could not read plan file' });
+
+      // Use steerDocument to modify the plan
+      const result = await llm.steerDocument({
+        instruction: body.instruction,
+        filePath: 'plans/' + body.source,
+        content: currentContent,
+        selection: body.selection || '',
+        isJson: body.source.endsWith('.json'),
+      });
+
+      if (!result.updated) {
+        return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false, reset: 0, kept: 0, new: 0 });
+      }
+
+      // Validate JSON if applicable
+      if (body.source.endsWith('.json')) {
+        try { JSON.parse(result.content); } catch (e) {
+          return jsonReply(res, 200, { ok: true, answer: result.answer + '\n\n(JSON validation failed — not saved: ' + e.message + ')', updated: false, reset: 0, kept: 0, new: 0 });
+        }
+      }
+
+      // Save the updated plan
+      safeWrite(planPath, result.content);
+
+      // Now regenerate: reset pending/failed work items
+      const plan = JSON.parse(body.source.endsWith('.json') ? result.content : '{"missing_features":[]}');
+      const planItems = plan.missing_features || [];
+      let reset = 0, kept = 0, newCount = 0;
+      const deletedItemIds = [];
+      const wiPaths = [{ path: path.join(SQUAD_DIR, 'work-items.json'), label: 'central' }];
+      for (const proj of PROJECTS) {
+        wiPaths.push({ path: path.join(proj.localPath, '.squad', 'work-items.json'), label: proj.name });
+      }
+      const materializedPlanItemIds = new Set();
+      for (const wiInfo of wiPaths) {
+        try {
+          const items = JSON.parse(fs.readFileSync(wiInfo.path, 'utf8'));
+          const filtered = [];
+          for (const w of items) {
+            if (w.sourcePlan === body.source) {
+              materializedPlanItemIds.add(w.sourcePlanItem);
+              if (w.status === 'pending' || w.status === 'failed') {
+                reset++;
+                deletedItemIds.push(w.sourcePlanItem);
+              } else {
+                kept++;
+                filtered.push(w);
+              }
+            } else {
+              filtered.push(w);
+            }
+          }
+          if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
+        } catch {}
+      }
+      for (const pi of planItems) {
+        if (!materializedPlanItemIds.has(pi.id)) newCount++;
+      }
+      for (const itemId of deletedItemIds) {
+        cleanDispatchEntries(d =>
+          (d.meta?.item?.sourcePlan === body.source && d.meta?.item?.sourcePlanItem === itemId) ||
+          (d.meta?.item?.planItemId === itemId && d.meta?.item?.sourcePlan === body.source)
+        );
+      }
+
+      return jsonReply(res, 200, { ok: true, answer: result.answer, updated: true, content: result.content, reset, kept, new: newCount });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
   // POST /api/plans/discuss — generate a plan discussion session script

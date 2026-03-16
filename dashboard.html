@@ -1074,7 +1074,12 @@ function renderPrdProgress(prog) {
         (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
       '</span>' +
       runtimeLabel +
-      '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto" title="' + escHtml(g.file) + '">' + escHtml(g.file) + '</span>' +
+      '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto;display:flex;align-items:center;gap:6px">' +
+        '<span title="' + escHtml(g.file) + '">' + escHtml(g.file) + '</span>' +
+        '<span onclick="event.stopPropagation();planOpenInDocChat(\'' + escHtml(g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Open plan in doc-chat editor">Edit Plan</span>' +
+        '<span onclick="event.stopPropagation();planRevisePRD(\'' + escHtml(g.file) + '\')" style="color:#a855f7;cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(168,85,247,0.1);border:1px solid rgba(168,85,247,0.3);border-radius:3px" title="Revise plan with AI and regenerate work items">Revise</span>' +
+        '<span onclick="event.stopPropagation();planRegeneratePRD(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Reset pending/failed items to pick up plan changes">Regenerate</span>' +
+      '</span>' +
     '</div>';
   };
 
@@ -1259,6 +1264,67 @@ async function prdItemRequeue(workItemId, source) {
     });
     if (res.ok) { refresh(); showToast('cmd-toast', workItemId + ' requeued', true); }
     else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Feature 1: Regenerate PRD — reset pending/failed work items so they re-materialize
+async function planRegeneratePRD(source) {
+  if (!confirm('Reset pending/failed items to pick up plan changes?\n\nIn-progress and completed items won\'t be affected.')) return;
+  try {
+    const res = await fetch('/api/plans/regenerate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source })
+    });
+    const d = await res.json();
+    if (res.ok && d.ok) {
+      refresh();
+      showToast('cmd-toast', 'Regenerated: ' + d.reset + ' reset, ' + d.kept + ' kept, ' + d.new + ' new', true);
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+// Feature 2: Open plan in doc-chat modal for natural language editing
+async function planOpenInDocChat(file) {
+  try {
+    const raw = await fetch('/api/plans/' + encodeURIComponent(file)).then(r => r.text());
+    let title = file;
+    let text = raw;
+    if (file.endsWith('.json')) {
+      try { title = JSON.parse(raw).plan_summary || file; } catch {}
+    }
+    document.getElementById('modal-title').textContent = 'Edit: ' + title;
+    document.getElementById('modal-body').textContent = text;
+    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    _modalDocContext = { title: title, content: text, selection: '' };
+    _modalFilePath = 'plans/' + file;
+    document.getElementById('modal').classList.add('open');
+  } catch (e) { alert('Error opening plan: ' + e.message); }
+}
+
+// Feature 4: Revise plan with AI instruction and regenerate work items
+async function planRevisePRD(source) {
+  const instruction = prompt('What changes do you want to make to this plan?\n\nExamples:\n- "Change P009 to use a different approach"\n- "Add a new item P018 for caching"\n- "Remove P003 and update dependencies"');
+  if (!instruction || !instruction.trim()) return;
+  showToast('cmd-toast', 'Revising plan with AI...', true);
+  try {
+    const res = await fetch('/api/plans/revise-and-regenerate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, instruction: instruction.trim() })
+    });
+    const d = await res.json();
+    if (res.ok && d.ok) {
+      if (d.updated) {
+        refresh();
+        showToast('cmd-toast', 'Plan revised: ' + d.reset + ' reset, ' + d.kept + ' kept, ' + d.new + ' new. ' + (d.answer || '').slice(0, 100), true);
+      } else {
+        showToast('cmd-toast', d.answer || 'No changes made', false);
+      }
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
   } catch (e) { alert('Error: ' + e.message); }
 }
 
