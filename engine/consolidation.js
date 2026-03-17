@@ -387,6 +387,16 @@ function classifyToKnowledgeBase(items) {
   if (classified > 0) {
     e.log('info', `Knowledge base: classified ${classified} note(s) into knowledge/`);
   }
+
+  // Save KB file count checkpoint so the watchdog can detect unexpected deletions
+  try {
+    let count = 0;
+    for (const cat of KB_CATEGORIES) {
+      const dir = path.join(KNOWLEDGE_DIR, cat);
+      if (fs.existsSync(dir)) count += fs.readdirSync(dir).length;
+    }
+    safeWrite(path.join(ENGINE_DIR, 'kb-checkpoint.json'), JSON.stringify({ count, updatedAt: new Date().toISOString() }));
+  } catch {}
 }
 
 function archiveInboxFiles(files) {

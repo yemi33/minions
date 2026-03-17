@@ -218,6 +218,7 @@ function removeProject(targetDir) {
     console.log(`  Removed project at ${target}`);
     console.log(`  Remaining projects: ${config.projects.length}`);
   }
+  rl.close();
 }
 
 function listProjects() {
@@ -226,6 +227,7 @@ function listProjects() {
   console.log(`\n  Squad Projects (${projects.length})\n`);
   if (projects.length === 0) {
     console.log('  No projects linked. Run: node squad.js <project-dir>\n');
+    rl.close();
     return;
   }
   for (const p of projects) {
@@ -237,6 +239,7 @@ function listProjects() {
     console.log(`    ID:   ${p.repositoryId || 'none'}`);
     console.log('');
   }
+  rl.close();
 }
 
 // ─── Scan & Multi-Select ─────────────────────────────────────────────────────
@@ -273,10 +276,10 @@ function findGitRepos(rootDir, maxDepth = 3) {
   return repos;
 }
 
-async function scanAndAdd() {
+async function scanAndAdd({ root, depth } = {}) {
   const homeDir = process.env.USERPROFILE || process.env.HOME || '';
-  const scanRoot = rest[0] || homeDir;
-  const maxDepth = parseInt(rest[1]) || 3;
+  const scanRoot = root ? path.resolve(root) : homeDir;
+  const maxDepth = depth !== undefined ? (parseInt(depth, 10) || 3) : 3;
 
   console.log(`\n  Scanning for git repos in: ${scanRoot}`);
   console.log(`  Max depth: ${maxDepth}\n`);
@@ -406,7 +409,7 @@ async function scanAndAdd() {
 
 const [cmd, ...rest] = process.argv.slice(2);
 
-async function initSquad() {
+async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
   if (!config.engine) config.engine = { ...ENGINE_DEFAULTS };
@@ -418,13 +421,25 @@ async function initSquad() {
   console.log(`\n  Squad initialized at ${SQUAD_HOME}`);
   console.log(`  Config, agents, and engine defaults created.\n`);
 
+  if (skipScan) {
+    console.log('  Skipping repo scan (--skip-scan). Run "node squad.js scan" later to link projects.\n');
+    rl.close();
+    return;
+  }
+
   // Auto-chain into scan
   console.log('  Now let\'s find your repos...\n');
-  await scanAndAdd();
+  await scanAndAdd({ root: scanRoot, depth: scanDepth });
 }
 
 const commands = {
-  init: () => initSquad().catch(e => { console.error(e); process.exit(1); }),
+  init: () => {
+    const skipScanFlag = rest.includes('--skip-scan');
+    const initArgs = rest.filter(arg => arg !== '--skip-scan');
+    const [scanRoot, scanDepth] = initArgs;
+    initSquad({ skipScan: skipScanFlag, scanRoot, scanDepth })
+      .catch(e => { console.error(e); process.exit(1); });
+  },
   add: () => {
     const dir = rest[0];
     if (!dir) { console.log('Usage: node squad add <project-dir>'); process.exit(1); }
@@ -436,7 +451,8 @@ const commands = {
     removeProject(dir);
   },
   list: () => listProjects(),
-  scan: () => scanAndAdd().catch(e => { console.error(e); process.exit(1); }),
+  scan: () => scanAndAdd({ root: rest[0], depth: rest[1] })
+    .catch(e => { console.error(e); process.exit(1); }),
 };
 
 if (cmd && commands[cmd]) {

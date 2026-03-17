@@ -24,7 +24,7 @@
         "specs": {
           "enabled": false,
           "filePatterns": ["docs/specs/**/*.md"],
-          "statePath": ".squad/specs-state.json",
+          "statePath": ".squad/spec-tracker.json",
           "lookbackDays": 7
         }
       }

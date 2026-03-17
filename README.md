@@ -55,6 +55,8 @@ squad init --force
 
 **What's preserved:** Your `config.json`, agent history, notes, knowledge base, routing, skills, and any `.md` files you've customized (charters, playbooks). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
 
+Upgrades now skip the interactive repo scan automatically. If you want to re-run discovery later, run `squad scan`. To skip scanning during the very first install, pass `--skip-scan` and link projects manually when ready.
+
 **What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
 
 ## Quick Start
@@ -119,7 +121,7 @@ squad work "Explore the codebase and document the architecture"
 
 | Command | Description |
 |---------|-------------|
-| `squad init` | Bootstrap `~/.squad/` with default agents and config |
+| `squad init` | Bootstrap `~/.squad/` with default agents and config (`--skip-scan` to skip repo scan) |
 | `squad init --force` | Upgrade engine code + add new files (preserves customizations) |
 | `squad version` | Show installed vs package version |
 | `squad scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |

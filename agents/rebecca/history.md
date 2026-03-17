@@ -84,3 +84,59 @@
 - **Branch:** work/PL-W017
 - **Dispatch ID:** rebecca-implement-1773616488944
 
+### 2026-03-17T17:32:39.152Z — error
+- **Task:** [office-bohemia] Implement: MOS App registration and federation manifest
+- **Type:** implement:large
+- **Project:** office-bohemia
+- **Branch:** work/PL-W006
+- **Dispatch ID:** rebecca-implement:large-mmurwq2w4y6f
+
+### 2026-03-17T22:48:09.091Z — error
+- **Task:** [office-bohemia] Review PR PR-4976726: feat(PL-W015): add cowork telemetry and performance tracking
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv72ifwyfxe
+
+### 2026-03-17T22:47:58.469Z — error
+- **Task:** [office-bohemia] Review PR PR-4976726: feat(PL-W015): add cowork telemetry and performance tracking
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv72ifwyfxe
+
+### 2026-03-17T22:47:28.218Z — error
+- **Task:** [office-bohemia] Review PR PR-4976726: feat(PL-W015): add cowork telemetry and performance tracking
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv72ifwyfxe
+
+### 2026-03-17T21:44:53.186Z — error
+- **Task:** [office-bohemia] Review PR PR-4976897: feat(PL-W012): add AugLoop annotation integration for cowork agent operations
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv4rvlhmxbg
+
+### 2026-03-17T21:44:51.186Z — error
+- **Task:** [office-bohemia] Review PR PR-4976897: feat(PL-W012): add AugLoop annotation integration for cowork agent operations
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv4rvlhmxbg
+
+### 2026-03-17T21:44:48.917Z — error
+- **Task:** [office-bohemia] Review PR PR-4976897: feat(PL-W012): add AugLoop annotation integration for cowork agent operations
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv4rvlhmxbg
+
+### 2026-03-17T21:43:37.145Z — error
+- **Task:** [office-bohemia] Review PR PR-4976897: feat(PL-W012): add AugLoop annotation integration for cowork agent operations
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** rebecca-review-mmv4rvlhmxbg
+

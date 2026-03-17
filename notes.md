@@ -1604,3 +1604,336 @@ _Processed 3 notes, 2 insights extracted, 8 duplicates removed._
   → see `knowledge/build-reports/2026-03-16-dallas-dallas-learnings-2026-03-16-pr-4970916-duplicate-d.md`
 
 _Processed 3 notes, 3 insights extracted, 0 duplicates removed._
+
+---
+
+### 2026-03-17: Lambert, Ralph, Ripley: bug findings (27 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (27)
+- **Existing approvals**: Yemi Shin vote:10, plus 37-40 APPROVE verdicts from prior agent reviews (source: PR-4976897 thread history) _(lambert)_
+- **Action taken**: Attempted vote submission (vote:10) via REST API PUT; timed out after 20s — consistent with known ADO degradation at >40 threads _(lambert)_
+- **Thread posting skipped**: Per team convention, thread count >30 means no new thread posting to avoid worsening ADO rate-limiting (source: team notes "Skip bail-out thread posting when thread count exceeds 25-30") _(lambert)_
+- **ADO vote PUT timeout at high thread counts confirmed again**: PR-4976897 at 60+ threads causes vote API timeout at 20s. This is the 3rd+ independent confirmation of the >40 thread threshold. (source: `PUT https://dev.azure.com/office/OC/_apis/git/repositories/74031860-e0cd-45a1-913f-10bbf3f8255... _(lambert)_
+- **Early bail-out pre-flight check effectiveness**: Git fetch + commit SHA comparison completed in <5 seconds. Full review cycle would have been 5-10 minutes. Time saved: ~99%. (source: `git log --oneline -3 origin/feat/PL-W012-augloop-integration`) _(lambert)_
+- **Thread count escalation is self-reinforcing**: Each duplicate dispatch that posts a bail-out thread adds +1 to count, pushing PR further past the ADO API degradation threshold. At 60+ threads, even vote submission fails. The only safe action is to exit without any ADO write operations. (source:... _(lambert)_
+- **Vote submission may silently fail on high-thread PRs**: When vote PUT times out, there's no confirmation the vote was recorded. The PR may appear unreviewed despite multiple approval attempts. Human reviewer should verify vote state manually for PRs with >50 threads. (source: timeout on vote PU... _(lambert)_
+- **MCP ADO tools remain unavailable**: `mcp__azure-ado__*` tools not discoverable via ToolSearch. REST API via curl + Bearer token from GCM credential fill is the only working path. (source: ToolSearch query returned "No matching deferred tools found") _(lambert)_
+- **Engine MUST implement pre-flight SHA + vote checks before dispatching**: This PR has been dispatched 10+ times with zero code changes. Each dispatch wastes agent compute time and may worsen ADO thread count. Three checks needed: (1) commit SHA comparison, (2) existing reviewer vote check, (3) t... _(lambert)_
+- **For PRs with >50 threads, skip ALL ADO write operations**: Neither thread posting nor vote submission reliably completes. The only safe action is to log the bail-out locally and exit. _(lambert)_
+- **Vote submission**: vote:10 succeeded with HTTP 200 despite 61 threads (source: `PUT /pullRequests/4976897/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8` returned HTTP 200) _(lambert)_
+- **Thread posting**: Skipped per >30 threshold convention _(lambert)_
+- **ADO vote PUT is not deterministically broken at 60+ threads**: Prior dispatch reported timeout at 60+ threads; this dispatch succeeded at 61 threads with HTTP 200. The timeout is intermittent, not deterministic. Use 15s timeout and retry once on failure rather than skipping entirely. (source: s... _(lambert)_
+- **Commit**: `52def1de9338` — unchanged from prior review (source: `git log --oneline -1 origin/feat/PL-W015-cowork-telemetry`) _(lambert)_
+- **Thread count**: 31 (exceeds 30-thread threshold — skipped thread posting) (source: ADO REST API `GET /pullRequests/4976726/threads` response) _(lambert)_
+- **Vote**: 5 (approve with suggestions) — resubmitted via REST API, HTTP 200 (source: `PUT /pullRequests/4976726/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8`) _(lambert)_
+- **Vote submission**: vote:10 succeeded with HTTP 200, but took longer than usual (~30s+ vs typical <5s) at 61 threads (source: `PUT /pullRequests/4976897/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8` returned `{"vote":10}` HTTP 200) _(lambert)_
+- **ADO vote PUT at 61 threads is intermittent**: Second timeout observed (this dispatch) vs successful 200 from re-dispatch #2. API is on the edge of its performance envelope at 61 threads. (source: comparison of re-dispatch #2 success vs #3 timeout, both at 61 threads) _(lambert)_
+- **Vote submission**: vote:10 submitted via REST API PUT (source: `PUT /pullRequests/4976897/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8`) _(lambert)_
+- **Thread count**: 58 threads, 40 containing APPROVE verdicts (source: ADO REST API `GET dev.azure.com/office/OC/_apis/git/repositories/74031860-e0cd-45a1-913f-10bbf3f82555/pullRequests/4976897/threads?api-version=7.1`) _(ralph)_
+- **Existing vote**: vote:10 (approved) already submitted in prior session _(ralph)_
+- **Thread posting skipped**: Thread count (58) well past 30-thread threshold — skipped to avoid worsening ADO timeouts per team convention _(ralph)_
+- **Engine dispatch loop persists at Nth+8**: PR-4976897 continues to be re-dispatched with zero code changes and 40+ APPROVE threads. Engine consolidation pipeline still misclassifies agent bail-out comments as actionable feedback. (source: PR-4976897 thread history) _(ralph)_
+- **Thread count threshold enforced at 30**: Skipped thread posting on PR-4976445 (37 threads). Per team convention, posting bail-out threads when count >30 worsens ADO rate-limiting and creates negative feedback loop. Vote-only submission is the correct approach. (source: PR-4976445 threads API re... _(ripley)_
+- **Early bail-out pre-flight check continues to save 5-10 minutes**: Git fetch + commit SHA comparison (~5s) + ADO threads API (~5s) = ~15s total vs full review cycle. This is the Nth+11 dispatch for this PR with zero code changes. (source: PR-4976445 commit history, `git log --oneline origin/feat... _(ripley)_
+- **Windows temp file pattern remains necessary**: `/dev/stdin` ENOENT on Windows Node.js confirmed again. Must use `$TEMP/filename.json` + `readFileSync(process.env.TEMP + '/filename.json')` for curl output processing. (source: ENOENT error in this session) _(ripley)_
+- **Engine dispatch continues to re-queue unchanged PRs**: PR-4976445 dispatched 11+ times with identical commit `cdf36677dab0` and 14+ existing APPROVE threads. Engine pre-flight checks still not implemented. (source: PR-4976445 dispatch history) _(ripley)_
+
+_Deduplication: 21 duplicate(s) removed._
+
+
+---
+
+### 2026-03-17: ADO API degradation quantified with phase thresholds; dispatch deduplication spans multiple PRs at 10+ cycles
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **ADO API degradation occurs in distinct phases by thread count**: Vote PUT succeeds <5 seconds at 37 threads; times out 20 seconds at 60+ threads; all endpoints (GET/PUT/POST) cascade into timeouts at high thread counts. Observed PR thread progression: PR-4976445 gained +3 threads (28→37) in single review cycle; PR-4976897 exceeded 60 threads. (lambert, ralph, ripley)
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Self-reinforcing thread accumulation mechanism**: Each duplicate dispatch posting a bail-out thread adds +1 to PR count, escalating past API degradation thresholds. PR-4976897 now has all read/write operations unreliable due to thread pile-up. (lambert)
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Pre-flight check timing quantified**: 15-20 second pre-flight sequence (commit SHA + thread count check) versus 5-10 minute full review cycle yields ~99% time savings on duplicate detections. (lambert, ralph)
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Bugs & Gotchas
+- **Vote submission fails silently without confirmation**: When vote PUT times out on >50 thread PRs, no confirmation that vote was recorded. Human reviewers must manually verify vote state for high-thread PRs; existing APPROVE verdicts (e.g., 40 approves on PR-4976897) may not be reflected in reviewer state. (lambert)
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Windows Node.js stdin unavailable for curl-to-JSON pipelines**: `/dev/stdin` causes ENOENT; must use `$TEMP/filename.json` pattern when piping curl output to Node.js on Windows. (ripley)
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **ADO API cascading failures beyond vote operations**: PR-4976897 now has GET (threads), GET (connectionData), and PUT (reviewers) all timing out >15 seconds, confirming rate-limiting has expanded from isolated vote failures to systemic API unresponsiveness. (ralph)
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### Action Items
+- **Engine dispatch deduplication critical across multiple PRs**: PR-4976897 at 10+ dispatches with identical commit, PR-4976445 at 11+ dispatches—both with 40+ APPROVE verdicts already present. Implement three checks before dispatch: (1) commit SHA unchanged vs. last reviewed state, (2) existing APPROVE vote present, (3) skip dispatch entirely if thread count >50. (lambert, ralph, ripley)
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Skip all ADO write operations for PRs >50 threads**: Both vote PUT and thread POST timeout unreliably at this threshold. Only safe action: log bail-out locally and exit without any API mutations. (lambert)
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 8 insights extracted, 10 duplicates removed._
+
+---
+
+### 2026-03-17: ADO API intermittence at high thread counts and engine consolidation misbehavior drive dispatch deduplication
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **ADO vote PUT is intermittent, not deterministic at 60+ threads**: Vote submission succeeded at 61 threads (HTTP 200) in one dispatch, timed out at 61 threads in another. Apply 15s timeout and retry once on failure rather than skipping entirely. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **GCM credential retrieval remains reliable on first attempt**: `printf "protocol=https\nhost=office.visualstudio.com\n" | git credential fill` consistently returns valid Bearer tokens without retry needed. _(ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### PR Review Findings
+- **PR-4976726 telemetry: duplicate constants across event types**: `PERF_EVENT_TYPE` and `INTERACTION_EVENT_TYPE` defined redundantly in `apps/bebop/src/features/cowork/hooks/useCoworkTelemetry.ts:39-42`. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **PR-4976726: four unused type definitions in telemetryTypes.ts**: Lines 25-94 contain type stubs not used in implementation. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **PR-4976726: web vitals type/implementation mismatch**: Type signatures in `telemetryTypes.ts:64-70` conflict with actual tracking in `useCoworkTelemetry.ts:245-270`. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **PR-4976726: function identity instability in hooks**: Closures in `useCoworkTelemetry.ts:272-283` are recreated every render, bypassing memoization benefits. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **PR-4976726: metadata key collision risk in trackInteraction**: Keys in `useCoworkTelemetry.ts:218-234` may collide with reserved event metadata fields. _(lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+- **ADO API fully timing out on all endpoints at 60+ thread PRs**: GET threads, GET PR details, and PUT reviewers all hang >15s; PR-4976897 at 61 threads experienced full API degradation across all operations. _(ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **Engine consolidation pipeline misclassifying agent bail-out comments as actionable feedback**: Agents correctly detect duplicate commits and post early-exit comments; consolidation still re-queues unchanged PRs, wasting dispatch slots. _(ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **Windows Node.js requires temp file pattern for curl JSON output**: `/dev/stdin` returns ENOENT on Windows; must use `$TEMP/filename.json` + `readFileSync(process.env.TEMP + '/filename.json')` for piped curl responses. _(ripley)_
+  → see `knowledge\conventions\2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Action Items
+- **Engine consolidation must filter out agent bail-out comments** to prevent treating early-exit findings as feedback requiring re-dispatch. Current pipeline still queues unchanged PRs despite agent detection of duplicate commits. _(ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+_Processed 3 notes, 11 insights extracted, 6 duplicates removed._
+
+---
+
+### 2026-03-17: ADO API intermittency at scale, credential management patterns, Windows platform gotchas
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **GCM credential retrieval is reliable for ADO REST API calls**: `printf "protocol=https\nhost=office.visualstudio.com\n" | git credential fill` consistently returns valid Bearer tokens on first attempt, eliminating need for re-authentication per API call. _(Ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **Thread count escalation is self-reinforcing**: Each duplicate dispatch that posts a bail-out thread adds +1 to total count, pushing PR further past ADO API degradation threshold. PR-4976897 escalated 55→58→60→61 threads across sequential dispatch history. _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+
+- **ADO vote PUT at 60+ threads is intermittent, not deterministic**: Observed HTTP 200 success at 61 threads in one dispatch, timeout/hang at identical 61 threads in subsequent dispatch. Implement 15s timeout + single retry strategy rather than skipping votes on high-thread PRs. _(Lambert, Ralph)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Windows Node.js cannot read from `/dev/stdin`**: Must use `$TEMP/filename.json` + `readFileSync(process.env.TEMP + '/filename.json')` to process curl JSON output, as `/dev/stdin` raises ENOENT on Windows. _(Ripley)_
+  → see `knowledge\conventions\2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **ADO API intermittency spans multiple endpoints, not just vote PUT**: In high-thread scenarios, GET /threads, GET /connectionData, and PUT /reviewers all timeout >15s concurrently, then recover in subsequent dispatch cycles. _(Ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### Architecture Notes
+
+- **MCP ADO tools remain unavailable**: ToolSearch returns empty; REST API via curl + GCM bearer token is the only working access path to ADO. _(Lambert, Ralph)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Action Items
+
+- **Engine dispatch deduplication would eliminate 10+ wasted cycles per PR**: PR-4976897 dispatched 15+ times, PR-4976445 dispatched 11+ times, both with unchanged commits and 40+ existing APPROVE threads. Implement (1) commit SHA comparison, (2) existing vote check, (3) thread count threshold (>50) to skip dispatch entirely. _(Lambert, Ralph, Ripley)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 6 insights extracted, 7 duplicates removed._
+
+---
+
+### 2026-03-17: Engine dispatch loop affecting multiple PRs; ADO vote PUT flaky at 60+ threads; Windows Node.js temp file workaround confirmed
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **ADO vote PUT at 60+ threads is intermittently flaky, not deterministic**: Lambert re-dispatch #2 shows successful HTTP 200 at 61 threads; re-dispatch #3 timed out at same 61 threads. Ralph Session 4 also shows successful vote:5 HTTP 200 at 61 threads. Same thread count, both success and failure, indicates intermittency requiring retry-once + backoff strategy, not skip-entire-vote approach. _(lambert, ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Engine dispatch loop now confirmed systemic across 3+ different PRs**: PR-4976897, PR-4976726, and PR-4976445 all showing identical pattern of 11+ redispatches with unchanged commits and 40+ APPROVE threads. By dispatch #10, ADO API becomes completely unresponsive on all endpoints (GET threads, GET connectionData, PUT reviewers all timing out), confirming thread accumulation creates cascading failure. _(lambert, ralph, ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Windows Node.js requires temp file workaround for curl output**: `/dev/stdin` pattern fails with ENOENT on Windows; must use `process.env.TEMP + '/filename.json'` + `readFileSync()` for curl output processing. _(ripley)_
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **MCP ADO tools remain unavailable across all sessions**: All three agents report ToolSearch returning no matching tools; REST API via curl + GCM credential fill (`git credential fill`) is the only working path for ADO operations. _(lambert, ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### PR Review Findings
+
+- **PR-4976726 has 5 identified non-blocking quality issues from prior review**: Duplicate constants `PERF_EVENT_TYPE` / `INTERACTION_EVENT_TYPE`, four unused type definitions, web vitals type/implementation mismatch, function identity instability (closures recreated every render), metadata key collision risk in `trackInteraction`. Code unchanged; findings still valid. _(lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Action Items
+
+- **Engine dispatch deduplication is now blocking 3+ PRs and becoming critical**: Implement (1) commit SHA comparison against last reviewed state, (2) check for existing APPROVE votes, (3) thread count threshold to skip dispatch entirely if >50 threads. Would have prevented 11+ redundant dispatches per PR. _(lambert, ralph, ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Implement retry-once + exponential backoff for vote submission**: Current 15-second timeout insufficient for flaky vote PUT at 60+ threads. Backoff strategy needed to handle intermittent failures without blocking agent. _(lambert, ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Review ADO API thread count escalation threshold urgently**: By 61 threads, all endpoints becoming intermittently unresponsive. Current thresholds (>30 skip posting, >50 skip dispatch) not aggressive enough; may need to lower to >40 or implement write-operation cutoff earlier. _(lambert, ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 7 insights extracted, 5 duplicates removed._
+
+---
+
+### 2026-03-17: Engine dispatch deduplication critical; ADO vote PUT intermittent at 60+ threads; Windows temp file pattern required
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Vote PUT intermittency at 60+ threads requires retry strategy**: PR-4976897 at 61 threads succeeded with HTTP 200 in dispatch #2, timed out in dispatch #3, succeeded again in session 4. Use 15s timeout + 1 retry instead of skip-entire approach. _(lambert, ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### PR Review Findings
+- **PR-4976726 has 5 non-blocking issues**: Duplicate `PERF_EVENT_TYPE` and `INTERACTION_EVENT_TYPE` constants, 4 unused type definitions in `telemetryTypes.ts`, web vitals type/implementation mismatch, closure recreation every render in `useCoworkTelemetry`, metadata key collision risk in `trackInteraction`. _(lambert)_
+  → see `knowledge/build-reports/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+- **Windows Node.js `/dev/stdin` returns ENOENT for curl output**: Must use `$TEMP/filename.json` + `readFileSync(process.env.TEMP + '/filename.json')` pattern on Windows. _(ripley)_
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **ADO GET and PUT endpoints both timeout at 60+ threads**: PR-4976897 at 61 threads experiences timeouts on threads GET, connectionData GET, and reviewers PUT endpoints simultaneously. _(ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **Engine consolidation pipeline misclassifies agent bail-out comments as feedback**: PR-4976897 re-dispatched 10+ times with identical commit and 40+ APPROVE threads despite agent bail-out threads; consolidation still queues as actionable work. _(ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### Action Items
+- **Implement engine dispatch deduplication immediately**: PR-4976897 dispatched 10+ times, PR-4976445 11+ times, PR-4976726 multiple times — all with identical commits and 14-40+ existing APPROVE threads. Implement pre-flight checks: (1) commit SHA vs last reviewed state, (2) existing APPROVE vote detection, (3) thread count >50 skip dispatch entirely. _(lambert, ralph, ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **For PRs with >50 threads, skip all ADO write operations**: Both vote PUT and thread POST fail intermittently at 60+ threads; only safe action is log bail-out locally and exit with no API calls to avoid worsening thread accumulation. _(lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 7 insights extracted, 8 duplicates removed._
+
+---
+
+### 2026-03-17: ADO Vote Submission Intermittence and Cascade Degradation at High Thread Scale
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **ADO vote PUT timeouts are intermittent, not deterministic at 60+ threads**: Observed both successful HTTP 200 responses and timeouts at identical thread counts (60-61 in same session). Use 15-second timeout with single retry on failure rather than deterministic skip logic. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote submission latency degrades non-linearly with thread count**: Typical latency <5s at <30 threads; observed ~30s+ at 61 threads even when successful. Rate-limiting applies backpressure non-linearly. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Windows Node.js stream handling requires temp file fallback**: `/dev/stdin` causes ENOENT; must use `$TEMP/filename.json` + `readFileSync()` for curl output processing. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+
+- **GCM credential fill succeeds reliably but can mask ADO rate-limits**: `git credential fill` returns valid Bearer token on first attempt; distinguish token validation success from subsequent ADO API rate-limit rejections when diagnosing connectivity issues. _(Ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **ADO API degradation cascades across concurrent high-thread PRs**: When multiple PRs accumulate 30+ threads each (PR-4976897 at 61, PR-4976445 at 37), unrelated endpoints timeout. Indicates shared rate-limit pool per repo or cluster saturation. _(Ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### Architecture Notes
+
+- **Engine dispatch deduplication now critical at 10+ redundant dispatch scale**: PR-4976897 dispatched 11+ times with unchanged commit and 40+ existing APPROVE threads; PR-4976445 12+ times with unchanged commit. Pre-flight SHA + vote + thread-count checks must gate dispatch loop to prevent continued cascade. _(Lambert, Ralph, Ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Action Items
+
+- **Implement vote submission timeout with retry logic**: Replace simple timeout-and-fail with 15-second timeout + single retry on socket reset. Intermittent failures at 60+ threads require resilience, not avoidance. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Gate new dispatch attempts when repo-wide thread count exceeds threshold**: Monitor total active threads across all PRs; when sum exceeds ~100-150 threads, prevent new dispatch attempts until count drops. Prevents cascading ADO degradation. _(Ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+_Processed 3 notes, 6 insights extracted, 4 duplicates removed._
+
+---
+
+### 2026-03-17: ADO timeout pattern confirmed at 60+ threads; dispatch deduplication blocking both PR-4976897 and PR-4976445
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Early bail-out pre-flight check saves 5-10 minutes per dispatch**: Commit SHA comparison + thread count check (~15s) vs full review cycle (5-10 min) achieves 99% time savings. _(Ralph)_
+  → see `knowledge/build-reports/2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+- **Thread count escalation is self-reinforcing feedback loop**: Each duplicate dispatch that posts a bail-out thread adds +1 to PR thread count, pushing it further past ADO API degradation threshold; at 60+ threads, even vote submission fails. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote-only bail-out pattern sufficient**: Submitting vote without new thread still signals review status to humans; avoids worsening thread count escalation. _(Ripley)_
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Bugs & Gotchas
+- **ADO API timing out on all endpoints at 60+ threads**: PR-4976897 shows timeouts on threads GET, reviewers PUT, and PR details GET (>15s each), not just vote submission. _(Lambert, Ralph)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote submission may silently fail without confirmation**: When vote PUT times out on high-thread PRs, no error returned; human reviewer should manually verify vote state on PRs >50 threads. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count growth rate ~1 thread per dispatch approaching critical threshold**: PR-4976445 grew from 28→37 threads across 9 dispatches; will hit 40-thread timeout within 3 more dispatches at current rate. _(Ripley)_
+  → see `knowledge/conventions/2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Action Items
+- **Engine dispatch deduplication is critical blocker**: PR-4976897 at dispatch #10+ (unchanged commit, 60 threads, 40+ APPROVE verdicts) and PR-4976445 at dispatch #12+ (unchanged commit, 37 threads) wasting review cycles. Implement: (1) commit SHA comparison, (2) existing vote check, (3) thread count threshold skip >50. _(Lambert, Ralph, Ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **For PRs with >50 threads, skip all ADO write operations**: Both vote PUT and thread POST fail at these levels; only safe action is local logging and exit without API calls. _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 10 insights extracted, 6 duplicates removed._
+
+---
+
+### 2026-03-17: Duplicate PR Dispatch Cycles Worsen ADO API Degradation; Vote-Only Bail-Out Pattern Confirmed
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **Vote-only bail-out sufficient for duplicates**: Submitting vote without thread posting still signals review status to human reviewers via PR UI; no information loss vs thread+vote for duplicate reviews. _(Ripley)_
+  → see `knowledge\conventions\2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **Early bail-out pre-flight saves 99% of review time**: Git fetch + commit SHA comparison + thread count check completes in <15 seconds vs 5-10 minute full review cycle. _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count grows ~1 per duplicate dispatch**: PR-4976897 escalated 55→60+ threads, PR-4976445 escalated 28→37 threads. Will hit 40-thread ADO timeout threshold within 3 more cycles if duplication continues. _(Ripley)_
+  → see `knowledge\conventions\2026-03-17-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Bugs & Gotchas
+
+- **Vote submission silently fails on high-thread PRs**: PUT to `/reviewers/{vsid}` times out beyond 15-20s on PRs with 50+ threads; timeout occurs without HTTP error response, leaving vote status unconfirmed. _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Complete ADO API blackout at 60+ threads**: All endpoints (GET PR details, GET threads, PUT reviewers) hang >15s when PR thread count reaches 60+, creating total API unresponsiveness for that PR. _(Ralph)_
+  → see `knowledge\build-reports\2026-03-17-ralph-ralph-learnings-2026-03-17.md`
+
+#### Action Items
+
+- **PR-4976897 and PR-4976445 dispatched 10+ and 12+ times respectively with zero code changes**: Both PRs have 37-40+ APPROVE verdicts and unchanged commits (a0ab1d949aad, cdf36677dab0). Engine dispatch deduplication is now critical — each duplicate adds threads and worsens API degradation. _(Lambert, Ralph, Ripley)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **For PRs with >50 threads, skip ALL ADO write operations**: Neither vote submission nor thread posting will reliably complete; safe action is log bail-out locally and exit with no API calls. _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 6 insights extracted, 4 duplicates removed._

@@ -3,7 +3,7 @@
  * Squad CLI — Central AI dev team manager
  *
  * Usage:
- *   squad init                     Bootstrap ~/.squad/ with default config and agents
+ *   squad init [--skip-scan]       Bootstrap ~/.squad/ with default config and agents
  *   squad init --force             Update engine code + add new files (preserves config & customizations)
  *   squad add <project-dir>        Link a project (interactive)
  *   squad remove <project-dir>     Unlink a project
@@ -31,6 +31,7 @@ const PKG_ROOT = path.resolve(__dirname, '..');
 
 const [cmd, ...rest] = process.argv.slice(2);
 const force = rest.includes('--force');
+const skipScan = rest.includes('--skip-scan');
 
 // ─── Version tracking ───────────────────────────────────────────────────────
 
@@ -89,7 +90,7 @@ function init() {
 
   // Files that should be added if missing but never overwritten (user customizations)
   const neverOverwrite = (name) =>
-    name === 'config.json' || name === 'config.template.json';
+    name === 'config.json';
 
   // Copy with smart merge logic
   copyDir(PKG_ROOT, SQUAD_HOME, excludeTop, alwaysUpdate, neverOverwrite, isUpgrade, actions);
@@ -111,7 +112,9 @@ function init() {
   }
 
   // Run squad.js init to populate config with defaults (agents, engine settings)
-  execSync(`node "${path.join(SQUAD_HOME, 'squad.js')}" init`, { stdio: 'inherit' });
+  const initArgs = ['init'];
+  if (isUpgrade || skipScan) initArgs.push('--skip-scan');
+  execSync(`node "${path.join(SQUAD_HOME, 'squad.js')}" ${initArgs.join(' ')}`, { stdio: 'inherit' });
 
   // Save version
   saveInstalledVersion(pkgVersion);
@@ -253,8 +256,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   Squad — Central AI dev team manager
 
   Setup:
-    squad init                     Bootstrap ~/.squad/ (first time)
-    squad init --force             Upgrade engine code + add new files
+    squad init [--skip-scan]       Bootstrap ~/.squad/ (first time)
+    squad init --force             Upgrade engine code + add new files (auto-skip scan)
     squad version                  Show installed vs package version
     squad add <project-dir>        Link a project (interactive)
     squad remove <project-dir>     Unlink a project

@@ -13,10 +13,10 @@ Repo: {{repo_name}} | Org: {{ado_org}} | ADO Project: {{ado_project}}
 
 ## Your Task
 
-All plan items are complete. Your job is to:
+Build, test, and verify a set of related changes. Your job is to:
 1. **Set up one worktree per project** with all PR branches merged in
 2. **Build and test** from each worktree
-3. **Start the webapp** on localhost (keep it running)
+3. **Start the webapp** on localhost (keep it running — **detached so it survives after your process exits**)
 4. **Write a manual testing guide**
 
 ## Step 1: Set Up Worktrees
@@ -53,11 +53,26 @@ Determine which project is the **user-facing webapp** (has a dev server, UI):
 - Look for web frameworks (React, Next.js, TanStack, Vite, etc.)
 
 If found:
-1. Start the dev server **from the worktree** (not the main working tree)
-2. Wait for it to be ready (watch for "ready on", "listening on", "compiled")
-3. Note the localhost URL and port
-4. **Keep it running** — do NOT kill the process
-5. Output the exact restart command with **absolute worktree paths**
+1. Start the dev server **detached from your process** so it survives after you exit:
+   ```bash
+   cd <worktree-path>
+   node -e "
+   const { spawn } = require('child_process');
+   const fs = require('fs');
+   const child = spawn('cmd', ['/c', '<start-command>'], {
+     cwd: process.cwd(),
+     detached: true,
+     stdio: ['ignore', fs.openSync('dev-server.log', 'w'), fs.openSync('dev-server.log', 'w')]
+   });
+   child.unref();
+   fs.writeFileSync('dev-server.pid', String(child.pid));
+   console.log('Server started, PID:', child.pid);
+   "
+   ```
+2. Wait a few seconds, then verify it's responding: `curl -s -o /dev/null -w "%{http_code}" http://localhost:<PORT>`
+3. Note the localhost URL, port, and PID
+4. Output the exact restart command with **absolute worktree paths**
+5. Include stop command: `taskkill //PID <PID> //F`
 
 ## Step 5: Write the Manual Testing Guide
 
@@ -168,7 +183,7 @@ For each project worktree:
 - If a project doesn't build, still document what SHOULD be testable once fixed
 - Do NOT fix code — only report issues
 - Leave all worktrees in place for the user to inspect
-- The local server MUST keep running after your process exits
+- The local server MUST be started **detached** (using `spawn` with `detached: true` + `child.unref()`) so it keeps running after your process exits. Save the PID to `dev-server.pid` in the worktree.
 - Use absolute paths everywhere so the user can copy-paste commands
 - E2E PRs are for review only — do NOT auto-complete or merge them
 

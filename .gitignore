@@ -7,11 +7,17 @@ engine/sysprompt-*.md
 engine/command-center-*.pid
 engine/command-center-*.md
 engine/doc-chat-*.pid
+engine/doc-chat-*.md
+engine/doc-sessions.json
+engine/claude-caps.json
+engine/pid-*.pid
+engine/pid-*-implement
+engine/kb-sweep-pid-*.pid
 engine/cc-session.json
 engine/metrics.json
 agents/*/status.json
 agents/*/output.log
-agents/*/output-*.log
+agents/*/output-*
 agents/*/live-output.log
 identity/now.md
 

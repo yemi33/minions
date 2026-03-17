@@ -61,6 +61,14 @@ git rm --cached skills/ado-pr-status-fetch.md 2>/dev/null
 
 # Knowledge base (session-specific learnings)
 git rm -r --cached knowledge/ 2>/dev/null
+
+# Engine runtime files (logs, PIDs, sessions, prompts, caches)
+git rm --cached engine/log.json engine/metrics.json engine/dispatch.json engine/cooldowns.json engine/control.json 2>/dev/null
+git rm --cached engine/cc-session.json engine/doc-sessions.json engine/claude-caps.json 2>/dev/null
+git rm --cached engine/engine-stdout.log engine/test-results.json engine/consolidate-prompt.pid 2>/dev/null
+git rm --cached engine/*-pid-*.pid engine/*-prompt-*.md engine/*-sys-*.md 2>/dev/null
+git rm --cached engine/pid-*.pid engine/prompt-*.md engine/sysprompt-*.md 2>/dev/null
+git rm --cached engine/triage-*.pid engine/triage-*.md engine/test-*.pid 2>/dev/null
 ```
 
 ### 4. Ensure .gitignore excludes these on the clean branch

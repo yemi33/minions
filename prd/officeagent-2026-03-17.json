@@ -1,0 +1,487 @@
+{
+  "version": "plan-w025-v2-2026-03-17",
+  "project": "OfficeAgent",
+  "source_plan": "plan-w025-v2-2026-03-17.md",
+  "generated_by": "lambert",
+  "generated_at": "2026-03-17",
+  "plan_summary": "Cowork UX Phase 2.5-7: 1JS packaging, async durability, MRU, testing",
+  "status": "awaiting-approval",
+  "requires_approval": false,
+  "branch_strategy": "parallel",
+  "missing_features": [
+    {
+      "id": "P-43e5ac28",
+      "name": "Integration fix — OfficeAgent E2E consolidation",
+      "description": "Fix build/test issues blocking PR-4972662 (e2e/cowork-w025 → main). The augloop-transport module has a babel config that fails to parse `import type` syntax in source tests — needs @babel/preset-typescript with onlyRemoveTypeImports. The @types/ws version conflict between root package.json and modules/api/node_modules breaks API module builds. The core module has 4 TS read-only property errors in websocket-manager.test.ts. All must be resolved before E2E PR can merge.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "high",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "augloop-transport source tests pass (babel parses import type syntax)",
+        "@types/ws version aligned between root and modules/api — API module builds cleanly",
+        "core module websocket-manager.test.ts read-only property errors fixed",
+        "yarn workspace @officeagent/message-protocol build passes (113 tests)",
+        "yarn workspace @officeagent/augloop-transport build passes (all tests)",
+        "PR-4972662 ready to merge with zero TS errors and all tests passing"
+      ]
+    },
+    {
+      "id": "P-0370db55",
+      "name": "Integration fix — office-bohemia E2E consolidation",
+      "description": "Fix 17 TypeScript errors and 5 protocol type mismatches blocking PR-4972663 (e2e/cowork-w025 → master). Specific issues: streamingBridge.ts imports renamed TransportConfig/TransportState/AugloopTransport from augloop-annotations PR; useCoworkStream.ts references atoms renamed in scaffold PR; CoworkErrorBoundary.tsx needs TS 5.9 override modifier; featureGates.ts uses ECS key 'bebop.cowork.enabled' but route uses 'EnableBebopCowork' query param (disconnected). Also reconcile 5 protocol mismatches: SessionInit payload (agentId/prompt vs settings), SessionInitResponse (sessionId vs containerInstanceId), FileInfo (fileId vs path), Error (message/code vs errorMsg), CoT events (label/timestamp vs stepLabel/ISO8601/turnNumber).",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "high",
+      "depends_on": [],
+      "acceptance_criteria": [
+        "yarn lage transpile typecheck --to @bebopjs/bebop passes with zero TS errors in cowork files",
+        "Feature gate unified: single key 'bebop.cowork.enabled' used consistently across ECS, route, and localStorage",
+        "All 5 protocol type shapes match OfficeAgent wire format exactly (field names, optionality, types)",
+        "Vite dev server serves /cowork route without runtime errors",
+        "PR-4972663 ready to merge with zero TS errors"
+      ]
+    },
+    {
+      "id": "P-8e973c4f",
+      "name": "Progression card components — full implementation",
+      "description": "Build the chain-of-thought / progression UI components that visualize agent work in real-time. Phase 2 E2E branches have a basic ProgressionPanel and step rendering but the v2 plan requires: (1) ProgressionPanel container with auto-scroll, (2) ProgressionStep with Pending→InProgress→Complete state transitions and animations, (3) ToolUseStep showing tool name + truncated input summary + result status, (4) ThinkingStep with collapsible agent reasoning display, (5) AskUserQuestion with inline answer input (free-form and option-selection modes), (6) progressionAtoms Jotai atoms, (7) useProgressionStream hook processing CoT WebSocket events. Files under apps/bebop/src/features/cowork/components/progression/ and atoms/hooks directories. Must follow Bebop feature-first pattern, no barrel files, concrete import paths only.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "high",
+      "depends_on": [
+        "P-0370db55"
+      ],
+      "acceptance_criteria": [
+        "Steps animate through Pending → InProgress → Complete states with appropriate icons (spinner/pulse/checkmark)",
+        "Tool uses show tool name, brief input summary (max 80 chars), and result status icon",
+        "Thinking blocks show agent reasoning with collapsible expand/collapse",
+        "Ask-user-question renders inline with response input (free-form or option chips)",
+        "Progression auto-scrolls to latest step on new step added",
+        "All imports use concrete paths (no barrel files)",
+        "Replay events (task_state_replay envelope) add steps without triggering animation"
+      ]
+    },
+    {
+      "id": "P-bbd5994c",
+      "name": "Protocol adapter — message translation layer",
+      "description": "Build the client-side adapter in Bebop that translates OfficeAgent WebSocket messages into Bebop's Jotai state model. Requires: (1) messageAdapter.ts mapping OfficeAgent Message<T> to Bebop atoms/events, (2) augloopTransport.ts for AugLoop WebSocket connection management (server-side in Nitro), (3) streamingBridge.ts bridging WebSocket events to SSE/ReadableStream for client consumption. Wire into coworkChat.ts server function. Must handle: QueryStatus → progression step updates, chain_of_thought_update → thinking/tool display, ask_user_question → question card, error messages → error state, connection lifecycle (connect/reconnect/disconnect).",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "high",
+      "depends_on": [
+        "P-43e5ac28",
+        "P-0370db55"
+      ],
+      "acceptance_criteria": [
+        "QueryStatus messages update progression step atoms correctly",
+        "chain_of_thought_update messages render thinking/tool steps in UI",
+        "ask_user_question messages show question card; user_answer sent back to OfficeAgent",
+        "Error messages set error state atom with user-friendly message",
+        "Connection lifecycle managed: auto-reconnect with exponential backoff on disconnect",
+        "No OfficeAgent internal types leaked into Bebop components — adapter is the boundary"
+      ]
+    },
+    {
+      "id": "P-c9863c04",
+      "name": "Artifact preview panel — tabbed display and sandbox",
+      "description": "Build the artifact preview panel showing generated documents inline. Requires: (1) ArtifactPanel.tsx container with tabs for multiple artifacts, (2) DocumentPreview.tsx with sandboxed iframe for HTML/web artifacts, (3) DownloadButton.tsx for generated file downloads, (4) artifactAtoms.ts for artifact state (list, selected, loading). HTML artifacts render in sandboxed iframe. DOCX/PPTX/XLSX show download link with file type icon. Multiple artifacts display with tab navigation. Artifact appears when agent completes file generation. Phase 2 E2E has basic artifact panel but needs tabbed multi-artifact support and proper sandboxing.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-0370db55"
+      ],
+      "acceptance_criteria": [
+        "Generated HTML artifacts render in sandboxed iframe (sandbox attribute set)",
+        "DOCX/PPTX/XLSX show download link with correct file type icon",
+        "Multiple artifacts display with tab switching",
+        "Artifact appears automatically when agent completes file generation",
+        "artifactUrl field populated when ArtifactGenerated message contains URL"
+      ]
+    },
+    {
+      "id": "P-4ba1d1f1",
+      "name": "Lazy-loading for interactive card components",
+      "description": "Ensure the initial Cowork bundle excludes heavy interactive card components. Convert AskUserQuestion and ArtifactPanel to React.lazy(() => import('./...')) with Suspense fallback skeleton. Create shared CardSuspenseBoundary.tsx wrapper with inline skeleton placeholder matching final card dimensions. ThinkingStep expanded view should also be lazy-loaded if large. This follows Weave's production pattern where ask-user-question.js is not fetched until the agent first needs user input (~90s into session). Bundle size is critical for 1JS hosting.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "small",
+      "priority": "medium",
+      "depends_on": [
+        "P-8e973c4f",
+        "P-c9863c04"
+      ],
+      "acceptance_criteria": [
+        "Initial cowork bundle does not include AskUserQuestion or ArtifactPanel chunks",
+        "Card components load on first appearance with skeleton shown during fetch",
+        "No layout shift when card chunk resolves (skeleton matches final card dimensions)",
+        "Chunk load failures handled: fallback to null render with retry button",
+        "Bundle analyzer shows AskUserQuestion and ArtifactPanel in separate async chunks"
+      ]
+    },
+    {
+      "id": "P-7bdb7ece",
+      "name": "MOS App registration and federation manifest",
+      "description": "Package the Cowork feature as a MOS App with module federation manifest for 1JS Midguard CDN shell. Create packages/cowork-mos-app/ with: CoworkApp.tsx (root, implements Weave lifecycle: init/mount/unmount/dispose), CoworkAppFactory.ts (factory for Midguard instantiation), hostBridge.ts (1JS host context bridge for auth/theme/locale/telemetry), federation-manifest.json (declares exposed modules and CDN entry), vite.config.ts (Vite federation plugin for CDN build). App must render in both standalone Bebop route and Midguard-federated 1JS host modes. Manifest is versioned and CDN-cacheable.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "high",
+      "depends_on": [
+        "P-8e973c4f",
+        "P-bbd5994c",
+        "P-c9863c04"
+      ],
+      "acceptance_criteria": [
+        "1JS Midguard can load Cowork app from CDN via module federation manifest",
+        "App receives host context (auth, theme, telemetry) via Midguard host bridge APIs",
+        "App renders in both standalone Bebop route and Midguard-federated 1JS host modes",
+        "App implements Weave lifecycle: init(), mount(container), unmount(), dispose()",
+        "Federation manifest is versioned and CDN-cacheable",
+        "No direct dependency on @ms/office-web-host in the MOS App"
+      ]
+    },
+    {
+      "id": "P-bbc32f34",
+      "name": "Auth and token provider shell (Weave parity)",
+      "description": "Implement the outermost shell layer equivalent to Weave's m365-chat-coworker-agent. Creates tokenProviderRegistry.ts mapping 7 provider keys (graph, substrate, spo, officeAgent, copilotStudio, powerPlatform, apiHub) to async acquisition functions. Per-host auth adapter (hostAuthAdapter.ts) selects correct token acquisition strategy per 1JS host type (word/excel/powerpoint/teams/outlook/loop). CoworkAuthShell.tsx is invisible wrapper that bootstraps token registry before rendering children. Token refresh handled transparently — in-flight agent tasks not interrupted on expiry. All providers mockable in unit tests.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "high",
+      "depends_on": [
+        "P-7bdb7ece"
+      ],
+      "acceptance_criteria": [
+        "OfficeAgent auth token acquired correctly in all 6 1JS hosts",
+        "Each host type uses correct auth context (OBO vs MSAL interactive vs Midguard-injected)",
+        "Token refresh handled transparently — in-flight agent task not interrupted on expiry",
+        "Graph, Substrate, SPO tokens available to Cowork feature for grounding",
+        "Token acquisition errors logged to telemetry with hostType dimension",
+        "Provider registry fully mockable in unit tests (no real network calls)"
+      ]
+    },
+    {
+      "id": "P-53d89112",
+      "name": "Navigation shell and CoworkCard UI",
+      "description": "Build the navigation frame (equivalent to Weave's scc-cowork-agent). Includes: CoworkNavShell.tsx (outer nav with breadcrumb bar: Cowork > Tasks > {taskName}), CoworkHomePage.tsx (skill workflow cards + Recent Tasks entry), CoworkCard.tsx (task card with title/status badge/timestamp/resume CTA), ScopePicker.tsx (host-specific scope selector varying by hostType), navAtoms.ts (Jotai atoms for current view, breadcrumb, scope). Nav shell invisible in Word/Excel/PPT; breadcrumb visible in Teams/Loop App per host convention. Homepage skill cards match available OfficeAgent registry agents.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-bbc32f34"
+      ],
+      "acceptance_criteria": [
+        "User flow: homepage → select skill → enter task view; breadcrumb updates at each step",
+        "Homepage skill cards match available OfficeAgent registry agents",
+        "ScopePicker renders correct options per host type (no calendar in Word, no document in Outlook)",
+        "CoworkCard status badge uses consistent model: running | awaiting-input | completed | failed",
+        "Nav shell invisible in Word/Excel/PPT; breadcrumb visible in Teams/Loop App",
+        "CoworkAppFactory exposes navigate(taskId) for Midguard deep-link support"
+      ]
+    },
+    {
+      "id": "P-7e068c83",
+      "name": "ECS feature flag integration and CDN version control",
+      "description": "Wire ECS-based CDN URL and version overrides for ring-based rollout. Create coworkEcsConfig.ts (typed config: coworkCdnUrl, coworkVersion, coworkEnabled, requiredFeatures), federationBootstrap.ts (reads ECS config, constructs CDN URL as {cdnUrl}/{version}/remoteEntry.js, falls back to baked-in default), ecsConfigLoader.ts (async fetch with localStorage cache, 5min TTL). Remove hardcoded CDN base URL from federation-manifest.json — move to ECS defaults. Ring progression via separate CDN paths: sdf/, msit/, prod/.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-7bdb7ece"
+      ],
+      "acceptance_criteria": [
+        "CDN URL overridable via ECS flag without Midguard package update",
+        "Ring progression from separate CDN paths (sdf/, msit/, prod/) controlled by ECS coworkCdnUrl",
+        "ECS unavailability falls back to baked-in default without user-visible failure",
+        "coworkVersion propagated into CDN fetch URL for correct cache-busting",
+        "ECS flag state logged to telemetry at session start"
+      ]
+    },
+    {
+      "id": "P-86f06181",
+      "name": "Federation render pipeline and discovery flow",
+      "description": "Specify and implement the complete render initialization sequence: Midguard discovers, validates, bootstraps, and mounts the Cowork federation. Create FederationHost.tsx (calls federationBootstrap.initializeFederation(), wraps in Suspense with skeleton), FederationErrorBoundary.tsx (catches CDN load errors, retry with exponential backoff x3, then graceful degradation), federationLoadState.ts (state machine: uninitialized→loading→loaded|failed|retrying), requiredFeaturesGuard.ts (validates requiredClientFeatures before mount), FederationSkeleton.tsx (loading skeleton matching CoworkLayout dimensions). Configure @originjs/vite-plugin-federation with remotes (CDN) and exposes (shared modules).",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-7bdb7ece",
+        "P-7e068c83"
+      ],
+      "acceptance_criteria": [
+        "Federation initializes from CDN URL constructed by federationBootstrap (ECS-controlled)",
+        "FederationSkeleton displayed during CDN fetch; no layout shift on resolution",
+        "CDN failure triggers retry sequence (3 attempts); permanent failure shows retry button",
+        "requiredFeaturesGuard blocks mount and logs telemetry when features unsatisfied",
+        "Federation load time tracked: CDN fetch start → first paint logged as cowork.federationLoadMs",
+        "Full render sequence observable in DevTools: ECS → CDN → federation resolve → React hydration"
+      ]
+    },
+    {
+      "id": "P-3183239d",
+      "name": "Host integration testing harness",
+      "description": "Test the MOS App federation in multiple 1JS hosts via Midguard. Create demos/cowork-embed.tsx (demo route simulating Midguard federation loading), hostBridge.test.ts (unit tests for host bridge with mocked Midguard context), test fixtures for mocked AugLoop transport and Midguard host APIs. Verify: app renders standalone and in simulated Midguard harness, auth works via Midguard-injected token provider, host resize events handled, dispose/cleanup on unmount, CSP headers compatible with CDN-federated scripts.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-7bdb7ece",
+        "P-bbc32f34",
+        "P-53d89112"
+      ],
+      "acceptance_criteria": [
+        "App renders in Bebop standalone (non-federated) mode",
+        "App renders in simulated Midguard federation harness",
+        "Auth works via Midguard-injected token provider (not Loop Loader SDK)",
+        "App handles host resize events via Midguard resize API",
+        "App handles dispose/cleanup on Midguard unmount signal",
+        "CSP headers compatible with CDN-federated script loading"
+      ]
+    },
+    {
+      "id": "P-2cafdc2a",
+      "name": "AugLoop annotation integration",
+      "description": "Wire up AugLoop annotation callbacks for agent operations (document edits, content suggestions). Modify augloopTransport.ts to register annotation result callbacks. Update progressionAtoms.ts to process annotation results into progression UI updates. Agent tool operations register as AugLoop annotations. Annotation results flow back to progression UI. Annotation failures handled with retry/fallback.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-bbd5994c"
+      ],
+      "acceptance_criteria": [
+        "Agent tool operations register as AugLoop annotations",
+        "Annotation results flow back to progression UI as step updates",
+        "Annotation failures handled with retry and fallback to non-annotated display"
+      ]
+    },
+    {
+      "id": "P-aeea514b",
+      "name": "Task history API — server-side @officeagent/task-history",
+      "description": "Create new workspace module @officeagent/task-history for MRU/task history (Weave /v1/mru/subscribe parity). Includes: taskStore.ts (in-memory registry keyed by conversationId with JSON file persistence for container restart survival; stores TaskRecord with conversationId, userId, tenantId, title, status, timestamps, progressSummary, outputArtifacts[]), taskHistoryRouter.ts (WebSocket handler for mru_subscribe/mru_unsubscribe types; broadcasts task_list_update on changes), types.ts. Register in modules/api/src/routes.ts. Emit task_created on SessionInit, task_progress on QueryStatus, task_completed on agent exit, task_failed on error from websocket-manager.ts. Add mru_subscribe, mru_unsubscribe, task_list_update, task_created, task_completed to MessageType enum in message-protocol.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "medium",
+      "depends_on": [
+        "P-43e5ac28",
+        "P-fec65f75"
+      ],
+      "acceptance_criteria": [
+        "Completed task appears in MRU list within 1s of agent exit",
+        "MRU list survives container restart (file-backed task store)",
+        "Task title auto-generated from first user message (first 60 chars)",
+        "Running tasks show real-time status updates via task_progress events",
+        "MRU list capped at 50 most recent tasks per user; older entries pruned",
+        "New message types registered: mru_subscribe, mru_unsubscribe, task_list_update, task_created, task_completed"
+      ]
+    },
+    {
+      "id": "P-6517cd97",
+      "name": "Task history UI — client-side MRU panel",
+      "description": "Build the client-side task history components in Bebop. Create TaskHistoryPanel.tsx (recent tasks list with status badges, timestamps, resume CTAs), taskHistoryAtoms.ts (Jotai atom for TaskRecord[] with derived runningTasks/completedTasks atoms), useTaskHistory.ts (subscribes to task_list_update WebSocket events). Wire into CoworkHomePage.tsx 'Recent Tasks' section and CoworkCard.tsx binding to TaskRecord type.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-53d89112",
+        "P-aeea514b"
+      ],
+      "acceptance_criteria": [
+        "Completed task appears in TaskHistoryPanel within 1s of agent exit",
+        "Clicking completed task navigates to artifacts/results view",
+        "Running tasks show real-time status badge updates",
+        "mru_subscribe sent on hook mount; mru_unsubscribe sent on unmount (cleanup)",
+        "TaskHistoryPanel renders in CoworkHomePage 'Recent Tasks' section"
+      ]
+    },
+    {
+      "id": "P-937dd46a",
+      "name": "Session persistence handshake",
+      "description": "Implement Weave-parity session persistence with composite conversationId format {tenantId}:{userId}:{sessionId}. Create sessionHandshake.ts (check sessionStore for existing sessionId, generate new UUID if none, compose conversationId, send SessionInit), sessionStore.ts (persists to localStorage: sessionId, conversationId, lastActive, taskId; provides getSession/createSession/invalidateSession), useSessionReconnect.ts (detects reconnect via Midguard remount or WebSocket re-open, calls sessionHandshake with existing sessionId, triggers state replay). Modify augloop-transport to accept and validate composite conversationId in SessionInit; emit state summary on existing session reconnect.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-bbd5994c",
+        "P-cef0ddee"
+      ],
+      "acceptance_criteria": [
+        "Browser refresh mid-task reconnects to same in-progress session",
+        "conversationId format matches {tenantId}:{userId}:{sessionId} composite key",
+        "New session created only when user explicitly starts new task (not on every mount)",
+        "Session handshake latency < 200ms p95",
+        "sessionId not regenerated on Midguard hot-reload or minor remounts",
+        "Pending ask_user_question re-emitted by OfficeAgent on reconnect"
+      ]
+    },
+    {
+      "id": "P-cef0ddee",
+      "name": "Async job model — 202 Accepted + background processing",
+      "description": "Replace synchronous POST /generateDocument with async job model. Create new module @officeagent/job-queue with: jobQueue.ts (in-process queue backed by worker_threads; enqueue returns {jobId} immediately), jobWorker.ts (worker thread entry invoking existing agent pipeline, emitting progress via parentPort), types.ts (JobRecord with jobId, conversationId, status, progress, outputFile, error, timestamps). Create /v1/jobs/:jobId GET endpoint. Modify modules/api/src/app.ts to replace synchronous invocation with jobQueue.enqueue() returning 202 {jobId}. Relay parentPort progress as WebSocket TaskUpdate notifications.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "high",
+      "depends_on": [
+        "P-43e5ac28"
+      ],
+      "acceptance_criteria": [
+        "POST /generateDocument returns 202 { jobId } in < 100ms regardless of agent complexity",
+        "Agent continues executing in background worker thread; WebSocket TaskUpdate stream unaffected",
+        "Client can poll GET /v1/jobs/:jobId to recover status on reconnect",
+        "Job worker crash caught and jobId status set to failed with error detail",
+        "Concurrent job limit configurable (default: 4) to prevent container overload",
+        "5th enqueue when 4 running returns appropriate error"
+      ]
+    },
+    {
+      "id": "P-fec65f75",
+      "name": "Durable task state store",
+      "description": "Create new module @officeagent/task-state for persistent task state. Includes: taskStateStore.ts (file-backed store with save/load/delete by conversationId; async EPERM-safe writes with sequential write queue), types.ts (TaskState with conversationId, phase, progressSteps[], pendingQuestion?, outputArtifacts[], checkpointAt), artifactUploader.ts (uploads generated files to ODSP/blob at task completion; stores URL in TaskState.outputArtifacts). Modify job-queue's jobWorker.ts to write TaskState checkpoint after each major phase. Modify chain-of-thought manager to persist pendingQuestion on ask_user_question. Hydrate /v1/jobs/:jobId response from taskStateStore if worker no longer in memory.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "large",
+      "priority": "high",
+      "depends_on": [
+        "P-cef0ddee"
+      ],
+      "acceptance_criteria": [
+        "TaskState checkpoint written within 1s of each phase boundary",
+        "Container restart followed by reconnect restores task status from file store",
+        "Pending ask_user_question persisted to state store; re-emitted on client reconnect",
+        "Generated artifacts uploaded to ODSP; URL stored in TaskState",
+        "State store entries pruned after 7 days",
+        "Concurrent writes do not corrupt file (sequential write queue)"
+      ]
+    },
+    {
+      "id": "P-b37b72f3",
+      "name": "SSE reconnect with pending state replay",
+      "description": "On WebSocket reconnect, OfficeAgent replays current task state: progress steps and pending ask_user_question. Modify session-init-handler.ts on reconnect detection (existing isInitialized check) to load TaskState from taskStateStore and emit: (1) task_progress events for completed steps, (2) current in-progress step, (3) ask_user_question if pendingQuestion set. Add task_state_replay message type as envelope for replay batch so client can distinguish replay from live events (suppress animations on replayed steps). Add replayTaskState(ws, conversationId) helper to websocket-manager.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-fec65f75"
+      ],
+      "acceptance_criteria": [
+        "Client reconnects mid-task and immediately sees all previous progress steps",
+        "Pending ask_user_question re-emitted within 500ms of reconnect",
+        "Replay events wrapped in task_state_replay envelope for client-side detection",
+        "Replay does not re-trigger agent execution — read-only from state store",
+        "Client ProgressionPanel shows replayed steps as already-complete (no re-animation)"
+      ]
+    },
+    {
+      "id": "P-e1c4afa8",
+      "name": "Progressive artifact upload",
+      "description": "Upload artifacts to ODSP/blob progressively at each ArtifactGenerated event, not only at task completion. Modify chain-of-thought manager to trigger async upload via artifactUploader.upload(filePath) on ArtifactGenerated and store URL in TaskState.outputArtifacts. Add artifactUrl field to ArtifactGenerated message type. Update Bebop ArtifactPanel to render artifactUrl link alongside download button. Container recycled mid-task: artifacts generated before recycle retrievable via ODSP URL.",
+      "project": "OfficeAgent",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "medium",
+      "depends_on": [
+        "P-fec65f75"
+      ],
+      "acceptance_criteria": [
+        "Each generated artifact uploaded within 10s of ArtifactGenerated event",
+        "Upload URL included in ArtifactGenerated WebSocket notification to client",
+        "Container recycled mid-task: pre-recycle artifacts retrievable via ODSP URL",
+        "Upload failures non-fatal (logged, retried once, then skipped)",
+        "artifactUrl field present in ArtifactGenerated message type"
+      ]
+    },
+    {
+      "id": "P-a5cafe8b",
+      "name": "Cowork telemetry and performance tracking",
+      "description": "Add performance tracking and telemetry for the cowork experience. Create useCoworkTelemetry.ts hook. Track: time-to-first-progression-step, agent round-trip latency, user interaction events (send, answer-question, download), Web Vitals for cowork route, federation load time (cowork.federationLoadMs). Wire into existing telemetry infrastructure.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "low",
+      "depends_on": [
+        "P-8e973c4f",
+        "P-bbd5994c"
+      ],
+      "acceptance_criteria": [
+        "Time-to-first-progression-step tracked and logged",
+        "Agent round-trip latency tracked per request",
+        "User interaction events logged (send, answer-question, download)",
+        "Web Vitals for cowork route measured",
+        "All telemetry events include sessionId and hostType dimensions"
+      ]
+    },
+    {
+      "id": "P-419da4f5",
+      "name": "Production feature gating for ring rollout",
+      "description": "Gate all cowork features behind flight flags for gradual ring-based rollout. Ensure feature gate config uses single key 'bebop.cowork.enabled' consistently. Route guard on /cowork checks flight. Midguard app registry entry gated behind Control Tower flight. ECS coworkEnabled flag controls CDN bundle loading. Telemetry reports flight state on every session.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "small",
+      "priority": "low",
+      "depends_on": [
+        "P-0370db55",
+        "P-7e068c83"
+      ],
+      "acceptance_criteria": [
+        "Feature invisible when flight is off — no route, no federation load",
+        "Gradual rollout via ring progression (SDF → MSIT → Prod)",
+        "Telemetry reports flight state on session start",
+        "Control Tower integration for Midguard app registry gating"
+      ]
+    },
+    {
+      "id": "P-d6cc7aac",
+      "name": "Error handling and connection resilience",
+      "description": "Comprehensive error handling for all failure modes across the cowork experience. Container unavailable → friendly error with retry. WebSocket disconnect → reconnect with state recovery (leverages P019). Agent timeout → user notification with cancel option. Token expiry → transparent refresh (leverages P008). Rate limiting → queued retry with user feedback. All error states must have graceful degradation paths.",
+      "project": "office-bohemia",
+      "status": "missing",
+      "estimated_complexity": "medium",
+      "priority": "low",
+      "depends_on": [
+        "P-8e973c4f",
+        "P-bbd5994c",
+        "P-bbc32f34"
+      ],
+      "acceptance_criteria": [
+        "Container unavailable shows friendly error with retry button",
+        "WebSocket disconnect triggers reconnect with state recovery",
+        "Agent timeout shows user notification with cancel option",
+        "Token expiry handled with transparent refresh (no task interruption)",
+        "Rate limiting shows queued retry feedback to user",
+        "All error states have graceful degradation (no blank screens)"
+      ]
+    }
+  ],
+  "open_questions": [
+    "Which 1JS hosts are priority? Should we target all 6 hosts or start with specific ones (e.g., Teams first, then Word)?",
+    "AugLoop readiness — is the AugLoop team ready to support production transport for this scenario? Is a staging environment available?",
+    "Which OfficeAgent agents are in scope for v1? All agents (create, workspace, ppt, excel, grounding) or a subset?",
+    "Figma designs — are there existing Figma designs for the cowork UX, or should we propose layout based on the Claude Cowork pattern?",
+    "Auth flow — how does the 1JS host OBO token get passed through to OfficeAgent container auth via Midguard? Is token forwarding part of the Midguard host API contract?",
+    "Existing Sydney integration — should the cowork UX replace or coexist with the current Sydney-based chat in Bebop?",
+    "Midguard app registry — who owns it? What is the approval/onboarding process for adding a new CDN-federated app entry?",
+    "ODSP blob storage endpoint — what storage account and permissions are needed for artifact upload (P018/P020)? Is there an existing OfficeAgent service principal with write access?",
+    "Phase 7 E2E testing: The plan specifies detailed E2E test suites (4 suites, 19 scenarios) and unit test plans (14 test files, coverage targets). These are testing strategy docs that should be tracked separately — when should E2E infrastructure be built?",
+    "Existing cowork branches from other developers (user/mohitkishore/coworkFeatures, user/sacra/cowork-officeagent, user/spuranda/cowork-prompt-tuning) — should these be investigated for reusable patterns or potential conflicts before Phase 3 work begins?",
+    "The v1 PRD marked 17 items as 'implemented' but code is only on E2E branches, not main. Should P001/P002 integration fixes be fast-tracked to unblock all downstream work?"
+  ],
+  "pausedAt": "2026-03-17T23:26:29.360Z",
+  "approvedAt": "2026-03-17T23:25:01.026Z",
+  "approvedBy": "yemishin"
+}

@@ -304,6 +304,10 @@ function renderPlaybook(type, vars) {
     content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
   }
 
+  // Inject KB guardrail
+  content += `\n\n---\n\n## Knowledge Base Rules\n\n`;
+  content += `**Never delete, move, or overwrite files in \`knowledge/\`.** The sweep (consolidation engine) is the only process that writes to \`knowledge/\`. If you think a KB file is wrong, note it in your learnings file — do not touch \`knowledge/\` directly.\n`;
+
   // Inject learnings requirement
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
   content += `After completing your task, you MUST write a findings/learnings file to:\n`;
@@ -1559,6 +1563,29 @@ function runCleanup(config, verbose = false) {
             cleaned.sweptKb++;
           }
         } catch {}
+      }
+    }
+  } catch {}
+
+  // 7. KB watchdog — restore deleted KB files from git if count dropped vs checkpoint
+  try {
+    const checkpoint = safeJson(path.join(ENGINE_DIR, 'kb-checkpoint.json'));
+    if (checkpoint && checkpoint.count > 0) {
+      const { KB_CATEGORIES: cats } = shared;
+      const knowledgeDir = path.join(SQUAD_DIR, 'knowledge');
+      let current = 0;
+      for (const cat of cats) {
+        const d = path.join(knowledgeDir, cat);
+        if (fs.existsSync(d)) current += fs.readdirSync(d).length;
+      }
+      if (current < checkpoint.count) {
+        log('warn', `KB watchdog: file count dropped ${checkpoint.count} → ${current}, restoring from git`);
+        try {
+          execSilent('git checkout HEAD -- knowledge/', { cwd: SQUAD_DIR });
+          log('info', 'KB watchdog: restored knowledge/ from git HEAD');
+        } catch (err) {
+          log('error', `KB watchdog: git restore failed — ${err.message}`);
+        }
       }
     }
   } catch {}

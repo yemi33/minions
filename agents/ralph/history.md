@@ -105,3 +105,38 @@
 - **Branch:** feat/PL-W015-cot-askuser-types
 - **Dispatch ID:** ralph-fix-mmtook2epyu1
 
+### 2026-03-17T17:21:22.980Z — error
+- **Task:** [office-bohemia] Review PR PR-4976726: feat(PL-W015): add cowork telemetry and performance tracking
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** ralph-review-mmuvnovsybjm
+
+### 2026-03-17T23:02:32.954Z — error
+- **Task:** [office-bohemia] Review PR PR-4976445: feat(PL-W001): consolidate cowork types for E2E branch integration
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** ralph-review-mmv7pgb8x4qz
+
+### 2026-03-17T23:02:09.216Z — error
+- **Task:** [office-bohemia] Review PR PR-4976445: feat(PL-W001): consolidate cowork types for E2E branch integration
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** ralph-review-mmv7pgb8x4qz
+
+### 2026-03-17T23:02:08.450Z — error
+- **Task:** [office-bohemia] Review PR PR-4976445: feat(PL-W001): consolidate cowork types for E2E branch integration
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** ralph-review-mmv7pg1i9bhj
+
+### 2026-03-17T22:57:48.132Z — error
+- **Task:** [office-bohemia] Review PR PR-4976445: feat(PL-W001): consolidate cowork types for E2E branch integration
+- **Type:** review
+- **Project:** office-bohemia
+- **Branch:** none
+- **Dispatch ID:** ralph-review-mmv7pg1i9bhj
+
