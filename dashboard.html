@@ -668,7 +668,7 @@
   </section>
 
   <section>
-    <h2>Team Notes <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0" id="notes-updated"></span></h2>
+    <h2 data-file="notes.md" style="position:relative">Team Notes <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0" id="notes-updated"></span></h2>
     <div id="notes-list">Loading...</div>
   </section>
 
@@ -1288,6 +1288,7 @@ function renderPrdProgress(prog) {
   }
 
   el.innerHTML = html;
+  restoreNotifBadges();
 }
 
 let _prdItems = []; // cache for edit lookups
@@ -3025,10 +3026,6 @@ function findCardForFile(filePath) {
       card = document.querySelector('[data-file="prd-archives"]') || document.querySelector('[data-file="plan-archives"]');
       if (card) return card;
     }
-  }
-  // Notes.md: badge the team notes section header
-  if (filePath === 'notes.md') {
-    return document.getElementById('notes-updated')?.parentElement || null;
   }
   return null;
 }
