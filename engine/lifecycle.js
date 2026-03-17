@@ -125,7 +125,7 @@ function checkPlanCompletion(meta, config) {
   if (plan.branch_strategy === 'shared-branch' && plan.feature_branch && wiPath) {
     const existingPrItem = allWorkItems.find(w => w.sourcePlan === planFile && w.sourcePlanItem === 'PR');
     if (!existingPrItem) {
-      const id = shared.nextWorkItemId(workItems, 'PL-W');
+      const id = 'PL-' + shared.uid();
       const featureBranch = plan.feature_branch;
       const mainBranch = primaryProject.mainBranch || 'main';
       const itemSummary = doneItems.map(w => '- ' + w.sourcePlanItem + ': ' + w.title.replace('Implement: ', '')).join('\n');
@@ -144,7 +144,7 @@ function checkPlanCompletion(meta, config) {
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.sourcePlanItem === 'VERIFY');
   if (!existingVerify && doneItems.length > 0) {
-    const verifyId = shared.nextWorkItemId(workItems, 'PL-W');
+    const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
     // Group PRs by project — one worktree per project with all branches merged in

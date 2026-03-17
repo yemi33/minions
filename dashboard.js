@@ -89,6 +89,7 @@ function getMcpServers() {
 let _statusCache = null;
 let _statusCacheTs = 0;
 const STATUS_CACHE_TTL = 3000; // 3s — dashboard polls every 4s
+function invalidateStatusCache() { _statusCache = null; }
 
 function getStatus() {
   const now = Date.now();
@@ -1143,8 +1144,8 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         const basename = path.basename(filePath);
         const destPath = shared.uniquePath(path.join(kbArchiveDir, basename));
         try {
-          // Prepend sweep metadata to archived file
-          const content = safeRead(filePath) || '';
+          const content = safeRead(filePath);
+          if (content === null) return; // don't delete if we can't read
           const meta = `<!-- swept: ${new Date().toISOString()} | reason: ${reason} -->\n`;
           safeWrite(destPath, meta + content);
           safeUnlink(filePath);
@@ -1230,6 +1231,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
               completedAt: plan.completedAt || '',
               requiresApproval: plan.requires_approval || false,
               revisionFeedback: plan.revision_feedback || null,
+              sourcePlan: plan.source_plan || null,
             });
           } catch {}
         } else {
@@ -1333,6 +1335,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         } catch {}
       }
 
+      invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1360,7 +1363,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           if (!items) continue;
           let changed = false;
           for (const w of items) {
-            if (w.sourcePlan === body.file && (w.status === 'pending' || w.status === 'dispatched')) {
+            if (w.sourcePlan === body.file && w.status === 'pending') {
               w.status = 'paused';
               w._pausedBy = 'prd-pause';
               paused++;
@@ -1371,6 +1374,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         } catch {}
       }
 
+      invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'paused', pausedWorkItems: paused });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1543,6 +1547,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         } catch {}
       }
 
+      invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, cleanedWorkItems: cleaned, cleanedDispatches: dispatchCleaned });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }

@@ -3393,13 +3393,9 @@ function renderPlans(plans) {
   const pausedPlanFiles = new Set();
   const planToPrdFile = {}; // .md filename → .json PRD filename
   for (const p of plans) {
-    if (p.format === 'prd' && !p.archived) {
-      // Link source .md plans to this PRD
-      const srcPlan = plans.find(s => s.format === 'draft' && s.file.endsWith('.md'));
-      if (srcPlan) {
-        planToPrdFile[srcPlan.file] = p.file;
-        if (p.status === 'awaiting-approval') pausedPlanFiles.add(srcPlan.file);
-      }
+    if (p.format === 'prd' && !p.archived && p.sourcePlan) {
+      planToPrdFile[p.sourcePlan] = p.file;
+      if (p.status === 'awaiting-approval') pausedPlanFiles.add(p.sourcePlan);
     }
   }
 
