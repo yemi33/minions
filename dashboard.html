@@ -963,7 +963,14 @@ function renderPrdProgress(prog) {
   const countEl = document.getElementById('prd-progress-count');
   if (!prog) { el.innerHTML = ''; countEl.textContent = '—'; return; }
 
-  countEl.textContent = prog.donePercent + '%';
+  // Compute progress from active (non-archived) items only
+  const activeItems = (prog.items || []).filter(i => !i._archived);
+  if (activeItems.length > 0) {
+    const activeDone = activeItems.filter(i => i.status === 'complete' || i.status === 'implemented' || i.status === 'pr-created').length;
+    countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
+  } else {
+    countEl.textContent = '—';
+  }
 
   function renderGroupStats(items) {
     const total = items.length;
