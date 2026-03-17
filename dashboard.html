@@ -3098,8 +3098,10 @@ async function _processQaMessage(message, selection) {
     if (loadingEl) loadingEl.remove();
 
     if (data.ok) {
+      const isVersion = data.isNewVersion;
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
-      const suffix = data.edited ? '\n\n✓ Document saved.' : '';
+      const suffix = isVersion ? '\n\n✓ New version saved: ' + data.versionedFile
+        : data.edited ? '\n\n✓ Document saved.' : '';
       thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + escHtml(data.answer + suffix) + '</div>';
 
       // Track conversation history
@@ -3117,33 +3119,15 @@ async function _processQaMessage(message, selection) {
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
 
-        // If this is a plan .md file, show PRD generation options
-        if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
+        // Plan versioning: show intent prompt after creating new version
+        if (isVersion) {
+          _modalFilePath = 'plans/' + data.versionedFile; // point subsequent edits at new version
+          refreshPlans(); // show new version in plans list
+          showPlanVersionActions(thread, data.versionedFile, data.originalFile);
+        } else if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
+          // Non-versioned plan edit (shouldn't happen normally, but fallback)
           const planFile = _modalFilePath.replace('plans/', '');
-          const existingBtn = document.getElementById('qa-generate-prd-btn');
-          if (!existingBtn) {
-            // Check if there's an existing PRD for this plan's project
-            const allPlans = window._lastStatus?.plans || [];
-            const mdPlan = allPlans.find(p => p.file === planFile);
-            const project = mdPlan?.project || '';
-            const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
-
-            const btn = document.createElement('div');
-            btn.id = 'qa-generate-prd-btn';
-            btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
-            const esc = planFile.replace(/'/g, "\\'");
-            if (existingPrd) {
-              btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">Plan updated — existing PRD found</span>' +
-                '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--orange);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Pause existing PRD, clean pending items, regenerate from revised plan">Replace existing PRD</button>' +
-                '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Keep existing PRD running, create a new PRD from this plan">New PRD (keep current)</button>' +
-                '<span style="color:var(--muted);font-size:10px">Replace discards pending items. New PRD keeps current work running.</span>';
-            } else {
-              btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px">Plan updated</span>' +
-                '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Generate PRD from this</button>' +
-                '<span style="color:var(--muted);font-size:10px">Dispatches an agent to create PRD items</span>';
-            }
-            thread.appendChild(btn);
-          }
+          showPlanVersionActions(thread, planFile, planFile);
         }
       }
     } else {
@@ -3230,13 +3214,22 @@ async function modalSteerSubmit() {
     if (loadingEl) loadingEl.remove();
 
     if (data.ok) {
-      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:var(--green)">' + escHtml(data.answer) + (data.edited ? '\n\n✓ Document saved.' : '') + '</div>';
+      const isVersion = data.isNewVersion;
+      const saveMsg = isVersion ? '\n\n✓ New version saved: ' + data.versionedFile
+        : data.edited ? '\n\n✓ Document saved.' : '';
+      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:var(--green)">' + escHtml(data.answer + saveMsg) + '</div>';
 
       // Refresh the modal body with updated content
       if (data.edited && data.content) {
         const display = data.content.replace(/^---[\s\S]*?---\n*/m, '');
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
+
+        if (isVersion) {
+          _modalFilePath = 'plans/' + data.versionedFile;
+          refreshPlans();
+          showPlanVersionActions(thread, data.versionedFile, data.originalFile);
+        }
       }
     } else {
       thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '</div>';
@@ -3434,6 +3427,42 @@ async function planApprove(file) {
 function qaDisablePrdButtons() {
   const container = document.getElementById('qa-generate-prd-btn');
   if (container) container.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+}
+
+// Show plan version action buttons (Run alongside / Replace / Just save)
+function showPlanVersionActions(thread, newFile, originalFile) {
+  const esc = newFile.replace(/'/g, "\\'");
+  // Look up existing PRD for the original plan's project
+  const allPlans = window._lastStatus?.plans || [];
+  const origPlan = allPlans.find(p => p.file === originalFile);
+  const project = origPlan?.project || '';
+  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project && p.status !== 'completed');
+
+  const btn = document.createElement('div');
+  btn.id = 'qa-generate-prd-btn';
+  btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
+
+  if (existingPrd) {
+    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created — existing PRD running</span>' +
+      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Execute this plan as a separate PRD alongside the current one">Run alongside</button>' +
+      '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--orange);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Pause existing PRD, clean pending items, execute this plan instead">Replace old PRD</button>' +
+      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer" title="Keep the new version saved without dispatching any work">Just save</button>' +
+      '<span style="color:var(--muted);font-size:10px;width:100%">Run alongside keeps current work going. Replace pauses it and starts fresh.</span>';
+  } else {
+    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created</span>' +
+      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Execute plan</button>' +
+      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Just save</button>' +
+      '<span style="color:var(--muted);font-size:10px">Execute dispatches an agent to create PRD items from this plan</span>';
+  }
+  // Remove any previous action buttons
+  const old = thread.querySelector('#qa-generate-prd-btn');
+  if (old) old.remove();
+  thread.appendChild(btn);
+}
+
+function qaJustSave(el) {
+  const container = el.closest('#qa-generate-prd-btn');
+  if (container) container.innerHTML = '<span style="color:var(--muted);font-size:11px">Saved. No work dispatched.</span>';
 }
 
 // Replace existing PRD: pause old, clean pending items, regenerate from revised plan

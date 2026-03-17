@@ -1309,8 +1309,9 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/revise-and-regenerate — revise the SOURCE PLAN (.md), then dispatch plan-to-prd
-  if (req.method === 'POST' && req.url === '/api/plans/revise-and-regenerate') {
+  // POST /api/plans/revise-and-regenerate — REMOVED: plan versioning now handled by /api/doc-chat
+  // The "Replace old PRD" flow uses qaReplacePrd (frontend) which calls /api/plans/pause + /api/plans/regenerate + planExecute
+  if (false && req.method === 'POST' && req.url === '/api/plans/revise-and-regenerate') {
     try {
       const body = await readBody(req);
       if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
@@ -1581,6 +1582,30 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       if (canEdit && fullPath) {
+        // Plan .md files: save as new version instead of overwriting
+        const isPlanMd = body.filePath && /^plans\/[^/]+\.md$/.test(body.filePath);
+        if (isPlanMd) {
+          const origName = path.basename(fullPath, '.md');
+          // Strip existing -vN and date suffixes to get the base name
+          const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+          // Find highest existing version number
+          const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md'));
+          let maxV = 1;
+          for (const f of existing) {
+            const m = f.match(/-v(\d+)/);
+            if (m) maxV = Math.max(maxV, parseInt(m[1]));
+          }
+          const today = new Date().toISOString().slice(0, 10);
+          const newName = `${base}-v${maxV + 1}-${today}.md`;
+          const newPath = path.join(PLANS_DIR, newName);
+          safeWrite(newPath, content);
+          return jsonReply(res, 200, {
+            ok: true, answer, edited: true, content, actions,
+            versionedFile: newName,
+            originalFile: path.basename(body.filePath),
+            isNewVersion: true,
+          });
+        }
         safeWrite(fullPath, content);
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
       }
