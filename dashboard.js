@@ -1585,29 +1585,43 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       if (canEdit && fullPath) {
-        // Plan .md files: save as new version instead of overwriting
+        // Plan .md files: fork only if there's an active PRD running for this plan's project
         const isPlanMd = body.filePath && /^plans\/[^/]+\.md$/.test(body.filePath);
         if (isPlanMd) {
-          const origName = path.basename(fullPath, '.md');
-          // Strip existing -vN and date suffixes to get the base name
-          const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
-          // Find highest existing version number
-          const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md'));
-          let maxV = 1;
-          for (const f of existing) {
-            const m = f.match(/-v(\d+)/);
-            if (m) maxV = Math.max(maxV, parseInt(m[1]));
-          }
-          const today = new Date().toISOString().slice(0, 10);
-          const newName = `${base}-v${maxV + 1}-${today}.md`;
-          const newPath = path.join(PLANS_DIR, newName);
-          safeWrite(newPath, content);
-          return jsonReply(res, 200, {
-            ok: true, answer, edited: true, content, actions,
-            versionedFile: newName,
-            originalFile: path.basename(body.filePath),
-            isNewVersion: true,
+          // Check if any non-completed PRD is actively running for this plan's project
+          const planContent = content;
+          const projectMatch = planContent.match(/\*\*Project:\*\*\s*(.+)/m);
+          const planProject = projectMatch ? projectMatch[1].trim() : '';
+          const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
+          const hasActivePrd = prdFiles.some(f => {
+            try {
+              const prd = JSON.parse(safeRead(path.join(PRD_DIR, f)) || '{}');
+              return prd.project === planProject && prd.status !== 'completed';
+            } catch { return false; }
           });
+
+          if (hasActivePrd) {
+            // Fork: create new version to preserve the running plan
+            const origName = path.basename(fullPath, '.md');
+            const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+            const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md'));
+            let maxV = 1;
+            for (const f of existing) {
+              const m = f.match(/-v(\d+)/);
+              if (m) maxV = Math.max(maxV, parseInt(m[1]));
+            }
+            const today = new Date().toISOString().slice(0, 10);
+            const newName = `${base}-v${maxV + 1}-${today}.md`;
+            const newPath = path.join(PLANS_DIR, newName);
+            safeWrite(newPath, content);
+            return jsonReply(res, 200, {
+              ok: true, answer, edited: true, content, actions,
+              versionedFile: newName,
+              originalFile: path.basename(body.filePath),
+              isNewVersion: true,
+            });
+          }
+          // No active PRD — overwrite in place (draft iteration)
         }
         safeWrite(fullPath, content);
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });

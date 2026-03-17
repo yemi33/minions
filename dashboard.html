@@ -3119,13 +3119,13 @@ async function _processQaMessage(message, selection) {
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
 
-        // Plan versioning: show intent prompt after creating new version
+        // Plan edit: show action prompt
         if (isVersion) {
           _modalFilePath = 'plans/' + data.versionedFile; // point subsequent edits at new version
-          refreshPlans(); // show new version in plans list
+          refreshPlans();
           showPlanVersionActions(thread, data.versionedFile, data.originalFile);
         } else if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
-          // Non-versioned plan edit (shouldn't happen normally, but fallback)
+          // Draft iteration (no active PRD) — overwritten in place, offer Execute
           const planFile = _modalFilePath.replace('plans/', '');
           showPlanVersionActions(thread, planFile, planFile);
         }
