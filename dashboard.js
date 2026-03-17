@@ -193,6 +193,7 @@ Available action types:
 - **edit-prd-item**: Edit a PRD item. Fields: source (PRD filename), itemId, name, description, priority, complexity
 - **remove-prd-item**: Remove a PRD item. Fields: source (PRD filename), itemId
 - **delete-work-item**: Delete a work item. Fields: id, source (project name or "central")
+- **plan-edit**: Revise/edit a plan .md file. Fields: file (plan .md filename from plans/), instruction (what to change). This creates a NEW version of the plan (original stays untouched) and lets the user choose: run alongside existing PRD, replace it, or just save.
 
 ## Rules
 

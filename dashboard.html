@@ -4157,6 +4157,39 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--orange)';
         break;
       }
+      case 'plan-edit': {
+        // Read the plan, send instruction to doc-chat, show version actions
+        const planContent = await fetch('/api/plans/' + encodeURIComponent(action.file)).then(r => r.text());
+        const res = await fetch('/api/doc-chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: action.instruction,
+            document: planContent,
+            title: action.file,
+            filePath: 'plans/' + action.file,
+          }),
+        });
+        const data = await res.json();
+        if (data.ok && data.isNewVersion) {
+          status.innerHTML = '&#10003; New plan version: <strong>' + escHtml(data.versionedFile) + '</strong>';
+          status.style.color = 'var(--green)';
+          msgs.appendChild(status);
+          // Show the version action buttons inline in CC
+          const actionDiv = document.createElement('div');
+          showPlanVersionActions(actionDiv, data.versionedFile, data.originalFile);
+          const btnEl = actionDiv.querySelector('#qa-generate-prd-btn');
+          if (btnEl) msgs.appendChild(btnEl);
+          refreshPlans();
+          return; // skip default append below
+        } else if (data.ok && data.edited) {
+          status.innerHTML = '&#10003; Plan edited: <strong>' + escHtml(action.file) + '</strong>';
+          status.style.color = 'var(--green)';
+        } else {
+          status.innerHTML = data.answer ? escHtml(data.answer) : '&#10007; Could not edit plan';
+          status.style.color = data.answer ? 'var(--muted)' : 'var(--red)';
+        }
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';
