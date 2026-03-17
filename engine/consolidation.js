@@ -24,16 +24,18 @@ function engine() {
 // Track in-flight LLM consolidation to prevent concurrent runs
 let _consolidationInFlight = false;
 let _consolidationStartedAt = 0;
+const _processingFiles = new Set(); // files currently being consolidated (race guard)
 
 function consolidateInbox(config) {
   const e = engine();
   const threshold = config.engine?.inboxConsolidateThreshold || 3;
-  const files = getInboxFiles();
+  const files = getInboxFiles().filter(f => !_processingFiles.has(f));
   if (files.length < threshold) return;
   // Auto-reset stale flag if consolidation has been running for >5 minutes (process died without cleanup)
   if (_consolidationInFlight && (Date.now() - _consolidationStartedAt) > 300000) {
     e.log('warn', 'Consolidation flag was stale (>5m) — resetting');
     _consolidationInFlight = false;
+    _processingFiles.clear();
   }
   if (_consolidationInFlight) return;
 
@@ -118,6 +120,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   const e = engine();
   _consolidationInFlight = true;
   _consolidationStartedAt = Date.now();
+  for (const f of files) _processingFiles.add(f);
 
   const kbPaths = items.map(item => {
     const cat = classifyInboxItem(item.name, item.content);
@@ -167,14 +170,19 @@ function consolidateWithLLM(items, existingNotes, files, config) {
       try { proc.kill('SIGKILL'); } catch {}
       if (_consolidationInFlight) {
         _consolidationInFlight = false;
+        _processingFiles.clear();
         e.log('warn', 'Consolidation flag force-reset after SIGKILL');
       }
     }, 10000);
   }, 180000);
 
+  function _clearProcessingState() {
+    for (const f of files) _processingFiles.delete(f);
+    _consolidationInFlight = false;
+  }
+
   proc.on('close', (code) => {
     clearTimeout(timeout);
-    _consolidationInFlight = false;
     safeUnlink(promptPath);
     safeUnlink(sysPromptPath);
 
@@ -193,6 +201,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
         } else {
           e.log('warn', 'LLM consolidation output missing expected format — falling back to regex');
           consolidateWithRegex(items, files);
+          _clearProcessingState();
           return;
         }
       }
@@ -220,15 +229,16 @@ function consolidateWithLLM(items, existingNotes, files, config) {
       if (stderr) e.log('debug', `LLM stderr: ${stderr.slice(0, 500)}`);
       consolidateWithRegex(items, files);
     }
+    _clearProcessingState();
   });
 
   proc.on('error', (err) => {
     clearTimeout(timeout);
-    _consolidationInFlight = false;
     e.log('warn', `LLM consolidation spawn error: ${err.message} — falling back to regex`);
     safeUnlink(promptPath);
     safeUnlink(sysPromptPath);
     consolidateWithRegex(items, files);
+    _clearProcessingState();
   });
 }
 
