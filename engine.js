@@ -615,6 +615,7 @@ function spawnAgent(dispatchItem, config) {
   let cwd = rootDir;
   let worktreePath = null;
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
+  const _gitOpts = { stdio: 'pipe', timeout: 30000, windowsHide: true, env: shared.gitEnv() };
 
   if (branchName) {
     const wtSuffix = id ? id.split('-').pop() : shared.uid();
@@ -627,14 +628,14 @@ function spawnAgent(dispatchItem, config) {
     if (existingWt) {
       worktreePath = existingWt;
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
-      try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
-      try { exec(`git pull origin "${branchName}"`, { cwd: existingWt, stdio: 'pipe', timeout: 30000 }); } catch {}
+      try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
+      try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch {}
     } else {
       try {
         if (!fs.existsSync(worktreePath)) {
           const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
           // Prune stale worktree entries before creating (handles leftover entries from crashed runs)
-          try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
+          try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
           // Remove index.lock if stale (Windows: previous git process died without cleanup)
           // 5 minute threshold — generous enough that even slow git operations finish
           const lockFile = path.join(rootDir, '.git', 'index.lock');
@@ -647,19 +648,19 @@ function spawnAgent(dispatchItem, config) {
 
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
-            try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
-            exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
+            exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
           } else {
             log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
             try {
               exec(`git worktree add "${worktreePath}" -b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, {
-                cwd: rootDir, stdio: 'pipe', windowsHide: true, timeout: 30000
+                ..._gitOpts, cwd: rootDir
               });
             } catch (e1) {
               // Branch already exists or checked out elsewhere — try without -b
-              try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
+              try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
               try {
-                exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                 log('info', `Reusing existing branch: ${branchName}`);
               } catch (e2) {
                 // "already checked out" — find and remove the stale worktree IF the directory no longer exists
@@ -668,8 +669,8 @@ function spawnAgent(dispatchItem, config) {
                   if (staleWt && !fs.existsSync(staleWt)) {
                     // Directory gone but git still tracks it — safe to prune
                     log('warn', `Branch ${branchName} checked out in missing dir ${staleWt} — pruning`);
-                    try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
-                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                     log('info', `Recovered worktree for ${branchName} after stale entry prune`);
                   } else if (staleWt && fs.existsSync(staleWt)) {
                     // Directory exists — another agent may be using it. Check if any active dispatch uses it.
@@ -684,14 +685,14 @@ function spawnAgent(dispatchItem, config) {
                     }
                     // Not actively used — directory is orphaned, safe to remove and recreate
                     log('warn', `Branch ${branchName} checked out in orphaned dir ${staleWt} — removing and recreating`);
-                    try { exec(`git worktree remove "${staleWt}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
-                    try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
-                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                    try { exec(`git worktree remove "${staleWt}" --force`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                     log('info', `Recovered worktree for ${branchName} after orphaned dir removal`);
                   } else {
                     // Can't find the worktree at all — just prune and retry
-                    try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
-                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                   }
                 } else {
                   throw e2;
@@ -701,7 +702,7 @@ function spawnAgent(dispatchItem, config) {
           }
         } else if (meta?.branchStrategy === 'shared-branch') {
           log('info', `Pulling latest on shared branch ${branchName}`);
-          try { exec(`git pull origin "${branchName}"`, { cwd: worktreePath, stdio: 'pipe', timeout: 30000 }); } catch {}
+          try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch {}
         }
       } catch (err) {
         log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
@@ -724,8 +725,8 @@ function spawnAgent(dispatchItem, config) {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
           for (const { branch: depBranch, prId } of depBranches) {
             try {
-              exec(`git fetch origin "${depBranch}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
-              exec(`git merge "origin/${depBranch}" --no-edit`, { cwd: worktreePath, stdio: 'pipe', timeout: 30000 });
+              exec(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir });
+              exec(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
               log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
             } catch (mergeErr) {
               log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);

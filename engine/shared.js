@@ -113,6 +113,11 @@ function cleanChildEnv() {
   return env;
 }
 
+// Environment for git commands — prevents credential manager from opening browser
+function gitEnv() {
+  return { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' };
+}
+
 // ── Claude Output Parsing ───────────────────────────────────────────────────
 
 /**
@@ -286,6 +291,7 @@ module.exports = {
   run,
   runFile,
   cleanChildEnv,
+  gitEnv,
   parseStreamJsonOutput,
   KB_CATEGORIES,
   classifyInboxItem,

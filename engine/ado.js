@@ -23,8 +23,8 @@ function getAdoToken() {
     return _adoTokenCache.token;
   }
   try {
-    const token = exec('azureauth ado token --output token', {
-      timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe']    }).trim();
+    const token = exec('azureauth ado token --mode broker --output token --timeout 10', {
+      timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
     if (token && token.startsWith('eyJ')) {
       _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
       return token;

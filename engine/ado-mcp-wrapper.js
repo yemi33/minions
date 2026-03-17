@@ -16,17 +16,10 @@ try {
     windowsHide: true,
   }).trim();
 } catch (e) {
-  // Fallback: try with web mode (may open browser as last resort)
-  try {
-    token = execSync('azureauth ado token --mode web --output token --timeout 5', {
-      encoding: 'utf8',
-      timeout: 120000,
-      windowsHide: true,
-    }).trim();
-  } catch (e2) {
-    process.stderr.write('ado-mcp-wrapper: Failed to get ADO token: ' + e2.message + '\n');
-    process.exit(1);
-  }
+  // Broker failed — do NOT fall back to web mode (opens browser in automated context)
+  process.stderr.write('ado-mcp-wrapper: Broker auth failed: ' + e.message + '\n');
+  process.stderr.write('ado-mcp-wrapper: Run "azureauth ado token --mode web" manually to refresh\n');
+  process.exit(1);
 }
 
 // Launch the actual MCP server with the token in env
