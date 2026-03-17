@@ -1877,6 +1877,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   // POST /api/command-center/new-session — clear active CC session
   if (req.method === 'POST' && req.url === '/api/command-center/new-session') {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+    ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     return jsonReply(res, 200, { ok: true });
   }
