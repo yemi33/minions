@@ -1,6 +1,8 @@
-# Squad — Central AI Development Team
+# Squad — Autonomous AI Development Team
 
 A multi-project AI dev team that runs from `~/.squad/`. Five autonomous agents share a single engine, dashboard, knowledge base, and MCP toolchain — working across any number of linked repos with self-improving workflows.
+
+Zero dependencies — uses only Node.js built-in modules.
 
 Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradygaster.github.io/squad/).
 
@@ -51,7 +53,7 @@ squad init --force
 
 **What gets updated:** Engine code (`.js`, `.html`), new playbooks, new agent charters, new docs, `CHANGELOG.md`.
 
-**What's preserved:** Your `config.json`, agent history, notes, knowledge base, and any `.md` files you've customized (charters, playbooks, routing). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
+**What's preserved:** Your `config.json`, agent history, notes, knowledge base, routing, skills, and any `.md` files you've customized (charters, playbooks). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
 
 **What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
 
@@ -459,11 +461,11 @@ Engine behavior is controlled via `config.json`. Key settings:
 {
   "engine": {
     "tickInterval": 60000,
-    "maxConcurrent": 5,
-    "agentTimeout": 600000,
-    "staleThreshold": 1800000,
+    "maxConcurrent": 3,
+    "agentTimeout": 18000000,
+    "heartbeatTimeout": 300000,
     "maxTurns": 100,
-    "inboxConsolidateThreshold": 3
+    "inboxConsolidateThreshold": 5
   }
 }
 ```
@@ -471,11 +473,14 @@ Engine behavior is controlled via `config.json`. Key settings:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `tickInterval` | 60000 (1min) | Milliseconds between engine ticks |
-| `maxConcurrent` | 5 | Max agents running simultaneously |
-| `agentTimeout` | 600000 (10min) | Kill agents silent longer than this |
-| `staleThreshold` | 1800000 (30min) | Kill stale dispatch entries |
+| `maxConcurrent` | 3 | Max agents running simultaneously |
+| `agentTimeout` | 18000000 (5h) | Max total agent runtime |
+| `heartbeatTimeout` | 300000 (5min) | Kill agents silent longer than this |
 | `maxTurns` | 100 | Max Claude CLI turns per agent session |
-| `inboxConsolidateThreshold` | 3 | Inbox files needed before consolidation |
+| `inboxConsolidateThreshold` | 5 | Inbox files needed before consolidation |
+| `worktreeRoot` | `../worktrees` | Where git worktrees are created |
+| `idleAlertMinutes` | 15 | Alert after no dispatch for this many minutes |
+| `restartGracePeriod` | 1200000 (20min) | Grace period for agent re-attachment after engine restart |
 
 ## Node.js Upgrade Caution
 
@@ -488,10 +493,12 @@ squad start
 
 ## Portability
 
-**Portable (works on any machine):** Engine, dashboard, playbooks, charters, routing, notes, skills, docs, work items.
+**Portable (works on any machine):** Engine code, dashboard, playbooks, charters, docs, `config.template.json`.
 
 **Machine-specific (reconfigure per machine):**
 - `config.json` — contains absolute paths to project directories. Re-link via `squad add <dir>`.
+
+**Generated at runtime:** routing, notes, knowledge, skills, plans, PRDs, work items, dispatch queue, metrics — all created by the engine as agents work.
 
 To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, then re-run `squad add` for each project.
 
@@ -502,10 +509,10 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
   bin/
     squad.js             <- Unified CLI entry point (npm package)
   squad.js               <- Project management: init, add, remove, list
-  engine.js              <- Engine daemon
+  engine.js              <- Engine daemon + orchestrator
   engine/
     shared.js            <- Shared utilities: IO, process spawning, config helpers
-    queries.js           <- Read-only state queries (agents, PRs, work items, metrics)
+    queries.js           <- Read-only state queries (used by engine + dashboard)
     cli.js               <- CLI command handlers (start, stop, status, plan, etc.)
     lifecycle.js          <- Post-completion hooks, plan chaining, PR sync, metrics
     consolidation.js     <- Haiku-powered inbox consolidation, knowledge base
@@ -513,21 +520,23 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
     llm.js               <- Shared Haiku wrapper (triage, doc-chat, steer, ask-about)
     spawn-agent.js       <- Agent spawn wrapper (resolves claude cli.js)
     ado-mcp-wrapper.js   <- ADO MCP authentication wrapper
-    control.json         <- running/paused/stopped (runtime)
-    dispatch.json        <- pending/active/completed queue (runtime)
-    log.json             <- Audit trail, capped at 500 (runtime)
-    metrics.json         <- Per-agent quality metrics + engine Haiku usage (runtime)
+    check-status.js      <- Quick status check without full engine load
+    control.json         <- running/paused/stopped (runtime, generated)
+    dispatch.json        <- pending/active/completed queue (runtime, generated)
+    log.json             <- Audit trail, capped at 500 (runtime, generated)
+    metrics.json         <- Per-agent quality metrics (runtime, generated)
+    cooldowns.json       <- Dispatch cooldown tracking (runtime, generated)
   dashboard.js           <- Web dashboard server
   dashboard.html         <- Dashboard UI (single-file)
-  config.json            <- projects[], agents, engine, claude settings
+  config.json            <- projects[], agents, engine, claude settings (generated by squad init)
   config.template.json   <- Template for new installs
-  plans/                 <- Approved plans (plans/{project}-{date}.json)
-  knowledge/             <- KB: architecture, conventions, project-notes, build-reports, reviews
   package.json           <- npm package definition
-  routing.md             <- Dispatch rules table (editable)
-  team.md                <- Team roster
-  notes.md               <- Team rules + consolidated learnings (runtime)
-  work-items.json        <- Central work queue (runtime)
+  plans/                 <- Approved plans: plans/{project}-{date}.json (generated)
+  prd/                   <- PRD archives and verification guides (generated)
+  knowledge/             <- KB: architecture, conventions, project-notes, build-reports, reviews (generated)
+  routing.md             <- Dispatch rules table (generated, editable)
+  notes.md               <- Team rules + consolidated learnings (generated)
+  work-items.json        <- Central work queue (generated)
   playbooks/
     work-item.md         <- Shared work item template
     implement.md         <- Build a PRD item
@@ -541,25 +550,25 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
     implement-shared.md  <- Implement on a shared branch
     ask.md               <- Answer a question about the codebase
     verify.md            <- Plan verification: build, test, start webapp, testing guide
-  skills/
-    README.md            <- Skill format guide
-    <name>.md            <- Agent-created reusable workflows
+  skills/                <- Agent-created reusable workflows (generated)
   agents/
     {name}/
       charter.md         <- Agent identity and boundaries (editable)
-      status.json        <- Current state (runtime)
-      history.md         <- Task history, last 20 (runtime)
-      live-output.log    <- Streaming output while working (runtime)
-      output.log         <- Final output after completion (runtime)
+      status.json        <- Current state (runtime, generated)
+      history.md         <- Task history, last 20 (runtime, generated)
+      live-output.log    <- Streaming output while working (runtime, generated)
+      output.log         <- Final output after completion (runtime, generated)
   identity/
-    now.md               <- Engine-generated state snapshot
+    now.md               <- Engine-generated state snapshot (runtime, generated)
   notes/
-    inbox/               <- Agent findings drop-box
-    archive/             <- Processed inbox files
+    inbox/               <- Agent findings drop-box (generated)
+    archive/             <- Processed inbox files (generated)
   docs/
     auto-discovery.md    <- Auto-discovery pipeline docs
     self-improvement.md  <- Self-improvement loop docs
     plan-lifecycle.md    <- Full plan pipeline: plan → PRD → implement → verify
+    command-center.md    <- Command Center usage and features
+    engine-restart.md    <- Engine restart and recovery procedures
 
 Each linked project keeps locally:
   <project>/.squad/

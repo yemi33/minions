@@ -1,24 +1,36 @@
 # Command Center
 
-The Command Center (CC) is a conversational AI interface in the dashboard that has full visibility into the squad's state and can both answer questions and take actions.
+The Command Center (CC) is the squad's conversational AI brain. It powers the dashboard's chat panel, document editing modals, and plan steering — all through a single persistent Sonnet session with full squad awareness.
 
 ## Access
 
 Click the **CC** button in the top-right header of the dashboard. A slide-out chat drawer opens on the right side.
 
-## How It Works
+## Persistent Sessions
 
-The CC is powered by Sonnet with multi-turn tool access. Each message you send:
+CC maintains a true multi-turn session using Claude CLI's `--resume` flag. Unlike a typical stateless API call, each message resumes the same conversation — Claude retains full history including tool calls, intermediate reasoning, and file contents from prior turns.
 
-1. **Builds a system prompt** with the full squad state (agents, plans, PRs, work items, config, routing, skills, KB, notes, dispatch history)
-2. **Sends your message** along with conversation history (last 10 messages) to Sonnet
-3. **Sonnet can use tools** to dig deeper — reading files, searching the codebase, looking up agent outputs
-4. **Parses the response** for action blocks and displays the conversational answer
-5. **Executes any actions** (dispatching work, managing plans, etc.) via dashboard API calls
+**Session lifecycle:**
+- **Created** on first message (or after expiry/new-session)
+- **Resumed** on subsequent messages via `--resume <sessionId>`
+- **Expires** after 30 minutes of inactivity or 50 turns
+- **Persisted** to `engine/cc-session.json` — survives dashboard restarts
+- **Frontend messages** saved to `localStorage` — survive page refresh
+
+Click **New Session** in the drawer header to start fresh.
+
+### Fresh State Each Turn
+
+The system prompt is baked into the session at creation (persona, rules, action format, tool access). Dynamic squad state is injected as a preamble in each user message, so CC always sees current data even in a resumed session.
+
+```
+Turn 1: system prompt (static) + [Current Squad State] + user message
+Turn 2+: [Updated Squad State] + user message  (system prompt already in session)
+```
 
 ## What It Knows
 
-The CC has full context injected on every message:
+Full squad context is injected every turn:
 
 | Context | Details |
 |---------|---------|
@@ -36,30 +48,39 @@ The CC has full context injected on every message:
 
 ## Tool Access (Read-Only)
 
-The CC can use tools to look beyond the pre-loaded context:
+CC can use tools to look beyond the pre-loaded context:
 
 - **Read** — Open any file (agent output logs, code, config, plans)
 - **Glob** — Find files by pattern (e.g., `agents/*/output.log`)
 - **Grep** — Search file contents (find functions, search agent outputs)
 - **WebFetch/WebSearch** — Look up external resources
 
-Key file paths the CC knows about:
-- Agent outputs: `agents/{id}/output.log` (latest) or `output-{dispatch-id}.log` (archived)
-- Plans: `plans/*.md` (source) and `plans/*.json` (PRDs)
-- Work items: `work-items.json` (central) or `{project}/.squad/work-items.json`
-- Knowledge: `knowledge/{category}/*.md`
+## Unified Brain
 
-The CC cannot write files or run commands — it's strictly read-only for information gathering.
+All LLM-powered features in the dashboard route through the same CC session:
+
+| Feature | Endpoint | How It Works |
+|---------|----------|-------------|
+| **CC chat panel** | `POST /api/command-center` | Direct CC interaction |
+| **Doc chat modal** | `POST /api/doc-chat` | Routes through CC via `ccDocCall()` |
+| **Doc steer** | `POST /api/steer-document` | Routes through CC via `ccDocCall()` |
+| **Plan revision** | `POST /api/plans/revise` | Routes through CC via `ccDocCall()` |
+
+This means:
+- A question in the doc chat modal shares context with the CC panel
+- CC remembers what you discussed in a document editing session
+- Doc modals can cross-reference other squad knowledge, PRs, work items
+- All turns accumulate in the same session
 
 ## Actions
 
-When you ask the CC to *do* something, it includes structured action blocks in its response. The dashboard frontend parses and executes them via API calls.
+When you ask CC to *do* something, it includes structured action blocks in its response.
 
 | Action | What It Does | Example Prompt |
 |--------|-------------|----------------|
-| `dispatch` | Create a work item | "Have dallas fix the login bug in OfficeAgent" |
-| `note` | Save a decision/reminder | "Remember that we need to migrate to v3 API" |
-| `plan` | Create an implementation plan | "Plan out the GitHub integration feature" |
+| `dispatch` | Create a work item | "Have dallas fix the login bug" |
+| `note` | Save a decision/reminder | "Remember we need to migrate to v3" |
+| `plan` | Create an implementation plan | "Plan the GitHub integration feature" |
 | `cancel` | Stop a running agent | "Cancel whatever ripley is doing" |
 | `retry` | Retry failed work items | "Retry the three failed tasks" |
 | `pause-plan` | Pause a PRD | "Pause the officeagent PRD" |
@@ -68,66 +89,72 @@ When you ask the CC to *do* something, it includes structured action blocks in i
 | `remove-prd-item` | Remove a PRD item | "Remove P011 from the plan" |
 | `delete-work-item` | Delete a work item | "Delete work item W025" |
 
-Multiple actions can be taken in a single response.
+## Error Handling
 
-## Example Prompts
-
-**Questions:**
-- "What's blocking progress right now?"
-- "What did dallas do on the last PR?"
-- "What was ripley's old plan about?"
-- "Why did P011 fail?"
-- "How many items are left in the officeagent PRD?"
-- "Who should handle API design work?"
-
-**Actions:**
-- "Retry all failed tasks"
-- "Have rebecca explore the auth module in office-bohemia"
-- "Create a plan to add GitHub PR support, parallel branches"
-- "Pause the current PRD and start a new plan for v2"
-- "Cancel lambert and reassign the review to ripley"
-
-**Multi-step:**
-- "Read dallas's output log and tell me what went wrong, then retry if it was a transient error"
-- "Check what's left in the PRD, then dispatch the highest priority missing item"
+- **Frontend timeout**: 5.5-minute `AbortSignal` on the fetch — prevents infinite "thinking" spinner
+- **Backend timeout**: 5-minute kill timer on the claude process
+- **Resume failure**: If `--resume` fails (corrupted/deleted session), automatically retries with a fresh session
+- **Concurrency guard**: Only one CC call at a time — concurrent requests get a 429 "CC is busy" response
+- **Phase indicators**: Thinking indicator shows progressive phases ("Thinking..." → "Analyzing..." → "Timing out soon...")
 
 ## Architecture
 
 ```
-User message
-    |
-    v
-POST /api/command-center
-    |
-    +-- Build system prompt (full squad state)
-    +-- Inject conversation history (last 10 messages)
-    +-- Call Sonnet via callLLM() with:
-    |     model: sonnet
-    |     maxTurns: 5
-    |     allowedTools: Read, Glob, Grep, WebFetch, WebSearch
-    |     timeout: 180s
-    |
-    v
+User message (CC panel, doc modal, or steer)
+    │
+    ▼
+POST /api/command-center  (or /api/doc-chat, /api/steer-document)
+    │
+    ├── Validate session (expiry, turn limit)
+    ├── Build dynamic state preamble (buildCCStatePreamble)
+    ├── callLLM() with sessionId (resume) or without (new)
+    │     model: sonnet
+    │     maxTurns: 5 (CC) or 3 (doc)
+    │     allowedTools: Read, Glob, Grep, WebFetch, WebSearch
+    │     timeout: 300s (CC) or 120s (doc)
+    │
+    ▼
+spawn-agent.js
+    │
+    ├── If --resume: skip system prompt file, pass -p --resume <id>
+    ├── If new: pass -p --system-prompt-file <file>
+    │
+    ▼
+claude CLI (persistent session on disk)
+    │
+    ▼
 Parse response
-    |
-    +-- Extract display text (markdown)
-    +-- Extract action blocks (```action {...}```)
-    |
-    v
-Dashboard frontend
-    +-- Render chat message
-    +-- Execute each action via dashboard API
-    +-- Show action status (success/fail)
+    ├── Extract sessionId from stream-json result
+    ├── Extract ===ACTIONS=== block (CC)
+    ├── Extract ---DOCUMENT--- block (doc chat/steer)
+    ├── Update cc-session.json
+    │
+    ▼
+Frontend
+    ├── Render chat message
+    ├── Execute actions / apply doc edits
+    ├── Save sessionId + messages to localStorage
 ```
+
+## Key Files
+
+| File | Role |
+|------|------|
+| `engine/llm.js` | `callLLM()` — single LLM function with optional `sessionId` for resume |
+| `engine/spawn-agent.js` | Spawns claude CLI; skips system prompt on `--resume` |
+| `engine/shared.js` | `parseStreamJsonOutput()` extracts `sessionId` from result |
+| `engine/cc-session.json` | Persisted session state (sessionId, turnCount, timestamps) |
+| `dashboard.js` | CC endpoint, `buildCCStatePreamble()`, `ccDocCall()`, `parseCCActions()` |
+| `dashboard.html` | Frontend: localStorage persistence, session indicator, New Session button |
 
 ## vs Command Bar
 
-The existing command bar at the top of the dashboard still works for quick commands. The CC is for when you need deeper reasoning or conversation.
+The command bar at the top of the dashboard still works for quick commands.
 
 | | Command Bar | Command Center |
 |---|---|---|
-| Model | Haiku (fast, cheap) | Sonnet (smart, multi-turn) |
+| Model | Haiku (fast, cheap) | Sonnet (persistent session) |
 | Tools | None | Read, Glob, Grep, Web |
 | Mode | Classify and dispatch | Conversational + actions |
-| Context | Squad state summary | Full state + file access |
+| Context | Squad state summary | Full state + file access + session memory |
 | Best for | Quick dispatches | Questions, reasoning, multi-step |

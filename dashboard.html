@@ -591,9 +591,12 @@
 <!-- Command Center Drawer -->
 <div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:300;flex-direction:column">
   <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-    <span style="font-weight:700;color:var(--blue);font-size:14px">Command Center</span>
     <div style="display:flex;align-items:center;gap:8px">
-      <button onclick="ccClear()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;padding:2px 8px;border-radius:3px;cursor:pointer">Clear</button>
+      <span style="font-weight:700;color:var(--blue);font-size:14px">Command Center</span>
+      <span id="cc-session-info" style="font-size:10px;color:var(--muted)">New session</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button onclick="ccNewSession()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;padding:2px 8px;border-radius:3px;cursor:pointer">New Session</button>
       <button onclick="toggleCommandCenter()" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px">&#10005;</button>
     </div>
   </div>
@@ -4105,22 +4108,61 @@ function timeSinceStr(date) {
 
 // ── Command Center ──────────────────────────────────────────────────────────
 
-let _ccHistory = [];
+let _ccSessionId = localStorage.getItem('cc-session-id') || null;
+let _ccMessages = JSON.parse(localStorage.getItem('cc-messages') || '[]');
 let _ccOpen = false;
 
 function toggleCommandCenter() {
   _ccOpen = !_ccOpen;
   const drawer = document.getElementById('cc-drawer');
   drawer.style.display = _ccOpen ? 'flex' : 'none';
-  if (_ccOpen) document.getElementById('cc-input').focus();
+  if (_ccOpen) {
+    document.getElementById('cc-input').focus();
+    ccRestoreMessages();
+  }
 }
 
-function ccClear() {
-  _ccHistory = [];
+function ccNewSession() {
+  fetch('/api/command-center/new-session', { method: 'POST' }).catch(() => {});
+  _ccSessionId = null;
+  _ccMessages = [];
+  localStorage.removeItem('cc-session-id');
+  localStorage.removeItem('cc-messages');
   document.getElementById('cc-messages').innerHTML = '';
+  ccUpdateSessionIndicator();
 }
 
-function ccAddMessage(role, html) {
+function ccRestoreMessages() {
+  const el = document.getElementById('cc-messages');
+  if (el.children.length > 0 || _ccMessages.length === 0) return; // Already rendered or nothing to restore
+  for (const msg of _ccMessages) {
+    ccAddMessage(msg.role, msg.html, true);
+  }
+}
+
+function ccSaveState() {
+  try {
+    if (_ccSessionId) localStorage.setItem('cc-session-id', _ccSessionId);
+    // Keep last 30 messages for display
+    const toSave = _ccMessages.slice(-30);
+    localStorage.setItem('cc-messages', JSON.stringify(toSave));
+  } catch {} // localStorage might be full
+}
+
+function ccUpdateSessionIndicator() {
+  const el = document.getElementById('cc-session-info');
+  if (!el) return;
+  if (_ccSessionId) {
+    const turns = _ccMessages.filter(m => m.role === 'user').length;
+    el.textContent = `Session: ${turns} turn${turns !== 1 ? 's' : ''}`;
+    el.style.color = 'var(--green)';
+  } else {
+    el.textContent = 'New session';
+    el.style.color = 'var(--muted)';
+  }
+}
+
+function ccAddMessage(role, html, skipSave) {
   const el = document.getElementById('cc-messages');
   const isUser = role === 'user';
   const div = document.createElement('div');
@@ -4129,6 +4171,10 @@ function ccAddMessage(role, html) {
   div.innerHTML = html;
   el.appendChild(div);
   el.scrollTop = el.scrollHeight;
+  if (!skipSave) {
+    _ccMessages.push({ role, html });
+    ccSaveState();
+  }
 }
 
 async function ccSend() {
@@ -4138,7 +4184,6 @@ async function ccSend() {
   input.value = '';
 
   ccAddMessage('user', escHtml(message));
-  _ccHistory.push({ role: 'user', text: message });
 
   // Show thinking indicator with timer
   const thinking = document.createElement('div');
@@ -4174,15 +4219,14 @@ async function ccSend() {
   }, 500);
 
   try {
-    const ccAbort = AbortSignal.timeout(330000); // 5.5min — slightly longer than backend's 5min LLM timeout
+    const ccAbort = AbortSignal.timeout(330000);
     const res = await fetch('/api/command-center', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: _ccHistory.slice(-11, -1) }),
+      body: JSON.stringify({ message, sessionId: _ccSessionId }),
       signal: ccAbort
     });
     const data = await res.json();
 
-    // Remove thinking indicator and stop timer
     clearInterval(ccTimer);
     thinking.remove();
 
@@ -4191,12 +4235,27 @@ async function ccSend() {
       return;
     }
 
+    // Track session — if server started a new session, clear stale frontend messages
+    if (data.sessionId) {
+      if (data.newSession && _ccSessionId && _ccSessionId !== data.sessionId) {
+        // Session was silently reset (expired/turn limit) — clear old messages except the current one
+        const el = document.getElementById('cc-messages');
+        // Keep only the user message we just added (last child)
+        const lastMsg = el.lastElementChild;
+        el.innerHTML = '';
+        if (lastMsg) el.appendChild(lastMsg);
+        _ccMessages = _ccMessages.slice(-1); // Keep only the message we just sent
+      }
+      _ccSessionId = data.sessionId;
+      ccSaveState();
+      ccUpdateSessionIndicator();
+    }
+
     // Render markdown-ish response
     const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
       .replace(/\n/g, '<br>');
     ccAddMessage('assistant', rendered);
-    _ccHistory.push({ role: 'assistant', text: data.text || '' });
 
     // Execute actions
     if (data.actions && data.actions.length > 0) {

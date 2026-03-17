@@ -23,24 +23,5 @@
   "homepage": "https://github.com/yemi33/squad#readme",
   "engines": {
     "node": ">=18"
-  },
-  "files": [
-    "bin/",
-    "agents/*/charter.md",
-    "config.template.json",
-    "dashboard.html",
-    "dashboard.js",
-    "docs/",
-    "engine.js",
-    "engine/spawn-agent.js",
-    "engine/ado-mcp-wrapper.js",
-    "playbooks/",
-    "routing.md",
-    "skills/README.md",
-    "squad.js",
-    "team.md",
-    "README.md",
-    "TODO.md",
-    "CHANGELOG.md"
-  ]
+  }
 }

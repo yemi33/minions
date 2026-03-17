@@ -179,6 +179,255 @@ function getTriageContext() {
   return { agents, projects, workItems: wi, plans, prdItems, activeDispatch: active };
 }
 
+// ── Command Center: session state + helpers ─────────────────────────────────
+
+const CC_SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+const CC_SESSION_MAX_TURNS = 50;
+let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+let ccInFlight = false;
+
+function ccSessionValid() {
+  if (!ccSession.sessionId) return false;
+  const age = Date.now() - new Date(ccSession.lastActiveAt || 0).getTime();
+  return age < CC_SESSION_EXPIRY_MS && ccSession.turnCount < CC_SESSION_MAX_TURNS;
+}
+
+// Load persisted CC session on startup
+try {
+  const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
+  if (saved && saved.sessionId) {
+    const age = Date.now() - new Date(saved.lastActiveAt || 0).getTime();
+    if (age < 30 * 60 * 1000) ccSession = saved;
+  }
+} catch {}
+
+// Static system prompt — baked into session on creation, never changes
+const CC_STATIC_SYSTEM_PROMPT = `You are the Command Center AI for a software engineering squad called "Squad."
+You have complete visibility into the squad's state and can answer questions AND take actions.
+
+Each message includes an updated "[Current Squad State]" section with real-time data. Use it to answer questions accurately.
+
+## Actions You Can Take
+
+When the user wants you to DO something (not just answer), append actions at the END of your response.
+
+**Format:** Write your conversational response first, then on a new line write exactly \`===ACTIONS===\` followed by a JSON array of actions. Example:
+
+I'll save that as a note and dispatch dallas to fix the bug.
+
+===ACTIONS===
+[{"type": "note", "title": "API v3 migration needed", "content": "We need to migrate..."}, {"type": "dispatch", "title": "Fix login bug", "workType": "fix", "priority": "high", "agents": ["dallas"], "project": "OfficeAgent", "description": "..."}]
+
+**CRITICAL:** The ===ACTIONS=== line and JSON array must be the LAST thing in your response. No text after it. The JSON must be a valid array on a single line.
+
+If no actions are needed (just answering a question), do NOT include the ===ACTIONS=== line at all.
+
+Available action types:
+- **dispatch**: Create a work item. Fields: title, workType (ask/explore/fix/review/test/implement), priority (low/medium/high), agents (array of IDs, optional), project, description
+- **note**: Save a note/decision. Fields: title, content
+- **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
+- **cancel**: Cancel a running agent. Fields: agent (agent ID), reason
+- **retry**: Retry failed work items. Fields: ids (array of work item IDs)
+- **pause-plan**: Pause a PRD (stop materializing items). Fields: file (PRD .json filename)
+- **approve-plan**: Approve a PRD (start materializing items). Fields: file (PRD .json filename)
+- **edit-prd-item**: Edit a PRD item. Fields: source (PRD filename), itemId, name, description, priority, complexity
+- **remove-prd-item**: Remove a PRD item. Fields: source (PRD filename), itemId
+- **delete-work-item**: Delete a work item. Fields: id, source (project name or "central")
+
+## Tool Access
+
+You have read-only access to the filesystem. Use these tools when the squad state above isn't enough:
+- **Read**: Read any file (code, config, plans, agent output logs, etc.)
+- **Glob**: Find files by pattern (e.g., \`agents/*/output.log\`, \`plans/*.json\`)
+- **Grep**: Search file contents (e.g., find where a function is defined, search agent outputs)
+- **WebFetch/WebSearch**: Look up external resources
+
+Key paths:
+- Squad root: \`${SQUAD_DIR}\`
+- Agent outputs: \`${SQUAD_DIR}/agents/{id}/output.log\` (latest) or \`output-{dispatch-id}.log\` (archived)
+- Plans: \`${SQUAD_DIR}/plans/\` (.md source plans) and \`${SQUAD_DIR}/prd/\` (.json PRDs)
+- Work items: \`${SQUAD_DIR}/work-items.json\` (central) or \`{project}/.squad/work-items.json\`
+- Knowledge: \`${SQUAD_DIR}/knowledge/{category}/*.md\`
+- Config: \`${SQUAD_DIR}/config.json\`
+
+## Rules
+
+1. Answer questions conversationally. Be specific — cite IDs, agent names, statuses, filenames, line numbers.
+2. When the user wants action, include the action block AND explain what you're doing.
+3. Resolve references like "ripley's plan", "the failing PR", "the old plan" to specific items from the context. Use Read/Grep to look up details if needed.
+4. When recommending which agent to assign, consult the charters and routing rules.
+5. If something is ambiguous, ask for clarification rather than guessing.
+6. Keep responses concise but informative. Use markdown.
+7. Never modify engine source code or config files directly — only take actions via action blocks.
+8. When the user asks about what an agent did, read the agent's output log for details.`;
+
+function buildCCStatePreamble() {
+  const ctx = getTriageContext();
+  const notes = safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
+  const notesTail = notes.length > 3000 ? notes.slice(-3000) : notes;
+  const config = queries.getConfig();
+
+  // Plan contents
+  let planContents = '';
+  for (const { dir, label } of [{ dir: PLANS_DIR, label: 'plan' }, { dir: PRD_DIR, label: 'prd' }]) {
+    try {
+      for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.md') || f.endsWith('.json'))) {
+        try {
+          const raw = safeRead(path.join(dir, f));
+          if (f.endsWith('.md')) {
+            planContents += `\n#### ${f} (${label})\n${raw.length > 4000 ? raw.slice(0, 4000) + '\n...(truncated)' : raw}\n`;
+          } else {
+            const plan = JSON.parse(raw);
+            planContents += `\n#### ${f} (${label})\nStatus: ${plan.status || 'unknown'} | By: ${plan.generated_by || 'unknown'} | Project: ${plan.project || ''}\nSummary: ${plan.plan_summary || ''}\n`;
+            if (plan.missing_features) {
+              planContents += `Items (${plan.missing_features.length}):\n`;
+              for (const item of plan.missing_features) planContents += `- ${item.id}: ${(item.name || '').slice(0, 60)} [${item.status}] ${item.priority || ''}\n`;
+            }
+          }
+        } catch {}
+      }
+      try {
+        for (const f of fs.readdirSync(path.join(dir, 'archive')).filter(f => f.endsWith('.md') || f.endsWith('.json')).slice(-3)) {
+          try { planContents += `\n#### [archived] ${f}\n${safeRead(path.join(dir, 'archive', f)).slice(0, 2000)}\n`; } catch {}
+        }
+      } catch {}
+    } catch {}
+  }
+
+  const agentCharters = Object.keys(config.agents || {}).map(id => {
+    const charter = safeRead(path.join(SQUAD_DIR, 'agents', id, 'charter.md'));
+    return charter ? `#### ${id}\n${charter.slice(0, 600)}` : '';
+  }).filter(Boolean).join('\n\n');
+
+  const routing = safeRead(path.join(SQUAD_DIR, 'routing.md')) || '(no routing.md)';
+  const skillsList = getSkills().map(s => `- **${s.name}**: ${s.description || ''} (trigger: ${s.trigger || 'manual'})`).join('\n') || '(no skills)';
+  const kbEntries = getKnowledgeBaseEntries().slice(-20).map(e => `- [${e.cat}] ${e.title} (${e.file})`).join('\n') || '(empty)';
+  const allPrs = getPullRequests().map(pr =>
+    `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 60)} | status: ${pr.status} | review: ${pr.reviewStatus || '?'} | build: ${pr.buildStatus || '?'}${pr.branch ? ' | branch: \`' + pr.branch + '\`' : ''}${pr.url ? ' | ' + pr.url : ''}`
+  ).join('\n') || '(no PRs)';
+  const engineConfig = config.engine || {};
+  const dispatchHistory = (() => {
+    try {
+      const d = JSON.parse(safeRead(path.join(SQUAD_DIR, 'engine', 'dispatch.json')) || '{}');
+      return (d.completed || []).slice(-15).reverse().map(c =>
+        `- ${c.agent} ${c.result}: ${(c.task || '').slice(0, 80)}${c.resultSummary ? ' — ' + c.resultSummary.slice(0, 120) : ''}${c.reason ? ' [' + c.reason.slice(0, 60) + ']' : ''} (${(c.completed_at || '').slice(0, 16)})`
+      ).join('\n') || '(none)';
+    } catch { return '(unavailable)'; }
+  })();
+
+  return `### Agents & Statuses
+${ctx.agents}
+
+### Agent Charters
+${agentCharters}
+
+### Routing Rules
+${routing}
+
+### Projects
+${ctx.projects}
+
+### Engine Config
+Tick: ${engineConfig.tickInterval || 60000}ms | Max concurrent: ${engineConfig.maxConcurrent || 3} | Agent timeout: ${Math.round((engineConfig.agentTimeout || 18000000) / 60000)}min | Max turns: ${engineConfig.maxTurns || 100}
+
+### Work Items
+${ctx.workItems}
+
+### Pull Requests
+${allPrs}
+
+### Plans & PRDs
+${ctx.plans}
+
+### Plan Contents
+${planContents || '(none)'}
+
+### PRD Items
+${ctx.prdItems}
+
+### Active Dispatch
+${ctx.activeDispatch}
+
+### Recent Dispatch History
+${dispatchHistory}
+
+### Skills
+${skillsList}
+
+### Knowledge Base
+${kbEntries}
+
+### Team Notes
+${notesTail.slice(-1500)}`;
+}
+
+function parseCCActions(text) {
+  let actions = [];
+  let displayText = text;
+  const delimIdx = text.indexOf('===ACTIONS===');
+  if (delimIdx >= 0) {
+    displayText = text.slice(0, delimIdx).trim();
+    try {
+      const parsed = JSON.parse(text.slice(delimIdx + '===ACTIONS==='.length).trim());
+      actions = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {}
+  }
+  if (actions.length === 0) {
+    const actionRegex = /`{3,}\s*action\s*\r?\n([\s\S]*?)`{3,}/g;
+    let match;
+    while ((match = actionRegex.exec(displayText)) !== null) {
+      try { actions.push(JSON.parse(match[1].trim())); } catch {}
+    }
+    if (actions.length > 0) displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
+  }
+  return { text: displayText, actions };
+}
+
+// Route doc chat/steer through CC's persistent session for squad-aware context
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson }) {
+  const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
+
+  const prompt = `## Current Squad State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}\n\n---\n\n${docContext}\n\n---\n\n${message}`;
+
+  const sessionId = ccSessionValid() ? ccSession.sessionId : null;
+
+  const result = await llm.callLLM(prompt, sessionId ? '' : CC_STATIC_SYSTEM_PROMPT, {
+    timeout: 120000, label: 'command-center', model: 'sonnet', maxTurns: 3,
+    allowedTools: 'Read,Glob,Grep', sessionId,
+  });
+  llm.trackEngineUsage('command-center', result.usage);
+
+  // Update CC session
+  const returnedId = result.sessionId || sessionId;
+  if (returnedId) {
+    ccSession = {
+      sessionId: returnedId,
+      createdAt: sessionId ? ccSession.createdAt : new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+      turnCount: (sessionId ? ccSession.turnCount : 0) + 1,
+    };
+    safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+  }
+
+  if (result.code !== 0 || !result.text) {
+    return { answer: 'Failed to process request. Try again.', content: null };
+  }
+
+  // Parse ---DOCUMENT--- delimiter for doc edits
+  const text = result.text;
+  const delimIdx = text.indexOf('---DOCUMENT---');
+  if (delimIdx >= 0) {
+    const answer = text.slice(0, delimIdx).trim();
+    let content = text.slice(delimIdx + '---DOCUMENT---'.length).trim();
+    content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
+    return { answer, content };
+  }
+
+  // Also strip any ===ACTIONS=== (CC might still emit them)
+  const actIdx = text.indexOf('===ACTIONS===');
+  return { answer: actIdx >= 0 ? text.slice(0, actIdx).trim() : text, content: null };
+}
+
 function buildTriageSysPrompt(ctx) {
   return `You are a triage assistant for a software engineering squad called "Squad."
 Given a user command, determine the intent and return structured JSON.
@@ -1278,16 +1527,18 @@ const server = http.createServer(async (req, res) => {
       const planContent = safeRead(sourcePlanPath);
       if (!planContent) return jsonReply(res, 404, { error: 'Source plan file not readable: ' + sourcePlanFile });
 
-      // Step 1: Steer the source plan with the user's instruction
-      const result = await llm.steerDocument({
-        instruction: body.instruction,
+      // Step 1: Steer the source plan with the user's instruction via CC
+      const result = await ccDocCall({
+        message: body.instruction,
+        document: planContent,
+        title: sourcePlanFile,
         filePath: 'plans/' + sourcePlanFile,
-        content: planContent,
         selection: body.selection || '',
+        canEdit: true,
         isJson: false,
       });
 
-      if (!result.updated) {
+      if (!result.content) {
         return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false });
       }
 
@@ -1467,7 +1718,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/doc-chat — unified Q&A + steering via engine/llm.js
+  // POST /api/doc-chat — routes through CC session for squad-aware doc Q&A + editing
   if (req.method === 'POST' && req.url === '/api/doc-chat') {
     try {
       const body = await readBody(req);
@@ -1485,27 +1736,27 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (diskContent !== null) currentContent = diskContent;
       }
 
-      const result = await llm.docChat({
+      const { answer, content } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
-        filePath: canEdit ? body.filePath : null, selection: body.selection, history: body.history, isJson,
+        filePath: body.filePath, selection: body.selection, canEdit, isJson,
       });
 
-      if (!result.edited) return jsonReply(res, 200, { ok: true, answer: result.answer, edited: false });
+      if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false });
 
       if (isJson) {
-        try { JSON.parse(result.content); } catch (e) {
-          return jsonReply(res, 200, { ok: true, answer: result.answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false });
+        try { JSON.parse(content); } catch (e) {
+          return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(JSON invalid — not saved: ' + e.message + ')', edited: false });
         }
       }
       if (canEdit && fullPath) {
-        safeWrite(fullPath, result.content);
-        return jsonReply(res, 200, { ok: true, answer: result.answer, edited: true, content: result.content });
+        safeWrite(fullPath, content);
+        return jsonReply(res, 200, { ok: true, answer, edited: true, content });
       }
-      return jsonReply(res, 200, { ok: true, answer: result.answer + '\n\n(Read-only — changes not saved)', edited: false });
+      return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/steer-document — modify a document via engine/llm.js
+  // POST /api/steer-document — routes through CC session for squad-aware doc editing
   if (req.method === 'POST' && req.url === '/api/steer-document') {
     try {
       const body = await readBody(req);
@@ -1517,33 +1768,19 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (currentContent === null) return jsonReply(res, 404, { error: 'file not found' });
       const isJson = body.filePath.endsWith('.json');
 
-      const result = await llm.steerDocument({
-        instruction: body.instruction, filePath: body.filePath,
-        content: currentContent, selection: body.selection, isJson,
+      const { answer, content } = await ccDocCall({
+        message: body.instruction, document: currentContent, title: path.basename(body.filePath),
+        filePath: body.filePath, selection: body.selection, canEdit: true, isJson,
       });
 
-      if (!result.updated) return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false });
+      if (!content) return jsonReply(res, 200, { ok: true, answer, updated: false });
       if (isJson) {
-        try { JSON.parse(result.content); } catch (e) {
-          return jsonReply(res, 200, { ok: true, answer: result.answer + '\n\n(JSON validation failed — not saved: ' + e.message + ')', updated: false });
+        try { JSON.parse(content); } catch (e) {
+          return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(JSON validation failed — not saved: ' + e.message + ')', updated: false });
         }
       }
-      safeWrite(fullPath, result.content);
-      return jsonReply(res, 200, { ok: true, answer: result.answer, updated: true, content: result.content });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
-  }
-
-  // POST /api/ask-about — document Q&A via engine/llm.js
-  if (req.method === 'POST' && req.url === '/api/ask-about') {
-    try {
-      const body = await readBody(req);
-      if (!body.question) return jsonReply(res, 400, { error: 'question required' });
-      if (!body.document) return jsonReply(res, 400, { error: 'document required' });
-      const result = await llm.askAbout({
-        question: body.question, document: body.document,
-        title: body.title, selection: body.selection,
-      });
-      return jsonReply(res, 200, { ok: true, answer: result.answer });
+      safeWrite(fullPath, content);
+      return jsonReply(res, 200, { ok: true, answer, updated: true, content });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -1802,253 +2039,74 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // ── Command Center: persistent multi-turn session ──────────────────────────
+
+  // POST /api/command-center/new-session — clear active CC session
+  if (req.method === 'POST' && req.url === '/api/command-center/new-session') {
+    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+    safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+    return jsonReply(res, 200, { ok: true });
+  }
+
   // POST /api/command-center — conversational command center with full squad context
   if (req.method === 'POST' && req.url === '/api/command-center') {
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
 
-      const ctx = getTriageContext();
-      const notes = safeRead(path.join(SQUAD_DIR, 'notes.md')) || '';
-      const notesTail = notes.length > 3000 ? notes.slice(-3000) : notes;
+      // Concurrency guard — only one CC call at a time
+      if (ccInFlight) return jsonReply(res, 429, { error: 'Command Center is busy — wait for the current request to finish.' });
+      ccInFlight = true;
 
-      // Build plan contents (source .md plans in plans/ + PRD JSONs in prd/)
-      let planContents = '';
-      const scanDirs = [
-        { dir: PLANS_DIR, label: 'plan' },
-        { dir: PRD_DIR, label: 'prd' },
-      ];
-      for (const { dir, label } of scanDirs) {
-        try {
-          const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') || f.endsWith('.json'));
-          for (const f of files) {
-            try {
-              const raw = safeRead(path.join(dir, f));
-              if (f.endsWith('.md')) {
-                const truncated = raw.length > 4000 ? raw.slice(0, 4000) + '\n...(truncated)' : raw;
-                planContents += `\n#### ${f} (${label})\n${truncated}\n`;
-              } else {
-                const plan = JSON.parse(raw);
-                planContents += `\n#### ${f} (${label})\n`;
-                planContents += `Status: ${plan.status || 'unknown'} | By: ${plan.generated_by || 'unknown'} | Project: ${plan.project || ''}\n`;
-                planContents += `Summary: ${plan.plan_summary || ''}\n`;
-                if (plan.missing_features) {
-                  planContents += `Items (${plan.missing_features.length}):\n`;
-                  for (const item of plan.missing_features) {
-                    planContents += `- ${item.id}: ${(item.name || '').slice(0, 60)} [${item.status}] ${item.priority || ''}\n`;
-                  }
-                }
-              }
-            } catch {}
-          }
-          // Also check archive subdirectory
-          try {
-            const archived = fs.readdirSync(path.join(dir, 'archive')).filter(f => f.endsWith('.md') || f.endsWith('.json')).slice(-3);
-            for (const f of archived) {
-              try {
-                const raw = safeRead(path.join(dir, 'archive', f));
-                const truncated = raw.length > 2000 ? raw.slice(0, 2000) + '\n...(truncated)' : raw;
-                planContents += `\n#### [archived] ${f}\n${truncated}\n`;
-              } catch {}
-            }
-          } catch {}
-        } catch {}
-      }
+      try {
+        // Check if client-provided sessionId matches our active session
+        // Resume if client sessionId matches and session is still valid
+        let sessionId = (body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid())
+          ? ccSession.sessionId : null;
 
-      // Build extra context: charters, routing, skills, KB, PRs, config
-      const config = queries.getConfig();
+        const prompt = `## Current Squad State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}\n\n---\n\n${body.message}`;
+        const ccOpts = { timeout: 300000, label: 'command-center', model: 'sonnet', maxTurns: 5, allowedTools: 'Read,Glob,Grep,WebFetch,WebSearch' };
 
-      const agentCharters = Object.keys(config.agents || {}).map(id => {
-        const charter = safeRead(path.join(SQUAD_DIR, 'agents', id, 'charter.md'));
-        return charter ? `#### ${id}\n${charter.slice(0, 600)}` : '';
-      }).filter(Boolean).join('\n\n');
+        let result = await llm.callLLM(prompt, sessionId ? '' : CC_STATIC_SYSTEM_PROMPT, { ...ccOpts, sessionId });
+        llm.trackEngineUsage('command-center', result.usage);
 
-      const routing = safeRead(path.join(SQUAD_DIR, 'routing.md')) || '(no routing.md)';
-
-      const skillsList = getSkills().map(s =>
-        `- **${s.name}**: ${s.description || ''} (trigger: ${s.trigger || 'manual'})`
-      ).join('\n') || '(no skills)';
-
-      const kbEntries = getKnowledgeBaseEntries().slice(-20).map(e =>
-        `- [${e.cat}] ${e.title} (${e.file})`
-      ).join('\n') || '(empty)';
-
-      const allPrs = getPullRequests().map(pr =>
-        `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 60)} | status: ${pr.status} | review: ${pr.reviewStatus || '?'} | build: ${pr.buildStatus || '?'}${pr.branch ? ' | branch: `' + pr.branch + '`' : ''}${pr.url ? ' | ' + pr.url : ''}`
-      ).join('\n') || '(no PRs)';
-
-      const engineConfig = config.engine || {};
-
-      const dispatchHistory = (() => {
-        try {
-          const d = JSON.parse(safeRead(path.join(SQUAD_DIR, 'engine', 'dispatch.json')) || '{}');
-          return (d.completed || []).slice(-15).reverse().map(c =>
-            `- ${c.agent} ${c.result}: ${(c.task || '').slice(0, 80)}${c.resultSummary ? ' — ' + c.resultSummary.slice(0, 120) : ''}${c.reason ? ' [' + c.reason.slice(0, 60) + ']' : ''} (${(c.completed_at || '').slice(0, 16)})`
-          ).join('\n') || '(none)';
-        } catch { return '(unavailable)'; }
-      })();
-
-      // Build comprehensive system prompt with full squad state
-      const sysPrompt = `You are the Command Center AI for a software engineering squad called "Squad."
-You have complete visibility into the squad's state and can answer questions AND take actions.
-
-## Squad State
-
-### Agents & Statuses
-${ctx.agents}
-
-### Agent Charters (expertise & roles)
-${agentCharters}
-
-### Routing Rules (who handles what)
-${routing}
-
-### Projects
-${ctx.projects}
-
-### Engine Configuration
-Tick: ${engineConfig.tickInterval || 60000}ms | Max concurrent: ${engineConfig.maxConcurrent || 3} | Consolidation threshold: ${engineConfig.inboxConsolidateThreshold || 5} notes | Agent timeout: ${Math.round((engineConfig.agentTimeout || 18000000) / 60000)}min | Max turns: ${engineConfig.maxTurns || 100}
-
-### Work Items (active/pending/failed)
-${ctx.workItems}
-
-### Pull Requests
-${allPrs}
-
-### Plans & PRDs (metadata)
-${ctx.plans}
-
-### Plan Contents
-${planContents || '(no plans on disk)'}
-
-### PRD Items
-${ctx.prdItems}
-
-### Currently Active
-${ctx.activeDispatch}
-
-### Recent Dispatch History
-${dispatchHistory}
-
-### Skills (reusable agent workflows)
-${skillsList}
-
-### Knowledge Base (recent entries)
-${kbEntries}
-
-### Team Notes (recent)
-${notesTail.slice(-1500)}
-
-## Actions You Can Take
-
-When the user wants you to DO something (not just answer), append actions at the END of your response.
-
-**Format:** Write your conversational response first, then on a new line write exactly \`===ACTIONS===\` followed by a JSON array of actions. Example:
-
-I'll save that as a note and dispatch dallas to fix the bug.
-
-===ACTIONS===
-[{"type": "note", "title": "API v3 migration needed", "content": "We need to migrate..."}, {"type": "dispatch", "title": "Fix login bug", "workType": "fix", "priority": "high", "agents": ["dallas"], "project": "OfficeAgent", "description": "..."}]
-
-**CRITICAL:** The ===ACTIONS=== line and JSON array must be the LAST thing in your response. No text after it. The JSON must be a valid array on a single line.
-
-If no actions are needed (just answering a question), do NOT include the ===ACTIONS=== line at all.
-
-Available action types:
-- **dispatch**: Create a work item. Fields: title, workType (ask/explore/fix/review/test/implement), priority (low/medium/high), agents (array of IDs, optional), project, description
-- **note**: Save a note/decision. Fields: title, content
-- **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
-- **cancel**: Cancel a running agent. Fields: agent (agent ID), reason
-- **retry**: Retry failed work items. Fields: ids (array of work item IDs)
-- **pause-plan**: Pause a PRD (stop materializing items). Fields: file (PRD .json filename)
-- **approve-plan**: Approve a PRD (start materializing items). Fields: file (PRD .json filename)
-- **edit-prd-item**: Edit a PRD item. Fields: source (PRD filename), itemId, name, description, priority, complexity
-- **remove-prd-item**: Remove a PRD item. Fields: source (PRD filename), itemId
-- **delete-work-item**: Delete a work item. Fields: id, source (project name or "central")
-
-## Tool Access
-
-You have read-only access to the filesystem. Use these tools when the squad state above isn't enough:
-- **Read**: Read any file (code, config, plans, agent output logs, etc.)
-- **Glob**: Find files by pattern (e.g., \`agents/*/output.log\`, \`plans/*.json\`)
-- **Grep**: Search file contents (e.g., find where a function is defined, search agent outputs)
-- **WebFetch/WebSearch**: Look up external resources
-
-Key paths:
-- Squad root: \`${SQUAD_DIR}\`
-- Agent outputs: \`${SQUAD_DIR}/agents/{id}/output.log\` (latest) or \`output-{dispatch-id}.log\` (archived)
-- Plans: \`${SQUAD_DIR}/plans/\` (.md source plans) and \`${SQUAD_DIR}/prd/\` (.json PRDs)
-- Work items: \`${SQUAD_DIR}/work-items.json\` (central) or \`{project}/.squad/work-items.json\`
-- Knowledge: \`${SQUAD_DIR}/knowledge/{category}/*.md\`
-- Config: \`${SQUAD_DIR}/config.json\`
-
-Use tools to dig deeper when the pre-loaded context isn't sufficient — e.g., reading an agent's full output log, checking a specific code file, or looking at a plan's details.
-
-## Rules
-
-1. Answer questions conversationally. Be specific — cite IDs, agent names, statuses, filenames, line numbers.
-2. When the user wants action, include the action block AND explain what you're doing.
-3. Resolve references like "ripley's plan", "the failing PR", "the old plan" to specific items from the context. Use Read/Grep to look up details if needed.
-4. When recommending which agent to assign, consult the charters and routing rules.
-5. If something is ambiguous, ask for clarification rather than guessing.
-6. Keep responses concise but informative. Use markdown.
-7. Never modify engine source code or config files directly — only take actions via action blocks.
-8. When the user asks about what an agent did, read the agent's output log for details.`;
-
-      // Build conversation prompt with history
-      let prompt = '';
-      if (body.history && body.history.length > 0) {
-        prompt += '## Conversation History\n\n';
-        for (const msg of body.history.slice(-10)) {
-          prompt += msg.role === 'user' ? `**User:** ${msg.text}\n\n` : `**You:** ${msg.text}\n\n`;
+        // If resume failed, retry with a fresh session
+        if ((result.code !== 0 || !result.text) && sessionId) {
+          console.log('[CC] Resume failed, retrying with fresh session...');
+          result = await llm.callLLM(prompt, CC_STATIC_SYSTEM_PROMPT, ccOpts);
+          llm.trackEngineUsage('command-center', result.usage);
+          sessionId = null; // Reset so session update below creates a new session
         }
-        prompt += '---\n\n';
-      }
-      prompt += `**User:** ${body.message}`;
 
-      const result = await llm.callLLM(prompt, sysPrompt, {
-        timeout: 300000, label: 'command-center', model: 'sonnet',
-        maxTurns: 5,
-        allowedTools: 'Read,Glob,Grep,WebFetch,WebSearch',
-      });
-      llm.trackEngineUsage('command-center', result.usage);
-
-      if (result.code !== 0 || !result.text) {
-        const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
-        const stderr = (result.stderr || '').slice(-300);
-        console.error(`[CC] LLM failed ${debugInfo}: ${stderr}`);
-        return jsonReply(res, 200, {
-          text: `I had trouble processing that ${debugInfo}. ${stderr ? 'Detail: ' + stderr.split('\n').pop() : 'Try again or rephrase.'}`,
-          actions: []
-        });
-      }
-
-      // Parse actions from ===ACTIONS=== delimiter at end of response
-      let actions = [];
-      let displayText = result.text;
-      const delimIdx = result.text.indexOf('===ACTIONS===');
-      if (delimIdx >= 0) {
-        displayText = result.text.slice(0, delimIdx).trim();
-        const jsonStr = result.text.slice(delimIdx + '===ACTIONS==='.length).trim();
-        try {
-          const parsed = JSON.parse(jsonStr);
-          actions = Array.isArray(parsed) ? parsed : [parsed];
-        } catch {}
-      }
-      // Fallback: also check for legacy ```action blocks (in case model uses old format)
-      if (actions.length === 0) {
-        const actionRegex = /`{3,}\s*action\s*\r?\n([\s\S]*?)`{3,}/g;
-        let match;
-        while ((match = actionRegex.exec(displayText)) !== null) {
-          try { actions.push(JSON.parse(match[1].trim())); } catch {}
+        if (result.code !== 0 || !result.text) {
+          const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
+          const stderr = (result.stderr || '').slice(-300);
+          console.error(`[CC] LLM failed ${debugInfo}: ${stderr}`);
+          return jsonReply(res, 200, {
+            text: `I had trouble processing that ${debugInfo}. ${stderr ? 'Detail: ' + stderr.split('\n').pop() : 'Try again or rephrase.'}`,
+            actions: [], sessionId: ccSession.sessionId
+          });
         }
-        if (actions.length > 0) {
-          displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
-        }
-      }
 
-      return jsonReply(res, 200, { text: displayText, actions });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+        // Update session state on success
+        const returnedSessionId = result.sessionId || sessionId;
+        if (returnedSessionId) {
+          ccSession = {
+            sessionId: returnedSessionId,
+            createdAt: sessionId ? ccSession.createdAt : new Date().toISOString(),
+            lastActiveAt: new Date().toISOString(),
+            turnCount: (sessionId ? ccSession.turnCount : 0) + 1,
+          };
+          safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+        }
+
+        // Tell frontend if this is a new session (so it can clear stale messages)
+        const isNewSession = !sessionId || returnedSessionId !== body.sessionId;
+        return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: returnedSessionId, newSession: isNewSession });
+      } finally {
+        ccInFlight = false;
+      }
+    } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
   }
 
   // GET /api/settings — return current engine + claude + routing config

@@ -123,6 +123,7 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
   const lines = raw.split('\n');
   let text = '';
   let usage = null;
+  let sessionId = null;
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line || !line.startsWith('{')) continue;
@@ -130,6 +131,7 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
       const obj = JSON.parse(line);
       if (obj.type === 'result') {
         if (obj.result) text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
+        if (obj.session_id) sessionId = obj.session_id;
         if (obj.total_cost_usd || obj.usage) {
           usage = {
             costUsd: obj.total_cost_usd || 0,
@@ -145,7 +147,7 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
       }
     } catch {}
   }
-  return { text, usage };
+  return { text, usage, sessionId };
 }
 
 // ── Knowledge Base ──────────────────────────────────────────────────────────
