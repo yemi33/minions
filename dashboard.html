@@ -755,7 +755,6 @@
         <button class="pill-clear" onclick="clearQaSelection()" title="Clear selection">&times;</button>
       </div>
       <div class="modal-qa-input-wrap">
-        <button id="qa-edit-toggle" onclick="toggleQaEditMode()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:10px;cursor:pointer;color:var(--muted);white-space:nowrap" title="Toggle edit mode (Sonnet + codebase tools)">Edit</button>
         <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document..." onkeydown="if(event.key==='Enter')modalSend()">
         <button class="modal-qa-btn" id="modal-send-btn" onclick="modalSend()">Send</button>
       </div>
@@ -3034,11 +3033,6 @@ function findCardForFile(filePath) {
 
 function showModalQa() {
   document.getElementById('modal-qa').style.display = '';
-  // Show edit toggle only for editable documents with file paths
-  const editBtn = document.getElementById('qa-edit-toggle');
-  if (editBtn) editBtn.style.display = _modalFilePath ? '' : 'none';
-  // Reset edit mode when opening a new document
-  if (_qaEditMode) toggleQaEditMode();
 }
 let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{role:'assistant',text:''}]
 let _qaProcessing = false; // true while waiting for Haiku response
@@ -3135,22 +3129,6 @@ function clearQaSelection() {
   document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
 }
 
-let _qaEditMode = false;
-function toggleQaEditMode() {
-  _qaEditMode = !_qaEditMode;
-  const btn = document.getElementById('qa-edit-toggle');
-  if (_qaEditMode) {
-    btn.style.background = 'var(--blue)';
-    btn.style.color = '#fff';
-    btn.style.borderColor = 'var(--blue)';
-    document.getElementById('modal-qa-input').placeholder = 'Edit instruction (Sonnet + codebase tools)...';
-  } else {
-    btn.style.background = 'none';
-    btn.style.color = 'var(--muted)';
-    btn.style.borderColor = 'var(--border)';
-    document.getElementById('modal-qa-input').placeholder = 'Ask about this document...';
-  }
-}
 
 function _initQaSession() {
   var key = _modalFilePath || _modalDocContext.title || '';
@@ -3272,7 +3250,6 @@ async function _processQaMessage(message, selection) {
         title: _modalDocContext.title,
         selection: selection,
         filePath: _modalFilePath || null,
-        editMode: _qaEditMode || false,
       }),
     });
     const data = await res.json();

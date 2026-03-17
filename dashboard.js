@@ -410,20 +410,20 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, editMode }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson }) {
   const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
 
-  // Default: Haiku, 1 turn, no tools — fast for Q&A and simple edits.
-  // Edit mode: Sonnet with tools for codebase-aware plan edits (user-toggled).
-  const useEditMode = editMode && canEdit;
+  // Plans: Sonnet with tools for codebase-aware Q&A and edits
+  // Everything else: Haiku, 1 turn, no tools — fast
+  const isPlan = filePath && /^plans\//.test(filePath);
   const result = await ccCall(message, {
     store: 'doc', sessionKey: filePath || title,
     extraContext: docContext, label: 'doc-chat',
-    timeout: useEditMode ? 300000 : 60000,
-    maxTurns: useEditMode ? 10 : 1,
-    model: useEditMode ? 'sonnet' : 'haiku',
-    allowedTools: useEditMode ? 'Read,Glob,Grep' : '',
-    skipStatePreamble: !useEditMode,
+    timeout: isPlan ? 300000 : 60000,
+    maxTurns: isPlan ? 10 : 1,
+    model: isPlan ? 'sonnet' : 'haiku',
+    allowedTools: isPlan ? 'Read,Glob,Grep' : '',
+    skipStatePreamble: !isPlan,
   });
 
   if (result.code !== 0 || !result.text) {
@@ -1856,7 +1856,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { answer, content, actions } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
-        editMode: body.editMode || false,
       });
 
       if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
