@@ -576,6 +576,27 @@ function resolveDependencyBranches(depIds, sourcePlan, project, config) {
   return results;
 }
 
+// Find an existing worktree already checked out on a given branch
+function findExistingWorktree(repoDir, branchName) {
+  try {
+    const out = exec(`git worktree list --porcelain`, { cwd: repoDir, stdio: 'pipe', timeout: 10000 }).toString();
+    const lines = out.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith('branch ') && lines[i].includes(branchName)) {
+        // Walk back to find the worktree path
+        for (let j = i - 1; j >= 0; j--) {
+          if (lines[j].startsWith('worktree ')) {
+            const wtPath = lines[j].replace('worktree ', '').trim();
+            if (fs.existsSync(wtPath)) return wtPath;
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
 function spawnAgent(dispatchItem, config) {
   const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
   const claudeConfig = config.claude || {};
@@ -592,65 +613,58 @@ function spawnAgent(dispatchItem, config) {
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
 
   if (branchName) {
-    // Worktrees live in a sibling 'worktrees/' folder next to each project
     const wtSuffix = id ? id.split('-').pop() : shared.uid();
     const projectSlug = (project.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '-');
     const wtDirName = `${projectSlug}-${branchName}-${wtSuffix}`;
     worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', wtDirName);
-    try {
+
+    // If branch is already checked out in an existing worktree, reuse it
+    const existingWt = findExistingWorktree(rootDir, branchName);
+    if (existingWt) {
+      worktreePath = existingWt;
+      log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
+      try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
+      try { exec(`git pull origin "${branchName}"`, { cwd: existingWt, stdio: 'pipe', timeout: 30000 }); } catch {}
+    } else try {
       if (!fs.existsSync(worktreePath)) {
         const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
         if (isSharedBranch) {
-          // Shared branch: fetch and checkout existing branch (no -b)
           log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
           try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
           exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
         } else {
-          // Parallel: create new branch (reuse if exists from a previous attempt)
           log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
           try {
             exec(`git worktree add "${worktreePath}" -b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, {
               cwd: rootDir, stdio: 'pipe', windowsHide: true, timeout: 30000
             });
           } catch {
-            // Branch already exists — try without -b, removing stale worktree if needed
+            // Branch already exists — use it without -b
             try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
-            try {
-              exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
-            } catch (wtErr) {
-              // "already used by worktree" — find and remove the stale worktree, then retry
-              if (wtErr.message?.includes('already used by worktree') || wtErr.message?.includes('already checked out')) {
-                log('info', `Branch ${branchName} locked by stale worktree — pruning and retrying`);
-                try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
-                // Find the stale worktree path from the error or worktree list
-                try {
-                  const wtList = exec(`git worktree list --porcelain`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }).toString();
-                  const lines = wtList.split('\n');
-                  for (let li = 0; li < lines.length; li++) {
-                    if (lines[li].startsWith('worktree ') && lines[li + 1]?.includes(branchName)) {
-                      const stalePath = lines[li].replace('worktree ', '').trim();
-                      log('info', `Removing stale worktree: ${stalePath}`);
-                      try { exec(`git worktree remove "${stalePath}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 15000 }); } catch {}
-                    }
-                  }
-                } catch {}
-                // Final retry
-                exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
-              } else {
-                throw wtErr;
-              }
-            }
+            exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
             log('info', `Reusing existing branch: ${branchName}`);
           }
         }
       } else if (meta?.branchStrategy === 'shared-branch') {
-        // Worktree exists — pull latest from prior plan item
         log('info', `Pulling latest on shared branch ${branchName}`);
         try { exec(`git pull origin "${branchName}"`, { cwd: worktreePath, stdio: 'pipe', timeout: 30000 }); } catch {}
       }
-      // Merge dependency PR branches into worktree if this item has depends_on
+    } catch (err) {
+      log('error', `Failed to create worktree for ${branchName}: ${err.message}`);
+      // Fall back to main directory for non-writing tasks
+      if (type === 'review' || type === 'analyze' || type === 'plan-to-prd' || type === 'plan') {
+        cwd = rootDir;
+      } else {
+        completeDispatch(id, 'error', 'Worktree creation failed');
+        return null;
+      }
+    }
+
+    // Merge dependency PR branches into worktree (applies to both reused and new worktrees)
+    if (worktreePath && fs.existsSync(worktreePath)) {
+      cwd = worktreePath;
       const depIds = meta?.item?.depends_on || [];
-      if (depIds.length > 0 && worktreePath && fs.existsSync(worktreePath)) {
+      if (depIds.length > 0) {
         try {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
           for (const { branch: depBranch, prId } of depBranches) {
@@ -665,17 +679,6 @@ function spawnAgent(dispatchItem, config) {
         } catch (e) {
           log('warn', `Could not resolve dependency branches for ${branchName}: ${e.message}`);
         }
-      }
-
-      cwd = worktreePath;
-    } catch (err) {
-      log('error', `Failed to create worktree for ${branchName}: ${err.message}`);
-      // Fall back to main directory for non-writing tasks
-      if (type === 'review' || type === 'analyze' || type === 'plan-to-prd' || type === 'plan') {
-        cwd = rootDir;
-      } else {
-        completeDispatch(id, 'error', 'Worktree creation failed');
-        return null;
       }
     }
   }
