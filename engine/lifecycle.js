@@ -568,20 +568,29 @@ function updatePrAfterReview(agentId, pr, project) {
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
 
-function updatePrAfterFix(pr, project) {
+function updatePrAfterFix(pr, project, source) {
   const e = engine();
   if (!pr?.id) return;
   const prs = getPrs(project);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
-  target.squadReview = {
-    ...target.squadReview,
-    status: 'waiting',
-    note: 'Fixed, awaiting re-review',
-    fixedAt: e.ts()
-  };
+
+  if (source === 'pr-human-feedback') {
+    // Human feedback fix: clear pendingFix but preserve existing review verdict
+    if (target.humanFeedback) target.humanFeedback.pendingFix = false;
+    e.log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix (review verdict preserved: ${target.squadReview?.status || 'none'})`);
+  } else {
+    // Review fix: reset to waiting for re-review
+    target.squadReview = {
+      ...target.squadReview,
+      status: 'waiting',
+      note: 'Fixed, awaiting re-review',
+      fixedAt: e.ts()
+    };
+    e.log('info', `Updated ${pr.id} → squad review: waiting (fix pushed)`);
+  }
+
   shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(SQUAD_DIR, '..'), '.squad', 'pull-requests.json'), prs);
-  e.log('info', `Updated ${pr.id} → squad review: waiting (fix pushed)`);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -908,7 +917,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
-  if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project);
+  if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (isSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
   updateAgentHistory(agentId, dispatchItem, result);
