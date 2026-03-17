@@ -935,6 +935,7 @@ function detectDependencyCycles(items) {
 
 const { consolidateInbox } = require('./engine/consolidation');
 const { pollPrStatus, pollPrHumanComments, reconcilePrs } = require('./engine/ado');
+const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
 
@@ -2384,16 +2385,19 @@ async function tickInner() {
     runCleanup(config);
   }
 
-  // 2.6. Poll ADO for full PR status: build, review, merge (every 6 ticks = ~3 minutes)
+  // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
   if (tickCount % 6 === 0) {
-    try { await pollPrStatus(config); } catch (err) { log('warn', `PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
   }
 
-  // 2.7. Poll PR threads for human @squad comments (every 12 ticks = ~6 minutes)
+  // 2.7. Poll PR threads for human comments (every 12 ticks = ~6 minutes)
   if (tickCount % 12 === 0) {
-    try { await pollPrHumanComments(config); } catch (err) { log('warn', `PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
-    try { await reconcilePrs(config); } catch (err) { log('warn', `PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await pollPrHumanComments(config); } catch (err) { log('warn', `ADO PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await ghReconcilePrs(config); } catch (err) { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
   }
 
   // 3. Discover new work from sources

@@ -1,0 +1,322 @@
+/**
+ * engine/github.js — GitHub integration for Squad engine.
+ * Parallel to ado.js: PR status polling, comment polling, reconciliation for GitHub-hosted projects.
+ * Uses `gh` CLI for all GitHub API calls.
+ */
+
+const shared = require('./shared');
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, SQUAD_DIR } = shared;
+const { getPrs } = require('./queries');
+const path = require('path');
+
+// Lazy require to avoid circular dependency
+let _engine = null;
+function engine() {
+  if (!_engine) _engine = require('../engine');
+  return _engine;
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function isGitHub(project) {
+  return project?.repoHost === 'github';
+}
+
+/** Get GitHub owner/repo slug from project config (e.g. "x3-design/Bebop_Workspaces") */
+function getRepoSlug(project) {
+  const org = project.adoOrg || '';
+  const repo = project.repoName || '';
+  if (!org || !repo) return null;
+  return `${org}/${repo}`;
+}
+
+/** Run a `gh api` call and parse JSON result. Returns null on failure. */
+function ghApi(endpoint, slug) {
+  try {
+    const cmd = `gh api repos/${slug}${endpoint}`;
+    const result = exec(cmd, { timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    return JSON.parse(result);
+  } catch (e) {
+    engine().log('warn', `GitHub API error (${endpoint}): ${e.message}`);
+    return null;
+  }
+}
+
+// ─── Shared PR Polling Loop ─────────────────────────────────────────────────
+
+async function forEachActiveGhPr(config, callback) {
+  const projects = getProjects(config).filter(isGitHub);
+  let totalUpdated = 0;
+
+  for (const project of projects) {
+    const slug = getRepoSlug(project);
+    if (!slug) continue;
+
+    const prs = getPrs(project);
+    const activePrs = prs.filter(pr => pr.status === 'active');
+    if (activePrs.length === 0) continue;
+
+    let projectUpdated = 0;
+
+    for (const pr of activePrs) {
+      const prNum = (pr.id || '').replace('PR-', '');
+      if (!prNum) continue;
+
+      try {
+        const updated = await callback(project, pr, prNum, slug);
+        if (updated) projectUpdated++;
+      } catch (err) {
+        try { engine().log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`); } catch {}
+      }
+    }
+
+    if (projectUpdated > 0) {
+      safeWrite(projectPrPath(project), prs);
+      totalUpdated += projectUpdated;
+    }
+  }
+
+  return totalUpdated;
+}
+
+// ─── PR Status Polling ──────────────────────────────────────────────────────
+
+async function pollPrStatus(config) {
+  const e = engine();
+
+  const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
+    const prData = ghApi(`/pulls/${prNum}`, slug);
+    if (!prData) return false;
+
+    let updated = false;
+
+    // Map GitHub PR state to squad status
+    let newStatus = pr.status;
+    if (prData.merged) newStatus = 'merged';
+    else if (prData.state === 'closed') newStatus = 'abandoned';
+    else if (prData.state === 'open') newStatus = 'active';
+
+    if (pr.status !== newStatus) {
+      e.log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
+      pr.status = newStatus;
+      updated = true;
+
+      if (newStatus === 'merged' || newStatus === 'abandoned') {
+        await engine().handlePostMerge(pr, project, config, newStatus);
+      }
+    }
+
+    // Review status from GitHub reviews
+    const reviews = ghApi(`/pulls/${prNum}/reviews`, slug);
+    if (reviews && Array.isArray(reviews)) {
+      // Get latest review per user
+      const latestByUser = new Map();
+      for (const r of reviews) {
+        const user = r.user?.login || '';
+        if (r.state === 'COMMENTED') continue; // Skip plain comments
+        latestByUser.set(user, r.state);
+      }
+      const states = [...latestByUser.values()];
+
+      let newReviewStatus = pr.reviewStatus || 'pending';
+      if (states.some(s => s === 'CHANGES_REQUESTED')) newReviewStatus = 'changes-requested';
+      else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
+      else if (states.length > 0) newReviewStatus = 'pending';
+
+      if (pr.reviewStatus !== newReviewStatus) {
+        e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
+        pr.reviewStatus = newReviewStatus;
+        updated = true;
+      }
+    }
+
+    // Check status / checks
+    if (prData.state === 'open' && prData.head?.sha) {
+      const checksData = ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
+      if (checksData && checksData.check_runs) {
+        const runs = checksData.check_runs;
+        let buildStatus = 'none';
+        let buildFailReason = '';
+
+        if (runs.length > 0) {
+          const hasFailed = runs.some(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
+          const allDone = runs.every(r => r.status === 'completed');
+          const allPassed = runs.every(r => r.conclusion === 'success' || r.conclusion === 'skipped' || r.conclusion === 'neutral');
+
+          if (hasFailed) {
+            buildStatus = 'failing';
+            const failed = runs.find(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
+            buildFailReason = failed?.name || 'Check failed';
+          } else if (allDone && allPassed) {
+            buildStatus = 'passing';
+          } else {
+            buildStatus = 'running';
+          }
+        }
+
+        if (pr.buildStatus !== buildStatus) {
+          e.log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+          pr.buildStatus = buildStatus;
+          if (buildFailReason) pr.buildFailReason = buildFailReason;
+          else delete pr.buildFailReason;
+          updated = true;
+        }
+      }
+    }
+
+    return updated;
+  });
+
+  if (totalUpdated > 0) {
+    e.log('info', `GitHub PR status poll: updated ${totalUpdated} PR(s)`);
+  }
+}
+
+// ─── Poll Human Comments on PRs ─────────────────────────────────────────────
+
+async function pollPrHumanComments(config) {
+  const e = engine();
+
+  const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
+    // Get issue comments (general PR comments)
+    const comments = ghApi(`/issues/${prNum}/comments`, slug);
+    if (!comments || !Array.isArray(comments)) return false;
+
+    // Also get review comments (inline code comments)
+    const reviewComments = ghApi(`/pulls/${prNum}/comments`, slug);
+    const allComments = [
+      ...(comments || []).map(c => ({ ...c, _type: 'issue' })),
+      ...((reviewComments || []).map(c => ({ ...c, _type: 'review' })))
+    ];
+
+    // Filter out bot comments and squad's own comments
+    const humanComments = allComments.filter(c => {
+      if (c.user?.type === 'Bot') return false;
+      if (/\bSquad\s*\(/i.test(c.body || '')) return false;
+      return true;
+    });
+
+    const allHumanAuthors = new Set(humanComments.map(c => c.user?.login || ''));
+    const soloReviewer = allHumanAuthors.size <= 1;
+
+    const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const newComments = [];
+
+    for (const c of humanComments) {
+      const date = c.created_at || c.updated_at || '';
+      if (!(date > cutoff)) continue;
+
+      // If multiple reviewers, only process @squad mentions
+      if (!soloReviewer && !/@squad\b/i.test(c.body || '')) continue;
+
+      newComments.push({
+        commentId: c.id,
+        author: c.user?.login || 'Human',
+        content: c.body || '',
+        date
+      });
+    }
+
+    if (newComments.length === 0) return false;
+
+    newComments.sort((a, b) => a.date.localeCompare(b.date));
+    const feedbackContent = newComments
+      .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
+      .join('\n\n---\n\n');
+    const latestDate = newComments[newComments.length - 1].date;
+
+    pr.humanFeedback = {
+      lastProcessedCommentDate: latestDate,
+      pendingFix: true,
+      feedbackContent
+    };
+
+    e.log('info', `PR ${pr.id}: found ${newComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
+    return true;
+  });
+
+  if (totalUpdated > 0) {
+    e.log('info', `GitHub PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
+  }
+}
+
+// ─── PR Reconciliation ──────────────────────────────────────────────────────
+
+async function reconcilePrs(config) {
+  const e = engine();
+  const projects = getProjects(config).filter(isGitHub);
+  const branchPatterns = [/^work\/PL-W/i, /^feat\/PL-W/i, /^user\/yemishin\//i];
+  let totalAdded = 0;
+
+  for (const project of projects) {
+    const slug = getRepoSlug(project);
+    if (!slug) continue;
+
+    // Fetch open PRs
+    const prsData = ghApi('/pulls?state=open&per_page=100', slug);
+    if (!prsData || !Array.isArray(prsData)) continue;
+
+    const ghPrs = prsData.filter(pr => {
+      const branch = pr.head?.ref || '';
+      return branchPatterns.some(pat => pat.test(branch));
+    });
+
+    if (ghPrs.length === 0) continue;
+
+    const prPath = projectPrPath(project);
+    const existingPrs = safeJson(prPath) || [];
+    const existingIds = new Set(existingPrs.map(p => p.id));
+    let projectAdded = 0;
+
+    // Load work items to match branches
+    const wiPath = projectWorkItemsPath(project);
+    const workItems = safeJson(wiPath) || [];
+    const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+    const centralItems = safeJson(centralWiPath) || [];
+    const allItems = [...workItems, ...centralItems];
+
+    for (const ghPr of ghPrs) {
+      const prId = `PR-${ghPr.number}`;
+      if (existingIds.has(prId)) continue;
+
+      const branch = ghPr.head?.ref || '';
+      const wiMatch = branch.match(/(PL-W\d+)/i);
+      const linkedItemId = wiMatch ? wiMatch[1].toUpperCase() : null;
+      const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
+      const confirmedItemId = linkedItem ? linkedItemId : null;
+
+      const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
+
+      existingPrs.push({
+        id: prId,
+        title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
+        agent: (ghPr.user?.login || 'unknown').toLowerCase(),
+        branch,
+        reviewStatus: 'pending',
+        status: 'active',
+        created: (ghPr.created_at || '').slice(0, 10) || e.dateStamp(),
+        url: prUrl,
+        prdItems: confirmedItemId ? [confirmedItemId] : [],
+      });
+      existingIds.add(prId);
+      projectAdded++;
+
+      e.log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
+    }
+
+    if (projectAdded > 0) {
+      safeWrite(prPath, existingPrs);
+      totalAdded += projectAdded;
+    }
+  }
+
+  if (totalAdded > 0) {
+    e.log('info', `GitHub PR reconciliation: added ${totalAdded} missing PR(s)`);
+  }
+}
+
+module.exports = {
+  pollPrStatus,
+  pollPrHumanComments,
+  reconcilePrs,
+};
