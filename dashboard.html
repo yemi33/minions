@@ -2912,6 +2912,7 @@ async function cmdSubmit() {
 
 let _modalDocContext = { title: '', content: '', selection: '' };
 let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
+let _modalOriginalPlan = null; // tracks original plan file when editing a forked version
 
 function showModalQa() {
   document.getElementById('modal-qa').style.display = '';
@@ -3064,7 +3065,8 @@ function modalSend() {
   if (_qaProcessing) {
     // Queue the message — show it as "queued" in the thread
     _qaQueue.push({ message, selection });
-    thread.innerHTML += '<div class="modal-qa-loading" style="color:var(--muted);font-size:10px">Queued — will send after current response</div>';
+    const preview = message.split(/\s+/).slice(0, 6).join(' ') + (message.split(/\s+/).length > 6 ? '...' : '');
+    thread.innerHTML += '<div class="modal-qa-loading" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(preview) + '" — will send after current response</div>';
     thread.scrollTop = thread.scrollHeight;
     return;
   }
@@ -3078,7 +3080,8 @@ async function _processQaMessage(message, selection) {
   _qaProcessing = true;
 
   const loadingId = 'chat-loading-' + Date.now();
-  thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '"><div class="dot-pulse"><span></span><span></span><span></span></div> Thinking...</div>';
+  const qaQueueBadge = _qaQueue.length > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + _qaQueue.length + ' queued</span>' : '';
+  thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '"><div class="dot-pulse"><span></span><span></span><span></span></div> Thinking...' + qaQueueBadge + '</div>';
   thread.scrollTop = thread.scrollHeight;
 
   try {
@@ -3121,13 +3124,14 @@ async function _processQaMessage(message, selection) {
 
         // Plan edit: show action prompt
         if (isVersion) {
-          _modalFilePath = 'plans/' + data.versionedFile; // point subsequent edits at new version
+          _modalFilePath = 'plans/' + data.versionedFile;
+          _modalOriginalPlan = data.originalFile; // track original for PRD lookups on subsequent edits
           refreshPlans();
           showPlanVersionActions(thread, data.versionedFile, data.originalFile);
         } else if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
-          // Draft iteration (no active PRD) — overwritten in place, offer Execute
           const planFile = _modalFilePath.replace('plans/', '');
-          showPlanVersionActions(thread, planFile, planFile);
+          const origFile = _modalOriginalPlan || planFile;
+          showPlanVersionActions(thread, planFile, origFile);
         }
       }
     } else {
@@ -3227,8 +3231,13 @@ async function modalSteerSubmit() {
 
         if (isVersion) {
           _modalFilePath = 'plans/' + data.versionedFile;
+          _modalOriginalPlan = data.originalFile;
           refreshPlans();
           showPlanVersionActions(thread, data.versionedFile, data.originalFile);
+        } else if (_modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/)) {
+          const planFile = _modalFilePath.replace('plans/', '');
+          const origFile = _modalOriginalPlan || planFile;
+          showPlanVersionActions(thread, planFile, origFile);
         }
       }
     } else {
@@ -3944,7 +3953,8 @@ async function ccSend() {
   if (_ccSending) {
     _ccQueue.push(message);
     ccAddMessage('user', escHtml(message));
-    ccAddMessage('assistant', '<span style="color:var(--muted);font-size:10px">Queued — will send after current request</span>');
+    const preview = message.split(/\s+/).slice(0, 6).join(' ') + (message.split(/\s+/).length > 6 ? '...' : '');
+    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(preview) + '" — will send after current request</span>');
     return;
   }
   await _ccDoSend(message);
@@ -3952,24 +3962,28 @@ async function ccSend() {
   // Drain queue
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
-    // Remove the "Queued" placeholder
+    // Remove the "Queued" placeholder for this message
     const msgs = document.getElementById('cc-messages');
-    const lastChild = msgs.lastElementChild;
-    if (lastChild?.textContent?.includes('Queued')) lastChild.remove();
-    await _ccDoSend(next);
+    const queuedPills = msgs.querySelectorAll('.cc-queued-pill');
+    for (const pill of queuedPills) {
+      if (pill.closest('div')) { pill.closest('div').remove(); break; }
+    }
+    await _ccDoSend(next, true); // skipUserMsg=true since already shown when queued
   }
 }
 
-async function _ccDoSend(message) {
+async function _ccDoSend(message, skipUserMsg) {
   _ccSending = true;
 
-  ccAddMessage('user', escHtml(message));
+  if (!skipUserMsg) ccAddMessage('user', escHtml(message));
 
-  // Show thinking indicator with timer
+  // Show thinking indicator with timer + queue count
+  const queueCount = _ccQueue.length;
+  const queueBadge = queueCount > 0 ? ' <span style="font-size:9px;background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + queueCount + ' queued</span>' : '';
   const thinking = document.createElement('div');
   thinking.id = 'cc-thinking';
   thinking.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:11px;color:var(--muted);align-self:flex-start;display:flex;align-items:center;gap:8px';
-  thinking.innerHTML = '<span class="dot-pulse" style="display:inline-flex;gap:3px"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span> <span id="cc-thinking-text">Thinking...</span> <span id="cc-thinking-time" style="font-size:10px;color:var(--border)"></span>';
+  thinking.innerHTML = '<span class="dot-pulse" style="display:inline-flex;gap:3px"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span> <span id="cc-thinking-text">Thinking...</span> <span id="cc-thinking-time" style="font-size:10px;color:var(--border)"></span>' + queueBadge;
   document.getElementById('cc-messages').appendChild(thinking);
   const ccMsgs = document.getElementById('cc-messages');
   ccMsgs.scrollTop = ccMsgs.scrollHeight;

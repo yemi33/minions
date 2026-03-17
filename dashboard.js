@@ -1600,8 +1600,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             } catch { return false; }
           });
 
-          if (hasActivePrd) {
-            // Fork: create new version to preserve the running plan
+          const currentFile = path.basename(body.filePath);
+          const isAlreadyForked = /-v\d+/.test(currentFile);
+
+          if (hasActivePrd && !isAlreadyForked) {
+            // First edit of original plan with active PRD: fork to new version
             const origName = path.basename(fullPath, '.md');
             const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
             const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md'));
@@ -1617,7 +1620,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             return jsonReply(res, 200, {
               ok: true, answer, edited: true, content, actions,
               versionedFile: newName,
-              originalFile: path.basename(body.filePath),
+              originalFile: currentFile,
               isNewVersion: true,
             });
           }
