@@ -1095,25 +1095,50 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       let removed = 0, reclassified = 0, merged = 0;
       const kbDir = path.join(SQUAD_DIR, 'knowledge');
 
-      // Process removals (stale/empty)
+      // If nothing to do, return early
+      const totalActions = (plan.remove || []).length + (plan.duplicates || []).reduce((n, d) => n + (d.remove || []).length, 0) + (plan.reclassify || []).length;
+      if (totalActions === 0) {
+        return jsonReply(res, 200, { ok: true, summary: 'KB is clean — nothing to sweep', plan });
+      }
+
+      // Archive dir for swept files (never delete, always preserve)
+      const kbArchiveDir = path.join(kbDir, '_swept');
+      if (!fs.existsSync(kbArchiveDir)) fs.mkdirSync(kbArchiveDir, { recursive: true });
+
+      function archiveKbFile(filePath, reason) {
+        if (!fs.existsSync(filePath)) return;
+        const basename = path.basename(filePath);
+        const destPath = shared.uniquePath(path.join(kbArchiveDir, basename));
+        try {
+          // Prepend sweep metadata to archived file
+          const content = safeRead(filePath) || '';
+          const meta = `<!-- swept: ${new Date().toISOString()} | reason: ${reason} -->\n`;
+          safeWrite(destPath, meta + content);
+          safeUnlink(filePath);
+        } catch {}
+      }
+
+      // Process removals (stale/empty) — archive, not delete
       for (const r of (plan.remove || [])) {
         const entry = manifest[r.index];
         if (!entry) continue;
         const fp = path.join(kbDir, entry.category, entry.file);
-        if (fs.existsSync(fp)) { safeUnlink(fp); removed++; }
+        archiveKbFile(fp, 'stale: ' + (r.reason || ''));
+        removed++;
       }
 
-      // Process duplicates
+      // Process duplicates — archive the duplicates, keep the primary
       for (const d of (plan.duplicates || [])) {
         for (const idx of (d.remove || [])) {
           const entry = manifest[idx];
           if (!entry) continue;
           const fp = path.join(kbDir, entry.category, entry.file);
-          if (fs.existsSync(fp)) { safeUnlink(fp); merged++; }
+          archiveKbFile(fp, 'duplicate of index ' + d.keep + ': ' + (d.reason || ''));
+          merged++;
         }
       }
 
-      // Process reclassifications
+      // Process reclassifications (move between categories)
       for (const r of (plan.reclassify || [])) {
         const entry = manifest[r.index];
         if (!entry || !shared.KB_CATEGORIES.includes(r.to)) continue;
