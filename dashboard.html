@@ -4190,6 +4190,37 @@ async function ccExecuteAction(action) {
         }
         break;
       }
+      case 'execute-plan': {
+        await fetch('/api/plans/execute', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: action.file, project: action.project || '' })
+        });
+        status.innerHTML = '&#10003; Plan execution queued: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        refreshPlans();
+        break;
+      }
+      case 'file-edit': {
+        // doc-chat reads current content from disk via filePath — pass placeholder for required field
+        const res = await fetch('/api/doc-chat', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: action.instruction,
+            document: '(loaded from disk)',
+            title: action.file.split('/').pop(),
+            filePath: action.file,
+          }),
+        });
+        const data = await res.json();
+        if (data.ok && data.edited) {
+          status.innerHTML = '&#10003; Edited: <strong>' + escHtml(action.file) + '</strong>';
+          status.style.color = 'var(--green)';
+        } else {
+          status.innerHTML = data.answer ? escHtml(data.answer) : '&#10007; Could not edit file';
+          status.style.color = data.answer ? 'var(--muted)' : 'var(--red)';
+        }
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';

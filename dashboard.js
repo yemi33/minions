@@ -194,6 +194,8 @@ Available action types:
 - **remove-prd-item**: Remove a PRD item. Fields: source (PRD filename), itemId
 - **delete-work-item**: Delete a work item. Fields: id, source (project name or "central")
 - **plan-edit**: Revise/edit a plan .md file. Fields: file (plan .md filename from plans/), instruction (what to change). This creates a NEW version of the plan (original stays untouched) and lets the user choose: run alongside existing PRD, replace it, or just save.
+- **execute-plan**: Execute an existing plan .md file (dispatch plan-to-prd conversion). Fields: file (plan .md filename), project (optional project name)
+- **file-edit**: Edit any squad file (knowledge base entries, routing.md, notes, skills, etc.). Fields: file (path relative to squad dir, e.g. "knowledge/architecture/foo.md" or "routing.md"), instruction (what to change). The LLM edits the file via doc-chat; the original is overwritten (no versioning — versioning only applies to plans/).
 
 ## Rules
 
