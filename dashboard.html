@@ -3727,20 +3727,22 @@ async function planView(file) {
        (isMdPlan && w.sourcePlan && w.sourcePlan.endsWith('.json')))
     );
     const prdCompleted = wi.some(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === file);
-    const modalExecuteBtn = isMdPlan && !hasActiveWork && !prdCompleted ? ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600;margin-left:8px;vertical-align:middle" ' +
+    const modalExecuteBtn = isMdPlan && !hasActiveWork && !prdCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
       'onclick="planExecute(\'' + escHtml(file) + '\',\'\',this)">Execute</button>' : '';
-    const modalCompletedLabel = prdCompleted && !hasActiveWork ? ' <span style="font-size:10px;color:var(--green);font-weight:600;margin-left:8px;vertical-align:middle">Completed</span>' : '';
-    const modalInProgressLabel = hasActiveWork ? ' <span style="font-size:10px;color:var(--blue);margin-left:8px;vertical-align:middle">In Progress</span>' : '';
-    const modalPauseBtn = isActive && !isMdPlan ? ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow);margin-left:8px;vertical-align:middle" ' +
+    const modalCompletedLabel = prdCompleted && !hasActiveWork ? '<span style="font-size:10px;color:var(--green);font-weight:600">Completed</span>' : '';
+    const modalInProgressLabel = hasActiveWork ? '<span style="font-size:10px;color:var(--blue)">In Progress</span>' : '';
+    const modalPauseBtn = isActive && !isMdPlan ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow)" ' +
       'onclick="planPause(\'' + escHtml(file) + '\');closeModal()">Pause</button>' : '';
-    const modalResumeBtn = isPaused ? ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);margin-left:8px;vertical-align:middle" ' +
+    const modalResumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
       'onclick="planApprove(\'' + escHtml(file) + '\');closeModal()">Resume</button>' : '';
 
-    const lastModLabel = lastMod ? ' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:8px;vertical-align:middle">Last updated: ' + new Date(lastMod).toLocaleString() + '</span>' : '';
-    document.getElementById('modal-title').innerHTML = escHtml(title) +
-      lastModLabel + modalCompletedLabel + modalInProgressLabel + modalExecuteBtn + modalPauseBtn + modalResumeBtn +
-      ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red);margin-left:8px;vertical-align:middle" ' +
-      'onclick="planDelete(\'' + escHtml(file) + '\')">Delete</button>';
+    const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
+    const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
+      (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') +
+      ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
+      'onclick="planDelete(\'' + escHtml(file) + '\')">Delete</button>' +
+    '</div>';
+    document.getElementById('modal-title').innerHTML = escHtml(title) + lastModLabel + actionBtns;
     document.getElementById('modal-body').textContent = text;
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
