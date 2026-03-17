@@ -1263,7 +1263,7 @@ function renderPrdProgress(prog) {
     // Store archived data for the modal
     window._archivedPrdGroups = archivedKeys.map(k => grouped[k]);
     window._archivedPrdRenderGroup = renderGroup;
-    html += '<div style="margin-top:8px;text-align:right">' +
+    html += '<div style="margin-top:8px;text-align:right;position:relative" data-file="prd-archives">' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPrdModal()">' +
         'View Archives (' + archivedKeys.length + ')' +
       '</button>' +
@@ -3002,6 +3002,17 @@ function findCardForFile(filePath) {
     card = document.querySelector('[data-file="' + CSS.escape('plans/' + filePath.slice(4)) + '"]');
     if (card) return card;
   }
+  // Archived items: badge the "View Archives" button
+  if (filePath.includes('archive')) {
+    if (filePath.startsWith('prd/') || filePath.startsWith('plans/')) {
+      card = document.querySelector('[data-file="prd-archives"]') || document.querySelector('[data-file="plan-archives"]');
+      if (card) return card;
+    }
+  }
+  // Notes.md: badge the team notes section header
+  if (filePath === 'notes.md') {
+    return document.getElementById('notes-updated')?.parentElement || null;
+  }
   return null;
 }
 
@@ -3426,7 +3437,7 @@ function renderPlans(plans) {
   if (archivedPlans.length > 0) {
     window._archivedPlans = archivedPlans;
     window._archivedPlanRenderer = renderPlanCard;
-    html += '<div style="margin-top:8px;text-align:right">' +
+    html += '<div style="margin-top:8px;text-align:right;position:relative" data-file="plan-archives">' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPlansModal()">' +
         'View Archives (' + archivedPlans.length + ')' +
       '</button>' +
