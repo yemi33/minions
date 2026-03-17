@@ -1604,17 +1604,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const isAlreadyForked = /-v\d+/.test(currentFile);
 
           if (hasActivePrd && !isAlreadyForked) {
-            // First edit of original plan with active PRD: fork to new version
+            // Fork: but first check if an unexecuted fork already exists (reuse it)
             const origName = path.basename(fullPath, '.md');
             const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
-            const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md'));
-            let maxV = 1;
+            const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md') && /-v\d+/.test(f));
+
+            // Find an existing fork that hasn't been executed (no matching PRD or work items)
+            let reuseFile = null;
             for (const f of existing) {
-              const m = f.match(/-v(\d+)/);
-              if (m) maxV = Math.max(maxV, parseInt(m[1]));
+              // Check if this fork has a PRD or work items — if not, it's unexecuted
+              const hasPrd = prdFiles.some(pf => {
+                try {
+                  const prd = JSON.parse(safeRead(path.join(PRD_DIR, pf)) || '{}');
+                  return prd.source_plan === f;
+                } catch { return false; }
+              });
+              if (!hasPrd) { reuseFile = f; break; }
             }
-            const today = new Date().toISOString().slice(0, 10);
-            const newName = `${base}-v${maxV + 1}-${today}.md`;
+
+            const newName = reuseFile || (() => {
+              let maxV = 1;
+              for (const f of existing) {
+                const m = f.match(/-v(\d+)/);
+                if (m) maxV = Math.max(maxV, parseInt(m[1]));
+              }
+              const today = new Date().toISOString().slice(0, 10);
+              return `${base}-v${maxV + 1}-${today}.md`;
+            })();
             const newPath = path.join(PLANS_DIR, newName);
             safeWrite(newPath, content);
             return jsonReply(res, 200, {
