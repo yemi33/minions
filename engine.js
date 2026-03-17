@@ -449,16 +449,19 @@ function buildSystemPrompt(agentId, config, project) {
 // This is the content that grows over time and would bloat the system prompt.
 function buildAgentContext(agentId, config, project) {
   project = project || getProjects(config)[0] || {};
-  const notes = getNotes();
   let context = '';
 
-  // Agent history (past tasks)
+  // Agent history — last 5 tasks only (keeps it relevant, avoids 37KB dumps)
   const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));
   if (history && history.trim() !== '# Agent History') {
-    context += `## Your Recent History\n\n${history}\n\n`;
+    const entries = history.split(/(?=^### )/m);
+    const header = entries[0].startsWith('#') && !entries[0].startsWith('### ') ? entries.shift() : '';
+    const recent = entries.slice(-5);
+    const trimmed = (header ? header + '\n' : '') + recent.join('');
+    context += `## Your Recent History (last 5 tasks)\n\n${trimmed}\n\n`;
   }
 
-  // Project conventions (from CLAUDE.md)
+  // Project conventions (from CLAUDE.md) — always relevant for code quality
   if (project.localPath) {
     const claudeMd = safeRead(path.join(project.localPath, 'CLAUDE.md'));
     if (claudeMd && claudeMd.trim()) {
@@ -467,19 +470,11 @@ function buildAgentContext(agentId, config, project) {
     }
   }
 
-  // Skills
-  const skillIndex = getSkillIndex();
-  if (skillIndex) {
-    context += skillIndex + '\n';
-  }
+  // KB and skills: NOT injected — agents can Glob/Read when needed
+  // This saves ~27KB per dispatch. Reference note so agents know they exist:
+  context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Skills are in \`skills/*.md\` and \`.claude/skills/\`. Use Glob/Read to browse when relevant.\n\n`;
 
-  // Knowledge base index (paths + titles only — agents can Read if needed)
-  const kbIndex = getKnowledgeBaseIndex();
-  if (kbIndex) {
-    context += kbIndex + '\n';
-  }
-
-  // Squad awareness: what's in flight, who's doing what, PR/work item state
+  // Squad awareness: what's in flight, who's doing what
   const dispatch = getDispatch();
   const activeItems = (dispatch.active || []).map(d =>
     `- **${d.agent}**: ${d.type} — ${(d.task || '').slice(0, 100)}${d.agent === agentId ? ' ← (you)' : ''}`
@@ -488,15 +483,15 @@ function buildAgentContext(agentId, config, project) {
     context += `## Active Agents\n\n${activeItems.join('\n')}\n\n`;
   }
 
-  // Recent completions (last 10) — so agents know what was just done
-  const recentCompleted = (dispatch.completed || []).slice(-10).reverse().map(d =>
+  // Recent completions (last 5, not 10)
+  const recentCompleted = (dispatch.completed || []).slice(-5).reverse().map(d =>
     `- **${d.agent}** ${d.result === 'success' ? 'completed' : 'failed'}: ${(d.task || '').slice(0, 80)}${d.resultSummary ? ' — ' + d.resultSummary.slice(0, 100) : ''}`
   );
   if (recentCompleted.length > 0) {
     context += `## Recently Completed\n\n${recentCompleted.join('\n')}\n\n`;
   }
 
-  // Active PRs across projects
+  // Active PRs across projects — coordination awareness
   const projects = getProjects(config);
   const allPrs = [];
   for (const p of projects) {
@@ -510,17 +505,25 @@ function buildAgentContext(agentId, config, project) {
     context += `## Active Pull Requests\n\n${prLines.join('\n')}\n\n`;
   }
 
-  // Pending work items (so agents know what's queued)
-  const pendingItems = (dispatch.pending || []).slice(0, 15).map(d =>
+  // Pending work items
+  const pendingItems = (dispatch.pending || []).slice(0, 10).map(d =>
     `- ${d.type}: ${(d.task || '').slice(0, 80)}`
   );
   if (pendingItems.length > 0) {
-    context += `## Pending Work Queue (${(dispatch.pending || []).length} items)\n\n${pendingItems.join('\n')}${(dispatch.pending || []).length > 15 ? '\n- ... and ' + ((dispatch.pending || []).length - 15) + ' more' : ''}\n\n`;
+    context += `## Pending Work Queue (${(dispatch.pending || []).length} items)\n\n${pendingItems.join('\n')}${(dispatch.pending || []).length > 10 ? '\n- ... and ' + ((dispatch.pending || []).length - 10) + ' more' : ''}\n\n`;
   }
 
-  // Team notes (the big one — can be 50KB)
+  // Team notes — last 5 sections only (recent learnings, not the full history)
+  const notes = getNotes();
   if (notes) {
-    context += `## Team Notes (MUST READ)\n\n${notes}\n\n`;
+    const sections = notes.split(/(?=^### )/m);
+    const header = sections[0] && !sections[0].startsWith('### ') ? sections.shift() : '';
+    if (sections.length > 5) {
+      const recent = sections.slice(-5).join('');
+      context += `## Team Notes (last 5 of ${sections.length})\n\n${recent}\n\n_${sections.length - 5} older entries in \`notes.md\` — Read if needed._\n\n`;
+    } else {
+      context += `## Team Notes\n\n${notes}\n\n`;
+    }
   }
 
   return context;
