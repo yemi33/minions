@@ -232,7 +232,11 @@ const commands = {
                 const alreadyDone = centralItems.some(w =>
                   w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === md
                 );
-                if (!alreadyDone) {
+                // Only recover plans that were previously queued for conversion (not unexecuted drafts)
+                const wasPreviouslyQueued = centralItems.some(w =>
+                  w.type === 'plan-to-prd' && w.planFile === md
+                );
+                if (!alreadyDone && wasPreviouslyQueued) {
                   centralItems.push({
                     id: shared.nextWorkItemId(centralItems, 'W'),
                     title: 'Convert plan to PRD: ' + md,
