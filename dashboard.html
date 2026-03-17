@@ -1021,7 +1021,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active' };
     grouped[key].items.push(i);
   }
 
@@ -1079,6 +1079,7 @@ function renderPrdProgress(prog) {
     const done = g.items.filter(i => i.status === 'complete' || i.status === 'implemented').length;
     const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
+    const isPaused = g.planStatus === 'awaiting-approval';
 
     // Runtime: from first dispatch to last completion (or now if still running)
     const t = timings[g.file];
@@ -1091,9 +1092,16 @@ function renderPrdProgress(prog) {
         icon + ' ' + formatDuration(elapsed) + (t.allDone ? '' : ' elapsed') + '</span>';
     }
 
+    const pausedLabel = isPaused ? '<span style="color:var(--yellow);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--yellow);border-radius:3px">PAUSED</span>' : '';
+    const pauseResumeBtn = isPaused
+      ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
+      : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\')" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
+    const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
+
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       (g.project ? '<span class="prd-project-badge">' + escHtml(g.project) + '</span>' : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
+      pausedLabel +
       '<span style="color:var(--muted);font-weight:400;font-size:10px">' + g.items.length + ' items' +
         (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
       '</span>' +
@@ -1102,6 +1110,8 @@ function renderPrdProgress(prog) {
         '<span title="' + escHtml(g.file) + '">' + escHtml(g.file) + '</span>' +
         '<span onclick="event.stopPropagation();planOpenInDocChat(\'' + escHtml(g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Open PRD in doc-chat editor">Edit PRD</span>' +
         '<span onclick="event.stopPropagation();planRegeneratePRD(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Reset pending/failed items to pick up PRD changes">Regenerate</span>' +
+        pauseResumeBtn +
+        deleteBtn +
       '</span>' +
     '</div>';
   };

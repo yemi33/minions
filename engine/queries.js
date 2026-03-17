@@ -499,17 +499,38 @@ function getPrdInfo(config) {
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
-  // PR-to-PRD linking
+  // PR-to-PRD linking (scoped by source plan to avoid cross-PRD contamination)
   const allPrs = getPullRequests(config);
-  const prdToPr = {};
+  // Build work-item-id → sourcePlan lookup
+  const wiToSourcePlan = {};
+  for (const project of projects) {
+    try {
+      const workItems = safeJson(projectWorkItemsPath(project)) || [];
+      for (const wi of workItems) { if (wi.sourcePlan) wiToSourcePlan[wi.id] = wi.sourcePlan; }
+    } catch {}
+  }
+  const prdToPr = {}; // key: "sourcePlan:itemId" or plain "itemId" (legacy fallback)
   for (const pr of allPrs) {
     for (const itemId of (pr.prdItems || [])) {
-      if (!prdToPr[itemId]) prdToPr[itemId] = [];
-      prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
+      const prData = { id: pr.id, url: pr.url, title: pr.title, status: pr.status, _project: pr._project };
+      // Scope by source plan if we can resolve it
+      const sourcePlan = wiToSourcePlan[itemId];
+      if (sourcePlan) {
+        const scopedKey = sourcePlan + ':' + itemId;
+        if (!prdToPr[scopedKey]) prdToPr[scopedKey] = [];
+        prdToPr[scopedKey].push(prData);
+      }
+      // Also add by prdItemId (the plan-level ID like P001)
       const prdItemId = wiToPlanItem[itemId];
-      if (prdItemId && prdItemId !== itemId) {
-        if (!prdToPr[prdItemId]) prdToPr[prdItemId] = [];
-        prdToPr[prdItemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status });
+      if (prdItemId) {
+        const scopedKey2 = sourcePlan ? sourcePlan + ':' + prdItemId : prdItemId;
+        if (!prdToPr[scopedKey2]) prdToPr[scopedKey2] = [];
+        prdToPr[scopedKey2].push(prData);
+      }
+      // Legacy fallback: plain itemId (for PRs without source plan resolution)
+      if (!sourcePlan) {
+        if (!prdToPr[itemId]) prdToPr[itemId] = [];
+        prdToPr[itemId].push(prData);
       }
     }
   }
@@ -536,8 +557,8 @@ function getPrdInfo(config) {
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
       description: (i.description || '').slice(0, 200), projects: i.projects || [],
-      prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
-      source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', _archived: i._archived || false,
+      prs: prdToPr[i._source + ':' + i.id] || prdToPr[i.id] || [], depends_on: i.depends_on || [],
+      source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false,
     })),
   };
 
