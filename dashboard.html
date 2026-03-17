@@ -1081,15 +1081,15 @@ function renderPrdProgress(prog) {
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isPaused = g.planStatus === 'awaiting-approval';
 
-    // Runtime: from first dispatch to last completion (or now if still running)
+    // Runtime: from first dispatch to last completion (or now if still running, frozen if paused)
     const t = timings[g.file];
     let runtimeLabel = '';
     if (t && t.firstDispatched) {
-      const end = t.allDone && t.lastCompleted ? t.lastCompleted : Date.now();
+      const end = t.allDone && t.lastCompleted ? t.lastCompleted : isPaused ? (t.lastCompleted || t.firstDispatched) : Date.now();
       const elapsed = end - t.firstDispatched;
-      const icon = t.allDone ? '&#x2713;' : '&#x23F1;';
-      runtimeLabel = '<span style="color:' + (t.allDone ? 'var(--green)' : 'var(--yellow)') + ';font-weight:400;font-size:10px">' +
-        icon + ' ' + formatDuration(elapsed) + (t.allDone ? '' : ' elapsed') + '</span>';
+      const icon = t.allDone ? '&#x2713;' : isPaused ? '&#x23F8;' : '&#x23F1;';
+      runtimeLabel = '<span style="color:' + (t.allDone ? 'var(--green)' : isPaused ? 'var(--muted)' : 'var(--yellow)') + ';font-weight:400;font-size:10px">' +
+        icon + ' ' + formatDuration(elapsed) + (t.allDone ? '' : isPaused ? ' (paused)' : ' elapsed') + '</span>';
     }
 
     const pausedLabel = isPaused ? '<span style="color:var(--yellow);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--yellow);border-radius:3px">PAUSED</span>' : '';
@@ -3382,6 +3382,16 @@ function renderPlans(plans) {
     }
   }
 
+  // Track which .md plans have a paused PRD
+  const pausedPlanFiles = new Set();
+  for (const p of plans) {
+    if (p.format === 'prd' && p.status === 'awaiting-approval' && !p.archived) {
+      // Find the source .md plan for this PRD
+      const srcPlan = plans.find(s => s.format === 'draft' && s.file.endsWith('.md'));
+      if (srcPlan) pausedPlanFiles.add(srcPlan.file);
+    }
+  }
+
   const activePlans = plans.filter(p => !p.archived && p.format !== 'prd');
   const archivedPlans = plans.filter(p => p.archived && p.format !== 'prd');
   countEl.textContent = activePlans.length + (archivedPlans.length ? ' + ' + archivedPlans.length + ' archived' : '');
@@ -3389,8 +3399,9 @@ function renderPlans(plans) {
   function renderPlanCard(p) {
     const status = p.status || 'active';
     const isWorking = workingPlanFiles.has(p.file);
+    const isPrdPaused = pausedPlanFiles.has(p.file);
     const isArchived = p.archived;
-    const label = isArchived ? 'Completed' : isWorking ? 'In Progress' : (statusLabels[status] || status);
+    const label = isArchived ? 'Completed' : isPrdPaused ? 'Paused' : isWorking ? 'In Progress' : (statusLabels[status] || status);
     const needsAction = status === 'awaiting-approval' && !isArchived;
     const isRevision = status === 'revision-requested' && !isArchived;
 
@@ -3425,11 +3436,11 @@ function renderPlans(plans) {
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
-    return '<div class="plan-card ' + statusClass(status) + (isWorking ? ' working' : '') + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+    return '<div class="plan-card ' + statusClass(status) + (isWorking && !isPrdPaused ? ' working' : '') + (isPrdPaused ? ' awaiting' : '') + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + '</div>' +
           '<div class="plan-card-meta">' +
-            '<span style="font-weight:600;color:' + (isArchived || isCompleted ? 'var(--green)' : isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
+            '<span style="font-weight:600;color:' + (isArchived || isCompleted ? 'var(--green)' : isPrdPaused ? 'var(--yellow)' : isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
             '<span>' + p.itemCount + ' items</span>' +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
