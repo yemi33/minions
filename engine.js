@@ -633,6 +633,12 @@ function spawnAgent(dispatchItem, config) {
       try {
         if (!fs.existsSync(worktreePath)) {
           const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
+          // Prune stale worktree entries before creating (handles leftover entries from crashed runs)
+          try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
+          // Remove index.lock if stale (Windows: previous git process died without cleanup)
+          const lockFile = path.join(rootDir, '.git', 'index.lock');
+          try { if (fs.existsSync(lockFile)) { const age = Date.now() - fs.statSync(lockFile).mtimeMs; if (age > 60000) fs.unlinkSync(lockFile); } } catch {}
+
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
             try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
@@ -643,11 +649,24 @@ function spawnAgent(dispatchItem, config) {
               exec(`git worktree add "${worktreePath}" -b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, {
                 cwd: rootDir, stdio: 'pipe', windowsHide: true, timeout: 30000
               });
-            } catch {
-              // Branch already exists — use it without -b
+            } catch (e1) {
+              // Branch already exists or checked out elsewhere — try without -b
               try { exec(`git fetch origin "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 }); } catch {}
-              exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
-              log('info', `Reusing existing branch: ${branchName}`);
+              try {
+                exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                log('info', `Reusing existing branch: ${branchName}`);
+              } catch (e2) {
+                // "already checked out" — force remove the stale worktree entry and retry
+                if (e2.message?.includes('already checked out') || e1.message?.includes('already checked out')) {
+                  log('warn', `Branch ${branchName} already checked out — removing stale entry and retrying`);
+                  try { exec(`git worktree remove "${branchName}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
+                  try { exec(`git worktree prune`, { cwd: rootDir, stdio: 'pipe', timeout: 10000 }); } catch {}
+                  exec(`git worktree add "${worktreePath}" "${branchName}"`, { cwd: rootDir, stdio: 'pipe', timeout: 30000 });
+                  log('info', `Recovered worktree for ${branchName} after stale entry removal`);
+                } else {
+                  throw e2;
+                }
+              }
             }
           }
         } else if (meta?.branchStrategy === 'shared-branch') {
@@ -655,12 +674,12 @@ function spawnAgent(dispatchItem, config) {
           try { exec(`git pull origin "${branchName}"`, { cwd: worktreePath, stdio: 'pipe', timeout: 30000 }); } catch {}
         }
       } catch (err) {
-        log('error', `Failed to create worktree for ${branchName}: ${err.message}`);
+        log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
         // Fall back to main directory for non-writing tasks
         if (type === 'review' || type === 'analyze' || type === 'plan-to-prd' || type === 'plan') {
           cwd = rootDir;
         } else {
-          completeDispatch(id, 'error', 'Worktree creation failed');
+          completeDispatch(id, 'error', 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
           return null;
         }
       }
