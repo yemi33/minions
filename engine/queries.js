@@ -466,22 +466,18 @@ function getPrdInfo(config) {
   const items = allPrdItems;
   const total = items.length;
 
-  // Build work item lookups
-  const wiByPlanKey = {};
-  const wiToPlanItem = {};
+  // Build work item lookup — work item ID = PRD item ID
+  const wiById = {};
   for (const project of projects) {
     try {
       const workItems = safeJson(projectWorkItemsPath(project)) || [];
-      for (const wi of workItems) {
-        if (wi.sourcePlanItem) wiToPlanItem[wi.id] = wi.sourcePlanItem;
-        if (wi.sourcePlan && wi.sourcePlanItem) wiByPlanKey[wi.sourcePlan + ':' + wi.sourcePlanItem] = wi;
-      }
+      for (const wi of workItems) { if (wi.sourcePlan) wiById[wi.id] = wi; }
     } catch {}
   }
 
   // Override PRD item status from work items
   for (const item of items) {
-    const wi = wiByPlanKey[item._source + ':' + item.id];
+    const wi = wiById[item.id];
     if (wi) {
       if (wi.status === 'done') item.status = 'implemented';
       else if (wi.status === 'failed') item.status = 'failed';
@@ -499,51 +495,13 @@ function getPrdInfo(config) {
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round(((complete + prCreated) / total) * 100) : 0;
 
-  // PR-to-PRD linking (scoped by source plan to avoid cross-PRD contamination)
+  // PR-to-PRD linking — work item ID = PRD item ID, so prdItems directly reference PRD items
   const allPrs = getPullRequests(config);
-  // Build work-item-id → sourcePlan lookup (per-project to handle duplicate IDs)
-  const wiByProject = {}; // projectName → { wiId → { sourcePlan, sourcePlanItem } }
-  for (const project of projects) {
-    try {
-      const workItems = safeJson(projectWorkItemsPath(project)) || [];
-      const lookup = {};
-      for (const wi of workItems) {
-        if (wi.sourcePlan) lookup[wi.id] = { sourcePlan: wi.sourcePlan, sourcePlanItem: wi.sourcePlanItem };
-      }
-      wiByProject[project.name] = lookup;
-    } catch {}
-  }
-  const prdToPr = {}; // key: "sourcePlan:prdItemId"
+  const prdToPr = {};
   for (const pr of allPrs) {
     for (const itemId of (pr.prdItems || [])) {
-      const prData = { id: pr.id, url: pr.url, title: pr.title, status: pr.status, _project: pr._project };
-      // Resolve via the PR's project context to get the right sourcePlan
-      const prProject = pr._project || '';
-      const wiLookup = wiByProject[prProject] || {};
-      const wiInfo = wiLookup[itemId];
-      if (wiInfo?.sourcePlan && wiInfo?.sourcePlanItem) {
-        const scopedKey = wiInfo.sourcePlan + ':' + wiInfo.sourcePlanItem;
-        if (!prdToPr[scopedKey]) prdToPr[scopedKey] = [];
-        prdToPr[scopedKey].push(prData);
-      } else {
-        // Fallback: try all projects
-        let found = false;
-        for (const lookup of Object.values(wiByProject)) {
-          const info = lookup[itemId];
-          if (info?.sourcePlan && info?.sourcePlanItem) {
-            const scopedKey = info.sourcePlan + ':' + info.sourcePlanItem;
-            if (!prdToPr[scopedKey]) prdToPr[scopedKey] = [];
-            prdToPr[scopedKey].push(prData);
-            found = true;
-            break;
-          }
-        }
-        // Legacy: unresolvable
-        if (!found) {
-          if (!prdToPr[itemId]) prdToPr[itemId] = [];
-          prdToPr[itemId].push(prData);
-        }
-      }
+      if (!prdToPr[itemId]) prdToPr[itemId] = [];
+      prdToPr[itemId].push({ id: pr.id, url: pr.url, title: pr.title, status: pr.status, _project: pr._project });
     }
   }
 
@@ -569,7 +527,7 @@ function getPrdInfo(config) {
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
       description: (i.description || '').slice(0, 200), projects: i.projects || [],
-      prs: prdToPr[i._source + ':' + i.id] || prdToPr[i.id] || [], depends_on: i.depends_on || [],
+      prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false,
     })),
   };

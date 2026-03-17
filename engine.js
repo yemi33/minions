@@ -1643,24 +1643,20 @@ function materializePlansAsWorkItems(config) {
       let created = 0;
 
       for (const item of projItems) {
-        // Skip if already materialized (check all projects for cross-project dedup)
-        let alreadyExists = existingItems.some(w => w.sourcePlan === file && w.sourcePlanItem === item.id);
+        // Skip if already materialized — work item ID = PRD item ID, check all projects
+        let alreadyExists = existingItems.some(w => w.id === item.id);
         if (!alreadyExists) {
-          // Also check other projects in case item was previously in a different queue
           for (const p of allProjects) {
             if (p.name === projName) continue;
             const otherItems = safeJson(projectWorkItemsPath(p)) || [];
-            if (otherItems.some(w => w.sourcePlan === file && w.sourcePlanItem === item.id)) {
-              alreadyExists = true;
-              break;
-            }
+            if (otherItems.some(w => w.id === item.id)) { alreadyExists = true; break; }
           }
         }
         if (alreadyExists) continue;
         // Skip items involved in dependency cycles
         if (cycleSet.has(item.id)) continue;
 
-        const id = 'PL-' + shared.uid();
+        const id = item.id; // Work item ID = PRD item ID — no indirection
         const complexity = item.estimated_complexity || 'medium';
         const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
 
