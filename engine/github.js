@@ -33,7 +33,7 @@ function getRepoSlug(project) {
 /** Run a `gh api` call and parse JSON result. Returns null on failure. */
 function ghApi(endpoint, slug) {
   try {
-    const cmd = `gh api repos/${slug}${endpoint}`;
+    const cmd = `gh api "repos/${slug}${endpoint}"`;
     const result = exec(cmd, { timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
     return JSON.parse(result);
   } catch (e) {
