@@ -1766,6 +1766,8 @@ function openModal(i) {
   document.getElementById('modal-body').innerHTML =
     '<div style="margin-bottom:12px"><button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escHtml(item.name) + '\')">Add to Knowledge Base</button></div>' +
     '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;font-family:Consolas,monospace;font-size:12px;line-height:1.7;color:var(--muted)">' + escHtml(item.content) + '</pre>';
+  _modalDocContext = { title: item.name, content: item.content, selection: '' };
+  _modalFilePath = 'notes/inbox/' + item.name; showModalQa();
   document.getElementById('modal').classList.add('open');
 }
 function closeModal() {

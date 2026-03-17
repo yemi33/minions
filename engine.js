@@ -895,16 +895,18 @@ function areDependenciesMet(item, config) {
   if (!deps || deps.length === 0) return true;
   const sourcePlan = item.sourcePlan;
   if (!sourcePlan) return true;
-  const projectName = item.project;
   const projects = getProjects(config);
-  const project = projectName
-    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase())
-    : projects[0];
-  if (!project) return true;
-  const wiPath = projectWorkItemsPath(project);
-  const workItems = safeJson(wiPath) || [];
+
+  // Collect work items from ALL projects (dependencies can be cross-project)
+  let allWorkItems = [];
+  for (const p of projects) {
+    try {
+      const wi = safeJson(projectWorkItemsPath(p)) || [];
+      allWorkItems = allWorkItems.concat(wi);
+    } catch {}
+  }
   for (const depId of deps) {
-    const depItem = workItems.find(w => w.sourcePlan === sourcePlan && w.planItemId === depId);
+    const depItem = allWorkItems.find(w => w.sourcePlan === sourcePlan && w.planItemId === depId);
     if (!depItem) {
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;

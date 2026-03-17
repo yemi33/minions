@@ -29,14 +29,17 @@ function checkPlanCompletion(meta, config) {
   if (!plan?.missing_features) return;
   if (plan.status === 'completed') return;
 
-  const projectName = plan.project;
   const projects = shared.getProjects(config);
-  const project = projectName
-    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
-  if (!project) return;
-  const wiPath = shared.projectWorkItemsPath(project);
-  const workItems = safeJson(wiPath) || [];
-  const planItems = workItems.filter(w => w.sourcePlan === planFile && w.planItemId !== 'PR' && w.planItemId !== 'VERIFY');
+
+  // Collect work items from ALL projects (PRD items can span multiple projects)
+  let allWorkItems = [];
+  for (const p of projects) {
+    try {
+      const wi = safeJson(shared.projectWorkItemsPath(p)) || [];
+      allWorkItems = allWorkItems.concat(wi);
+    } catch {}
+  }
+  const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.planItemId !== 'PR' && w.planItemId !== 'VERIFY');
   if (planItems.length === 0) return;
   if (!planItems.every(w => w.status === 'done' || w.status === 'failed')) return;
 
@@ -111,13 +114,20 @@ function checkPlanCompletion(meta, config) {
   shared.safeWrite(shared.uniquePath(path.join(SQUAD_DIR, 'notes', 'inbox', summaryFile)), summary);
   e.log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
 
+  // Resolve the primary project for writing new work items (PR, verify)
+  const projectName = plan.project;
+  const primaryProject = projectName
+    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
+  const wiPath = primaryProject ? shared.projectWorkItemsPath(primaryProject) : null;
+  const workItems = wiPath ? (safeJson(wiPath) || []) : [];
+
   // 3. For shared-branch plans, create PR work item
-  if (plan.branch_strategy === 'shared-branch' && plan.feature_branch) {
-    const existingPrItem = workItems.find(w => w.sourcePlan === planFile && w.planItemId === 'PR');
+  if (plan.branch_strategy === 'shared-branch' && plan.feature_branch && wiPath) {
+    const existingPrItem = allWorkItems.find(w => w.sourcePlan === planFile && w.planItemId === 'PR');
     if (!existingPrItem) {
       const id = shared.nextWorkItemId(workItems, 'PL-W');
       const featureBranch = plan.feature_branch;
-      const mainBranch = project.mainBranch || 'main';
+      const mainBranch = primaryProject.mainBranch || 'main';
       const itemSummary = doneItems.map(w => '- ' + w.planItemId + ': ' + w.title.replace('Implement: ', '')).join('\n');
       workItems.push({
         id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
@@ -132,7 +142,7 @@ function checkPlanCompletion(meta, config) {
   }
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
-  const existingVerify = workItems.find(w => w.sourcePlan === planFile && w.planItemId === 'VERIFY');
+  const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.planItemId === 'VERIFY');
   if (!existingVerify && doneItems.length > 0) {
     const verifyId = shared.nextWorkItemId(workItems, 'PL-W');
     const planSlug = planFile.replace('.json', '');
