@@ -69,14 +69,24 @@ if (!claudeBin) {
   process.exit(1);
 }
 
-// Check if --system-prompt-file is supported by trying it; if not, fall back to inline
-// but truncate to stay under Windows arg limit (skip this check on resume — no sys prompt needed)
+// Check if --system-prompt-file is supported (cached to avoid spawning claude --help every call)
 let actualArgs = cliArgs;
+const capsCachePath = path.join(__dirname, 'claude-caps.json');
+let _sysPromptFileSupported = null;
+try {
+  const caps = JSON.parse(fs.readFileSync(capsCachePath, 'utf8'));
+  if (caps.claudeBin === claudeBin) _sysPromptFileSupported = caps.sysPromptFile;
+} catch {}
+if (_sysPromptFileSupported === null) {
+  try {
+    const { spawnSync } = require('child_process');
+    const testResult = spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
+    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: new Date().toISOString() })); } catch {}
+  } catch { _sysPromptFileSupported = true; /* assume supported */ }
+}
 if (!isResume) try {
-  // Test: does claude support --system-prompt-file?
-  const { spawnSync } = require('child_process');
-  const testResult = spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
-  if (!(testResult.stdout || '').includes('system-prompt-file')) {
+  if (!_sysPromptFileSupported) {
     // Not supported — fall back to inline but safe: use --append-system-prompt with chunking
     // or just inline if under 30KB
     fs.unlinkSync(sysTmpPath);

@@ -360,8 +360,8 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   let result;
 
-  // Attempt 1: resume existing session (skip if we know it's expired)
-  if (sessionId) {
+  // Attempt 1: resume existing session (skip for single-turn/no-tool calls — nothing to resume)
+  if (sessionId && maxTurns > 1) {
     result = await llm.callLLM(prompt, '', {
       timeout, label, model, maxTurns, allowedTools, sessionId,
     });
@@ -394,7 +394,8 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     return result;
   }
 
-  // Attempt 3: one more retry after a brief pause (handles transient failures)
+  // Attempt 3: one more retry after a brief pause (skip for single-turn — not worth the latency)
+  if (maxTurns <= 1) return result;
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
   result = await llm.callLLM(prompt, CC_STATIC_SYSTEM_PROMPT, {
