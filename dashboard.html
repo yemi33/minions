@@ -1788,7 +1788,8 @@ function closeModal() {
   }
   // Reset UI state but don't kill processing/queue — they run in background
   _modalDocContext = { title: '', content: '', selection: '' };
-  _qaSessionKey = '';
+  // Keep session key alive if processing is in flight — result will save when it completes
+  if (!_qaProcessing) _qaSessionKey = '';
   document.getElementById('modal-qa-input').value = '';
   document.getElementById('modal-qa-input').placeholder = 'Ask about this document (or select text first)...';
   document.getElementById('modal-qa-pill').style.display = 'none';
@@ -3147,6 +3148,7 @@ async function _processQaMessage(message, selection) {
   thread.scrollTop = thread.scrollHeight;
 
   // Save session (persists even if modal was closed during processing)
+  const modalIsOpen = document.getElementById('modal').classList.contains('open');
   if (_qaSessionKey) {
     _qaSessions.set(_qaSessionKey, {
       history: _qaHistory,
@@ -3154,6 +3156,8 @@ async function _processQaMessage(message, selection) {
       docContext: { ..._modalDocContext },
       filePath: _modalFilePath,
     });
+    // If modal was closed while processing, clean up session key now
+    if (!modalIsOpen) _qaSessionKey = '';
   }
 
   // Process next queued message
@@ -3164,7 +3168,7 @@ async function _processQaMessage(message, selection) {
       if (el.textContent.includes('Queued')) { el.remove(); break; }
     }
     _processQaMessage(next.message, next.selection);
-  } else {
+  } else if (modalIsOpen) {
     document.getElementById('modal-qa-input')?.focus();
   }
 }

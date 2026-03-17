@@ -355,8 +355,8 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   const result = await ccCall(message, {
     store: 'doc', sessionKey: filePath || title,
     extraContext: docContext, label: 'doc-chat',
-    timeout: isPlanEdit ? 300000 : 120000,
-    maxTurns: isPlanEdit ? 5 : 3,
+    timeout: isPlanEdit ? 600000 : 120000,
+    maxTurns: isPlanEdit ? 30 : 5,
     allowedTools: 'Read,Glob,Grep',
   });
 
