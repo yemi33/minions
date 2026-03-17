@@ -1373,43 +1373,50 @@ function runCleanup(config, verbose = false) {
       }
     }
 
-    // List worktrees
+    // List worktrees — collect info for age-based + cap-based cleanup
+    const MAX_WORKTREES = 10;
     try {
       const dirs = fs.readdirSync(worktreeRoot);
+      const wtEntries = []; // { dir, wtPath, mtime, shouldClean, isProtected }
+      const dispatch = getDispatch();
+
       for (const dir of dirs) {
         const wtPath = path.join(worktreeRoot, dir);
-        if (!fs.statSync(wtPath).isDirectory()) continue;
+        try { if (!fs.statSync(wtPath).isDirectory()) continue; } catch { continue; }
 
-        // Check if this worktree's branch is merged
         let shouldClean = false;
+        let isProtected = false;
 
-        // Match worktree dir to branch — dir format is "{project}-{branch}-{uid}" or legacy "{branch}"
+        // Check if this worktree's branch is merged/abandoned
         for (const branch of mergedBranches) {
           const branchSlug = branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
-          // Only match if dir equals branch, or contains the full branch slug (not partial matches)
           if (dir === branchSlug || dir === branch || (branchSlug.length >= 6 && dir.includes(branchSlug))) {
             shouldClean = true;
             break;
           }
         }
 
-        // Also clean worktrees older than 24 hours with no active dispatch referencing them
+        // Check if referenced by active/pending dispatch
+        const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d =>
+          d.meta?.branch && (dir.includes(d.meta.branch) || d.meta.branch.includes(dir))
+        );
+        if (isReferenced) isProtected = true;
+
+        // Also clean worktrees older than 2 hours with no active dispatch referencing them
+        let mtime = Date.now();
         if (!shouldClean) {
           try {
             const stat = fs.statSync(wtPath);
-            const ageMs = Date.now() - stat.mtimeMs;
-            if (ageMs > 86400000) { // 24 hours
-              const dispatch = getDispatch();
-              const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d =>
-                d.meta?.branch && (dir.includes(d.meta.branch) || d.meta.branch.includes(dir))
-              );
-              if (!isReferenced) shouldClean = true;
+            mtime = stat.mtimeMs;
+            const ageMs = Date.now() - mtime;
+            if (ageMs > 7200000 && !isReferenced) { // 2 hours
+              shouldClean = true;
             }
           } catch {}
         }
 
         // Skip worktrees for active shared-branch plans
-        if (shouldClean) {
+        if (shouldClean || !isProtected) {
           try {
             const planDir = path.join(SQUAD_DIR, 'plans');
             if (fs.existsSync(planDir)) {
@@ -1418,8 +1425,11 @@ function runCleanup(config, verbose = false) {
                 if (plan?.branch_strategy === 'shared-branch' && plan?.feature_branch && plan?.status !== 'completed') {
                   const planBranch = sanitizeBranch(plan.feature_branch);
                   if (dir === planBranch || dir.includes(planBranch) || planBranch.includes(dir)) {
-                    shouldClean = false;
-                    if (verbose) console.log(`  Skipping worktree ${dir}: active shared-branch plan`);
+                    isProtected = true;
+                    if (shouldClean) {
+                      shouldClean = false;
+                      if (verbose) console.log(`  Skipping worktree ${dir}: active shared-branch plan`);
+                    }
                     break;
                   }
                 }
@@ -1428,13 +1438,30 @@ function runCleanup(config, verbose = false) {
           } catch {}
         }
 
-        if (shouldClean) {
+        wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected });
+      }
+
+      // Enforce max worktree cap — if over limit, mark oldest unprotected for cleanup
+      const surviving = wtEntries.filter(e => !e.shouldClean && !e.isProtected);
+      if (surviving.length + wtEntries.filter(e => e.isProtected).length > MAX_WORKTREES) {
+        // Sort oldest first
+        surviving.sort((a, b) => a.mtime - b.mtime);
+        const excess = surviving.length + wtEntries.filter(e => e.isProtected).length - MAX_WORKTREES;
+        for (let i = 0; i < Math.min(excess, surviving.length); i++) {
+          surviving[i].shouldClean = true;
+          if (verbose) console.log(`  Marking worktree ${surviving[i].dir} for cap cleanup (${MAX_WORKTREES} max)`);
+        }
+      }
+
+      // Remove all marked worktrees
+      for (const entry of wtEntries) {
+        if (entry.shouldClean) {
           try {
-            exec(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe' });
+            exec(`git worktree remove "${entry.wtPath}" --force`, { cwd: root, stdio: 'pipe' });
             cleaned.worktrees++;
-            if (verbose) console.log(`  Removed worktree: ${wtPath}`);
+            if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
           } catch (e) {
-            if (verbose) console.log(`  Failed to remove worktree ${wtPath}: ${e.message}`);
+            if (verbose) console.log(`  Failed to remove worktree ${entry.wtPath}: ${e.message}`);
           }
         }
       }

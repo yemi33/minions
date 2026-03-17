@@ -886,6 +886,41 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   let prsCreatedCount = 0;
   if (isSuccess) prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
 
+  // Clean up worktree for non-shared-branch tasks after completion
+  if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {
+    try {
+      const project = meta.project || {};
+      const rootDir = project.localPath ? path.resolve(project.localPath) : null;
+      if (rootDir) {
+        const engineConfig = (config.engine || {});
+        const worktreeRoot = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees');
+        // Find the worktree directory for this dispatch's branch
+        const branchSlug = shared.sanitizeBranch ? shared.sanitizeBranch(meta.branch) : meta.branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
+        const dirs = fs.readdirSync(worktreeRoot).filter(d => {
+          return d.includes(branchSlug) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
+        });
+        // Only remove if no other active dispatch uses this branch
+        const dispatch = e.getDispatch();
+        const otherActive = ((dispatch.active || []).concat(dispatch.pending || [])).some(d =>
+          d.id !== dispatchItem.id && d.meta?.branch && shared.sanitizeBranch && shared.sanitizeBranch(d.meta.branch) === branchSlug
+        );
+        if (!otherActive) {
+          for (const dir of dirs) {
+            const wtPath = path.join(worktreeRoot, dir);
+            try {
+              shared.exec(`git worktree remove "${wtPath}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 15000, windowsHide: true });
+              e.log('info', `Post-completion: removed worktree ${dir}`);
+            } catch (err) {
+              e.log('warn', `Post-completion: failed to remove worktree ${dir}: ${err.message}`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      e.log('warn', `Post-completion worktree cleanup error: ${err.message}`);
+    }
+  }
+
   // Detect implement tasks that completed without creating a PR
   if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
