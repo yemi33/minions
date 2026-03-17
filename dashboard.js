@@ -1309,11 +1309,35 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.approvedAt = new Date().toISOString();
       plan.approvedBy = body.approvedBy || os.userInfo().username;
       safeWrite(planPath, plan);
-      return jsonReply(res, 200, { ok: true, status: 'approved' });
+
+      // Resume paused work items across all projects
+      let resumed = 0;
+      const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      for (const proj of PROJECTS) {
+        wiPaths.push(path.join(proj.localPath, '.squad', 'work-items.json'));
+      }
+      for (const wiPath of wiPaths) {
+        try {
+          const items = safeJson(wiPath);
+          if (!items) continue;
+          let changed = false;
+          for (const w of items) {
+            if (w.sourcePlan === body.file && w.status === 'paused' && w._pausedBy === 'prd-pause') {
+              w.status = 'pending';
+              delete w._pausedBy;
+              resumed++;
+              changed = true;
+            }
+          }
+          if (changed) safeWrite(wiPath, items);
+        } catch {}
+      }
+
+      return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/pause — pause a plan (stops new item materialization)
+  // POST /api/plans/pause — pause a plan (stops new item materialization + pauses work items)
   if (req.method === 'POST' && req.url === '/api/plans/pause') {
     try {
       const body = await readBody(req);
@@ -1323,7 +1347,31 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.status = 'awaiting-approval';
       plan.pausedAt = new Date().toISOString();
       safeWrite(planPath, plan);
-      return jsonReply(res, 200, { ok: true, status: 'paused' });
+
+      // Propagate pause to materialized work items across all projects
+      let paused = 0;
+      const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      for (const proj of PROJECTS) {
+        wiPaths.push(path.join(proj.localPath, '.squad', 'work-items.json'));
+      }
+      for (const wiPath of wiPaths) {
+        try {
+          const items = safeJson(wiPath);
+          if (!items) continue;
+          let changed = false;
+          for (const w of items) {
+            if (w.sourcePlan === body.file && (w.status === 'pending' || w.status === 'dispatched')) {
+              w.status = 'paused';
+              w._pausedBy = 'prd-pause';
+              paused++;
+              changed = true;
+            }
+          }
+          if (changed) safeWrite(wiPath, items);
+        } catch {}
+      }
+
+      return jsonReply(res, 200, { ok: true, status: 'paused', pausedWorkItems: paused });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
