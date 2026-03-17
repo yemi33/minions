@@ -35,7 +35,7 @@ This file is NOT checked into the repo. The engine reads it on every tick and di
   "source_plan": "{{plan_file}}",
   "generated_by": "{{agent_id}}",
   "generated_at": "{{date}}",
-  "plan_summary": "{{plan_summary}}",
+  "plan_summary": "Short title (max ~80 chars, shown in dashboard tiles)",
   "status": "approved",
   "requires_approval": false,
   "branch_strategy": "shared-branch|parallel",
