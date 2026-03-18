@@ -2629,6 +2629,18 @@ async function tickInner() {
                 delete item.dispatched_at;
                 delete item.dispatched_to;
                 changed = true;
+
+                // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
+                try {
+                  const dispatchPath = path.join(ENGINE_DIR, 'dispatch.json');
+                  const dp = safeJson(dispatchPath) || {};
+                  if (dp.completed) {
+                    const key = `work-${project.name}-${item.id}`;
+                    const before = dp.completed.length;
+                    dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                    if (dp.completed.length !== before) safeWrite(dispatchPath, dp);
+                  }
+                } catch {}
               }
             }
             if (changed) safeWrite(wiPath, items);
