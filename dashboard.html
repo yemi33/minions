@@ -167,7 +167,11 @@
   .prd-legend-dot.in-progress { background: var(--yellow); }
   .prd-legend-dot.missing { background: var(--border); }
   .prd-items-list { display: flex; flex-direction: column; gap: 3px; max-height: 400px; overflow-y: auto; padding: 0 8px; }
-  .prd-item-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius-sm); font-size: var(--text-base); background: var(--surface2); border: 1px solid var(--border); }
+  .prd-item-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius-sm); font-size: var(--text-base); background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--border); }
+  .prd-item-row.st-implemented { border-left-color: var(--green); }
+  .prd-item-row.st-pr-created { border-left-color: #2ea043; }
+  .prd-item-row.st-in-progress { border-left-color: var(--yellow); }
+  .prd-item-row.st-failed { border-left-color: var(--red); }
   .prd-item-id { font-family: Consolas, monospace; color: var(--muted); min-width: 36px; font-size: 0.9em; }
   .prd-item-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .prd-item-priority { font-size: var(--text-sm); padding: var(--space-1) var(--space-3); border-radius: var(--radius-lg); }
@@ -1048,7 +1052,7 @@ function renderPrdProgress(prog) {
       ? '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>'
       : '';
 
-    return '<div class="prd-item-row" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
+    return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
@@ -1157,8 +1161,9 @@ function renderPrdProgress(prog) {
     });
 
     const statusColor = (s) => {
-      if (s === 'complete' || s === 'implemented') return 'var(--green)';
-      if (s === 'in-progress' || s === 'dispatched') return 'var(--blue)';
+      if (s === 'implemented') return 'var(--green)';
+      if (s === 'pr-created') return '#2ea043';
+      if (s === 'in-progress') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       return 'var(--border)';
     };
@@ -1952,9 +1957,24 @@ function openArchive(i) {
 
 function renderEngineStatus(engine) {
   const badge = document.getElementById('engine-badge');
-  const state = engine?.state || 'stopped';
-  badge.className = 'engine-badge ' + state;
-  badge.textContent = state.toUpperCase();
+  let state = engine?.state || 'stopped';
+
+  // Detect stale engine — says running but heartbeat is old (>2 min)
+  if (state === 'running' && engine?.heartbeat) {
+    const staleMs = Date.now() - engine.heartbeat;
+    if (staleMs > 120000) {
+      state = 'stale';
+    }
+  } else if (state === 'running' && !engine?.heartbeat) {
+    // Running but no heartbeat yet — engine just started or old version
+    state = 'running';
+  }
+
+  badge.className = 'engine-badge ' + (state === 'stale' ? 'stopped' : state);
+  badge.textContent = state === 'stale' ? 'STALE' : state.toUpperCase();
+  badge.title = state === 'stale'
+    ? 'Engine claims running but heartbeat is stale (>2min). It may have crashed. Run: node engine.js start'
+    : state === 'stopped' ? 'Engine is stopped. Run: node engine.js start' : '';
 }
 
 function renderDispatch(dispatch) {

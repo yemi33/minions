@@ -860,12 +860,22 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id) updateWorkItemStatus(meta, 'done', '');
   if (!isSuccess && meta?.item?.id) {
-    // Auto-retry: reset to pending if retries remain
-    const retries = (meta.item._retryCount || 0);
+    // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
+    let retries = (meta.item._retryCount || 0);
+    try {
+      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+        ? path.join(SQUAD_DIR, 'work-items.json')
+        : meta.project?.localPath ? path.join(meta.project.localPath, '.squad', 'work-items.json') : null;
+      if (wiPath) {
+        const items = safeJson(wiPath) || [];
+        const wi = items.find(i => i.id === meta.item.id);
+        if (wi) retries = (wi._retryCount || 0); // Use fresh value from file
+      }
+    } catch {}
+
     if (retries < 3) {
       e.log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
       updateWorkItemStatus(meta, 'pending', '');
-      // Increment retry counter on the source work item
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
           ? path.join(SQUAD_DIR, 'work-items.json')

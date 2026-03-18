@@ -2555,6 +2555,9 @@ async function tickInner() {
     process.exit(0);
   }
 
+  // Write heartbeat so dashboard can detect stale engine
+  try { safeWrite(CONTROL_PATH, { ...control, heartbeat: Date.now() }); } catch {}
+
   const config = getConfig();
   tickCount++;
 
@@ -2585,6 +2588,54 @@ async function tickInner() {
     try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghReconcilePrs(config); } catch (err) { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+  }
+
+  // 2.9. Stalled dispatch detection — auto-retry failed items blocking the graph (every 20 ticks = ~10 min)
+  if (tickCount % 20 === 0) {
+    try {
+      const projects = getProjects(config);
+      const dispatch = getDispatch();
+      const activeCount = (dispatch.active || []).length;
+      const allAgentsIdle = Object.keys(config.agents || {}).every(id => {
+        const s = getAgentStatus(id);
+        return !s || s.status === 'idle';
+      });
+
+      if (allAgentsIdle && activeCount === 0) {
+        // Check for failed items blocking pending items
+        for (const project of projects) {
+          try {
+            const wiPath = projectWorkItemsPath(project);
+            const items = safeJson(wiPath) || [];
+            let changed = false;
+            const failedIds = new Set(items.filter(w => w.status === 'failed').map(w => w.id));
+            const pendingWithBlockedDeps = items.filter(w =>
+              w.status === 'pending' && (w.depends_on || []).some(d => failedIds.has(d))
+            );
+
+            if (pendingWithBlockedDeps.length > 0) {
+              // Auto-retry failed items that are blocking others (transient errors)
+              for (const item of items) {
+                if (item.status !== 'failed') continue;
+                // Only retry if something depends on this item
+                const isBlocking = items.some(w => w.status === 'pending' && (w.depends_on || []).includes(item.id));
+                if (!isBlocking) continue;
+
+                log('info', `Stall recovery: auto-retrying ${item.id} (blocking ${pendingWithBlockedDeps.filter(w => (w.depends_on || []).includes(item.id)).length} items)`);
+                item.status = 'pending';
+                item._retryCount = 0;
+                delete item.failReason;
+                delete item.failedAt;
+                delete item.dispatched_at;
+                delete item.dispatched_to;
+                changed = true;
+              }
+            }
+            if (changed) safeWrite(wiPath, items);
+          } catch {}
+        }
+      }
+    } catch (err) { log('warn', `Stall detection error: ${err?.message || err}`); }
   }
 
   // 3. Discover new work from sources
