@@ -107,6 +107,47 @@ function autoDiscover(targetDir) {
   return result;
 }
 
+// ─── Shared Helpers (used by both addProject and scanAndAdd) ─────────────────
+
+function buildPrUrlBase({ repoHost, org, project, repoName }) {
+  if (repoHost === 'github') {
+    return org && repoName ? `https://github.com/${org}/${repoName}/pull/` : '';
+  }
+  return org && project && repoName
+    ? `https://${org}.visualstudio.com/DefaultCollection/${project}/_git/${repoName}/pullrequest/`
+    : '';
+}
+
+function buildProjectEntry({ name, description, localPath, repoHost, repositoryId, org, project, repoName, mainBranch }) {
+  return {
+    name,
+    description: description || '',
+    localPath: localPath.replace(/\\/g, '/'),
+    repoHost: repoHost || 'ado',
+    repositoryId: repositoryId || '',
+    adoOrg: org || '',
+    adoProject: project || '',
+    repoName: repoName || name,
+    mainBranch: mainBranch || 'main',
+    prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName }),
+    workSources: {
+      pullRequests: { enabled: true, path: '.squad/pull-requests.json', cooldownMinutes: 30 },
+      workItems: { enabled: true, path: '.squad/work-items.json', cooldownMinutes: 0 },
+    }
+  };
+}
+
+function ensureProjectStateFiles(projectPath) {
+  const squadDir = path.join(projectPath, '.squad');
+  if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
+  for (const f of ['pull-requests.json', 'work-items.json']) {
+    const fp = path.join(squadDir, f);
+    if (!fs.existsSync(fp)) fs.writeFileSync(fp, '[]');
+  }
+}
+
+// ─── Commands ────────────────────────────────────────────────────────────────
+
 async function addProject(targetDir) {
   const target = path.resolve(targetDir);
   if (!fs.existsSync(target)) {
@@ -131,7 +172,6 @@ async function addProject(targetDir) {
   console.log(`  Squad home: ${SQUAD_HOME}`);
   console.log(`  Project:    ${target}\n`);
 
-  // Auto-discover what we can from the repo
   const detected = autoDiscover(target);
   if (detected._found.length > 0) {
     console.log(`  Auto-detected: ${detected._found.join(', ')}\n`);
@@ -140,64 +180,20 @@ async function addProject(targetDir) {
   const name = await ask('Project name', detected.name || path.basename(target));
   const description = await ask('Description (what this repo contains/does)', detected.description || '');
   const repoHost = await ask('Repo host (ado/github)', detected.repoHost || 'ado');
-  const adoOrg = await ask('Organization', detected.org || '');
-  const adoProject = await ask('Project', detected.project || '');
+  const org = await ask('Organization', detected.org || '');
+  const project = await ask('Project', detected.project || '');
   const repoName = await ask('Repo name', detected.repoName || name);
-  const repoId = await ask('Repository ID (GUID, optional)', '');
+  const repositoryId = await ask('Repository ID (GUID, optional)', '');
   const mainBranch = await ask('Main branch', detected.mainBranch || 'main');
 
   rl.close();
 
-  const prUrlBase = repoHost === 'github'
-    ? (adoOrg && repoName ? `https://github.com/${adoOrg}/${repoName}/pull/` : '')
-    : (adoOrg && adoProject && repoName
-      ? `https://${adoOrg}.visualstudio.com/DefaultCollection/${adoProject}/_git/${repoName}/pullrequest/`
-      : '');
-
-  const project = {
-    name,
-    description,
-    localPath: target.replace(/\\/g, '/'),
-    repoHost,
-    repositoryId: repoId,
-    adoOrg,
-    adoProject,
-    repoName,
-    mainBranch,
-    prUrlBase,
-    workSources: {
-      pullRequests: {
-        enabled: true,
-        path: '.squad/pull-requests.json',
-        cooldownMinutes: 30
-      },
-      workItems: {
-        enabled: true,
-        path: '.squad/work-items.json',
-        cooldownMinutes: 0
-      }
-    }
-  };
-
-  config.projects.push(project);
+  config.projects.push(buildProjectEntry({ name, description, localPath: target, repoHost, repositoryId, org, project, repoName, mainBranch }));
   saveConfig(config);
-
-  // Create project-local state files if needed
-  const squadDir = path.join(target, '.squad');
-  if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
-
-  const stateFiles = {
-    'pull-requests.json': '[]',
-    'work-items.json': '[]',
-  };
-  for (const [f, content] of Object.entries(stateFiles)) {
-    const fp = path.join(squadDir, f);
-    if (!fs.existsSync(fp)) fs.writeFileSync(fp, content);
-  }
+  ensureProjectStateFiles(target);
 
   console.log(`\n  Linked "${name}" (${target})`);
   console.log(`  Total projects: ${config.projects.length}`);
-  console.log(`\n  Project state files created in ${squadDir}`);
   console.log(`\n  Start the squad from anywhere:`);
   console.log(`    node ${SQUAD_HOME}/engine.js         # Engine`);
   console.log(`    node ${SQUAD_HOME}/dashboard.js      # Dashboard`);
@@ -363,39 +359,12 @@ async function scanAndAdd({ root, depth } = {}) {
   console.log(`\n  Adding ${toAdd.length} project(s)...\n`);
 
   for (const repo of toAdd) {
-    const prUrlBase = repo.host === 'github'
-      ? (repo.org && repo.repoName ? `https://github.com/${repo.org}/${repo.repoName}/pull/` : '')
-      : (repo.org && repo.project && repo.repoName
-        ? `https://${repo.org}.visualstudio.com/DefaultCollection/${repo.project}/_git/${repo.repoName}/pullrequest/`
-        : '');
-
-    const project = {
-      name: repo.name,
-      description: repo.description,
-      localPath: repo.path.replace(/\\/g, '/'),
-      repositoryId: '',
-      adoOrg: repo.org,
-      adoProject: repo.project,
-      repoName: repo.repoName,
-      mainBranch: repo.mainBranch,
-      prUrlBase,
-      workSources: {
-        pullRequests: { enabled: true, path: '.squad/pull-requests.json', cooldownMinutes: 30 },
-        workItems: { enabled: true, path: '.squad/work-items.json', cooldownMinutes: 0 },
-        specs: { enabled: true, filePatterns: ['docs/**/*.md'], statePath: '.squad/spec-tracker.json', lookbackDays: 7 },
-      }
-    };
-
-    config.projects.push(project);
-
-    // Create project-local state files
-    const squadDir = path.join(repo.path, '.squad');
-    if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
-    for (const [f, content] of Object.entries({ 'pull-requests.json': '[]', 'work-items.json': '[]' })) {
-      const fp = path.join(squadDir, f);
-      if (!fs.existsSync(fp)) fs.writeFileSync(fp, content);
-    }
-
+    config.projects.push(buildProjectEntry({
+      name: repo.name, description: repo.description, localPath: repo.path,
+      repoHost: repo.host, org: repo.org, project: repo.project,
+      repoName: repo.repoName, mainBranch: repo.mainBranch,
+    }));
+    ensureProjectStateFiles(repo.path);
     console.log(`  + ${repo.name} (${repo.path})`);
   }
 

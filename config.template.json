@@ -20,35 +20,8 @@
           "enabled": true,
           "path": ".squad/work-items.json",
           "cooldownMinutes": 0
-        },
-        "specs": {
-          "enabled": false,
-          "filePatterns": ["docs/specs/**/*.md"],
-          "statePath": ".squad/spec-tracker.json",
-          "lookbackDays": 7
         }
       }
     }
-  ],
-  "engine": {
-    "tickInterval": 60000,
-    "maxConcurrent": 3,
-    "inboxConsolidateThreshold": 5,
-    "agentTimeout": 18000000,
-    "heartbeatTimeout": 300000,
-    "maxTurns": 100,
-    "worktreeRoot": "../worktrees"
-  },
-  "claude": {
-    "binary": "claude",
-    "outputFormat": "json",
-    "allowedTools": "Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch"
-  },
-  "agents": {
-    "ripley":  { "name": "Ripley",  "emoji": "🏗️",  "role": "Lead / Explorer", "skills": ["architecture", "codebase-exploration", "design-review"] },
-    "dallas":  { "name": "Dallas",  "emoji": "🔧",  "role": "Engineer", "skills": ["implementation", "typescript", "docker", "testing"] },
-    "lambert": { "name": "Lambert", "emoji": "📊",  "role": "Analyst", "skills": ["gap-analysis", "requirements", "documentation"] },
-    "rebecca": { "name": "Rebecca", "emoji": "🧠",  "role": "Architect", "skills": ["system-design", "api-design", "scalability", "implementation"] },
-    "ralph":   { "name": "Ralph",   "emoji": "⚙️",   "role": "Engineer", "skills": ["implementation", "bug-fixes", "testing", "scaffolding"] }
-  }
+  ]
 }

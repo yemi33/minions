@@ -175,7 +175,7 @@ function classifyInboxItem(name, content) {
 
 // ── Engine Defaults ─────────────────────────────────────────────────────────
 // Single source of truth for engine configuration defaults.
-// Used by: engine.js, squad.js (init), config.template.json is manually kept in sync.
+// Used by: engine.js, squad.js (init). config.template.json only has the project schema.
 
 const ENGINE_DEFAULTS = {
   tickInterval: 60000,

@@ -398,5 +398,71 @@
     "dispatched_at": "2026-03-16T20:38:04.183Z",
     "dispatched_to": "ripley",
     "completedAt": "2026-03-16T20:43:48.097Z"
+  },
+  {
+    "id": "W-mmve4hppedar",
+    "title": "E2E Retry Status",
+    "type": "implement",
+    "priority": "low",
+    "description": "",
+    "status": "pending",
+    "created": "2026-03-18T01:56:37.165Z",
+    "createdBy": "dashboard",
+    "_retryCount": 1
+  },
+  {
+    "id": "W-mmve4ld62b7y",
+    "title": "E2E Test Plan",
+    "type": "plan",
+    "priority": "low",
+    "description": "",
+    "status": "done",
+    "created": "2026-03-18T01:56:41.898Z",
+    "createdBy": "dashboard",
+    "chain": "plan-to-prd",
+    "branchStrategy": "parallel",
+    "_planFileName": "plan-w-mmve4ld62b7y-2026-03-18.md",
+    "dispatched_at": "2026-03-18T01:56:42.033Z",
+    "dispatched_to": "ripley",
+    "completedAt": "2026-03-18T02:03:44.179Z"
+  },
+  {
+    "id": "W-mmvedncgki75",
+    "title": "Convert plan to PRD: E2E Test Plan",
+    "type": "plan-to-prd",
+    "priority": "low",
+    "description": "Plan file: plans/plan-w-mmve4ld62b7y-2026-03-18.md\nChained from plan task ripley-plan-mmve4lhdcvxu",
+    "status": "done",
+    "created": "2026-03-18T02:03:44.368Z",
+    "createdBy": "engine:chain",
+    "project": "OfficeAgent",
+    "planFile": "plan-w-mmve4ld62b7y-2026-03-18.md",
+    "dispatched_at": "2026-03-18T02:03:46.647Z",
+    "dispatched_to": "lambert",
+    "completedAt": "2026-03-18T02:09:36.331Z"
+  },
+  {
+    "id": "W-mmveq38as2tm",
+    "title": "E2E Delete Test",
+    "type": "implement",
+    "priority": "low",
+    "description": "",
+    "status": "dispatched",
+    "created": "2026-03-18T02:13:24.826Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-18T02:13:49.396Z",
+    "dispatched_to": "dallas"
+  },
+  {
+    "id": "W-mmveqgku8xva",
+    "title": "E2E Delete Test",
+    "type": "implement",
+    "priority": "low",
+    "description": "",
+    "status": "dispatched",
+    "created": "2026-03-18T02:13:42.126Z",
+    "createdBy": "dashboard",
+    "dispatched_at": "2026-03-18T02:13:49.631Z",
+    "dispatched_to": "ralph"
   }
 ]
