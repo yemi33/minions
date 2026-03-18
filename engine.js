@@ -653,7 +653,17 @@ function spawnAgent(dispatchItem, config) {
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
             try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
-            exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
+            try {
+              exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
+            } catch (eShared) {
+              if (eShared.message?.includes('already used by worktree') || eShared.message?.includes('already checked out')) {
+                const existingWtPath = findExistingWorktree(rootDir, branchName);
+                if (existingWtPath && fs.existsSync(existingWtPath)) {
+                  log('info', `Shared branch ${branchName} already checked out at ${existingWtPath} — reusing`);
+                  worktreePath = existingWtPath;
+                } else { throw eShared; }
+              } else { throw eShared; }
+            }
           } else {
             log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
             try {
@@ -667,34 +677,33 @@ function spawnAgent(dispatchItem, config) {
                 exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                 log('info', `Reusing existing branch: ${branchName}`);
               } catch (e2) {
-                // "already checked out" — find and remove the stale worktree IF the directory no longer exists
-                if (e2.message?.includes('already checked out') || e1.message?.includes('already checked out')) {
-                  const staleWt = findExistingWorktree(rootDir, branchName);
-                  if (staleWt && !fs.existsSync(staleWt)) {
-                    // Directory gone but git still tracks it — safe to prune
-                    log('warn', `Branch ${branchName} checked out in missing dir ${staleWt} — pruning`);
-                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
-                    exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
-                    log('info', `Recovered worktree for ${branchName} after stale entry prune`);
-                  } else if (staleWt && fs.existsSync(staleWt)) {
-                    // Directory exists — another agent may be using it. Check if any active dispatch uses it.
+                // "already checked out" or "already used by worktree" — find and reuse or recover
+                const alreadyUsed = e2.message?.includes('already checked out') || e2.message?.includes('already used by worktree')
+                  || e1.message?.includes('already checked out') || e1.message?.includes('already used by worktree');
+                if (alreadyUsed) {
+                  const existingWtPath = findExistingWorktree(rootDir, branchName);
+                  if (existingWtPath && fs.existsSync(existingWtPath)) {
+                    // Directory exists — reuse it if no other active dispatch is using it
                     const dispatch = safeJson(DISPATCH_PATH) || {};
                     const activelyUsed = (dispatch.active || []).some(d => {
                       const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
                       return dBranch === branchName && d.id !== id;
                     });
                     if (activelyUsed) {
-                      log('warn', `Branch ${branchName} actively used by another agent at ${staleWt} — cannot create worktree`);
+                      log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
                       throw e2;
                     }
-                    // Not actively used — directory is orphaned, safe to remove and recreate
-                    log('warn', `Branch ${branchName} checked out in orphaned dir ${staleWt} — removing and recreating`);
-                    try { exec(`git worktree remove "${staleWt}" --force`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    // Reuse the existing worktree — update path so the rest of spawnAgent uses it
+                    log('info', `Branch ${branchName} already checked out at ${existingWtPath} — reusing`);
+                    worktreePath = existingWtPath;
+                  } else if (existingWtPath && !fs.existsSync(existingWtPath)) {
+                    // Directory gone but git still tracks it — prune and recreate
+                    log('warn', `Branch ${branchName} tracked in missing dir ${existingWtPath} — pruning and recreating`);
                     try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
                     exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
-                    log('info', `Recovered worktree for ${branchName} after orphaned dir removal`);
+                    log('info', `Recovered worktree for ${branchName} after stale entry prune`);
                   } else {
-                    // Can't find the worktree at all — just prune and retry
+                    // Can't find the worktree at all — prune and retry
                     try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
                     exec(`git worktree add "${worktreePath}" "${branchName}"`, { ..._gitOpts, cwd: rootDir });
                   }
