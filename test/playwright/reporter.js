@@ -56,9 +56,10 @@ class SummaryReporter {
     console.log(`  \x1b[32m${passed} passed\x1b[0m  \x1b[31m${failed} failed\x1b[0m  \x1b[33m${skipped} skipped\x1b[0m  (${total} total, ${duration}s)`);
     console.log('═'.repeat(60) + '\n');
 
-    // Write results for regression tracking
-    const resultsPath = path.join(__dirname, '..', '..', 'engine', 'test-results.json');
-    const prev = (() => { try { return JSON.parse(fs.readFileSync(resultsPath, 'utf8')); } catch { return null; } })();
+    // Write last-run results
+    const engineDir = path.join(__dirname, '..', '..', 'engine');
+    const resultsPath = path.join(engineDir, 'test-results.json');
+    const baselinePath = path.join(engineDir, 'test-baseline.json');
 
     const output = {
       timestamp: new Date().toISOString(),
@@ -67,20 +68,29 @@ class SummaryReporter {
       results: this.results,
     };
 
-    // Regression check: flag any test that was passing before and is now failing
-    if (prev && prev.results) {
-      const prevPassed = new Set(prev.results.filter(r => r.status === 'passed').map(r => `${r.suite} > ${r.title}`));
+    // Regression check: compare against accepted baseline (not last run)
+    const baseline = (() => { try { return JSON.parse(fs.readFileSync(baselinePath, 'utf8')); } catch { return null; } })();
+    if (baseline && baseline.results) {
+      const baselinePassed = new Set(baseline.results.filter(r => r.status === 'passed').map(r => `${r.suite} > ${r.title}`));
       const regressions = this.results.filter(r =>
-        r.status === 'failed' && prevPassed.has(`${r.suite} > ${r.title}`)
+        r.status === 'failed' && baselinePassed.has(`${r.suite} > ${r.title}`)
       );
+      const newTests = this.results.filter(r => !baseline.results.some(b => b.suite === r.suite && b.title === r.title));
+
       if (regressions.length > 0) {
-        console.log('\x1b[31m⚠ REGRESSIONS DETECTED:\x1b[0m');
+        console.log('\x1b[31m⚠ REGRESSIONS vs baseline:\x1b[0m');
         for (const r of regressions) console.log(`  - ${r.suite} > ${r.title}`);
         console.log('');
         output.regressions = regressions.map(r => `${r.suite} > ${r.title}`);
-      } else if (failed === 0) {
-        console.log('\x1b[32m✓ No regressions detected.\x1b[0m\n');
+      } else {
+        console.log('\x1b[32m✓ No regressions vs baseline.\x1b[0m');
       }
+      if (newTests.length > 0) {
+        console.log(`\x1b[36m  ${newTests.length} new test(s) not yet in baseline — run npm run test:e2e:accept to update.\x1b[0m`);
+      }
+      console.log('');
+    } else {
+      console.log('\x1b[33m  No baseline found — run npm run test:e2e:accept after a clean run to set one.\x1b[0m\n');
     }
 
     try { fs.writeFileSync(resultsPath, JSON.stringify(output, null, 2)); } catch {}

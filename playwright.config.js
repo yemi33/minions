@@ -13,8 +13,9 @@ module.exports = defineConfig({
   use: {
     baseURL: 'http://localhost:7331',
     headless: true,
-    screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    screenshot: 'only-on-failure',   // screenshot on every failure
+    video: 'retain-on-failure',       // video for failed tests only (saves disk)
+    trace: 'retain-on-failure',       // trace (time-travel debugger) for failures
     actionTimeout: 8000,
     navigationTimeout: 10000,
   },

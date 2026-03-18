@@ -1070,7 +1070,10 @@ test.describe('API Contracts', () => {
     expect(Array.isArray(r.json)).toBe(true);
     for (const p of r.json) {
       expect(p).toHaveProperty('file');
-      expect(p.file.endsWith('.md')).toBe(true);
+      expect(p).toHaveProperty('format'); // 'draft' | 'prd'
+      expect(p).toHaveProperty('status');
+      // Plans can be .md (draft) or .json (PRD)
+      expect(p.file.endsWith('.md') || p.file.endsWith('.json')).toBe(true);
     }
   });
 
