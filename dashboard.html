@@ -678,7 +678,7 @@
   </section>
 
   <section>
-    <h2>Knowledge Base <span class="count" id="kb-count">0</span> <button id="kb-sweep-btn" onclick="kbSweep()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;margin-left:8px;vertical-align:middle">sweep</button></h2>
+    <h2>Knowledge Base <span class="count" id="kb-count">0</span> <button id="kb-sweep-btn" onclick="kbSweep()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;margin-left:8px;vertical-align:middle">sweep</button><span id="kb-swept-time" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px"></span></h2>
     <div class="kb-tabs" id="kb-tabs"></div>
     <div class="kb-list" id="kb-list"><p class="empty">No knowledge entries yet. Notes are classified here after consolidation.</p></div>
   </section>
@@ -3872,10 +3872,14 @@ function renderKnowledgeBase() {
   const listEl = document.getElementById('kb-list');
   const countEl = document.getElementById('kb-count');
 
-  // Count total
+  // Count total (skip non-array keys like lastSwept)
   let total = 0;
-  for (const items of Object.values(_kbData)) total += items.length;
+  for (const [k, v] of Object.entries(_kbData)) if (Array.isArray(v)) total += v.length;
   countEl.textContent = total;
+
+  // Last swept timestamp
+  const sweptEl = document.getElementById('kb-swept-time');
+  if (sweptEl) sweptEl.textContent = _kbData.lastSwept ? 'swept ' + timeSinceStr(new Date(_kbData.lastSwept)) : '';
 
   if (total === 0) {
     tabsEl.innerHTML = '';
@@ -3886,7 +3890,7 @@ function renderKnowledgeBase() {
   // Render tabs
   let tabsHtml = '<button class="kb-tab ' + (_kbActiveTab === 'all' ? 'active' : '') + '" onclick="kbSetTab(\'all\')">All <span class="badge">' + total + '</span></button>';
   for (const [cat, items] of Object.entries(_kbData)) {
-    if (items.length === 0) continue;
+    if (!Array.isArray(items) || items.length === 0) continue;
     const label = KB_CAT_LABELS[cat] || cat;
     tabsHtml += '<button class="kb-tab ' + (_kbActiveTab === cat ? 'active' : '') + '" onclick="kbSetTab(\'' + cat + '\')">' + label + ' <span class="badge">' + items.length + '</span></button>';
   }
@@ -3896,6 +3900,7 @@ function renderKnowledgeBase() {
   let items = [];
   if (_kbActiveTab === 'all') {
     for (const [cat, catItems] of Object.entries(_kbData)) {
+      if (!Array.isArray(catItems)) continue;
       for (const item of catItems) items.push({ ...item, category: cat });
     }
     items.sort((a, b) => b.date.localeCompare(a.date));

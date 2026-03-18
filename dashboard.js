@@ -1072,6 +1072,8 @@ const server = http.createServer(async (req, res) => {
       if (!result[e.cat]) result[e.cat] = [];
       result[e.cat].push({ file: e.file, category: e.cat, title: e.title, agent: e.agent, date: e.date, size: e.size, preview: e.preview });
     }
+    const swept = safeJson(path.join(ENGINE_DIR, 'kb-swept.json'));
+    if (swept) result.lastSwept = swept.timestamp;
     return jsonReply(res, 200, result);
   }
 
@@ -1223,6 +1225,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
 
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified`;
+      safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
       return jsonReply(res, 200, { ok: true, summary, plan });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { global._kbSweepInFlight = false; }
   }
