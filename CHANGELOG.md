@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.1.57 (2026-03-18)
+
+### Engine
+- engine.js
+- engine/ado-mcp-wrapper.js
+- engine/ado.js
+- engine/check-status.js
+- engine/cli.js
+- engine/consolidation.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/llm.js
+- engine/queries.js
+- engine/shared.js
+- engine/spawn-agent.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Playbooks
+- ask.md
+- build-and-test.md
+- explore.md
+- fix.md
+- implement-shared.md
+- implement.md
+- plan-to-prd.md
+- plan.md
+- review.md
+- test.md
+- verify.md
+- work-item.md
+
+### Agents
+- agents/dallas/charter.md
+- agents/lambert/charter.md
+- agents/ralph/charter.md
+- agents/rebecca/charter.md
+- agents/ripley/charter.md
+
+### Documentation
+- README.md
+- auto-discovery.md
+- blog-first-successful-dispatch.md
+- command-center.md
+- distribution.md
+- engine-restart.md
+- human-vs-automated.md
+- plan-lifecycle.md
+- self-improvement.md
+
+### Other
+- .github/workflows/publish.yml
+- TODO.md
+- bin/squad.js
+- config.template.json
+- playwright.config.js
+- routing.md
+- squad.js
+- team.md
+- test/playwright/accept-baseline.js
+- test/playwright/dashboard.spec.js
+- test/playwright/reporter.js
+- test/pre-commit-hook.js
+- test/squad-tests.js
+
 All notable changes to Squad are documented here. Versions are auto-published to npm on each sync.
 
 ## 0.2.x (2026-03-15)
