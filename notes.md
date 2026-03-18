@@ -1937,3 +1937,460 @@ _Processed 3 notes, 10 insights extracted, 6 duplicates removed._
   → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
 
 _Processed 3 notes, 6 insights extracted, 4 duplicates removed._
+
+---
+
+### 2026-03-18: ADO API intermittency thresholds and dispatch deduplication implementation details
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Pre-flight commit SHA check is mandatory before review cycles**: Compare branch HEAD against known reviewed commits to detect duplicate dispatches early. Completes in <15 seconds vs 5-10 minute full review cycle. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote-only bail-out when PR thread count >30**: Submit vote without posting new threads to signal review completion. Prevents thread accumulation while maintaining reviewer status — distinguishes from "skip all writes >50" convention. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **ADO vote PUT succeeds reliably at 35-63 threads**: Intermittent failures observed at 37 threads, but HTTP 200 confirmed at 38, 63 threads. Vote operations more resilient than thread reads. Use vote-only pattern instead of complete skip until >50 threshold. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **AugLoop annotation provider pattern for Bebop**: Minimal 2-method interface (`activateAnnotations(types[], callback) → Promise<tokens[]>`, `releaseAnnotation(token) → Promise<bool>`) cleanly separates concerns and avoids tight coupling to Jotai. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **Callback-based Jotai integration pattern**: Pass `AnnotationCallbacks` interface instead of raw Jotai `set` — enables testing with mocks and avoids importing Jotai store types into transport layer. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+- **GCM credential success does not indicate ADO API health**: Token retrieval via `git credential fill` completes while subsequent API calls (GET /threads, PUT /reviewers) timeout. Don't assume API is responsive because auth succeeded. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote state not persisted from prior sessions**: Reviewers API may omit votes submitted in earlier dispatch cycles. Resubmit via `PUT /pullRequests/{id}/reviewers/{vsid}` with `{"vote":5}` JSON body to ensure current state. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **ADO API degradation intermittent at 37-38 threads**: Vote PUT timed out at 37 threads in one session but succeeded HTTP 200 at 38 in another. Intermittency in 30-50 range justifies conservative >30 thread posting threshold. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **Node.js `https.request()` more reliable than curl on Windows**: Avoids `/dev/stdin` ENOENT errors from curl JSON piping. Use inline Node.js for ADO REST API calls. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Thread accumulation continues despite bail-out pattern adoption**: Some agents still posting threads past >30 threshold. PR-4976445 escalated 28→37, PR-4976726 approaching 40-thread limit. Requires enforcement across all agent sessions. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### PR Review Findings
+- **PR-4976897: feat(PL-W012) AugLoop integration — APPROVE**: 5 files, 1,399 lines. All pattern compliance passes (string unions, readonly fields, state+dispatch, ES private fields, no assertions/any/console/user data). Retry logic correct via closure capture. Comprehensive test coverage. Non-blocking: module-level counter resets, missing logger integration. No security issues. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **PR-4976726 findings unchanged across 5+ duplicate dispatches**: Commit `52def1de9338` static. Original review identified 5 non-blocking quality issues: duplicate constants, unused types, type/implementation mismatch, function identity instability, metadata key collision. All remain valid. PR approvable. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Action Items
+- **Engine dispatch deduplication — implement 3-point pre-flight check**: (1) Compare branch HEAD commit SHA against last-reviewed SHA, (2) Check for existing APPROVE or APPROVE-WITH-SUGGESTIONS votes from squad agents, (3) Skip dispatch entirely if thread count >50. Eliminates 15+ wasted cycles per high-activity PR. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Add exponential PR-level cooldown to dispatch router**: If same commit SHA dispatched N times, increase delay before next dispatch (e.g., 2^N minutes). Prevents rapid re-queueing of identical work. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Enforce vote-only bail-out convention across all agent sessions**: Consolidation pipeline should filter agent-authored review threads from "actionable findings" to prevent re-dispatch triggering. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+_Processed 5 notes, 16 insights extracted, 5 duplicates removed._
+
+---
+
+### 2026-03-18: ADO intermittency 35-60 threads; PR-4976726 joins duplicate dispatch crisis; AugLoop annotation integration patterns documented
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **ADO API intermittency is intermittent, not deterministic failure**: Vote PUT succeeded at 63 threads (HTTP 200), timed out at 37 threads, succeeded again at 38 threads. Degradation 35-60 range shows failure pattern is inconsistent, not binary threshold. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **GCM credential fill succeeds while ADO API unresponsive**: Successful `git credential fill` doesn't indicate API health; all subsequent API calls can timeout. Don't treat auth success as API health proxy. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote-only pre-flight check completes in <15 seconds**: Git fetch + commit SHA comparison + threads API query saves 5-10 minutes vs full review cycle. Confirms commit unchanged before deciding on action. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Self-reinforcing thread accumulation on duplicate dispatches**: PR-4976726 shows 74% of threads authored by agent identity (26 of 35). Duplicate dispatches → more threads → worse API degradation → more dispatch confusion. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+#### PR Review Findings
+- **PR-4976726 identified as third duplicate-dispatch victim**: Commit `52def1de9338` unchanged across multiple dispatches. 35 threads, 22 APPROVE verdicts, five non-blocking quality issues remain valid: duplicate constants, unused type definitions, web vitals mismatch, function identity instability, metadata key collision risk. Vote:5 resubmitted via REST API to confirm status. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **PR-4976897 code review: APPROVE**: Five files (1,399 lines) implementing AugLoop annotation lifecycle. All pattern compliance verified (string unions, readonly fields, feature-first org, private ES fields). Retry logic traced correct through closure capture. Dispose cleanup thorough. Test coverage comprehensive. Non-blocking: module-level `annotationCounter` never resets (suggest `crypto.randomUUID()`), no logger integration for silent error handling. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Architecture Notes
+- **AugLoop annotation provider minimal contract**: `IAugLoopAnnotationProvider` with two methods only: `activateAnnotations(types[], callback) → Promise<tokens[]>` and `releaseAnnotation(token) → Promise<boolean>`. Loose coupling pattern for Bebop cowork agent operations. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **Callback-based Jotai integration avoids type assertions**: Accept `AnnotationCallbacks` interface in constructor instead of raw Jotai `set`. Enables testing without Jotai store imports. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Bugs & Gotchas
+- **ADO reviewers API doesn't persist votes between calls**: Vote PUT returns HTTP 200, but vote absent from subsequent reviewer queries until resubmitted. Resubmission pattern corrects transient persistence. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Node.js `https.request()` more reliable than curl for Windows ADO submission**: Curl JSON hits `/dev/stdin` ENOENT on Windows; inline Node.js script avoids issue, completes in <5 seconds at 35 threads. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Thread count progression shows convention adoption gap**: PR-4976445 grew 28→37→38 despite >30 threshold published. Some agents still posting threads beyond threshold, incrementing count ~1 per dispatch cycle. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Action Items
+- **Three PRs now trapped in duplicate dispatch loop: PR-4976897, PR-4976445, PR-4976726**: All show unchanged commits with 14-40+ APPROVE verdicts and 28-63 threads. Each dispatch adds threads, worsening API degradation. Engine deduplication (SHA check, vote detection, >50 thread skip) is now critical across all three. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+- **Broadcast >30 thread posting threshold to all agents**: Incomplete adoption causing thread growth despite convention. Unified enforcement prevents further ADO API degradation. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+_Processed 3 notes, 12 insights extracted, 6 duplicates removed._
+
+---
+
+### 2026-03-18: ADO API Intermittency Patterns, AugLoop Annotation Architecture, and Duplicate Dispatch Thread Accumulation
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **Vote-only bail-out pattern effective at >30 threads**: Submitting vote via REST API PUT without thread posting avoids worsening thread accumulation. Vote PUT succeeds more consistently than thread operations (no timeouts observed at 35-38 threads; thread posting still skipped per convention). _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count grows ~1 per duplicate dispatch despite bail-outs**: PR-4976445 escalated 37→38 threads, PR-4976897 escalated 60→63 threads. Some agents not yet adopting >30 threshold convention consistently. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **Self-reinforcing thread accumulation from duplicate dispatches**: 74% of threads on PR-4976726 (26 of 35) authored by agent identity; clearest evidence that duplicate dispatches, not human reviewers, drive thread growth and API degradation. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **GCM credential fill succeeds even when ADO API unresponsive**: Token retrieval via `git credential fill` completes successfully while all subsequent API calls timeout — don't treat successful auth as indicator of API health. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Node.js https.request() more reliable than curl for ADO API votes**: Inline Node.js scripts avoid `/dev/stdin` ENOENT issues on Windows and complete faster than curl JSON parsing. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Callback-based Jotai integration pattern eliminates type assertions**: Accept `AnnotationCallbacks` interface instead of raw Jotai `set` — enables testing with mocks and avoids Jotai store type imports in transport class. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### Bugs & Gotchas
+
+- **ADO vote PUT intermittent at 37-63 threads, not deterministic failure**: Session 1 observed timeout at 37 threads; Sessions 2-3 observed HTTP 200 at 38, 63+ threads. Intermittency correlates with concurrent agent load, not just thread count. Previous assumption of deterministic failure at 50+ is inaccurate. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Git fetch also degrades under concurrent agent load**: Single branch fetch timed out after 30s when Ripley concurrently dispatched on same PR (PR-4976897). Timeout pattern suggests resource contention, not just endpoint-specific degradation. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+#### PR Review Findings
+
+- **PR-4976897 APPROVE — AugLoop annotation integration for Bebop cowork (1,399 lines, 5 files)**: All patterns compliant (string unions, readonly fields, state+dispatch, feature-first org, ES # private fields). Retry logic correct (maxRetries: 2 with closure capture verified). Minimal `IAugLoopAnnotationProvider` interface (2 methods) eliminates coupling. Comprehensive test coverage (9 reducer + 10+ transport tests). Two non-blocking suggestions: (1) module-level `annotationCounter` never resets—consider `crypto.randomUUID()`; (2) silent error swallowing in `releaseAnnotation` catches—consider logger integration. No security issues. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **PR-4976726 five quality findings remain valid across 3+ duplicate dispatches**: Duplicate constants, 4 unused type definitions, web vitals type/implementation mismatch, function identity instability, metadata key collision risk. Commit `52def1de9338` unchanged. Code approvable as-is; all findings are non-blocking enhancements. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Architecture Notes
+
+- **AugLoop annotation provider pattern for Bebop**: Minimal contract with `activateAnnotations(types[], callback) → Promise<tokens[]>` and `releaseAnnotation(token) → Promise<boolean>`. Callback-based Jotai integration avoids tight coupling and enables transport-layer testing without Jotai store imports. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### Action Items
+
+- **Engine dispatch deduplication now critical: PR-4976897 (63 threads, 41 APPROVEs, N+17), PR-4976445 (38 threads, 14 APPROVEs, N+13), PR-4976726 (35 threads, 22 APPROVEs, N+2+)**: Unchanged commits across all dispatches. Each duplicate adds 1 thread and worsens API degradation. Implement pre-flight checks: (1) commit SHA vs last-reviewed SHA, (2) existing APPROVE vote detection, (3) thread count >50 skip dispatch entirely. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote resubmission pattern reliable at 35-63 threads**: Use `PUT /pullRequests/{prId}/reviewers/{vsid}` with `{"vote":5}` for bail-outs while dispatch deduplication is implemented. Completes in <5s; HTTP 200 observed consistently at moderate thread counts. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+_Processed 5 notes, 15 insights extracted, 6 duplicates removed._
+
+---
+
+### 2026-03-18: AugLoop integration approved; ADO vote PUT intermittent at 35-40 threads; duplicate dispatch threads traced to agent-authored identity
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **ADO vote PUT is intermittent at 35-40 threads, not deterministic**: Ripley observed HTTP 200 success at 38 threads (N+13) immediately after timeout at 37 threads (N+12); Lambert confirmed <5s success at 35 threads. Threshold is probabilistic, not deterministic, in the 35-60 range. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **GCM credential retrieval works reliably even during ADO API degradation**: Pattern `printf "protocol=https\nhost=office.visualstudio.com\n" | git credential fill` returns valid Bearer token even when subsequent vote PUT or GET threads operations timeout; don't treat successful auth as API health indicator. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Node.js https.request() for ADO REST API more reliable than curl on Windows**: Avoids `/dev/stdin` ENOENT and JSON escaping edge cases; recommended for vote submission and thread queries. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Callback-based Jotai integration pattern for transport classes**: Accept `AnnotationCallbacks` interface instead of raw Jotai `set`; enables testing with mocks and decouples transport class from Jotai store type imports. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### Build & Test Results
+
+- **PR-4976897 AugLoop annotation lifecycle APPROVE**: 5 files (1,399 lines) with comprehensive test coverage; passes all pattern compliance (string unions, readonly fields, ES `#` private fields). Non-blocking: module-level annotationCounter never resets (consider `crypto.randomUUID()`), no logger integration for error swallowing. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+#### PR Review Findings
+
+- **PR-4976897 minimal AugLoop provider interface**: `activateAnnotations(types[], callback) → Promise<tokens[]>` and `releaseAnnotation(token) → Promise<boolean>`; 2-method contract prevents tight coupling and enables mock injection in tests. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17.md`
+
+- **PR-4976726 non-blocking quality observations remain valid across all 5+ duplicate dispatches**: (1) Duplicate constants (PERF_EVENT_TYPE, INTERACTION_EVENT_TYPE), (2) Four unused type definitions, (3) Web vitals type/implementation mismatch, (4) Function identity instability (closures recreated per render), (5) Metadata key collision risk. Commit `52def1de9338` unchanged throughout. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Bugs & Gotchas
+
+- **Agent-authored threads comprise 74% of PR-4976726 (26 of 35)**: Confirms duplicate dispatches—not human reviewer activity—drive thread accumulation; self-reinforcing cycle where added threads worsen API degradation, triggering more incorrect dispatch decisions. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count growth validates 1 thread per duplicate dispatch**: PR-4976897 escalated 55→60→63 threads; PR-4976445 escalated 28→37→38 threads across adjacent sessions. At current rate, will hit 40-thread ADO timeout threshold within 3-5 cycles. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **ADO reviewers API may not persist agent votes on initial return**: Lambert and Ripley resubmissions via PUT succeeded even though prior reviewer list queries omitted their votes; always resubmit vote via PUT when voting, even during bail-out sessions. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Action Items
+
+- **Engine dispatch deduplication: implement three-check pre-flight router**: (1) Compare branch HEAD commit SHA against last-reviewed-SHA, (2) Detect existing APPROVE/APPROVE-WITH-SUGGESTIONS votes from squad agents, (3) Skip dispatch if thread count >50. Eliminates 12-17 duplicate cycles per PR. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Add exponential PR-level cooldown to dispatch router**: If PR dispatched N times with identical commit SHA, increase delay before next dispatch exponentially (e.g., 2^N minutes); preserves human-triggered dispatch while reducing waste. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 16 insights extracted, 8 duplicates removed._
+
+---
+
+### 2026-03-18: Lambert, Ripley: bug findings (58 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### Bugs & Gotchas (58)
+- **ADO REST API GET /pullRequests/4976897**: Timed out after 20s _(lambert)_
+- **Git rev-parse origin/feat/PL-W012-augloop-integration**: Timed out after 10s _(lambert)_
+- **Bailed out without any ADO write operations** per team convention: "For PRs with >50 threads, skip ALL ADO write operations" (source: team notes 2026-03-17, lambert + ralph recommendation). _(lambert)_
+- **ADO API total blackout at 60+ threads is persistent**: Not just intermittent — when multiple agents hit the same high-thread PR concurrently, even read operations fail consistently. This dispatch confirms the pattern from 5+ prior sessions. (source: curl timeouts on both `GET /pullRequests/4976... _(lambert)_
+- **Pre-flight check is the correct first action**: Even when pre-flight itself times out, the timeout (~30s total) is still 10-20x faster than a full review cycle (5-10 minutes). The bail-out decision can be made from team notes alone when API is unresponsive. (source: this session completing in <... _(lambert)_
+- **Engine MUST implement pre-flight SHA + vote checks before dispatch**: Three checks needed: (1) commit SHA comparison against last reviewed state, (2) existing APPROVE vote detection, (3) thread count >50 skip dispatch entirely. This single fix would eliminate 15+ wasted dispatch cycles per PR. _(lambert)_
+- **Consider PR-level cooldown in dispatch router**: If a PR has been dispatched N times with same commit SHA, exponentially increase delay before next dispatch (e.g., 2^N minutes). _(lambert)_
+- **Duplicate constants**: `PERF_EVENT_TYPE` and `INTERACTION_EVENT_TYPE` defined redundantly (source: `apps/bebop/src/features/cowork/hooks/useCoworkTelemetry.ts:39-42`) _(lambert)_
+- **Web vitals type/implementation mismatch**: Type signatures in `telemetryTypes.ts:64-70` conflict with actual tracking in `useCoworkTelemetry.ts:245-270` _(lambert)_
+- **ADO REST API still functional at 35 threads**: Unlike PR-4976897 at 60+ threads (total API blackout), PR-4976726 at 35 threads had responsive read endpoints. The degradation threshold is somewhere between 35-60. (source: successful GET /threads and GET /reviewers in this session) _(lambert)_
+- **Pre-flight check completed in <15 seconds**: git fetch (~5s) + threads API (~5s) + reviewers API (~3s) = ~13s total. Full review cycle avoided: 5-10 min savings. (source: this session timing) _(lambert)_
+- **Thread count 35 is approaching danger zone**: At ~1 thread per dispatch, this PR will hit the 40-thread degradation threshold within 5 more dispatches. Vote-only bail-out (no thread posting) is critical to slow accumulation. (source: thread count progression from team notes) _(lambert)_
+- **Prior votes**: vote:10 already submitted multiple times (source: team notes 2026-03-17) _(lambert)_
+- **Vote**: vote:10 resubmitted via REST API — HTTP 200 success at 63 threads (source: `PUT /pullRequests/4976897/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8` returned `{"vote":10}`) _(lambert)_
+- **Pre-flight check completed in <20 seconds total**: git fetch + commit check + threads API + vote submission = full bail-out in under 20s vs 5-10 min review cycle. _(lambert)_
+- **Existing vote**: vote:10 already recorded for VSID `1c41d604-e345-64a9-a731-c823f28f9ca8` (source: ADO REST API `GET /pullRequests/4976897?api-version=7.1` reviewers array) _(lambert)_
+- **Vote resubmitted**: vote:5 (approve with suggestions) via REST API — HTTP 200 (source: `PUT /pullRequests/4976726/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8`) _(lambert)_
+- **Pre-flight total: ~15 seconds**: git fetch + SHA check (~5s) + threads API (~5s) + vote submission (~5s) = full bail-out under 15s. (source: this session timing) _(lambert)_
+- **Last 3 threads**: All Yemi Shin vote records (vote:10, vote:5, vote:10) — human already approved _(lambert)_
+- **Vote submitted**: vote:10 via REST API — HTTP 200 received (source: `PUT /pullRequests/4976445/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8?api-version=7.1`) _(lambert)_
+- **Windows temp file pattern required**: `/dev/stdin` ENOENT still observed; used `$TEMP/conndata.json` for connectionData response parsing. (source: session error when attempting stdin pipe for VSID retrieval) _(lambert)_
+- **Pre-flight check under 20 seconds total**: git fetch (~8s) + threads API (~5s) + VSID + vote = ~20s total vs 5-10 min review. (source: this session timing) _(lambert)_
+- **All interface fields are `readonly`**: enforces immutability per CLAUDE.md (source: `annotationTypes.ts:55-85`) _(lambert)_
+- **`jest.useFakeTimers()` for timer-dependent tests**: correct per CLAUDE.md (source: `augloopTransport.test.ts:20-26`) _(lambert)_
+- **`Promise.allSettled` for parallel cleanup**: error-tolerant release (source: `augloopTransport.ts:228-238`) _(lambert)_
+- 3. **`mapAnnotationStatusToStepStatus` default returns `'pending'`** (source: `progressionAtoms.ts:258`): The default branch silently maps unknown statuses to 'pending'. A `never` assertion would give compile-time exhaustiveness checking as `AnnotationStatus` evolves. _(lambert)_
+- **Fallback-first resilience**: Transport falls back to direct display when AugLoop annotations fail after maxRetries (`DEFAULT_ANNOTATION_CONFIG.fallbackToDirectDisplay: true`). Progression panel works without AugLoop connectivity. (source: `augloopTransport.ts:291-311`) _(lambert)_
+- **`satisfies` keyword for literal exhaustiveness**: `'error' satisfies ProgressionStepStatus` confirms a literal is a valid union member at compile time without widening the type. Correct modern TS pattern. (source: `progressionAtoms.ts:~196`) _(lambert)_
+- **Thread posting**: SKIPPED (63 > 30-thread threshold) _(lambert)_
+- **Vote submission**: SKIPPED (63 > 50-thread safety threshold) _(lambert)_
+- - This review is documented locally only per team convention for >50-thread PRs. _(lambert)_
+- **Web vitals type/implementation mismatch**: type signatures conflict with actual tracking logic _(lambert)_
+- **Early bail-out pre-flight saves 5-10 minutes**: Git fetch + commit SHA check + threads API query completed in ~15s. Full review cycle avoided. _(lambert)_
+- **PR:**: https://office.visualstudio.com/DefaultCollection/OC/_git/office-bohemia/pullrequest/4976726 _(lambert)_
+- **Repository ID:**: `74031860-e0cd-45a1-913f-10bbf3f82555` _(lambert)_
+- **Lambert VSID:**: `1c41d604-e345-64a9-a731-c823f28f9ca8` _(lambert)_
+- **Threads endpoint:**: `GET https://dev.azure.com/office/OC/_apis/git/repositories/74031860-e0cd-45a1-913f-10bbf3f82555/pullRequests/4976726/threads?api-version=7.1` _(lambert)_
+- **Vote endpoint:**: `PUT https://dev.azure.com/office/OC/_apis/git/repositories/74031860-e0cd-45a1-913f-10bbf3f82555/pullRequests/4976726/reviewers/1c41d604-e345-64a9-a731-c823f28f9ca8?api-version=7.1` _(lambert)_
+- **Thread count 35 is safe for vote operations**: Based on today's observation (fast HTTP 200), ADO degradation threshold is closer to 50-60 threads, not 35. The ">30 skip thread posting" convention is conservative but appropriate. _(lambert)_
+- **Node.js inline script for vote submission**: Using `https.request()` in Node.js inline script is more reliable than curl JSON on Windows; avoids `/dev/stdin` ENOENT issue. _(lambert)_
+- Applied vote-only bail-out pattern — no new thread posted to avoid worsening ADO thread accumulation. _(ripley)_
+- **Vote-only bail-out at >30 threads**: Do not post new threads when PR thread count exceeds 30; submit vote only to signal review status without worsening thread accumulation (source: team notes convention, validated in this session) _(ripley)_
+- **Pre-flight commit SHA check is mandatory**: Always compare `git log --oneline` against known reviewed commits before creating worktrees or starting review cycles (source: established pattern from 12+ dispatches on this PR) _(ripley)_
+- - State + dispatch pattern follows `chatModeAtoms.ts` convention (source: `progressionAtoms.ts:154-162` vs `conversation/atoms/chatModeAtoms.ts:37-49`) _(ripley)_
+- **Retry logic correctness**: Traced `#handleActivationFailure` → `#retryActivation` recursive path. With `maxRetries: 2`, retryCount increments 0→1→2 through closure capture; `2 < 2 = false` terminates correctly. (source: `augloopTransport.ts:294-330`) _(ripley)_
+- **Dispose cleanup thorough**: Cancels timers, releases tokens via `Promise.allSettled`, resets state (source: `augloopTransport.ts:210-232`) _(ripley)_
+- **Callback-based constructor**: `AnnotationCallbacks` eliminates type assertions at Jotai boundaries (source: `augloopTransport.ts:69-74`) _(ripley)_
+- 1. Module-level `annotationCounter` never resets between transport instances; consider `crypto.randomUUID()` (source: `augloopTransport.ts:82-86`) _(ripley)_
+- **Callback-based Jotai integration**: Accept `AnnotationCallbacks` interface instead of raw Jotai `set` — enables testing with mocks, avoids Jotai store type imports in transport class (source: `augloopTransport.ts:69-74`) _(ripley)_
+- **Vote PUT is reliable at ~38 threads**: No timeout observed. Contrast with prior session (37 threads, timeout) — intermittency confirmed even at this range. Today: HTTP 200 at 38 threads. (source: this session) _(ripley)_
+- **Thread count grew 37→38**: One additional thread accumulated since prior Ripley session. Engine dispatch still running. (source: prior team notes = 37, current session = 38) _(ripley)_
+- **29 Ripley threads already on this PR**: My own accumulated comments are worsening the thread count. Bail-out notes I've posted in prior sessions are among the 38 threads. This reinforces the action item: engine MUST stop dispatching this PR. _(ripley)_
+- **>50 threads = skip ALL ADO write operations**: At 63 threads, PR-4976897 exceeds the threshold where both vote PUT and thread POST are unreliable. Per team convention, only safe action is local bail-out with no API calls. (source: team notes, this session) _(ripley)_
+- **Vote-already-submitted check needed**: Engine should verify whether a reviewer vote (vote:10) from this agent already exists before dispatching another review cycle. A pre-existing vote:10 with unchanged commit SHA should terminate dispatch immediately. (source: this session — my vote:10 was al... _(ripley)_
+- **Self-reinforcing escalation at 63 threads**: PR-4976897 has now grown 55→58→60→61→63 threads across sequential duplicate dispatches. Each bail-out note posted (when agents ignore the >30 threshold) adds +1 to count, worsening ADO API reliability. (source: thread count progression from team notes) _(ripley)_
+- - Windows temp file pattern (`curl -o "$TEMP/file.json"` + `readFileSync(process.env.TEMP+'/file.json')`) works reliably (source: this session) _(ripley)_
+- **APPROVE threads**: **14** existing (all from yemishin@microsoft.com agent sessions) _(ripley)_
+- **Current vote**: **10 (approved)** already set on reviewer entry for Yemi Shin (source: `GET /pullRequests/4976445/reviewers?api-version=7.1`) _(ripley)_
+
+_Deduplication: 79 duplicate(s) removed._
+
+
+---
+
+### 2026-03-18: Intermittent ADO API degradation at 35+ threads; PR-4976897 approved; dispatch deduplication reaching critical mass
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Vote-only bail-out convention partially adopted but thread count still growing**: PR-4976445 escalated 37→38 threads, PR-4976726 holding at 35 threads; some agents still posting threads despite >30 threshold. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Dispatch frequency extremely high for affected PRs**: PR-4976897 received 3 duplicate dispatches in single Lambert session (#15, #16, #17); PR-4976445 received 2 in single Ripley session (#12, #13). _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+#### PR Review Findings
+- **PR-4976897 (feat/PL-W012): APPROVE** — 5 files (1,399 lines) implementing AugLoop annotation lifecycle for Bebop cowork operations. Pattern compliance verified (string unions, readonly fields, Jotai state pattern). Retry logic correct, dispose cleanup thorough, minimal interface design. Non-blocking: module-level `annotationCounter` never resets (consider `crypto.randomUUID()`); no logger integration for error swallowing. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **PR-4976726 (feat/PL-W015) code analysis**: 5 non-blocking quality issues persist across all duplicate reviews (code unchanged at commit `52def1de9338`): duplicate constants, 4 unused type definitions, web vitals type/implementation mismatch, function identity instability (closures recreated per render), metadata key collision risk. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Bugs & Gotchas
+- **ADO vote PUT has intermittent timeout in 35-63 thread range — not deterministic**: Ripley observed timeout at 37 threads but success at 38 threads in same session; Lambert observed success at 35 threads and HTTP 200 at 63 threads. Degradation is progressive and non-deterministic, not a hard threshold. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **GCM credential fill succeeds even when ADO API unresponsive**: `git credential fill` returns valid Bearer token successfully while all subsequent API calls time out. Don't treat successful auth as API health indicator. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Vote may not persist in ADO reviewer list on first submission**: Lambert resubmitted vote:5 via PUT and confirmed persistence in reviewer list. _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Architecture Notes
+- **AugLoop annotation provider pattern for Bebop**: Minimal contract with `activateAnnotations(types[], callback) → Promise<tokens[]>` and `releaseAnnotation(token) → Promise<boolean>`. Avoids tight coupling, enables testing with mocks. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **Callback-based Jotai integration pattern**: Accept `AnnotationCallbacks` interface instead of raw Jotai `set` — enables testing with mocks, avoids Jotai store type imports in transport class. _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+#### Action Items
+- **Engine dispatch deduplication is now urgent across 3 PRs with 13-17+ duplicate cycles**: PR-4976897 (17+ dispatches at `a0ab1d949aad`), PR-4976445 (13+ dispatches at `cdf36677dab0`), PR-4976726 (5+ dispatches at `52def1de9338`). Current throttling insufficient — implement: (1) commit SHA comparison vs last reviewed, (2) APPROVE vote detection, (3) thread count >50 skip dispatch entirely. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Refine ADO vote timeout handling — intermittent failures require retry logic**: Vote PUT at 37-63 threads shows intermittent success/timeout. Current convention to skip >50 threads may be overly conservative; instead implement exponential backoff retry (3 attempts, 5-10s intervals) before bail-out. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count accumulation threshold approach**: PR-4976445 and PR-4976726 will hit 40-thread ADO timeout zone within 3-5 cycles at current 1-thread/dispatch growth rate. Enforce thread-posting >30 threshold across all agents immediately. _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 12 insights extracted, 8 duplicates merged._
+
+---
+
+### 2026-03-18: Dispatch Loop Root Cause: Agent-Authored Threads Trigger Re-Dispatch; PR-4976897 Approved
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Self-reinforcing thread accumulation**: Agent-authored review threads are re-classified as actionable findings by consolidation, perpetuating dispatch on unchanged code; PR-4976726 shows 74% of threads (26/35) from same agent identity _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+- **Vote-only bail-out at >30 threads**: Submit vote without posting thread to avoid worsening accumulation _(Lambert, Ripley)_
+  → see `knowledge\conventions\2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+- **Pre-flight commit SHA check is mandatory**: Compare `git log --oneline` against prior reviews in <15s to detect unchanged code, avoiding 5-10 minute review cycles _(Lambert, Ripley)_
+  → see `knowledge\conventions\2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+- **AugLoop annotation provider pattern**: `IAugLoopAnnotationProvider` with `activateAnnotations(types[], callback)` and `releaseAnnotation(token)` is minimal contract for Bebop integration _(Ripley)_
+  → see `knowledge\build-reports\2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+- **Callback-based Jotai integration**: Accept `AnnotationCallbacks` instead of raw Jotai set — enables mocking and avoids store type imports in transport class _(Ripley)_
+  → see `knowledge\build-reports\2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Build & Test Results
+- **PR-4976897 APPROVE**: 1,399 lines across 5 files implementing AugLoop annotation lifecycle; all pattern compliance passes (string unions, readonly fields, ES # private), retry logic correct, dispose cleanup thorough, comprehensive tests (9 reducer + 7 Jotai + 10+ transport) _(Ripley)_
+  → see `knowledge\build-reports\2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+- **PR-4976726 findings remain valid**: 5 non-blocking quality issues (duplicate constants, unused types, web vitals mismatch, closure instability, metadata collision risk) unchanged across 5+ duplicate dispatches _(Lambert)_
+  → see `knowledge\conventions\2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Bugs & Gotchas
+- **GCM credential fill succeeds when ADO API is unresponsive**: `git credential fill` returns valid Bearer token while all subsequent API calls timeout — successful auth is not API health indicator _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+- **ADO vote PUT failures intermittent at moderate thread counts**: Timeouts at 37 threads (Ripley Nth+12), yet HTTP 200 success at 35-38 threads in later sessions — degradation is intermittent across 35-60+ range _(Lambert, Ripley)_
+  → see `knowledge\conventions\2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+- **Reviewer list doesn't persist vote submission**: ADO `GET /reviewers` may omit prior vote even after successful `PUT` HTTP 200, requiring resubmission _(Lambert)_
+  → see `knowledge\conventions\2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+- **Git fetch degrades under concurrent agent load**: Timeout observed when multiple agents fetch from same high-thread PR simultaneously _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+#### Architecture Notes
+- **Engine consolidation misclassifies agent threads as actionable findings**: Squad agent review threads from prior dispatches are re-queued as new work — filtering by squad agent identities needed _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+- **Thread accumulation grows ~1 per dispatch despite bail-out**: PR-4976445 escalated 28→37→38 across 13 dispatches; some agents still posting despite >30 threshold _(Ripley)_
+  → see `knowledge\build-reports\2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976445-duplicate-d.md`
+
+#### Action Items
+- **Engine dispatch deduplication critical across 3+ PRs**: PR-4976897 (15+), PR-4976726 (5+), PR-4976445 (13+) with unchanged commits and 14-40+ APPROVE votes. Implement: (1) commit SHA vs last-reviewed, (2) existing APPROVE detection, (3) thread count >50 auto-skip _(Lambert, Ripley)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+- **Filter squad agent threads from consolidation "actionable findings"**: Exclude threads authored by squad agent identities (Lambert: `1c41d604-e345-64a9-a731-c823f28f9ca8`) to break re-dispatch loop _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+- **Consider exponential PR-level cooldown in dispatch router**: If PR dispatched N times with same SHA, increase delay before next dispatch (e.g., 2^N minutes) _(Lambert)_
+  → see `knowledge\conventions\2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+_Processed 3 notes, 11 insights extracted, 3 duplicates removed._
+
+---
+
+### 2026-03-18: ADO API degradation thresholds confirmed; AugLoop integration PR-4976897 approved; engine dispatch deduplication spans 17+ cycles across 3 PRs
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **PR-level cooldown via exponential backoff**: For branches with N prior dispatches at unchanged commit SHA, delay next dispatch by 2^N minutes; eliminates wasted cycles on frozen PRs _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Commit SHA pre-flight check is mandatory first action**: Compare `git log --oneline -1 origin/branch` against team notes history before any review work; identifies unchanging branches instantly _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **ADO API degradation threshold empirically 35–60 threads**: At 35 threads, read endpoints (GET threads, GET reviewers) respond reliably; between 37–50 threads, vote PUT intermittently times out (20s) or succeeds (HTTP 200) non-deterministically; at 60+ threads, total API blackout _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **AugLoop annotation provider pattern**: Minimal 2-method interface (`activateAnnotations(types[], callback) → Promise<tokens[]>`, `releaseAnnotation(token) → Promise<bool>`) enables transport-layer abstraction and eliminates type assertion coupling _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **Callback-based Jotai integration over raw store injection**: Pass `AnnotationCallbacks` interface instead of Jotai `set` function; enables testing with mocks and avoids Jotai type imports in transport layer _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+#### Build & Test Results
+
+- **PR-4976897 (feat/PL-W012-augloop-integration): APPROVE** — 1,399 lines across 5 files implementing AugLoop annotation lifecycle; retry logic correct (closure capture through maxRetries:2), dispose cleanup thorough (timer cancellation + token release), test coverage comprehensive (9 reducer + 5 status mapping + 7 Jotai + 10+ transport tests); no security issues, no injection vectors _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **PR-4976897 Bebop pattern compliance**: String union types (not enums), readonly interfaces, feature-first organization (features/cowork/atoms/, server/, types/), ES `#` private fields per lint rules, no barrel files, no type assertions, no `any`/`!`/`console` _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **PR-4976897 non-blocking suggestions**: Module-level `annotationCounter` never resets between transport instances (consider `crypto.randomUUID()`); no logger integration causes silent error swallowing in `releaseAnnotation` catch blocks _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+- **PR-4976726 original findings remain valid**: 5 non-blocking quality issues persist across all 5+ duplicate dispatches (duplicate constants, 4 unused type definitions, web vitals type/implementation mismatch, function identity instability via closure recreation, metadata key collision risk); code unchanged _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Bugs & Gotchas
+
+- **GCM credential fill succeeds while ADO API hangs**: `git credential fill` for Azure DevOps returns valid Bearer token even when all subsequent API calls timeout; successful auth ≠ API health _(Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Thread count grows despite vote-only bail-out pattern**: PR-4976445 escalated 28→37→38 across 3 sessions despite most dispatches applying >30 threshold; indicates some agents still posting threads or non-agent activity adding threads _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Agent identity dominates thread accumulation**: PR-4976726 shows 26/35 threads (74%) authored by agent VSID `1c41d604-e345-64a9-a731-c823f28f9ca8`; duplicate dispatches, not human reviewers, are primary thread driver _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **ADO vote PUT is non-deterministic at 37–50 threads**: Ripley observed both HTTP 200 success and 20s timeout at same PR with 37–38 threads across consecutive sessions; intermittency precludes reliable retry logic _(Ripley, Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **ADO reviewers list doesn't persist agent votes**: Lambert's vote:5 returned in subsequent API call but not reflected in `GET /reviewers` response; resubmission required for confirmation _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+#### Architecture Notes
+
+- **Bebop state + dispatch pattern follows chatModeAtoms**: progressionAtoms.ts (267 lines) mirrors conversation/atoms/chatModeAtoms.ts structure for Jotai state + reducer dispatch _(Ripley)_
+  → see `knowledge/build-reports/2026-03-18-ripley-ripley-learnings-2026-03-17-pr-4976897-full-code-review.md`
+
+#### Action Items
+
+- **Engine dispatch deduplication now critical — 17+ wasted cycles**: PR-4976897 (17+ dispatches), PR-4976445 (13+ dispatches), PR-4976726 (5+ dispatches) all at unchanged commits with 14–40+ APPROVE threads; consolidate pre-flight checks into dispatcher before agent spawn _(Lambert, Ripley)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+- **Identify exact ADO degradation curve between 35–60 threads**: Current ">50 skip dispatch" and ">30 skip thread posting" conventions are conservative; empirical data (success at 38, failures at 37) suggests lower threshold; run controlled test with high-thread PR to determine safe vote PUT limit _(Ripley, Lambert)_
+  → see `knowledge/conventions/2026-03-17-lambert-lambert-learnings-2026-03-17.md`
+
+- **Node.js https.request() preferred over curl for Windows vote submission**: Avoids `/dev/stdin` ENOENT issues and JSON escaping gotchas; both GCM credential fill and Node.js inline vote script are reliable on Windows _(Lambert)_
+  → see `knowledge/conventions/2026-03-18-lambert-lambert-learnings-2026-03-18.md`
+
+_Processed 3 notes, 26 insights extracted, 8 duplicates removed._

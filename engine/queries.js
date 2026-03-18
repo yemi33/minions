@@ -453,7 +453,7 @@ function getPrdInfo(config) {
             allPrdItems.push({
               ...f, _source: pf, _planStatus: plan.status || 'active',
               _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
-              _archived: archived,
+              _archived: archived, _sourcePlan: plan.source_plan || '',
             });
           }
         } catch {}
@@ -528,7 +528,7 @@ function getPrdInfo(config) {
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
       description: (i.description || '').slice(0, 200), projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
-      source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false,
+      source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
     })),
   };
 
