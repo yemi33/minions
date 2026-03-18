@@ -612,6 +612,7 @@ const server = http.createServer(async (req, res) => {
       if (!item) return jsonReply(res, 404, { error: 'item not found' });
 
       item.status = 'pending';
+      item._retryCount = 0; // Reset retry counter on manual retry
       delete item.dispatched_at;
       delete item.dispatched_to;
       delete item.failReason;
@@ -621,11 +622,11 @@ const server = http.createServer(async (req, res) => {
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
       const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+      const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
+      const dispatchKey = sourcePrefix + id;
       try {
         const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
         if (dispatch.completed) {
-          const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
-          const dispatchKey = sourcePrefix + id;
           const before = dispatch.completed.length;
           dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
           // Also clear fan-out entries
@@ -633,6 +634,16 @@ const server = http.createServer(async (req, res) => {
           if (dispatch.completed.length !== before) {
             safeWrite(dispatchPath, dispatch);
           }
+        }
+      } catch {}
+
+      // Clear cooldown so item isn't blocked by exponential backoff
+      try {
+        const cooldownPath = path.join(SQUAD_DIR, 'engine', 'cooldowns.json');
+        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        if (cooldowns[dispatchKey]) {
+          delete cooldowns[dispatchKey];
+          safeWrite(cooldownPath, cooldowns);
         }
       } catch {}
 

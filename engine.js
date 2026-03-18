@@ -1306,7 +1306,12 @@ function checkTimeouts(config) {
     for (const item of items) {
       if (item.status !== 'dispatched') continue;
       // Check if any active dispatch references this item
-      const possibleKeys = [`central-work-${item.id}`, `work-${item.id}`];
+      // Dispatch keys include project name: work-{project}-{id} or central-work-{id}
+      const projectNames = getProjects(config).map(p => p.name);
+      const possibleKeys = [
+        `central-work-${item.id}`,
+        ...projectNames.map(p => `work-${p}-${item.id}`),
+      ];
       const isActive = possibleKeys.some(k => activeKeys.has(k)) ||
         (dispatch.active || []).some(d => d.meta?.item?.id === item.id);
       if (!isActive) {
@@ -2641,8 +2646,47 @@ async function tickInner() {
                     if (dp.completed.length !== before) safeWrite(dispatchPath, dp);
                   }
                 } catch {}
+
+                // Clear cooldown so item isn't blocked by exponential backoff
+                try {
+                  const key = `work-${project.name}-${item.id}`;
+                  if (dispatchCooldowns.has(key)) {
+                    dispatchCooldowns.delete(key);
+                    saveCooldowns();
+                  }
+                } catch {}
               }
             }
+
+            // Un-fail dependent items that were cascade-failed
+            if (changed) {
+              const retriedIds = new Set(items.filter(w => w.status === 'pending' && w._retryCount === 0).map(w => w.id));
+              for (const dep of items) {
+                if (dep.status === 'failed' && dep.failReason === 'Dependency failed — cannot proceed') {
+                  const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
+                  if (blockers.length > 0) {
+                    log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
+                    dep.status = 'pending';
+                    dep._retryCount = 0;
+                    delete dep.failReason;
+                    delete dep.failedAt;
+                    delete dep.dispatched_at;
+                    delete dep.dispatched_to;
+                    // Clear dispatch entries for this dependent too
+                    try {
+                      const dispatchPath = path.join(ENGINE_DIR, 'dispatch.json');
+                      const dp = safeJson(dispatchPath) || {};
+                      if (dp.completed) {
+                        const key = `work-${project.name}-${dep.id}`;
+                        dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                        safeWrite(dispatchPath, dp);
+                      }
+                    } catch {}
+                  }
+                }
+              }
+            }
+
             if (changed) safeWrite(wiPath, items);
           } catch {}
         }

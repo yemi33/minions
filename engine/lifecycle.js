@@ -977,56 +977,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
-// Scans active PRs with prdItems links and updates corresponding PRD features
-// from "missing" to "in-pr". Called periodically from tick() after PR status polling.
-function syncPrdFromPrs(config) {
-  const e = engine();
-  const projects = shared.getProjects(config);
-
-  // Collect all PRs with prdItems across all projects
-  const prItemMap = new Map(); // prdItemId -> { prId, prStatus }
-  for (const p of projects) {
-    try {
-      const prs = safeJson(projectPrPath(p)) || [];
-      for (const pr of prs) {
-        if (!pr.prdItems?.length) continue;
-        for (const itemId of pr.prdItems) {
-          const existing = prItemMap.get(itemId);
-          if (!existing || pr.status === 'active') {
-            prItemMap.set(itemId, { prId: pr.id, prStatus: pr.status });
-          }
-        }
-      }
-    } catch {}
-  }
-
-  if (prItemMap.size === 0) return;
-
-  // Scan all PRD files and update missing features → in-pr
-  let totalUpdated = 0;
-  try {
-    const planFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json'));
-    for (const pf of planFiles) {
-      const planPath = path.join(PRD_DIR, pf);
-      const plan = safeJson(planPath);
-      if (!plan?.missing_features) continue;
-      let changed = false;
-      for (const feature of plan.missing_features) {
-        const prInfo = prItemMap.get(feature.id);
-        if (!prInfo) continue;
-        // Only upgrade status, never downgrade (implemented > in-pr > missing)
-        if (feature.status === 'implemented') continue;
-        if (prInfo.prStatus === 'active' && feature.status !== 'in-pr') {
-          feature.status = 'in-pr';
-          changed = true;
-          totalUpdated++;
-        }
-      }
-      if (changed) safeWrite(planPath, plan);
-    }
-  } catch {}
-  if (totalUpdated > 0) e.log('info', `PRD sync: marked ${totalUpdated} item(s) as in-pr`);
-}
+// No-op: PRD item status is computed at read time by getPrdInfo() in queries.js
+// (checks work item status + PR status). Writing to PRD files caused flicker
+// because two sources of truth competed. handlePostMerge still writes 'implemented'.
+function syncPrdFromPrs() {}
 
 module.exports = {
   checkPlanCompletion,
