@@ -113,6 +113,7 @@ function getStatus() {
     skills: getSkills(),
     mcpServers: getMcpServers(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
+    initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     timestamp: new Date().toISOString(),
   };
   _statusCacheTs = now;

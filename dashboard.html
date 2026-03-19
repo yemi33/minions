@@ -622,6 +622,12 @@
   <div id="projects-list" style="display:flex;gap:8px;flex-wrap:wrap;">—</div>
 </div>
 
+<div id="setup-banner" style="display:none;margin:16px 24px;padding:16px 20px;background:var(--surface2);border:1px dashed var(--blue);border-radius:8px;text-align:center;color:var(--text)">
+  <div style="font-size:18px;margin-bottom:6px">Welcome to Squad</div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:10px">Your squad hasn't been initialized yet. Run the following command to get started:</div>
+  <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">squad init</code>
+</div>
+
 <div class="layout">
   <section class="cmd-center">
     <h2>Command Center</h2>
@@ -2120,6 +2126,7 @@ async function refresh() {
   try {
     const data = await fetch('/api/status').then(r => r.json());
     document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
+    document.getElementById('setup-banner').style.display = data.initialized ? 'none' : 'block';
     renderAgents(data.agents);
     renderPrdProgress(data.prdProgress);
     _cachePrdItems(data.prdProgress);
