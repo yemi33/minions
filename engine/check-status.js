@@ -3,9 +3,10 @@ const path = require('path');
 const dir = path.resolve(__dirname, '..');
 
 console.log('=== Work Items (non-done) ===');
-const items = JSON.parse(fs.readFileSync(path.join(dir, 'work-items.json'), 'utf8'));
+let items = [];
+try { items = JSON.parse(fs.readFileSync(path.join(dir, 'work-items.json'), 'utf8')); } catch {}
 items.filter(i => i.status !== 'done').forEach(i => {
-  console.log(i.id, i.status.padEnd(12), (i.type || '').padEnd(12), (i.title || '').slice(0, 60));
+  console.log(i.id, (i.status || '').padEnd(12), (i.type || '').padEnd(12), (i.title || '').slice(0, 60));
 });
 
 console.log('\n=== Agent Status (derived from dispatch) ===');

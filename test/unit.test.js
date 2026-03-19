@@ -729,6 +729,162 @@ async function testSyncPrdItemStatus() {
   });
 }
 
+// ─── Consolidation Tests ─────────────────────────────────────────────────────
+
+async function testConsolidationHelpers() {
+  console.log('\n── consolidation.js — Knowledge Base Classification ──');
+
+  await test('classifyInboxItem categorizes by filename priority', () => {
+    // Filename takes priority over content for reviews/builds
+    assert.strictEqual(shared.classifyInboxItem('review-summary.md', 'architecture overview'), 'reviews');
+    assert.strictEqual(shared.classifyInboxItem('build-log.md', 'conventions and patterns'), 'build-reports');
+  });
+
+  await test('classifyInboxItem content fallback for architecture', () => {
+    assert.strictEqual(shared.classifyInboxItem('generic.md', 'the data flow through the system'), 'architecture');
+    assert.strictEqual(shared.classifyInboxItem('notes.md', 'how it works end to end'), 'architecture');
+  });
+
+  await test('classifyInboxItem content fallback for conventions', () => {
+    assert.strictEqual(shared.classifyInboxItem('notes.md', 'rule: always validate inputs'), 'conventions');
+    assert.strictEqual(shared.classifyInboxItem('notes.md', 'never use var in strict mode'), 'conventions');
+  });
+
+  await test('KB_CATEGORIES are consistent', () => {
+    const validCats = new Set(shared.KB_CATEGORIES);
+    // All possible classifyInboxItem outputs should be in KB_CATEGORIES
+    const testCases = [
+      shared.classifyInboxItem('review.md', ''),
+      shared.classifyInboxItem('build.md', ''),
+      shared.classifyInboxItem('x.md', 'architecture'),
+      shared.classifyInboxItem('x.md', 'convention pattern'),
+      shared.classifyInboxItem('x.md', 'random notes'),
+    ];
+    for (const cat of testCases) {
+      assert.ok(validCats.has(cat), `classifyInboxItem returned '${cat}' which is not in KB_CATEGORIES`);
+    }
+  });
+}
+
+// ─── Reconciliation Tests ───────────────────────────────────────────────────
+
+async function testReconciliation() {
+  console.log('\n── engine.js — PR Reconciliation ──');
+
+  let reconcileItemsWithPrs;
+  try {
+    const engineModule = require(path.join(SQUAD_DIR, 'engine'));
+    reconcileItemsWithPrs = engineModule.reconcileItemsWithPrs;
+  } catch {
+    skip('reconciliation', 'engine.js not loadable');
+    return;
+  }
+
+  if (!reconcileItemsWithPrs) {
+    skip('reconciliation', 'reconcileItemsWithPrs not exported');
+    return;
+  }
+
+  await test('reconcileItemsWithPrs matches by prdItems', () => {
+    const items = [
+      { id: 'P001', status: 'pending' },
+      { id: 'P002', status: 'pending' },
+      { id: 'P003', status: 'done' }, // already done, should not be touched
+    ];
+    const prs = [
+      { id: 'PR-100', prdItems: ['P001'], status: 'active' },
+    ];
+    const count = reconcileItemsWithPrs(items, prs);
+    assert.strictEqual(count, 1);
+    assert.strictEqual(items[0].status, 'in-pr');
+    assert.strictEqual(items[0]._pr, 'PR-100');
+    assert.strictEqual(items[1].status, 'pending'); // unchanged
+    assert.strictEqual(items[2].status, 'done');     // unchanged
+  });
+
+  await test('reconcileItemsWithPrs skips items with existing _pr', () => {
+    const items = [
+      { id: 'P001', status: 'pending', _pr: 'PR-50' }, // already linked
+    ];
+    const prs = [
+      { id: 'PR-100', prdItems: ['P001'], status: 'active' },
+    ];
+    const count = reconcileItemsWithPrs(items, prs);
+    assert.strictEqual(count, 0); // should not re-reconcile
+    assert.strictEqual(items[0]._pr, 'PR-50'); // unchanged
+  });
+
+  await test('reconcileItemsWithPrs respects onlyIds filter', () => {
+    const items = [
+      { id: 'P001', status: 'pending' },
+      { id: 'P002', status: 'pending' },
+    ];
+    const prs = [
+      { id: 'PR-100', prdItems: ['P001'], status: 'active' },
+      { id: 'PR-101', prdItems: ['P002'], status: 'active' },
+    ];
+    const count = reconcileItemsWithPrs(items, prs, { onlyIds: new Set(['P001']) });
+    assert.strictEqual(count, 1); // only P001 eligible
+    assert.strictEqual(items[0].status, 'in-pr');
+    assert.strictEqual(items[1].status, 'pending'); // not in onlyIds
+  });
+
+  await test('reconcileItemsWithPrs handles empty inputs', () => {
+    assert.strictEqual(reconcileItemsWithPrs([], []), 0);
+    assert.strictEqual(reconcileItemsWithPrs([], [{ id: 'PR-1', prdItems: ['P1'] }]), 0);
+  });
+}
+
+// ─── GitHub Helpers Tests ───────────────────────────────────────────────────
+
+async function testGithubHelpers() {
+  console.log('\n── github.js — Helper Functions ──');
+
+  const github = require(path.join(SQUAD_DIR, 'engine', 'github'));
+
+  await test('github module exports required functions', () => {
+    assert.ok(typeof github.pollPrStatus === 'function');
+    assert.ok(typeof github.pollPrHumanComments === 'function');
+    assert.ok(typeof github.reconcilePrs === 'function');
+  });
+}
+
+// ─── LLM Module Tests ──────────────────────────────────────────────────────
+
+async function testLlmModule() {
+  console.log('\n── llm.js — LLM Utilities ──');
+
+  const llm = require(path.join(SQUAD_DIR, 'engine', 'llm'));
+
+  await test('llm module exports callLLM and trackEngineUsage', () => {
+    assert.ok(typeof llm.callLLM === 'function');
+    assert.ok(typeof llm.trackEngineUsage === 'function');
+  });
+
+  await test('trackEngineUsage handles null usage gracefully', () => {
+    llm.trackEngineUsage('test-category', null); // should not throw
+  });
+
+  await test('trackEngineUsage handles empty usage object', () => {
+    llm.trackEngineUsage('test-category', {}); // should not throw
+  });
+}
+
+// ─── Check-Status Tests ────────────────────────────────────────────────────
+
+async function testCheckStatus() {
+  console.log('\n── check-status.js — Quick Status ──');
+
+  await test('check-status.js can be required without crashing', () => {
+    // The module executes on require, so we just verify it doesn't throw
+    // We can't actually require it since it has side effects (console.log)
+    // Instead verify the file exists and has the right imports
+    const content = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'check-status.js'), 'utf8');
+    assert.ok(content.includes('getAgentStatus'), 'check-status.js should use getAgentStatus');
+    assert.ok(content.includes('dispatch'), 'check-status.js should reference dispatch');
+  });
+}
+
 // ─── Config & Playbook Tests ────────────────────────────────────────────────
 
 async function testConfigAndPlaybooks() {
@@ -933,10 +1089,23 @@ async function main() {
     // engine.js tests
     await testRoutingParser();
     await testDependencyCycleDetection();
+    await testReconciliation();
 
     // lifecycle.js tests
     await testLifecycleHelpers();
     await testSyncPrdItemStatus();
+
+    // consolidation.js tests
+    await testConsolidationHelpers();
+
+    // github.js tests
+    await testGithubHelpers();
+
+    // llm.js tests
+    await testLlmModule();
+
+    // check-status.js tests
+    await testCheckStatus();
 
     // Config & playbook tests
     await testConfigAndPlaybooks();

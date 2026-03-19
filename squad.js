@@ -122,7 +122,7 @@ function buildProjectEntry({ name, description, localPath, repoHost, repositoryI
   return {
     name,
     description: description || '',
-    localPath: localPath.replace(/\\/g, '/'),
+    localPath: (localPath || '').replace(/\\/g, '/'),
     repoHost: repoHost || 'ado',
     repositoryId: repositoryId || '',
     adoOrg: org || '',
