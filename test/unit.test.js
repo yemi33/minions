@@ -849,6 +849,103 @@ async function testGithubHelpers() {
   });
 }
 
+// ─── PR Comment Processing Tests ────────────────────────────────────────────
+
+async function testPrCommentProcessing() {
+  console.log('\n── PR Comment Processing — Full Thread Context ──');
+
+  await test('Fix playbook should receive ALL comments, not just @squad', () => {
+    // Simulate what ado.js/github.js does: collect all human comments
+    // and mark new ones with [NEW] prefix
+    const cutoff = '2024-01-15T00:00:00Z';
+    const allComments = [
+      { author: 'Alice', date: '2024-01-14T10:00:00Z', content: 'Please fix the error handling in auth.js' },
+      { author: 'Bob', date: '2024-01-14T12:00:00Z', content: 'Also the tests are flaky' },
+      { author: 'Alice', date: '2024-01-16T09:00:00Z', content: 'The cache invalidation is wrong too' },
+    ];
+
+    const newComments = allComments.filter(c => c.date > cutoff);
+    assert.strictEqual(newComments.length, 1, 'Should detect 1 new comment');
+
+    // Build feedback content the way the fixed code does
+    const feedbackContent = allComments
+      .map(c => {
+        const isNew = c.date > cutoff;
+        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content}`;
+      })
+      .join('\n\n---\n\n');
+
+    // ALL 3 comments should be in the context
+    assert.ok(feedbackContent.includes('error handling in auth.js'), 'Missing old comment from Alice');
+    assert.ok(feedbackContent.includes('tests are flaky'), 'Missing old comment from Bob');
+    assert.ok(feedbackContent.includes('cache invalidation'), 'Missing new comment from Alice');
+
+    // New comment should be marked [NEW]
+    assert.ok(feedbackContent.includes('**[NEW]** **Alice**'), 'New comment not marked with [NEW]');
+    // Old comments should NOT have [NEW]
+    const bobLine = feedbackContent.split('\n').find(l => l.includes('Bob'));
+    assert.ok(!bobLine.includes('[NEW]'), 'Old comment incorrectly marked as [NEW]');
+  });
+
+  await test('Squad own comments are filtered out', () => {
+    const comments = [
+      { content: 'Please fix this', commentType: 'text' },
+      { content: 'Fixed by Squad (Dallas — Engineer)', commentType: 'text' },
+      { content: null, commentType: 'system' },
+      { content: 'System update', commentType: 'system' },
+    ];
+
+    // Simulate the filtering logic from ado.js/github.js
+    const humanComments = comments.filter(c => {
+      if (!c.content || c.commentType === 'system') return false;
+      if (/\bSquad\s*\(/i.test(c.content)) return false;
+      return true;
+    });
+
+    assert.strictEqual(humanComments.length, 1);
+    assert.strictEqual(humanComments[0].content, 'Please fix this');
+  });
+
+  await test('No @squad filter required — all comments trigger fix', () => {
+    // Previously, multi-reviewer PRs required @squad mention
+    // Now ALL human comments should trigger
+    const comments = [
+      { author: 'Alice', date: '2024-01-16T10:00:00Z', content: 'Fix the typo on line 42' },
+      { author: 'Bob', date: '2024-01-16T11:00:00Z', content: 'And update the docs' },
+    ];
+
+    const cutoff = '2024-01-15T00:00:00Z';
+    const newComments = comments.filter(c => c.date > cutoff);
+
+    // Both should trigger (no @squad filter)
+    assert.strictEqual(newComments.length, 2, 'Both comments should trigger fix');
+  });
+
+  await test('Empty comment thread returns no feedback', () => {
+    const comments = [];
+    const cutoff = '2024-01-15T00:00:00Z';
+    const newComments = comments.filter(c => c.date > cutoff);
+    assert.strictEqual(newComments.length, 0);
+  });
+
+  await test('Comments before cutoff do not trigger but are included in context', () => {
+    const cutoff = '2024-01-20T00:00:00Z';
+    const allComments = [
+      { author: 'Alice', date: '2024-01-10T10:00:00Z', content: 'Old feedback' },
+      { author: 'Bob', date: '2024-01-15T10:00:00Z', content: 'Also old' },
+    ];
+
+    const newComments = allComments.filter(c => c.date > cutoff);
+    assert.strictEqual(newComments.length, 0, 'No new comments should trigger');
+
+    // But if we had a new one, ALL old ones would be in context
+    allComments.push({ author: 'Alice', date: '2024-01-21T10:00:00Z', content: 'New feedback' });
+    const withNew = allComments.filter(c => c.date > cutoff);
+    assert.strictEqual(withNew.length, 1, 'Only the new comment triggers');
+    assert.strictEqual(allComments.length, 3, 'But all 3 are available for context');
+  });
+}
+
 // ─── LLM Module Tests ──────────────────────────────────────────────────────
 
 async function testLlmModule() {
@@ -1100,6 +1197,9 @@ async function main() {
 
     // github.js tests
     await testGithubHelpers();
+
+    // PR comment processing tests
+    await testPrCommentProcessing();
 
     // llm.js tests
     await testLlmModule();

@@ -208,44 +208,47 @@ async function pollPrHumanComments(config) {
     const threadsData = await adoFetch(threadsUrl, token);
     const threads = threadsData.value || [];
 
-    const allHumanAuthors = new Set();
-    for (const thread of threads) {
-      for (const comment of (thread.comments || [])) {
-        if (!comment.content || comment.commentType === 'system') continue;
-        if (/\bSquad\s*\(/i.test(comment.content)) continue;
-        allHumanAuthors.add(comment.author?.uniqueName || comment.author?.displayName || '');
-      }
-    }
-    const soloReviewer = allHumanAuthors.size <= 1;
-
     const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+
+    // Collect ALL human comments on the PR for full context
+    const allHumanComments = [];
     const newHumanComments = [];
 
     for (const thread of threads) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
-        if (/\bSquad\s*\(/i.test(comment.content)) continue;
-        if (!(comment.publishedDate && comment.publishedDate > cutoff)) continue;
+        if (/\bSquad\s*\(/i.test(comment.content)) continue; // skip squad's own comments
 
-        if (!soloReviewer && !/@squad\b/i.test(comment.content)) continue;
-
-        newHumanComments.push({
+        const entry = {
           threadId: thread.id,
           commentId: comment.id,
           author: comment.author?.displayName || 'Human',
           content: comment.content,
           date: comment.publishedDate
-        });
+        };
+        allHumanComments.push(entry);
+
+        // Track which comments are new (for triggering — any new comment triggers a fix)
+        if (comment.publishedDate && comment.publishedDate > cutoff) {
+          newHumanComments.push(entry);
+        }
       }
     }
 
     if (newHumanComments.length === 0) return false;
 
+    // Sort all comments chronologically and build full context for the fix agent
+    allHumanComments.sort((a, b) => a.date.localeCompare(b.date));
     newHumanComments.sort((a, b) => a.date.localeCompare(b.date));
-    const feedbackContent = newHumanComments
-      .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
-      .join('\n\n---\n\n');
     const latestDate = newHumanComments[newHumanComments.length - 1].date;
+
+    // Provide ALL comments as context — the agent needs full thread context to fix properly
+    const feedbackContent = allHumanComments
+      .map(c => {
+        const isNew = c.date > cutoff;
+        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`;
+      })
+      .join('\n\n---\n\n');
 
     pr.humanFeedback = {
       lastProcessedCommentDate: latestDate,
@@ -253,7 +256,7 @@ async function pollPrHumanComments(config) {
       feedbackContent
     };
 
-    e.log('info', `PR ${pr.id}: found ${newHumanComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
+    e.log('info', `PR ${pr.id}: ${newHumanComments.length} new comment(s), ${allHumanComments.length} total — full thread context provided`);
     return true;
   });
 

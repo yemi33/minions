@@ -196,34 +196,42 @@ async function pollPrHumanComments(config) {
       return true;
     });
 
-    const allHumanAuthors = new Set(humanComments.map(c => c.user?.login || ''));
-    const soloReviewer = allHumanAuthors.size <= 1;
-
     const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+
+    // Collect ALL human comments for full context, track new ones for triggering
+    const allCommentEntries = [];
     const newComments = [];
 
     for (const c of humanComments) {
       const date = c.created_at || c.updated_at || '';
-      if (!(date > cutoff)) continue;
-
-      // If multiple reviewers, only process @squad mentions
-      if (!soloReviewer && !/@squad\b/i.test(c.body || '')) continue;
-
-      newComments.push({
+      const entry = {
         commentId: c.id,
         author: c.user?.login || 'Human',
         content: c.body || '',
         date
-      });
+      };
+      allCommentEntries.push(entry);
+
+      // Any new comment triggers a fix — no @squad filter needed
+      if (date > cutoff) {
+        newComments.push(entry);
+      }
     }
 
     if (newComments.length === 0) return false;
 
+    // Sort all comments chronologically and build full context for the fix agent
+    allCommentEntries.sort((a, b) => a.date.localeCompare(b.date));
     newComments.sort((a, b) => a.date.localeCompare(b.date));
-    const feedbackContent = newComments
-      .map(c => `**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`)
-      .join('\n\n---\n\n');
     const latestDate = newComments[newComments.length - 1].date;
+
+    // Provide ALL comments as context — the agent needs full thread context to fix properly
+    const feedbackContent = allCommentEntries
+      .map(c => {
+        const isNew = c.date > cutoff;
+        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`;
+      })
+      .join('\n\n---\n\n');
 
     pr.humanFeedback = {
       lastProcessedCommentDate: latestDate,
@@ -231,7 +239,7 @@ async function pollPrHumanComments(config) {
       feedbackContent
     };
 
-    e.log('info', `PR ${pr.id}: found ${newComments.length} new human comment(s)${soloReviewer ? '' : ' (via @squad)'}`);
+    e.log('info', `PR ${pr.id}: ${newComments.length} new comment(s), ${allCommentEntries.length} total — full thread context provided`);
     return true;
   });
 
