@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.83 (2026-03-19)
+
+### Other
+- bin/squad.js
+- test/unit.test.js
+
 ## 0.1.81 (2026-03-19)
 
 ### Engine
