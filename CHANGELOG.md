@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.80 (2026-03-19)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.79 (2026-03-19)
 
 ### Dashboard
