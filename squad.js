@@ -392,13 +392,32 @@ async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
 
   if (skipScan) {
     console.log('  Skipping repo scan (--skip-scan). Run "node squad.js scan" later to link projects.\n');
-    rl.close();
-    return;
+  } else {
+    // Auto-chain into scan
+    console.log('  Now let\'s find your repos...\n');
+    await scanAndAdd({ root: scanRoot, depth: scanDepth });
   }
 
-  // Auto-chain into scan
-  console.log('  Now let\'s find your repos...\n');
-  await scanAndAdd({ root: scanRoot, depth: scanDepth });
+  // Auto-start engine and dashboard
+  console.log('  Starting engine and dashboard...\n');
+  const { spawn } = require('child_process');
+  const enginePath = path.join(SQUAD_HOME, 'engine.js');
+  const dashboardPath = path.join(SQUAD_HOME, 'dashboard.js');
+
+  const engineProc = spawn(process.execPath, [enginePath], {
+    cwd: SQUAD_HOME, stdio: 'ignore', detached: true, windowsHide: true
+  });
+  engineProc.unref();
+  console.log(`  Engine started (PID: ${engineProc.pid})`);
+
+  const dashProc = spawn(process.execPath, [dashboardPath], {
+    cwd: SQUAD_HOME, stdio: 'ignore', detached: true, windowsHide: true
+  });
+  dashProc.unref();
+  console.log(`  Dashboard started (PID: ${dashProc.pid})`);
+  console.log('  Dashboard: http://localhost:7331\n');
+
+  rl.close();
 }
 
 const commands = {
