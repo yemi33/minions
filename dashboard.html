@@ -782,6 +782,56 @@ let inboxData = [];
 let agentData = [];
 let currentAgentId = null;
 let currentTab = 'thought-process';
+window._prdRequeueUi = window._prdRequeueUi || {};
+
+function getPrdRequeueState(workItemId) {
+  const map = window._prdRequeueUi || {};
+  const state = map[workItemId];
+  if (!state) return null;
+  const now = Date.now();
+  if (state.until && now > state.until) {
+    delete map[workItemId];
+    return null;
+  }
+  return state;
+}
+
+function setPrdRequeueState(workItemId, state) {
+  window._prdRequeueUi = window._prdRequeueUi || {};
+  window._prdRequeueUi[workItemId] = Object.assign({ updatedAt: Date.now() }, state);
+}
+
+function clearPrdRequeueState(workItemId) {
+  const map = window._prdRequeueUi || {};
+  delete map[workItemId];
+}
+
+function prunePrdRequeueState(workItems) {
+  const map = window._prdRequeueUi || {};
+  if (!Object.keys(map).length) return;
+  const byId = {};
+  for (const w of (workItems || [])) {
+    if (w.id) byId[w.id] = w;
+  }
+  for (const [id, state] of Object.entries(map)) {
+    if (!state) continue;
+    const wi = byId[id];
+    if (state.status === 'pending') {
+      if (!wi || (wi.status !== 'failed' && wi.status !== 'paused')) delete map[id];
+      continue;
+    }
+    if (state.status === 'queued') {
+      if (wi && wi.status !== 'failed') delete map[id];
+      continue;
+    }
+    if (state.status === 'error' && state.until && Date.now() > state.until) delete map[id];
+  }
+}
+
+function rerenderPrdFromCache() {
+  if (!window._lastStatus || !window._lastStatus.prdProgress) return;
+  renderPrd(window._lastStatus.prd, window._lastStatus.prdProgress);
+}
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -1077,9 +1127,17 @@ function renderPrdProgress(prog) {
 
     // Requeue button for failed items
     const canRequeue = wi && (wi.status === 'failed' || i.status === 'failed');
-    const requeueBtn = canRequeue
-      ? '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>'
-      : '';
+    const requeueState = wi ? getPrdRequeueState(wi.id) : null;
+    let requeueBtn = '';
+    if (requeueState && requeueState.status === 'pending') {
+      requeueBtn = '<span style="color:var(--yellow);cursor:wait;font-size:9px;padding:1px 5px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px" title="Retry request in progress">requeuing…</span>';
+    } else if (requeueState && requeueState.status === 'queued') {
+      requeueBtn = '<span style="color:var(--green);cursor:default;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.35);border-radius:3px" title="Successfully requeued">requeued</span>';
+    } else if (requeueState && requeueState.status === 'error') {
+      requeueBtn = '<span style="color:var(--red);cursor:default;font-size:9px;padding:1px 5px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(requeueState.message || 'Retry failed') + '">retry failed</span>';
+    } else if (canRequeue) {
+      requeueBtn = '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>';
+    }
 
     return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status) +
@@ -1227,7 +1285,22 @@ function renderPrdProgress(prog) {
           '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
             '<span class="prd-item-priority ' + (i.priority || '') + '" style="font-size:8px;padding:1px 4px">' + escHtml(i.priority || '') + '</span>' +
             (agent ? '<span style="font-size:8px;color:var(--muted)">' + escHtml(agent) + '</span>' : '') +
-            (i.status === 'failed' && wi[i.id] ? '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi[i.id].id) + '\',\'' + escHtml(wi[i.id]._source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>' : '') +
+            (function() {
+              const w = wi[i.id];
+              if (!w) return '';
+              const rq = getPrdRequeueState(w.id);
+              if (rq && rq.status === 'pending') {
+                return '<span style="font-size:8px;color:var(--yellow);cursor:wait;padding:1px 4px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px">requeuing…</span>';
+              }
+              if (rq && rq.status === 'queued') {
+                return '<span style="font-size:8px;color:var(--green);cursor:default;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.35);border-radius:3px">requeued</span>';
+              }
+              if (rq && rq.status === 'error') {
+                return '<span style="font-size:8px;color:var(--red);cursor:default;padding:1px 4px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(rq.message || 'Retry failed') + '">failed</span>';
+              }
+              if (i.status !== 'failed') return '';
+              return '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(w.id) + '\',\'' + escHtml(w._source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>';
+            })() +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
           '</div>' +
           ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
@@ -1537,14 +1610,30 @@ async function prdItemRemove(source, itemId) {
 }
 
 async function prdItemRequeue(workItemId, source) {
+  setPrdRequeueState(workItemId, { status: 'pending', message: '' });
+  rerenderPrdFromCache();
   try {
     const res = await fetch('/api/work-items/retry', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: workItemId, source })
     });
-    if (res.ok) { refresh(); showToast('cmd-toast', workItemId + ' requeued', true); }
-    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) {
+      setPrdRequeueState(workItemId, { status: 'queued', until: Date.now() + 10000 });
+      rerenderPrdFromCache();
+      refresh();
+      showToast('cmd-toast', workItemId + ' requeued', true);
+    } else {
+      const d = await res.json();
+      const msg = d.error || 'unknown';
+      setPrdRequeueState(workItemId, { status: 'error', message: msg, until: Date.now() + 10000 });
+      rerenderPrdFromCache();
+      alert('Failed: ' + msg);
+    }
+  } catch (e) {
+    setPrdRequeueState(workItemId, { status: 'error', message: e.message, until: Date.now() + 10000 });
+    rerenderPrdFromCache();
+    alert('Error: ' + e.message);
+  }
 }
 
 // Feature 1: Regenerate PRD — reset pending/failed work items so they re-materialize
@@ -2166,6 +2255,7 @@ async function refresh() {
     window._lastDispatch = data.dispatch;
     window._lastWorkItems = data.workItems || [];
     window._lastStatus = data;
+    prunePrdRequeueState(window._lastWorkItems);
     renderEngineLog(data.engineLog || []);
     renderProjects(data.projects || []);
     renderMetrics(data.metrics || {});

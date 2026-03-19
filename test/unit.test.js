@@ -1092,6 +1092,18 @@ async function testPrdStaleInvalidation() {
       'dashboard.html should show Regenerate PRD? label');
   });
 
+  await test('Dashboard shows immediate PRD retry feedback states', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes('window._prdRequeueUi'),
+      'dashboard should maintain transient PRD requeue UI state');
+    assert.ok(html.includes('requeuing…'),
+      'dashboard should show pending requeue feedback');
+    assert.ok(html.includes('requeued'),
+      'dashboard should show success requeue feedback');
+    assert.ok(html.includes('prunePrdRequeueState'),
+      'dashboard should prune stale PRD requeue feedback states');
+  });
+
   await test('Dashboard has /api/prd/regenerate endpoint', () => {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('/api/prd/regenerate'),
