@@ -46,4 +46,5 @@ team.md
 .gitignore
 .github/
 test/
+playwright.config.js
 make-video.js
