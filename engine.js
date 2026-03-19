@@ -537,7 +537,7 @@ function buildAgentContext(agentId, config, project) {
 
 // ─── Lifecycle (extracted to engine/lifecycle.js) ────────────────────────────
 
-const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion, chainPlanToPrd,
+const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs } = require('./engine/lifecycle');
 
@@ -1799,6 +1799,47 @@ function materializePlansAsWorkItems(config) {
           autoCleanPrdWorkItems(file, config);
           plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
           plan.lastSyncedFromPlan = new Date().toISOString();
+
+          // If PRD is awaiting approval, invalidate and queue regeneration from revised plan
+          const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
+          if (prdStatus === 'awaiting-approval') {
+            plan.status = 'revision-requested';
+            log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
+
+            // Queue plan-to-prd regeneration
+            const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
+            if (planContent) {
+              const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
+              const allProjects = getProjects(config);
+              const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
+              if (targetProject) {
+                // Queue as a work item (picked up by discoverFromWorkItems next tick)
+                const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+                const centralItems = safeJson(centralWiPath) || [];
+                // Avoid duplicate: check if regeneration already queued
+                const alreadyQueued = centralItems.some(w =>
+                  w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+                );
+                if (!alreadyQueued) {
+                  centralItems.push({
+                    id: 'W-' + shared.uid(),
+                    title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
+                    type: 'plan-to-prd',
+                    priority: 'high',
+                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised while PRD was awaiting approval — regenerating.`,
+                    status: 'pending',
+                    created: ts(),
+                    createdBy: 'engine:plan-revision',
+                    project: targetProject.name,
+                    planFile: plan.source_plan,
+                  });
+                  safeWrite(centralWiPath, centralItems);
+                  log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan}`);
+                }
+              }
+            }
+          }
+
           safeWrite(path.join(PRD_DIR, file), plan);
         }
       } catch {}

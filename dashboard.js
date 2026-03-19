@@ -810,7 +810,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
-      // Write as a work item with type 'plan' — engine handles the chaining
+      // Write as a work item with type 'plan' — user must explicitly execute plan-to-prd after reviewing
       const wiPath = path.join(SQUAD_DIR, 'work-items.json');
       let items = [];
       const existing = safeRead(wiPath);
@@ -820,7 +820,6 @@ const server = http.createServer(async (req, res) => {
         id, title: body.title, type: 'plan',
         priority: body.priority || 'high', description: body.description || '',
         status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
-        chain: 'plan-to-prd',
         branchStrategy: body.branch_strategy || 'parallel',
       };
       if (body.project) item.project = body.project;

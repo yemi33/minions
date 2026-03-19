@@ -910,7 +910,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
     }
   }
-  if (isSuccess && type === 'plan' && meta?.item?.chain === 'plan-to-prd') chainPlanToPrd(dispatchItem, meta, config);
+  // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
   if (isSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 
   let prsCreatedCount = 0;
@@ -1030,7 +1030,6 @@ function syncPrdFromPrs(config) {
 
 module.exports = {
   checkPlanCompletion,
-  chainPlanToPrd,
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,

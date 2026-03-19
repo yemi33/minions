@@ -37,8 +37,8 @@ This file is NOT checked into the repo. The engine reads it on every tick and di
   "generated_by": "{{agent_id}}",
   "generated_at": "{{date}}",
   "plan_summary": "Short title (max ~80 chars, shown in dashboard tiles)",
-  "status": "approved",
-  "requires_approval": false,
+  "status": "awaiting-approval",
+  "requires_approval": true,
   "branch_strategy": "shared-branch|parallel",
   "feature_branch": "feat/plan-short-name",
   "missing_features": [

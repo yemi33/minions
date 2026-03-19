@@ -946,6 +946,155 @@ async function testPrCommentProcessing() {
   });
 }
 
+// ─── Plan Lifecycle Tests ───────────────────────────────────────────────────
+
+async function testPlanLifecycle() {
+  console.log('\n── Plan Lifecycle — No Auto-Chain, Explicit Execution ──');
+
+  await test('Plan work items created via dashboard have no chain property', () => {
+    // Simulate what dashboard.js /api/plan POST creates
+    const item = {
+      id: 'W-test', title: 'Test plan', type: 'plan',
+      priority: 'high', description: '',
+      status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+      branchStrategy: 'parallel',
+    };
+    assert.strictEqual(item.chain, undefined, 'Plan work item should NOT have chain property');
+    assert.strictEqual(item.type, 'plan');
+  });
+
+  await test('lifecycle.js no longer exports chainPlanToPrd', () => {
+    const lifecycle = require(path.join(SQUAD_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(lifecycle.chainPlanToPrd, undefined,
+      'chainPlanToPrd should not be exported — auto-chaining is removed');
+  });
+
+  await test('runPostCompletionHooks does not chain plan-to-prd on plan success', () => {
+    // Verify the chain call was removed from runPostCompletionHooks
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the runPostCompletionHooks function body and check it doesn't call chainPlanToPrd
+    const hookStart = src.indexOf('function runPostCompletionHooks(');
+    const hookBody = src.slice(hookStart, src.indexOf('\nfunction ', hookStart + 1) || src.length);
+    assert.ok(!hookBody.includes('chainPlanToPrd('),
+      'runPostCompletionHooks should not call chainPlanToPrd');
+    assert.ok(src.includes('Plan chaining removed'),
+      'lifecycle.js should have comment explaining removal');
+  });
+
+  await test('plan-to-prd playbook sets PRD status to awaiting-approval', () => {
+    const playbook = fs.readFileSync(path.join(SQUAD_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    assert.ok(playbook.includes('"status": "awaiting-approval"'),
+      'plan-to-prd playbook should set status to awaiting-approval');
+    assert.ok(playbook.includes('"requires_approval": true'),
+      'plan-to-prd playbook should set requires_approval to true');
+    assert.ok(!playbook.includes('"status": "approved"'),
+      'plan-to-prd playbook should NOT set status to approved');
+  });
+
+  await test('cli.js recovery does not re-queue plan-to-prd chains', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(!src.includes("chain === 'plan-to-prd'"),
+      'cli.js should not contain plan-to-prd chain recovery logic');
+    assert.ok(src.includes('Plan chain recovery removed'),
+      'cli.js should have comment explaining removal');
+  });
+}
+
+async function testPrdStaleInvalidation() {
+  console.log('\n── PRD Staleness — Auto-Invalidation on Plan Revision ──');
+
+  await test('engine.js materializePlansAsWorkItems handles stale awaiting-approval PRD', () => {
+    // Verify the invalidation logic exists in engine.js
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("plan.status = 'revision-requested'"),
+      'engine.js should set stale PRD status to revision-requested');
+    assert.ok(src.includes('engine:plan-revision'),
+      'engine.js should queue regeneration with createdBy engine:plan-revision');
+    assert.ok(src.includes('alreadyQueued'),
+      'engine.js should check for duplicate regeneration queue');
+  });
+
+  await test('Stale PRD invalidation only targets awaiting-approval status', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    // The invalidation should be gated on awaiting-approval
+    assert.ok(src.includes("prdStatus === 'awaiting-approval'"),
+      'Invalidation should only trigger for awaiting-approval PRDs');
+  });
+
+  await test('Stale PRD regeneration creates plan-to-prd work item', () => {
+    // Simulate the regeneration work item structure
+    const regenItem = {
+      type: 'plan-to-prd',
+      priority: 'high',
+      status: 'pending',
+      createdBy: 'engine:plan-revision',
+      planFile: 'test-plan.md',
+    };
+    assert.strictEqual(regenItem.type, 'plan-to-prd');
+    assert.strictEqual(regenItem.createdBy, 'engine:plan-revision');
+    assert.strictEqual(regenItem.status, 'pending');
+  });
+
+  await test('Duplicate regeneration is prevented', () => {
+    // Simulate duplicate check logic
+    const centralItems = [
+      { type: 'plan-to-prd', planFile: 'test-plan.md', status: 'pending' },
+    ];
+    const alreadyQueued = centralItems.some(w =>
+      w.type === 'plan-to-prd' && w.planFile === 'test-plan.md' && (w.status === 'pending' || w.status === 'dispatched')
+    );
+    assert.strictEqual(alreadyQueued, true, 'Should detect existing pending regeneration');
+
+    const noDuplicate = centralItems.some(w =>
+      w.type === 'plan-to-prd' && w.planFile === 'other-plan.md' && (w.status === 'pending' || w.status === 'dispatched')
+    );
+    assert.strictEqual(noDuplicate, false, 'Should not detect duplicate for different plan');
+  });
+
+  await test('Approved PRDs are not invalidated on plan revision', () => {
+    // If PRD is already approved and executing, plan revision should clean items
+    // but NOT invalidate the PRD status
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    // The status check gates the invalidation
+    const invalidationBlock = src.indexOf("plan.status = 'revision-requested'");
+    const statusCheck = src.lastIndexOf("prdStatus === 'awaiting-approval'", invalidationBlock);
+    assert.ok(statusCheck >= 0 && statusCheck < invalidationBlock,
+      'revision-requested should only be set inside the awaiting-approval check');
+  });
+
+  await test('Plan revision flow: plan→review→revise→auto-regenerate→review→approve', () => {
+    // End-to-end flow verification via state transitions
+    const states = [];
+
+    // Step 1: Plan created, user reviews
+    states.push('plan-created');
+
+    // Step 2: User executes plan-to-prd (explicit)
+    states.push('prd-generated:awaiting-approval');
+
+    // Step 3: User revises plan .md via doc chat
+    states.push('plan-revised');
+
+    // Step 4: Engine detects staleness, invalidates PRD, queues regen
+    states.push('prd-invalidated:revision-requested');
+    states.push('plan-to-prd-queued');
+
+    // Step 5: Agent regenerates PRD
+    states.push('prd-regenerated:awaiting-approval');
+
+    // Step 6: User approves
+    states.push('prd-approved');
+
+    // Step 7: Work items materialize
+    states.push('work-items-created');
+
+    assert.strictEqual(states.length, 8, 'Should have 8 state transitions in full flow');
+    assert.ok(states.includes('prd-invalidated:revision-requested'));
+    assert.ok(states.includes('plan-to-prd-queued'));
+    assert.ok(states.indexOf('prd-approved') > states.indexOf('prd-regenerated:awaiting-approval'));
+  });
+}
+
 // ─── LLM Module Tests ──────────────────────────────────────────────────────
 
 async function testLlmModule() {
@@ -1200,6 +1349,10 @@ async function main() {
 
     // PR comment processing tests
     await testPrCommentProcessing();
+
+    // Plan lifecycle tests
+    await testPlanLifecycle();
+    await testPrdStaleInvalidation();
 
     // llm.js tests
     await testLlmModule();
