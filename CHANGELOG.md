@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.62 (2026-03-19)
+
+### Engine
+- engine.js
+- engine/cli.js
+- engine/consolidation.js
+
+### Dashboard
+- dashboard.js
+
+### Documentation
+- auto-discovery.md
+- command-center.md
+- self-improvement.md
+
 ## 0.1.61 (2026-03-19)
 
 ### Documentation
