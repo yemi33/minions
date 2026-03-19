@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.79 (2026-03-19)
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Documentation
+- 01-dashboard-overview.gif
+- 02-command-center.gif
+- 03-work-items.gif
+- 04-plan-docchat.gif
+- 05-prd-progress.gif
+- 06-inbox-metrics.gif
+- index.html
+
+### Other
+- bin/squad.js
+- squad.js
+
 ## 0.1.78 (2026-03-19)
 
 ### Other
