@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.81 (2026-03-19)
+
+### Engine
+- engine.js
+- engine/cli.js
+- engine/queries.js
+
+### Documentation
+- README.md
+- auto-discovery.md
+- engine-restart.md
+
+### Other
+- test/unit.test.js
+
 ## 0.1.80 (2026-03-19)
 
 ### Engine
