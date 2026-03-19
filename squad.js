@@ -27,6 +27,17 @@ function loadConfig() {
   }
 }
 
+function cleanupPlaceholderProjects(config) {
+  const projects = Array.isArray(config?.projects) ? config.projects : [];
+  const filtered = projects.filter(p => {
+    const name = String(p?.name || '').trim();
+    return name && name !== 'YOUR_PROJECT_NAME';
+  });
+  const removed = projects.length - filtered.length;
+  if (removed > 0) config.projects = filtered;
+  return removed;
+}
+
 function saveConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
@@ -381,6 +392,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
+  const removedPlaceholders = cleanupPlaceholderProjects(config);
   if (!config.engine) config.engine = { ...ENGINE_DEFAULTS };
   if (!config.claude) config.claude = { ...DEFAULT_CLAUDE };
   if (!config.agents || Object.keys(config.agents).length === 0) {
@@ -389,6 +401,9 @@ async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
   saveConfig(config);
   console.log(`\n  Squad initialized at ${SQUAD_HOME}`);
   console.log(`  Config, agents, and engine defaults created.\n`);
+  if (removedPlaceholders > 0) {
+    console.log(`  Removed ${removedPlaceholders} placeholder project entr${removedPlaceholders === 1 ? 'y' : 'ies'} from config.\n`);
+  }
 
   if (skipScan) {
     console.log('  Skipping repo scan (--skip-scan). Run "node squad.js scan" later to link projects.\n');

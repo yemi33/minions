@@ -357,6 +357,13 @@ async function testProjectHelpers() {
     assert.deepStrictEqual(shared.getProjects({ projects: null }), []);
   });
 
+  await test('getProjects filters template placeholder project', () => {
+    const config = { projects: [{ name: 'YOUR_PROJECT_NAME' }, { name: 'RealProject' }] };
+    const result = shared.getProjects(config);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].name, 'RealProject');
+  });
+
   await test('getAdoOrgBase extracts from prUrlBase', () => {
     const project = { prUrlBase: 'https://dev.azure.com/myorg/myproj/_apis/git/repos/123/pullrequests/' };
     const result = shared.getAdoOrgBase(project);
@@ -1575,6 +1582,7 @@ async function testEdgeCases() {
     assert.deepStrictEqual(shared.getProjects({}), []);
     assert.deepStrictEqual(shared.getProjects({ projects: 'not an array' }), []);
     assert.deepStrictEqual(shared.getProjects({ projects: [] }), []);
+    assert.deepStrictEqual(shared.getProjects({ projects: [{ name: 'YOUR_PROJECT_NAME' }] }), []);
   });
 }
 

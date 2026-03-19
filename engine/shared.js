@@ -209,7 +209,13 @@ const DEFAULT_CLAUDE = {
 
 function getProjects(config) {
   if (config && config.projects && Array.isArray(config.projects)) {
-    return config.projects;
+    return config.projects.filter(p => {
+      if (!p || typeof p !== 'object') return false;
+      const name = String(p.name || '').trim();
+      // Drop template placeholders so they never leak into runtime/dashboard.
+      if (!name || name === 'YOUR_PROJECT_NAME') return false;
+      return true;
+    });
   }
   return [];
 }
