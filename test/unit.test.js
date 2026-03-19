@@ -1194,6 +1194,93 @@ async function testCheckStatus() {
   });
 }
 
+// ─── Worktree Management Tests ──────────────────────────────────────────────
+
+async function testWorktreeManagement() {
+  console.log('\n── Worktree Management ──');
+
+  await test('sanitizeBranch produces deterministic slugs for matching', () => {
+    // Branch matching relies on sanitized comparison
+    const branch = 'feat/my-feature';
+    const slug1 = shared.sanitizeBranch(branch);
+    const slug2 = shared.sanitizeBranch(branch);
+    assert.strictEqual(slug1, slug2, 'sanitizeBranch should be deterministic');
+    assert.strictEqual(slug1, 'feat/my-feature', 'Simple branches unchanged');
+  });
+
+  await test('sanitizeBranch normalizes special characters consistently', () => {
+    const branch = 'work/P-001: add auth [v2]';
+    const slug = shared.sanitizeBranch(branch);
+    assert.ok(!slug.includes(':'), 'Colons should be replaced');
+    assert.ok(!slug.includes(' '), 'Spaces should be replaced');
+    assert.ok(!slug.includes('['), 'Brackets should be replaced');
+    // Same input always gives same output
+    assert.strictEqual(slug, shared.sanitizeBranch(branch));
+  });
+
+  await test('Worktree cleanup uses sanitized branch matching (not fuzzy substring)', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    // Should use sanitizeBranch for consistent matching
+    assert.ok(src.includes('sanitizeBranch(branch).toLowerCase()') || src.includes('sanitizeBranch(d.meta.branch).toLowerCase()'),
+      'Cleanup should sanitize branches before comparison');
+    // Should NOT have the old fuzzy bidirectional matching
+    assert.ok(!src.includes("d.meta.branch.includes(dir)"),
+      'Should not use bidirectional substring matching for dispatch protection');
+  });
+
+  await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('dirLower.includes(branchSlug)'),
+      'Post-merge cleanup should match by sanitized branch slug');
+    assert.ok(src.includes('readdirSync(wtRoot)'),
+      'Post-merge cleanup should scan worktree directory');
+  });
+
+  await test('Shared-branch worktrees cleaned on plan completion', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('shared-branch worktree'),
+      'Plan completion should clean shared-branch worktrees');
+    assert.ok(src.includes('plan.branch_strategy') && src.includes('plan.feature_branch'),
+      'Should check both branch_strategy and feature_branch');
+  });
+
+  await test('Shared-branch plan protection checks both prd/ and plans/', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('PRD_DIR') && src.includes("'plans'"),
+      'Worktree protection should check both prd/ and plans/ directories');
+  });
+
+  await test('MAX_WORKTREES cap enforced during cleanup', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('MAX_WORKTREES'),
+      'Should reference MAX_WORKTREES constant');
+    assert.ok(src.includes('excess'),
+      'Should calculate and clean excess worktrees');
+  });
+
+  await test('Review/test tasks skip worktree creation if none exists', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("type === 'review' || type === 'test'"),
+      'Review/test types should have special worktree handling');
+    assert.ok(src.includes('falling back to rootDir'),
+      'Should fall back to rootDir for review/test without existing worktree');
+  });
+
+  await test('Worktree creation handles stale index.lock', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('index.lock'),
+      'Should check for and handle stale index.lock');
+    assert.ok(src.includes('300000'),
+      'Should use 5-minute threshold for stale lock detection');
+  });
+
+  await test('findExistingWorktree validates directory exists on disk', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('fs.existsSync(wtPath)'),
+      'findExistingWorktree should verify directory exists');
+  });
+}
+
 // ─── Config & Playbook Tests ────────────────────────────────────────────────
 
 async function testConfigAndPlaybooks() {
@@ -1422,6 +1509,9 @@ async function main() {
 
     // check-status.js tests
     await testCheckStatus();
+
+    // Worktree management tests
+    await testWorktreeManagement();
 
     // Config & playbook tests
     await testConfigAndPlaybooks();

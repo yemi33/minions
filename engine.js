@@ -1429,18 +1429,22 @@ function runCleanup(config, verbose = false) {
         let isProtected = false;
 
         // Check if this worktree's branch is merged/abandoned
+        // Use sanitized exact match on the branch portion of the dir name (format: {slug}-{branch}-{suffix})
+        const dirLower = dir.toLowerCase();
         for (const branch of mergedBranches) {
-          const branchSlug = branch.replace(/[^a-zA-Z0-9._\-\/]/g, '-');
-          if (dir === branchSlug || dir === branch || (branchSlug.length >= 6 && dir.includes(branchSlug))) {
+          const branchSlug = sanitizeBranch(branch).toLowerCase();
+          if (dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug)) {
             shouldClean = true;
             break;
           }
         }
 
-        // Check if referenced by active/pending dispatch
-        const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d =>
-          d.meta?.branch && (dir.includes(d.meta.branch) || d.meta.branch.includes(dir))
-        );
+        // Check if referenced by active/pending dispatch (use sanitized branch comparison)
+        const isReferenced = [...dispatch.pending, ...(dispatch.active || [])].some(d => {
+          if (!d.meta?.branch) return false;
+          const dispBranch = sanitizeBranch(d.meta.branch).toLowerCase();
+          return dirLower.includes(dispBranch);
+        });
         if (isReferenced) isProtected = true;
 
         // Also clean worktrees older than 2 hours with no active dispatch referencing them
@@ -1456,16 +1460,16 @@ function runCleanup(config, verbose = false) {
           } catch {}
         }
 
-        // Skip worktrees for active shared-branch plans
+        // Skip worktrees for active shared-branch plans (check both prd/ and plans/ for .json PRDs)
         if (shouldClean || !isProtected) {
           try {
-            const planDir = path.join(SQUAD_DIR, 'plans');
-            if (fs.existsSync(planDir)) {
-              for (const pf of fs.readdirSync(planDir).filter(f => f.endsWith('.json'))) {
-                const plan = safeJson(path.join(planDir, pf));
+            for (const checkDir of [PRD_DIR, path.join(SQUAD_DIR, 'plans')]) {
+              if (!fs.existsSync(checkDir)) continue;
+              for (const pf of fs.readdirSync(checkDir).filter(f => f.endsWith('.json'))) {
+                const plan = safeJson(path.join(checkDir, pf));
                 if (plan?.branch_strategy === 'shared-branch' && plan?.feature_branch && plan?.status !== 'completed') {
-                  const planBranch = sanitizeBranch(plan.feature_branch);
-                  if (dir === planBranch || dir.includes(planBranch) || planBranch.includes(dir)) {
+                  const planBranch = sanitizeBranch(plan.feature_branch).toLowerCase();
+                  if (dirLower.includes(planBranch)) {
                     isProtected = true;
                     if (shouldClean) {
                       shouldClean = false;
@@ -1475,6 +1479,7 @@ function runCleanup(config, verbose = false) {
                   }
                 }
               }
+              if (isProtected) break;
             }
           } catch {}
         }

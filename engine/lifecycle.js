@@ -268,6 +268,28 @@ function checkPlanCompletion(meta, config) {
     }
   } catch {}
 
+  // 6. Clean up shared-branch worktree if plan used shared-branch strategy
+  if (plan.branch_strategy === 'shared-branch' && plan.feature_branch) {
+    try {
+      const branchSlug = shared.sanitizeBranch(plan.feature_branch).toLowerCase();
+      for (const p of projects) {
+        const root = path.resolve(p.localPath);
+        const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+        if (!fs.existsSync(wtRoot)) continue;
+        const dirs = fs.readdirSync(wtRoot);
+        for (const dir of dirs) {
+          if (dir.toLowerCase().includes(branchSlug)) {
+            const wtPath = path.join(wtRoot, dir);
+            try {
+              execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
+              e.log('info', `Plan completion: cleaned shared-branch worktree ${dir}`);
+            } catch (err) { e.log('warn', `Failed to remove shared-branch worktree ${dir}: ${err.message}`); }
+          }
+        }
+      }
+    } catch {}
+  }
+
   e.log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }
 
@@ -627,16 +649,22 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (pr.branch) {
     const root = path.resolve(project.localPath);
     const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
-    const wtPath = path.join(wtRoot, pr.branch);
-    const btPath = path.join(wtRoot, `bt-${prNum}`);
-    for (const p of [wtPath, btPath]) {
-      if (fs.existsSync(p)) {
-        try {
-          execSilent(`git worktree remove "${p}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
-          e.log('info', `Cleaned up worktree: ${p}`);
-        } catch (err) { e.log('warn', `Failed to remove worktree ${p}: ${err.message}`); }
+    // Find worktrees matching this branch — dir format is {slug}-{branch}-{suffix}
+    const branchSlug = shared.sanitizeBranch(pr.branch).toLowerCase();
+    try {
+      const dirs = require('fs').readdirSync(wtRoot);
+      for (const dir of dirs) {
+        const dirLower = dir.toLowerCase();
+        if (dirLower.includes(branchSlug) || dir === pr.branch || dir === `bt-${prNum}`) {
+          const wtPath = path.join(wtRoot, dir);
+          try {
+            if (!require('fs').statSync(wtPath).isDirectory()) continue;
+            execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
+            e.log('info', `Post-merge cleanup: removed worktree ${dir}`);
+          } catch (err) { e.log('warn', `Failed to remove worktree ${dir}: ${err.message}`); }
+        }
       }
-    }
+    } catch {}
   }
 
   if (newStatus !== 'merged') return;
