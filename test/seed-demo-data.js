@@ -54,8 +54,16 @@ if (process.argv.includes('--clean')) {
   // Clean dispatch demo entries
   const dispPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
   const disp = safeJson(dispPath) || { pending: [], active: [], completed: [] };
+  disp.active = (disp.active || []).filter(d => !d._demo);
   disp.completed = (disp.completed || []).filter(d => !d._demo);
   safeWrite(dispPath, disp);
+
+  // Clean live output logs for demo agents
+  const agentsDir = path.join(SQUAD_DIR, 'agents');
+  for (const agentId of ['dallas', 'ripley', 'rebecca']) {
+    const livePath = path.join(agentsDir, agentId, 'live-output.log');
+    if (fs.existsSync(livePath)) { try { fs.unlinkSync(livePath); console.log(`  Removed ${agentId}/live-output.log`); } catch {} }
+  }
 
   console.log('Demo data cleaned.');
   process.exit(0);
@@ -70,7 +78,7 @@ const demoItems = [
   { id: 'DEMO-001', title: 'Add OAuth2 authentication middleware', type: 'implement', priority: 'high', status: 'done', created: '2026-03-18T10:00:00Z', createdBy: 'dashboard', completedAt: '2026-03-18T14:30:00Z', dispatched_to: 'dallas', _demo: true },
   { id: 'DEMO-002', title: 'Implement role-based access control', type: 'implement', priority: 'high', status: 'in-pr', created: '2026-03-18T11:00:00Z', createdBy: 'dashboard', dispatched_to: 'rebecca', _pr: 'PR-4521', _demo: true },
   { id: 'DEMO-003', title: 'Fix login page CSS on mobile', type: 'implement', priority: 'medium', status: 'pending', created: '2026-03-19T08:00:00Z', createdBy: 'dashboard', _demo: true },
-  { id: 'DEMO-004', title: 'Add rate limiting to API endpoints', type: 'implement', priority: 'high', status: 'pending', created: '2026-03-19T09:00:00Z', createdBy: 'dashboard', _demo: true },
+  { id: 'DEMO-004', title: 'Add rate limiting to API endpoints', type: 'implement', priority: 'high', status: 'dispatched', dispatched_to: 'dallas', dispatched_at: '2026-03-19T09:30:00Z', created: '2026-03-19T09:00:00Z', createdBy: 'dashboard', _demo: true },
   { id: 'DEMO-005', title: 'Review PR for auth middleware', type: 'review', priority: 'medium', status: 'done', created: '2026-03-18T15:00:00Z', createdBy: 'engine', dispatched_to: 'ripley', completedAt: '2026-03-18T16:00:00Z', _demo: true },
   { id: 'DEMO-006', title: 'Explore codebase authentication patterns', type: 'explore', priority: 'low', status: 'failed', failReason: 'Agent timeout after 3 retries', created: '2026-03-17T10:00:00Z', _demo: true },
 ];
@@ -162,14 +170,60 @@ console.log('  Inbox: 2 demo notes created');
 // 5. Dispatch completed entries (for agent history)
 const dispPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
 const disp = safeJson(dispPath) || { pending: [], active: [], completed: [] };
-const demoDispatches = [
+// Active dispatches — these make agents show as "working"
+const now = new Date().toISOString();
+const demoActive = [
+  { id: 'demo-a1', agent: 'dallas', agentName: 'Dallas', type: 'implement', task: '[OfficeAgent] Implement: API Rate Limiting with Redis', created_at: now, started_at: now, meta: { branch: 'work/DEMO-004', item: { id: 'DEMO-004' } }, _demo: true },
+  { id: 'demo-a2', agent: 'ripley', agentName: 'Ripley', type: 'review', task: '[OfficeAgent] Review PR-4521: Role-Based Access Control', created_at: now, started_at: now, meta: { pr: { id: 'PR-4521' } }, _demo: true },
+  { id: 'demo-a3', agent: 'rebecca', agentName: 'Rebecca', type: 'implement', task: '[OfficeAgent] Implement: Session Management with Redis', created_at: now, started_at: now, meta: { branch: 'work/DEMO-P004', item: { id: 'DEMO-P004' } }, _demo: true },
+];
+const demoCompleted = [
   { id: 'demo-d1', agent: 'dallas', agentName: 'Dallas', type: 'implement', task: '[OfficeAgent] Implement: OAuth2 Authentication Middleware', result: 'success', completed_at: '2026-03-18T14:30:00Z', resultSummary: 'Implemented JWT auth with passport.js, created PR-4520', _demo: true },
-  { id: 'demo-d2', agent: 'ripley', agentName: 'Ripley', type: 'review', task: '[OfficeAgent] Review PR-4521: RBAC implementation', result: 'success', completed_at: '2026-03-18T16:00:00Z', resultSummary: 'Approved with suggestions — token expiry and CORS fixes needed', _demo: true },
+  { id: 'demo-d2', agent: 'ripley', agentName: 'Ripley', type: 'review', task: '[OfficeAgent] Review PR-4520: Auth Middleware', result: 'success', completed_at: '2026-03-18T16:00:00Z', resultSummary: 'Approved with suggestions — token expiry and CORS fixes needed', _demo: true },
   { id: 'demo-d3', agent: 'rebecca', agentName: 'Rebecca', type: 'implement', task: '[OfficeAgent] Implement: Role-Based Access Control', result: 'success', completed_at: '2026-03-19T09:00:00Z', resultSummary: 'RBAC implemented with role hierarchy, created PR-4521', _demo: true },
   { id: 'demo-d4', agent: 'lambert', agentName: 'Lambert', type: 'plan-to-prd', task: '[OfficeAgent] Generate PRD from plan: auth-plan', result: 'success', completed_at: '2026-03-18T11:30:00Z', resultSummary: 'Generated PRD with 5 features, dependency graph mapped', _demo: true },
 ];
-disp.completed = [...(disp.completed || []).filter(d => !d._demo), ...demoDispatches];
+disp.active = [...(disp.active || []).filter(d => !d._demo), ...demoActive];
+disp.completed = [...(disp.completed || []).filter(d => !d._demo), ...demoCompleted];
 safeWrite(dispPath, disp);
-console.log(`  Dispatch: ${demoDispatches.length} demo completions seeded`);
+console.log(`  Dispatch: ${demoActive.length} active + ${demoCompleted.length} completed seeded`);
+
+// 6. Live output logs — makes working agents show recent activity
+const agentsDir = path.join(SQUAD_DIR, 'agents');
+const liveOutputs = {
+  dallas: `# Live output for dallas — demo-a1
+# Started: ${now}
+# Task: [OfficeAgent] Implement: API Rate Limiting with Redis
+
+{"type":"assistant","message":{"content":[{"type":"text","text":"I'll implement the rate limiting middleware using Redis. Let me start by reading the existing middleware patterns..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/middleware/auth.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Good, I can see the middleware chain pattern. Now let me create the rate limiter..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"src/middleware/rate-limiter.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Rate limiter created. Now implementing the Redis connection and configuring per-endpoint limits..."}]}}
+`,
+  ripley: `# Live output for ripley — demo-a2
+# Started: ${now}
+# Task: [OfficeAgent] Review PR-4521: Role-Based Access Control
+
+{"type":"assistant","message":{"content":[{"type":"text","text":"Reviewing PR-4521 for RBAC implementation. Let me check the permission model..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git diff origin/main...origin/work/DEMO-P002 --stat"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"14 files changed. Reviewing the role hierarchy implementation and permission middleware..."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Found a potential issue: the permission check doesn't handle inherited roles correctly. The Admin role should inherit all Editor permissions..."}]}}
+`,
+  rebecca: `# Live output for rebecca — demo-a3
+# Started: ${now}
+# Task: [OfficeAgent] Implement: Session Management with Redis
+
+{"type":"assistant","message":{"content":[{"type":"text","text":"Implementing secure session management. Starting with the Redis session store configuration..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{"pattern":"src/config/**/*.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Found the config structure. Creating session store with configurable TTL and secure cookie settings..."}]}}
+`,
+};
+for (const [agentId, content] of Object.entries(liveOutputs)) {
+  const agentDir = path.join(agentsDir, agentId);
+  if (!fs.existsSync(agentDir)) fs.mkdirSync(agentDir, { recursive: true });
+  safeWrite(path.join(agentDir, 'live-output.log'), content);
+}
+console.log(`  Live output: ${Object.keys(liveOutputs).length} agents with active output`);
 
 console.log('\nDemo data seeded. Run with --clean to remove.');
