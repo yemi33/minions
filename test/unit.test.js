@@ -1423,6 +1423,14 @@ async function testConfigAndPlaybooks() {
       }
     }
   });
+
+  await test('bin/squad init guards against home under package root', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'bin', 'squad.js'), 'utf8');
+    assert.ok(src.includes('function isSubpath('),
+      'bin/squad.js should define subpath helper');
+    assert.ok(src.includes('Refusing to initialize Squad home inside package directory'),
+      'init should fail fast when SQUAD_HOME is inside PKG_ROOT');
+  });
 }
 
 // ─── Integration-Level Tests (uses real state files) ─────────────────────────

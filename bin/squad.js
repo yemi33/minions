@@ -33,6 +33,11 @@ const [cmd, ...rest] = process.argv.slice(2);
 const force = rest.includes('--force');
 const skipScan = rest.includes('--skip-scan');
 
+function isSubpath(parent, child) {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
 // ─── Version tracking ───────────────────────────────────────────────────────
 
 function getPkgVersion() {
@@ -53,6 +58,16 @@ function saveInstalledVersion(version) {
 // ─── Init / Upgrade ─────────────────────────────────────────────────────────
 
 function init() {
+  // Safety guard: avoid recursive copy if user HOME is inside package root.
+  // This can happen in tests or unusual shell setups.
+  if (isSubpath(PKG_ROOT, SQUAD_HOME)) {
+    console.error(`\n  ERROR: Refusing to initialize Squad home inside package directory.`);
+    console.error(`  Package root: ${PKG_ROOT}`);
+    console.error(`  Squad home:   ${SQUAD_HOME}`);
+    console.error('  Set HOME/USERPROFILE to a location outside this repo and run `squad init` again.\n');
+    process.exit(1);
+  }
+
   const isUpgrade = fs.existsSync(path.join(SQUAD_HOME, 'engine.js'));
   const pkgVersion = getPkgVersion();
   const installedVersion = getInstalledVersion();
