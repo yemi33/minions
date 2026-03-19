@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.61 (2026-03-19)
+
+### Documentation
+- README.md
+- auto-discovery.md
+- command-center.md
+- human-vs-automated.md
+- self-improvement.md
+
 ## 0.1.60 (2026-03-19)
 
 ### Engine
