@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.90 (2026-03-19)
+
+### Documentation
+- auto-discovery.md
+
 ## 0.1.89 (2026-03-19)
 
 ### Other
