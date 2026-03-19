@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.70 (2026-03-19)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.69 (2026-03-19)
 
 ### Engine
