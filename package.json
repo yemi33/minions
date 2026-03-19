@@ -1,6 +1,6 @@
 {
   "name": "@yemi33/squad",
-  "version": "0.1.81",
+  "version": "0.1.82",
   "description": "Multi-agent AI dev team that runs from ~/.squad/ — five autonomous agents share a single engine, dashboard, and knowledge base",
   "bin": {
     "squad": "bin/squad.js"
