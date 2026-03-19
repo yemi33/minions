@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.73 (2026-03-19)
+
+### Other
+- test/demo-screenshots/01-dashboard-overview.gif
+- test/demo-screenshots/02-command-center.gif
+- test/demo-screenshots/03-work-items.gif
+- test/demo-screenshots/04-plan-docchat.gif
+- test/demo-screenshots/05-prd-progress.gif
+- test/demo-screenshots/06-inbox-metrics.gif
+- test/seed-demo-data.js
+
 ## 0.1.72 (2026-03-19)
 
 ### Engine
