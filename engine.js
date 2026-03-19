@@ -1809,10 +1809,22 @@ function materializePlansAsWorkItems(config) {
             log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
           }
 
-          // Awaiting-approval PRDs: invalidate and auto-regenerate
+          // Awaiting-approval PRDs: invalidate, carry over completed items, delete old PRD, queue regeneration
           if (prdStatus === 'awaiting-approval') {
-            plan.status = 'revision-requested';
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
+
+            // Collect completed items to carry over to new PRD
+            const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
+            const completedItems = (plan.missing_features || [])
+              .filter(f => completedStatuses.has(f.status))
+              .map(f => ({ id: f.id, name: f.name, status: f.status }));
+
+            const completedContext = completedItems.length > 0
+              ? `\nPreviously completed items (preserve their status in the new PRD):\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
+              : '';
+
+            // Delete old PRD — agent will write replacement at same path
+            try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch {}
 
             // Queue plan-to-prd regeneration
             const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
@@ -1821,10 +1833,8 @@ function materializePlansAsWorkItems(config) {
               const allProjects = getProjects(config);
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
-                // Queue as a work item (picked up by discoverFromWorkItems next tick)
                 const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
                 const centralItems = safeJson(centralWiPath) || [];
-                // Avoid duplicate: check if regeneration already queued
                 const alreadyQueued = centralItems.some(w =>
                   w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
                 );
@@ -1834,18 +1844,20 @@ function materializePlansAsWorkItems(config) {
                     title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
                     type: 'plan-to-prd',
                     priority: 'high',
-                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised while PRD was awaiting approval — regenerating.`,
+                    description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${file}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
                     status: 'pending',
                     created: ts(),
                     createdBy: 'engine:plan-revision',
                     project: targetProject.name,
                     planFile: plan.source_plan,
+                    _targetPrdFile: file,
                   });
                   safeWrite(centralWiPath, centralItems);
-                  log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan}`);
+                  log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
                 }
               }
             }
+            continue; // Old PRD deleted — skip safeWrite below
           }
 
           safeWrite(path.join(PRD_DIR, file), plan);

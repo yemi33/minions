@@ -1495,12 +1495,30 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const sourcePlanPath = path.join(PLANS_DIR, plan.source_plan);
       if (!fs.existsSync(sourcePlanPath)) return jsonReply(res, 400, { error: `Source plan not found: ${plan.source_plan}` });
 
-      // Reset PRD to awaiting-approval, clear stale flag
-      plan.status = 'awaiting-approval';
-      plan.planStale = false;
-      safeWrite(prdPath, plan);
+      // Collect completed item IDs from the old PRD to carry over
+      const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
+      const completedItems = (plan.missing_features || [])
+        .filter(f => completedStatuses.has(f.status))
+        .map(f => ({ id: f.id, name: f.name, status: f.status }));
 
-      // Queue plan-to-prd regeneration (reuse execute logic for .md plans)
+      // Clean pending/failed work items from old PRD (keep done/in-pr)
+      const { getProjects, projectWorkItemsPath } = shared;
+      const config = queries.getConfig();
+      for (const p of getProjects(config)) {
+        const projWiPath = projectWorkItemsPath(p);
+        const projItems = safeJson(projWiPath);
+        if (!projItems) continue;
+        const filtered = projItems.filter(w => {
+          if (w.sourcePlan !== body.file) return true; // different plan, keep
+          return completedStatuses.has(w.status); // keep completed, remove pending/failed
+        });
+        if (filtered.length < projItems.length) safeWrite(projWiPath, filtered);
+      }
+
+      // Delete old PRD — agent will write replacement at same path
+      try { fs.unlinkSync(prdPath); } catch {}
+
+      // Queue plan-to-prd regeneration with instructions to preserve completed items
       const wiPath = path.join(SQUAD_DIR, 'work-items.json');
       let items = [];
       const existing = safeRead(wiPath);
@@ -1512,13 +1530,18 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       );
       if (alreadyQueued) return jsonReply(res, 200, { id: alreadyQueued.id, alreadyQueued: true });
 
+      const completedContext = completedItems.length > 0
+        ? `\n\n**Previously completed items (preserve their status in the new PRD):**\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
+        : '';
+
       const id = 'W-' + shared.uid();
       items.push({
         id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
         type: 'plan-to-prd', priority: 'high',
-        description: `Plan file: plans/${plan.source_plan}\nRegeneration requested by user after plan revision.`,
+        description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
         status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
         project: plan.project || '', planFile: plan.source_plan,
+        _targetPrdFile: body.file,
       });
       safeWrite(wiPath, items);
       return jsonReply(res, 200, { id, file: plan.source_plan });
