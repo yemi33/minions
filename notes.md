@@ -2964,3 +2964,450 @@ _Processed 3 notes, 34 insights extracted, 8 duplicates removed (deduplication g
   → see `knowledge/build-reports/2026-03-18-ripley-ripley-findings-2026-03-18.md`
 
 _Processed 3 notes, 19 insights extracted, 15 duplicates removed._
+
+---
+
+### 2026-03-19: Weave lifecycle pattern and AugLoop three-layer architecture from office-bohemia
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **IWeaveLifecycle** is the Midguard MOS App lifecycle contract: `init(config) → mount(container) → unmount() → dispose()` with re-mount support (unmount preserves React root; dispose destroys it). _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Dual-mode rendering pattern** for MOS Apps: supports both Midguard-federated path (via CoworkAppFactory) and standalone Bebop route path (via mountCoworkApp helper)—correct approach for 1JS apps rendering in multiple hosts. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Module federation manifest pattern** declares appId, version, federation scope, exposes, shared deps (React singleton), and CDN caching config; schema at `https://midguard.microsoft.com/schemas/mos-app-manifest/v1.json`. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Vite dual-build config**: single vite.config.ts produces library build or federation build; federation mode triggered by `mode === 'federation'` or `BUILD_TARGET=federation` env var; remoteEntry.js unhashed for short cache, chunks content-hashed for immutable CDN caching. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **@bebopjs scope** established for Bebop-adjacent packages (`@bebopjs/bebop-ux`, `@bebopjs/bebop-telemetry`, `@bebopjs/cowork-mos-app`); most packages/ use `@fluidx` scope. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **AppLifecycleStatus** is string union type (`'created' | 'initialized' | 'mounted' | 'unmounted' | 'disposed'`), not TypeScript enum—consistent with Bebop/Vite convention for tree-shaking. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **crypto.randomUUID()** for operation IDs addresses module-level counter issue; eliminates stale operation ID risk. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **jest.useFakeTimers()** enables reliable retry timing tests without race conditions. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **satisfies keyword** for literal exhaustiveness in reducers ensures compile-time verification of discriminated union coverage. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+#### Architecture Notes
+
+- **Host bridge dependency inversion**: MosHostContext is interface-only contract (auth, theme, locale, telemetry)—MOS App never imports `@ms/office-web-host`; host creates bridge with its own APIs via `createHostBridge()` (Midguard) or `createStandaloneBridge()` (dev/Bebop). _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **MOS App is first package pattern** in office-bohemia combining Weave lifecycle + module federation; establishes blueprint for future 1JS MOS Apps. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **React root reuse across unmount/remount is intentional**: unmount() preserves root and clears container only; dispose() destroys root. Destroying root on unmount would force re-create on remount, which conflicts with Midguard navigation pattern. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Three-layer AugLoop architecture** (types → transport → state) has no circular dependencies and clean separation of concerns. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **Provider interface minimal and correct**: `IAugLoopAnnotationProvider` has exactly 2 methods (`activateAnnotations`, `releaseAnnotation`); no AugLoop SDK types leak. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **Callback-based AnnotationCallbacks interface** eliminates Jotai store type imports in transport layer; enables clean decoupling of state management from network logic. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **Reducer follows chatModeAtoms.ts pattern exactly**: pure function, discriminated union actions, no side effects—consistent codebase convention. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **Feature-first directory organization** with co-located tests improves discoverability and maintenance. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+#### Bugs & Gotchas
+
+- **CoworkApp test assertion bug**: CoworkApp.test.tsx:119 asserts `expect(mockUnmount).toHaveBeenCalledTimes(1)` after `app.unmount()`, but `unmount()` does NOT call `reactRoot.unmount()`—only sets status and clears container. `reactRoot.unmount()` only in `dispose()`. Test will fail. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **COWORK_MOS_APP_VERSION uses `(globalThis as any)`**: violates CLAUDE.md "no any" rule; replace with `declare const __COWORK_MOS_APP_VERSION__: string | undefined` pattern. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Silent error swallowing in augloopTransport.ts**: three `.catch(() => {})` locations swallow errors with zero logging; no logger parameter on constructor—zero production observability. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **mapAnnotationStatusToStepStatus default returns 'pending' silently**: forward-compatible but masks bugs when `AnnotationStatus` gains new values; suggest `never` assertion for exhaustiveness. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **registerOperation resolves before retries complete**: first activation failure means promise resolves with operationId while retries continue via setTimeout in background; JSDoc omits this. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **Missing coworkTypes.ts dependency**: progressionAtoms.ts imports `ProgressionStep` and `ProgressionStepStatus` from a file that doesn't exist in master; piecemeal PR pattern requires strict merge ordering. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **git merge-base fails on orphan branches**: use `git show --stat origin/<branch>` instead of `git diff master...branch` for orphan branches. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+- **README.md stub**: 7-line placeholder saying "use master not main" instead of feature documentation. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+#### PR Review Findings
+
+- **CoworkAppShell is placeholder-only** until feat/PL-W001 through PL-W005 merge to master; lifecycle shell fully functional, UI content is stub. _(Ripley)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-lambert.md`
+
+- **Blocking votes from multiple reviewers** (Luan Nguyen, Loop Canvas, Fluid Component Framework Reviewers; vote:-5 each) must be addressed before merge. _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+#### Build & Test Results
+
+- **ADO API at 58 threads successfully posted thread and vote in <20s**: contradicts ">50 skip all writes" convention; recommend increasing threshold to >60 based on this data point (complements prior 62-thread success). _(Rebecca)_
+  → see `knowledge/build-reports/2026-03-19-rebecca-rebecca-learnings-2026-03-19.md`
+
+_Processed 4 notes, 28 unique insights extracted, 5 duplicate patterns removed (string unions, ES # private fields, Promise.allSettled, phantom dependency, placeholder leak)._
+
+---
+
+### 2026-03-19: Lambert's code review findings on artifact preview panel PR (PR-4981797)
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+- **Dead code detection via import grep**: After `git show --stat`, grep entire PR for each new component's import; if only self-reference found → dead code. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+- **Dual atom store detection**: Check for same-named exports across different atom files (e.g., `artifactAtoms.ts:appendArtifactAtom` vs `coworkAtoms.ts:appendArtifactAtom`); writes to one don't update the other. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### Build & Test Results
+- **ADO REST API at 18 threads is performant**: All operations (thread POST, vote PUT, threads GET) completed <5s; complements prior 58-thread success, suggests threshold can be increased to >60. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### PR Review Findings
+- **`useDemoCoworkSession` in production hardcodes localhost**: Uses `ws://localhost:11040/ws` with module-level mutable singletons (`let sharedWs`, `let sharedSessionId`) and `!` non-null assertions; violates CLAUDE.md. Must replace with `useCoworkSession`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **ArtifactPanel is dead code**: ~382 lines of unreachable code (93 TSX + 198 CSS + 26 DocumentPreview + 65 DownloadButton) added but never imported; `CoworkLayout.tsx` uses `DetailsSidebar → ArtifactRow` with `coworkAtoms.artifactsAtom`, bypassing the new panel entirely. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Dual disconnected artifact atom stores**: `artifactListAtom` (artifactAtoms.ts:6) and `artifactsAtom` (coworkAtoms.ts:103) are separate Jotai atoms; `CoworkLayout.tsx` reads one, `ArtifactPanel.tsx` reads the other. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Dual type definitions for CoworkSession**: `CoworkSession.status` is required in types.ts but optional in types/coworkTypes.ts; `ChatMessage` fields differ between files. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Type assertion violations**: Four `as unknown as` double assertions in coworkAtoms.ts:134-137, `as any` in featureGates.test.ts:35, and `as Message<unknown>` in websocketTransport.ts:105,174; all violate CLAUDE.md. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Misleading sandbox comment**: DocumentPreview.tsx:12 JSDoc incorrectly claims `allow-same-origin` "restricts script execution"; `sandbox` attribute restricts by default; `allow-same-origin` gives iframe access to parent origin's cookies/storage. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Bugs & Gotchas
+- **`git diff master...origin/<branch>` fails on non-master ancestry**: When branch created from non-master ancestor, returns "no merge base". Use `git show --stat origin/<branch>` for commit-level file list instead. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+- **MCP ADO tools remain unavailable**: `mcp__azure-ado__*` tools not discoverable; REST API via curl + GCM credential fill is the only working path. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+_Processed 3 notes, 12 unique insights extracted, 0 duplicates removed (all content novel vs. existing team notes)._
+
+---
+
+### 2026-03-19: Lambert's PR-4981797 review—production hardcoding, dead components, and type assertion antipatterns
+
+**By:** Engine (LLM-consolidated)
+
+#### Patterns & Conventions
+
+- **Dead code detection via import grep**: After `git show --stat`, grep entire PR for each new component's import; if only self-references found → dead code. Applied to ArtifactPanel: returns only CSS module self-imports across 35 files. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+- **Dual atom store detection**: Scan atom files for same-named exports (e.g., `artifactAtoms.ts:appendArtifactAtom` vs `coworkAtoms.ts:appendArtifactAtom`). Both write to different backing stores; writes to one don't propagate to the other. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+- **Type assertion antipatterns**: Double assertions (`as unknown as`), unchecked `as any` casts, and conflicting type definitions across files (e.g., required vs optional status fields) should be audited repo-wide. Violates CLAUDE.md. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### PR Review Findings
+
+- **PR-4981797 blocking**: `useDemoCoworkSession` hardcodes `ws://localhost:11040/ws` in production code and uses module-level mutable singletons (`let sharedWs`, `let sharedSessionId`, `!` non-null assertion). Must replace with `useCoworkSession`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **ArtifactPanel dead code**: New component (~382 lines: 93 TSX + 198 CSS + 26 DocumentPreview + 65 DownloadButton) never imported anywhere; `CoworkLayout.tsx` uses alternate `DetailsSidebar → ArtifactRow` path with `coworkAtoms.artifactsAtom`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Artifact atom store split**: `artifactListAtom` and `artifactsAtom` are separate Jotai atoms in different files; `CoworkLayout` reads one, `ArtifactPanel` reads the other, causing state desync. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Dual type definitions conflict**: `CoworkSession.status` required in `types.ts`, optional in `types/coworkTypes.ts`; `ChatMessage` fields differ. Creates downstream type safety gaps. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Misleading sandbox iframe comment**: JSDoc claims `allow-same-origin` "restricts script execution"—incorrect. The `sandbox` attribute restricts by default; `allow-same-origin` grants iframe access to parent cookies/storage. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Bugs & Gotchas
+
+- **MCP ADO tools unavailable**: `mcp__azure-ado__*` tools not discoverable. REST API via curl + GCM credential manager is the only working path for ADO operations. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### Build & Test Results
+
+- **ADO REST API operational at 18 threads**: Thread POST, vote PUT, threads GET all complete <5s. Well within safe operational thresholds. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+_Processed 3 notes (2 duplicates), 8 unique insights extracted, 1 duplicate pattern removed (git merge-base workaround already documented)._
+
+---
+
+### 2026-03-19: Lambert detects dead code and atom store conflicts blocking PR-4981797 artifact panel merge
+**By:** Engine (LLM-consolidated)
+
+#### PR Review Findings
+- **`useDemoCoworkSession` in production**: Hardcodes demo WebSocket URL (`ws://localhost:11040/ws`) and uses module-level mutable singletons; must replace with `useCoworkSession`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **ArtifactPanel is dead code**: Added to PR but never imported; CoworkLayout completely bypasses it via `DetailsSidebar → ArtifactRow`. ~382 lines unreachable (93 TSX + 198 CSS + 26 DocumentPreview + 65 DownloadButton). _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Dual disconnected artifact atom stores**: `artifactListAtom` (in `artifactAtoms.ts`) and `artifactsAtom` (in `coworkAtoms.ts`) are separate Jotai atoms; CoworkLayout reads one while ArtifactPanel reads the other, causing state synchronization failures. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Multiple type assertion violations**: Four `as unknown as` assertions in `coworkAtoms.ts:134-137`, `as any` in `featureGates.test.ts:35`, and `as Message<unknown>` in `websocketTransport.ts:105,174`. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Dual type definitions conflict**: `CoworkSession.status` is required in `types.ts` but optional in `types/coworkTypes.ts`; `ChatMessage` fields differ across files. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Misleading sandbox iframe documentation**: JSDoc in `DocumentPreview.tsx:12` incorrectly claims `allow-same-origin` "restricts script execution"; it actually grants iframe access to parent origin's cookies/storage. _(Lambert)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Patterns & Conventions
+- **Dead code detection via import grep**: After `git show --stat`, grep the entire PR diff for each new component's imports; if only self-imports found → dead code. Effective heuristic for catching unreachable code. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+- **Dual atom store detection**: Check for same-named atom exports across different files (e.g., `appendArtifactAtom` in both `artifactAtoms.ts` and `coworkAtoms.ts`); if writes to one don't update the other's dependents → disconnected stores. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### Bugs & Gotchas
+- **MCP ADO tools remain unavailable**: `mcp__azure-ado__*` tools not discoverable; REST API via curl + Git Credential Manager fill is the only working path for ADO operations. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+#### Build & Test Results
+- **ADO REST API at 18 threads is performant**: Thread POST, vote PUT, and threads GET operations all completed in <5s, well within safe threshold for concurrent ADO operations. _(Lambert)_
+  → see `knowledge/conventions/2026-03-19-lambert-lambert-learnings-2026-03-19.md`
+
+_Processed 3 notes, 12 unique insights extracted, 1 duplicate removed (git diff merge-base gotcha)._
+
+---
+
+### 2026-03-19: Feedback, Ralph: PR reviews (10 insights from 3 notes)
+**By:** Engine (regex fallback)
+
+#### PR Review Findings (10)
+- **Branch**: `feat/PL-W015-cot-askuser-types` _(feedback, ralph)_
+- **Commits**: 3 (`b60eee4e2`, `ccb74bed4`, `9f9c2e06b`) _(feedback, ralph)_
+- **Files**: 5 files, 407 insertions in `modules/message-protocol/` _(feedback, ralph)_
+- **Thread posted**: Closed-status (status: 4) with full review _(feedback, ralph)_
+- **Vote**: 10 (approved) _(feedback, ralph)_
+- **Three-tier CoT hierarchy**: WorkspaceChainOfThoughtPayload (batch) → PptAgentCotPayload (typed batch) → ChainOfThoughtUpdatePayload (incremental streaming). This PR adds the third tier. (source: `chain-of-thought-stream.ts:1-10`) _(feedback, ralph)_
+- **Compile-time shape tests**: 164 lines of typed object literals in `tests/message-type.test.ts` catch field renames at compile time — strongest defense against silent wire-format drift (source: `tests/message-type.test.ts:428-591`) _(feedback, ralph)_
+- **dev.azure.com hostname works for ISS project**: Thread POST and vote PUT both returned HTTP 200 using `dev.azure.com/office/ISS/_apis/...` (source: this session) _(feedback, ralph)_
+- **VSID for vote submission**: `1c41d604-e345-64a9-a731-c823f28f9ca8` (source: `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview`) _(feedback, ralph)_
+- **PR-4970128 has 62+ threads from prior duplicate dispatches**: Engine dispatch deduplication still unimplemented. This PR has been reviewed 20+ times with identical commits. (source: team notes 2026-03-19) _(feedback, ralph)_
+
+_Deduplication: 54 duplicate(s) removed._
+
+
+---
+
+### 2026-03-19: PR-4970128 protocol design review and ADO REST API patterns
+**By:** Engine (LLM-consolidated)
+
+#### PR Review Findings
+- **CoT protocol directionality**: `AskUserQuestionMessage = Message<T>` (server→client) and `UserAnswerMessage = ResponseMessage<T>` (client→server) correctly implement existing message-protocol conventions _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Discriminated union on `kind` field**: `CoTStreamEvent` union with 6 event types enables exhaustive switch pattern matching for type-safe event handling _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Three-tier CoT hierarchy**: WorkspaceChainOfThoughtPayload (batch) → PptAgentCotPayload (typed batch) → ChainOfThoughtUpdatePayload (streaming) properly partitions abstraction levels _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Compile-time shape tests as primary defense**: 164 lines of typed object literals catch field renames at compile time, strongest protection against silent wire-format drift _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **PptAgentCotContentType alignment by design**: `text` and `thinking` event kinds intentionally mirror agent values with explicit documentation of overlap _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Bugs & Gotchas
+- **stepId requirement asymmetry**: Required on `CoTStepStartedEvent` but optional on `CoTStepCompletedEvent` — clarify contract for downstream handler implementations _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **sequenceNumber scoping mismatch**: Documented as session-scoped but handler needs per-session counters; module-level counter would interleave across sessions _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **PR-4970128 dispatch duplication backlog**: 62+ threads from prior duplicate dispatches; identical PR reviewed 20+ times — engine dispatch deduplication remains unimplemented _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Windows temp file pattern required for curl**: JSON payloads must be written to `$TEMP/file.json` and referenced via `-d @"$TEMP/file.json"` syntax _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Patterns & Conventions
+- **dev.azure.com REST API endpoint verified**: ADO thread POST and vote PUT operations both succeeded using `dev.azure.com/office/ISS/_apis/...` hostname _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **VSID for ADO vote submission**: Token `1c41d604-e345-64a9-a731-c823f28f9ca8` obtained via `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview` for vote PUT requests _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+_Processed 3 notes, 10 unique insights extracted, 2 duplicates removed._
+
+---
+
+### 2026-03-19: PR-4970128 CoT streaming protocol types — approved with clean code quality
+
+**By:** Engine (LLM-consolidated)
+
+#### PR Review Findings
+- **Protocol directionality modeled correctly**: `AskUserQuestionMessage = Message<T>` (server→client), `UserAnswerMessage = ResponseMessage<T>` (client→server) follows existing protocol convention in `modules/message-protocol/src/types/core.ts:28-42`. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Discriminated union enables exhaustive switches**: `CoTStreamEvent` union with 6 event types (`step_started`, `step_completed`, `tool_use`, `thinking`, `text`, `ask_user_question`) enforces compile-time pattern matching. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Three-tier CoT streaming hierarchy complete**: WorkspaceChainOfThoughtPayload (batch) → PptAgentCotPayload (typed batch) → ChainOfThoughtUpdatePayload (incremental) — this PR adds the third tier. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Compile-time shape tests strongest defense**: 164 lines of typed object literals in `tests/message-type.test.ts` catch silent wire-format drift at compile time, not runtime. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **Intentional overlap documented**: `text` and `thinking` event kinds mirror `PptAgentCotContentType` from `agents/ppt-agent/messages.ts`; documented as "overlap by design" in file header. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+#### Patterns & Conventions
+- **dev.azure.com hostname works for ISS project**: Thread POST and vote PUT both returned HTTP 200 with `dev.azure.com/office/ISS/_apis/...` path; safe alternative when org-scoped URLs fail. _(Ralph)_
+  → see `knowledge/conventions/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **VSID cache for ADO votes**: `1c41d604-e345-64a9-a731-c823f28f9ca8` obtained via `GET https://dev.azure.com/office/_apis/connectionData?api-version=6.0-preview`; reuse across vote operations. _(Ralph)_
+  → see `knowledge/conventions/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Bugs & Gotchas
+- **stepId inconsistency**: Required on `CoTStepStartedEvent` but optional on `CoTStepCompletedEvent` — downstream handler PRs must handle both cases. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **sequenceNumber scope mismatch**: Documented as session-scoped but handler needs per-session counters; module-level counter would interleave across sessions. _(Ralph)_
+  → see `knowledge/reviews/2026-03-19-feedback-review-feedback-for-dallas.md`
+
+- **PR-4970128 duplicate reviews**: PR has 62+ threads from 20+ prior duplicate dispatches due to unimplemented engine deduplication — each dispatch redundantly reviews identical commits. _(Ralph)_
+  → see `knowledge/conventions/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+_Processed 3 notes (2 duplicates of 1 source), 10 unique insights extracted, 3 duplicates removed (MCP ADO unavailable, REST API workaround, Windows temp pattern already noted by Lambert)._
+
+---
+
+### 2026-03-19: Session Persistence Review Findings and Worktree Timeout Cascade
+
+**By:** Engine (LLM-consolidated)
+
+#### PR Review Findings
+
+- **Type assertions violate no-`as` rule**: `sessionStore.ts` lines 59-65 use `as PersistedSession` casts instead of type guards; should use `in` operator or validation function. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **useCallback contradiction in JSDoc**: `useSessionReconnect.ts` JSDoc claims no manual useCallback wrappers, but hook uses useCallback three times (lines 108, 156, 168); comment should clarify why stable identity is justified here. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Missing test for useSessionReconnect hook**: 3 of 4 implementation files tested; this 189-line React hook with StrictMode guard, reconnect lock, and mount/skip logic has no test coverage. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Session expiry bypass in touchSession**: `touchSession()` uses `readRaw()` (no expiry check) and re-saves with fresh `lastActive`, which could "un-expire" >24h sessions; should use `getSession()` instead. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **PII leak in error messages**: `validateAgentConversationId` includes full conversationId (tenantId + userId) in rejection reason strings; if logged to telemetry, leaks PII. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Patterns & Conventions
+
+- **Composite conversationId format**: Weave-parity convention is `{tenantId}:{userId}:{sessionId}` for task correlation across connection drops, validated with `isValidCompositeConversationId` (3 non-empty colon-separated parts). _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **SessionBridgeCallbacks pattern**: `onSessionConfirmed`, `onSessionRejected`, `onStateReplay` callbacks decouple bridge from UI state, consistent with existing AnnotationCallbacks pattern. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **StrictMode double-mount guard via mountedRef**: `if (mountedRef.current) return;` in useEffect with empty deps prevents duplicate reconnect on React StrictMode; mountedRef never reset in cleanup. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Session max age is 24 hours**: `SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000` — expired sessions silently cleared on read. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Task state replay structure**: OfficeAgent sends `TaskStateReplayPayload` on reconnect with `progressionSteps`, `pendingQuestion`, `taskPhase`, and `progressPercent` for full UI state restore without round-trip. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Action Items
+
+- **Fix type assertions in sessionStore.ts**: Replace `as` casts with proper type guards using `in` operator on lines 59-65. _(Ralph)_
+  → see `knowledge/project-notes/2026-03-19-engine-work-item-failed-p-bbc32f34-.md`
+
+- **Add tests for useSessionReconnect hook**: Cover StrictMode guard, reconnect lock, mount/skip logic. _(Ralph)_
+  → see `knowledge/project-notes/2026-03-19-engine-work-item-failed-p-e1c4afa8-.md`
+
+- **Fix touchSession to use getSession**: Replace `readRaw()` with `getSession()` to respect expiry check before re-saving. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Sanitize error messages for PII**: Remove full conversationId from `validateAgentConversationId` rejection reasons. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Reset P-bbc32f34 to pending**: Worktree creation timeout (ETIMEDOUT) blocks 3 dependents (`P-53d89112`, `P-3183239d`, `P-d6cc7aac`); requires fix before they can dispatch. _(Engine)_
+  → see `knowledge/project-notes/2026-03-19-engine-work-item-failed-p-bbc32f34-.md`
+
+_Processed 3 notes, 15 unique insights extracted, 0 duplicates removed._
+
+---
+
+### 2026-03-19: Session persistence review findings, code quality gaps, and worktree timeout blocker
+**By:** Engine (LLM-consolidated)
+
+#### Architecture Notes
+- **Composite conversationId format**: Sessions use `{tenantId}:{userId}:{sessionId}` for Weave-parity task correlation; validated with `isValidCompositeConversationId` helper. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **SessionBridgeCallbacks pattern**: `onSessionConfirmed`, `onSessionRejected`, `onStateReplay` callbacks decouple bridge from UI state, consistent with existing AnnotationCallbacks pattern. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **StrictMode double-mount guard**: Use `if (mountedRef.current) return;` in empty-deps useEffect to prevent duplicate reconnect; mountedRef never reset in cleanup to prevent re-fire. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **State replay on reconnect**: `TaskStateReplayPayload` contains `progressionSteps`, `pendingQuestion`, `taskPhase`, `progressPercent` for full UI state restore without round-trip. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Bugs & Gotchas
+- **touchSession expiry bypass**: `touchSession()` uses `readRaw()` (no expiry check) and re-saves with fresh `lastActive`, allowing >24h sessions to be un-expired; should use `getSession()` instead. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **PII leak in validation errors**: `validateAgentConversationId` includes full conversationId (tenantId + userId) in rejection strings that could leak to telemetry. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **Type assertion violations**: PR-4982837 uses `as PersistedSession` casts in sessionStore.ts lines 59-65, violating project "no `as` assertions" convention; should use `in` operator or type guard. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **useCallback contradiction**: JSDoc states "Do NOT add manual useCallback wrappers" but hook uses useCallback three times; needs clarification for hook return value memoization justification. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Build & Test Results
+- **Missing test for useSessionReconnect**: Hook (189 lines with StrictMode guard, reconnect lock, mount/skip logic) has no test file; 3 of 4 implementation files covered. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+- **GCM credential fill broken**: `git credential fill` returned only `protocol=https` without password; `az account get-access-token` is reliable fallback. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+#### Action Items
+- **Worktree timeout blocker**: P-bbc32f34 (Auth and token provider shell) failed with spawnSync cmd.exe ETIMEDOUT; blocks 3 dependent items (navigation shell UI, host integration testing, error handling). Requires investigation and reset. _(Engine)_
+  → see `knowledge/project-notes/2026-03-19-engine-work-item-failed-p-bbc32f34-.md`
+
+- **Progressive artifact upload failed**: P-e1c4afa8 failed after 3 retries; needs root cause investigation. _(Engine)_
+  → see `knowledge/project-notes/2026-03-19-engine-work-item-failed-p-e1c4afa8-.md`
+
+#### Patterns & Conventions
+- **Session expiry enforcement**: Sessions have 24-hour max age; expired sessions silently cleared on read. _(Ralph)_
+  → see `knowledge/architecture/2026-03-19-ralph-ralph-learnings-2026-03-19.md`
+
+_Processed 3 notes, 12 insights extracted, 0 duplicates removed._

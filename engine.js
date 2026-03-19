@@ -83,7 +83,7 @@ function validateConfig(config) {
   }
 }
 
-const { getProjects, projectRoot, projectWorkItemsPath, projectPrPath, getAdoOrgBase, sanitizeBranch, parseSkillFrontmatter, safeReadDir } = shared;
+const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, projectPrPath, getAdoOrgBase, sanitizeBranch, parseSkillFrontmatter, safeReadDir } = shared;
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ function log(level, msg, meta = {}) {
 // ─── State Readers (delegated to engine/queries.js) ─────────────────────────
 
 const { getConfig, getControl, getDispatch, getNotes,
-  getAgentStatus, setAgentStatus, getAgentCharter, getInboxFiles,
+  getAgentStatus, getAgentCharter, getInboxFiles,
   collectSkillFiles, getSkillIndex, getKnowledgeBaseIndex,
   getPrs, SKILLS_DIR } = queries;
 
@@ -443,7 +443,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `2. ${getRepoHostToolRule(project)}\n`;
   prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
   prompt += `4. Write learnings to: ${SQUAD_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
-  prompt += `5. Do NOT write to agents/*/status.json — the engine manages agent status automatically\n`;
+  prompt += `5. Agent status is managed by the engine via dispatch.json — agents do not need to track their own status\n`;
   prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — the engine auto-extracts it to ~/.claude/skills/\n\n`;
 
   return prompt;
@@ -794,15 +794,7 @@ function spawnAgent(dispatchItem, config) {
   log('info', `Spawning agent: ${agentId} (${id}) in ${cwd}`);
   log('info', `Task type: ${type} | Branch: ${branchName || 'none'}`);
 
-  // Update agent status
-  setAgentStatus(agentId, {
-    status: 'working',
-    task: dispatchItem.task,
-    dispatch_id: id,
-    type: type,
-    branch: branchName,
-    started_at: startedAt
-  });
+  // Agent status is derived from dispatch.json — no setAgentStatus needed for working state.
 
   // Spawn the claude process
   const childEnv = shared.cleanChildEnv();
@@ -852,20 +844,7 @@ function spawnAgent(dispatchItem, config) {
     // Parse output and run all post-completion hooks
     const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
-    // Update agent status
-    setAgentStatus(agentId, {
-      status: code === 0 ? 'done' : 'error',
-      task: dispatchItem.task,
-      dispatch_id: id,
-      type: type,
-      branch: branchName,
-      exit_code: code,
-      started_at: startedAt,
-      completed_at: ts(),
-      resultSummary: resultSummary || undefined,
-    });
-
-    // Move from active to completed in dispatch
+    // Move from active to completed in dispatch (single source of truth for agent status)
     completeDispatch(id, code === 0 ? 'success' : 'error', '', resultSummary);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
@@ -880,12 +859,6 @@ function spawnAgent(dispatchItem, config) {
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
     completeDispatch(id, 'error', `Spawn error: ${err.message}`);
-    setAgentStatus(agentId, {
-      status: 'error',
-      task: dispatchItem.task,
-      error: err.message,
-      completed_at: ts()
-    });
   });
 
   // Safety: if process exits immediately (within 3s), log it
@@ -996,7 +969,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
         try {
           const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
             ? path.join(SQUAD_DIR, 'work-items.json')
-            : item.meta.project?.localPath ? path.join(item.meta.project.localPath, '.squad', 'work-items.json') : null;
+            : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
           if (wiPath) {
             const items = safeJson(wiPath) || [];
             const wi = items.find(i => i.id === item.meta.item.id);
@@ -1069,7 +1042,7 @@ function areDependenciesMet(item, config) {
       return false;
     }
     if (depItem.status === 'failed' && (depItem._retryCount || 0) >= 3) return 'failed'; // Only cascade after retries exhausted
-    if (depItem.status !== 'done') return false; // Pending, dispatched, or retrying — wait
+    if (depItem.status !== 'done' && depItem.status !== 'in-pr') return false; // Pending, dispatched, or retrying — wait
   }
   return true;
 }
@@ -1254,12 +1227,6 @@ function checkTimeouts(config) {
         } catch {}
 
         completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');
-        setAgentStatus(item.agent, {
-          status: 'done',
-          task: item.task || '',
-          dispatch_id: item.id,
-          completed_at: ts()
-        });
 
         // Run post-completion hooks via shared helper
         runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
@@ -1337,33 +1304,10 @@ function checkTimeouts(config) {
   for (const { item, reason } of deadItems) {
     completeDispatch(item.id, 'error', reason);
     if (item.meta?.item?.id) updateWorkItemStatus(item.meta, 'failed', reason);
-    setAgentStatus(item.agent, {
-      status: 'idle',
-      task: null,
-      started_at: null,
-      completed_at: ts()
-    });
   }
 
-  // Reset "done" agents to "idle" after 1 minute (visual cleanup)
-  // Also catch stranded "working" agents with no active dispatch (e.g. after engine restart)
-  for (const [agentId] of Object.entries(config.agents || {})) {
-    const status = getAgentStatus(agentId);
-    if ((status.status === 'done' || status.status === 'error') && status.completed_at) {
-      const elapsed = Date.now() - new Date(status.completed_at).getTime();
-      if (elapsed > 60000) {
-        setAgentStatus(agentId, { status: 'idle', task: null, started_at: null, completed_at: status.completed_at });
-      }
-    }
-    // Reconcile: if status says "working" but no active dispatch exists, reset to idle
-    if (status.status === 'working') {
-      const hasActiveDispatch = (dispatch.active || []).some(d => d.agent === agentId);
-      if (!hasActiveDispatch) {
-        log('warn', `Reconcile: ${agentId} status is "working" but no active dispatch found — resetting to idle`);
-        setAgentStatus(agentId, { status: 'idle', task: null, started_at: null, completed_at: ts() });
-      }
-    }
-  }
+  // Agent status is now derived from dispatch.json at read time (getAgentStatus).
+  // No reconcile sweep needed — dispatch IS the source of truth.
 
   // Reconcile: find work items stuck in "dispatched" with no matching active dispatch
   const activeKeys = new Set((dispatch.active || []).map(d => d.meta?.dispatchKey).filter(Boolean));
@@ -1613,7 +1557,7 @@ function runCleanup(config, verbose = false) {
     } catch {}
     for (const project of projects) {
       try {
-        const projItems = safeJson(path.join(project.localPath, '.squad', 'work-items.json')) || [];
+        const projItems = safeJson(projectWorkItemsPath(project)) || [];
         projItems.forEach(w => allWiIds.add(w.id));
       } catch {}
     }
@@ -1768,7 +1712,7 @@ function isAlreadyDispatched(key) {
 function autoCleanPrdWorkItems(prdFile, config) {
   const allProjects = getProjects(config);
   const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
-  for (const proj of allProjects) wiPaths.push(path.join(proj.localPath, '.squad', 'work-items.json'));
+  for (const proj of allProjects) wiPaths.push(projectWorkItemsPath(proj));
   const deletedIds = [];
   for (const wiPath of wiPaths) {
     try {
@@ -2049,8 +1993,7 @@ function discoverFromPrs(config, project) {
   const src = project?.workSources?.pullRequests || config.workSources?.pullRequests;
   if (!src?.enabled) return [];
 
-  const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
-  const prs = safeJson(path.resolve(root, src.path)) || [];
+  const prs = safeJson(projectPrPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 30) * 60 * 1000;
   const newWork = [];
 
@@ -2134,7 +2077,7 @@ function discoverFromWorkItems(config, project) {
   if (!src?.enabled) return [];
 
   const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
-  const items = safeJson(path.resolve(root, src.path)) || [];
+  const items = safeJson(projectWorkItemsPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
   const skipped = { gated: 0, noAgent: 0 };
@@ -2159,7 +2102,7 @@ function discoverFromWorkItems(config, project) {
     if (item._resumedAt) {
       dispatchCooldowns.delete(key);
       delete item._resumedAt;
-      safeWrite(path.resolve(root, src.path), items);
+      safeWrite(projectWorkItemsPath(project), items);
     }
     if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) { skipped.gated++; continue; }
 
@@ -2238,7 +2181,7 @@ function discoverFromWorkItems(config, project) {
 
   // Write back updated statuses (always, since we mark items dispatched before newWork check)
   if (newWork.length > 0) {
-    const workItemsPath = path.resolve(root, src.path);
+    const workItemsPath = projectWorkItemsPath(project);
     safeWrite(workItemsPath, items);
   }
 
@@ -2293,7 +2236,7 @@ function materializeSpecsAsWorkItems(config, project) {
 
   const root = projectRoot(project);
   const filePatterns = src.filePatterns || ['docs/**/*.md'];
-  const trackerPath = path.resolve(root, src.statePath || '.squad/spec-tracker.json');
+  const trackerPath = path.join(projectStateDir(project), 'spec-tracker.json');
   const tracker = safeJson(trackerPath) || { processedPrs: {} };
 
   const prs = getPrs(project);
@@ -2858,7 +2801,16 @@ async function tickInner() {
   });
   safeWrite(DISPATCH_PATH, dispatch);
 
-  const toDispatch = dispatch.pending.slice(0, slotsAvailable);
+  // Only dispatch to agents that aren't already busy (one task per agent at a time).
+  // Build set of agents currently active.
+  const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  const toDispatch = [];
+  for (const item of dispatch.pending) {
+    if (toDispatch.length >= slotsAvailable) break;
+    if (busyAgents.has(item.agent)) continue; // agent already has an active task
+    toDispatch.push(item);
+    busyAgents.add(item.agent); // mark busy for this dispatch round too
+  }
 
   // Dispatch items — spawnAgent moves each from pending→active on disk.
   // We use the already-loaded item objects; spawnAgent handles the state transition.
@@ -2885,7 +2837,7 @@ module.exports = {
 
   // State readers/writers
   getConfig, getControl, getDispatch, getRouting, getNotes,
-  getAgentStatus, setAgentStatus, getAgentCharter, getInboxFiles, getPrs,
+  getAgentStatus, getAgentCharter, getInboxFiles, getPrs,
   validateConfig,
 
   // Dispatch management

@@ -107,22 +107,51 @@ function getInbox() {
 
 // ── Agents ──────────────────────────────────────────────────────────────────
 
+// Agent status is DERIVED from dispatch.json — single source of truth.
+// dispatch.active entry for this agent → working
+// dispatch.completed (most recent) → done/error
+// neither → idle
+// Metadata (resultSummary, verdict, pr) stored in status.json as secondary store.
 function getAgentStatus(agentId) {
-  return safeJson(path.join(AGENTS_DIR, agentId, 'status.json')) || {
-    status: 'idle', task: null, started_at: null, completed_at: null
-  };
+  const dispatch = getDispatch();
+
+  // Check active dispatch
+  const active = (dispatch.active || []).find(d => d.agent === agentId);
+  if (active) {
+    return {
+      status: 'working',
+      task: active.task || '',
+      dispatch_id: active.id,
+      type: active.type || '',
+      branch: active.meta?.branch || '',
+      started_at: active.created_at || null,
+    };
+  }
+
+  // Check most recent completed dispatch (within last 5 minutes → show done/error)
+  const completed = (dispatch.completed || [])
+    .filter(d => d.agent === agentId)
+    .sort((a, b) => (b.completed_at || '').localeCompare(a.completed_at || ''));
+  if (completed.length > 0) {
+    const latest = completed[0];
+    const ageMs = latest.completed_at ? Date.now() - new Date(latest.completed_at).getTime() : Infinity;
+    if (ageMs < 300000) { // 5 minutes
+      return {
+        status: latest.result === 'error' ? 'error' : 'done',
+        task: latest.task || '',
+        dispatch_id: latest.id,
+        type: latest.type || '',
+        completed_at: latest.completed_at,
+        resultSummary: latest.resultSummary || latest.reason || '',
+      };
+    }
+  }
+
+  return { status: 'idle', task: null, started_at: null, completed_at: null };
 }
 
-function setAgentStatus(agentId, status) {
-  if (status.task && typeof status.task === 'string') {
-    if (status.task.includes('"session_id"') || status.task.includes('"is_error"') || status.task.includes('"uuid"')) {
-      const cleanEnd = status.task.search(/[{"\[].*session_id|[{"\[].*is_error|[{"\[].*uuid/);
-      status.task = cleanEnd > 10 ? status.task.slice(0, cleanEnd).trim() : status.task.slice(0, 80);
-    }
-    if (status.task.length > 200) status.task = status.task.slice(0, 200);
-  }
-  safeWrite(path.join(AGENTS_DIR, agentId, 'status.json'), status);
-}
+// setAgentStatus removed — agent status is derived from dispatch.json.
+// Status.json files no longer exist.
 
 function getAgentCharter(agentId) {
   return safeRead(path.join(AGENTS_DIR, agentId, 'charter.md'));
@@ -131,42 +160,27 @@ function getAgentCharter(agentId) {
 function getAgents(config) {
   config = config || getConfig();
   const roster = Object.entries(config.agents || {}).map(([id, info]) => ({ id, ...info }));
-  const allInboxFiles = safeReadDir(INBOX_DIR); // read once, not per-agent
+  const allInboxFiles = safeReadDir(INBOX_DIR);
 
   return roster.map(a => {
     const inboxFiles = allInboxFiles.filter(f => f.includes(a.id));
+    const s = getAgentStatus(a.id); // derives from dispatch.json
 
-    let status = 'idle';
     let lastAction = 'Waiting for assignment';
-    let currentTask = '';
-    let resultSummary = '';
-
-    const statusFile = safeRead(path.join(AGENTS_DIR, a.id, 'status.json'));
-    if (statusFile) {
-      try {
-        const sj = JSON.parse(statusFile);
-        status = sj.status || 'idle';
-        currentTask = sj.task || '';
-        resultSummary = sj.resultSummary || '';
-        if (sj.status === 'working') lastAction = `Working: ${sj.task}`;
-        else if (sj.status === 'done') lastAction = `Done: ${sj.task}`;
-      } catch {}
-    }
-
-    if (status === 'idle' && inboxFiles.length > 0) {
+    if (s.status === 'working') lastAction = `Working: ${s.task}`;
+    else if (s.status === 'done') lastAction = `Done: ${s.task}`;
+    else if (s.status === 'error') lastAction = `Error: ${s.task}`;
+    else if (inboxFiles.length > 0) {
       const lastOutput = path.join(INBOX_DIR, inboxFiles[inboxFiles.length - 1]);
-      try {
-        const stat = fs.statSync(lastOutput);
-        lastAction = `Output: ${path.basename(lastOutput)} (${timeSince(stat.mtimeMs)})`;
-      } catch {}
+      try { lastAction = `Output: ${path.basename(lastOutput)} (${timeSince(fs.statSync(lastOutput).mtimeMs)})`; } catch {}
     }
 
     const chartered = fs.existsSync(path.join(AGENTS_DIR, a.id, 'charter.md'));
     if (lastAction.length > 120) lastAction = lastAction.slice(0, 120) + '...';
     return {
-      ...a, status, lastAction,
-      currentTask: (currentTask || '').slice(0, 200),
-      resultSummary: (resultSummary || '').slice(0, 500),
+      ...a, status: s.status, lastAction,
+      currentTask: (s.task || '').slice(0, 200),
+      resultSummary: (s.resultSummary || '').slice(0, 500),
       chartered, inboxCount: inboxFiles.length
     };
   });
@@ -178,9 +192,7 @@ function getAgentDetail(id) {
   const history = safeRead(path.join(agentDir, 'history.md')) || 'No history yet.';
   const outputLog = safeRead(path.join(agentDir, 'output.log')) || '';
 
-  const statusJson = safeRead(path.join(agentDir, 'status.json'));
-  let statusData = null;
-  if (statusJson) { try { statusData = JSON.parse(statusJson); } catch {} }
+  const statusData = getAgentStatus(id); // derives from dispatch.json
 
   const inboxContents = safeReadDir(INBOX_DIR)
     .filter(f => f.includes(id))
@@ -409,18 +421,6 @@ function getWorkItems(config) {
         // no further fallback — pr-links.json and wi._pr are the sources of truth
       }
     }
-    if (!item._pr && ['implement', 'fix', 'test', ''].includes(item.type || '')) {
-      const match = (dispatch.completed || []).find(d => d.meta?.item?.id === item.id && d.meta?.source?.includes('work-item'));
-      if (match?.agent) {
-        const s = safeJson(path.join(AGENTS_DIR, match.agent, 'status.json'));
-        if (s?.pr) {
-          item._pr = s.pr;
-          const prId = String(s.pr).replace('PR-', '');
-          const pr = allPrs.find(p => String(p.id).includes(prId));
-          if (pr) item._prUrl = pr.url;
-        }
-      }
-    }
   }
 
   const statusOrder = { pending: 0, queued: 0, dispatched: 1, done: 2 };
@@ -561,7 +561,7 @@ function getPrdInfo(config) {
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
       description: (i.description || '').slice(0, 200), projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
-      source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
+      project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null,
     })),
   };
@@ -593,7 +593,7 @@ module.exports = {
   getInboxFiles, getInbox,
 
   // Agents
-  getAgentStatus, setAgentStatus, getAgentCharter, getAgents, getAgentDetail,
+  getAgentStatus, getAgentCharter, getAgents, getAgentDetail,
 
   // Pull requests
   getPrs, getPullRequests,

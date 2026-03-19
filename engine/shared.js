@@ -218,16 +218,21 @@ function projectRoot(project) {
   return path.resolve(project.localPath);
 }
 
+// All project state files live centrally in .squad/projects/{name}/
+// No state files in project repos — avoids worktree/git interference.
+function projectStateDir(project) {
+  const name = project.name || path.basename(project.localPath);
+  const dir = path.join(SQUAD_DIR, 'projects', name);
+  if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 function projectWorkItemsPath(project) {
-  const wiSrc = project.workSources?.workItems;
-  if (wiSrc?.path) return path.resolve(projectRoot(project), wiSrc.path);
-  return path.join(projectRoot(project), '.squad', 'work-items.json');
+  return path.join(projectStateDir(project), 'work-items.json');
 }
 
 function projectPrPath(project) {
-  const root = path.resolve(project.localPath);
-  const prSrc = project.workSources?.pullRequests || {};
-  return path.resolve(root, prSrc.path || '.squad/pull-requests.json');
+  return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
 // ── ID Generation ────────────────────────────────────────────────────────────
@@ -318,6 +323,7 @@ module.exports = {
   DEFAULT_CLAUDE,
   getProjects,
   projectRoot,
+  projectStateDir,
   projectWorkItemsPath,
   projectPrPath,
   getPrLinks,

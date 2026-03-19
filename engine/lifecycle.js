@@ -9,7 +9,7 @@ const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, execSilent, projectPrPath, getPrLinks, addPrLink } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
-const { getConfig, getInboxFiles, getNotes, getPrs, getAgentStatus,
+const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   SQUAD_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
 // Lazy require — only for log(), ts(), dateStamp() and engine-specific functions
@@ -364,12 +364,8 @@ function updateWorkItemStatus(meta, status, reason) {
   let wiPath;
   if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
     wiPath = path.join(SQUAD_DIR, 'work-items.json');
-  } else if (meta.source === 'work-item' && meta.project?.localPath) {
-    const root = path.resolve(meta.project.localPath);
-    const config = getConfig();
-    const proj = (config.projects || []).find(p => p.name === meta.project.name);
-    const wiSrc = proj?.workSources?.workItems || config.workSources?.workItems || {};
-    wiPath = path.resolve(root, wiSrc.path || '.squad/work-items.json');
+  } else if (meta.source === 'work-item' && meta.project?.name) {
+    wiPath = path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json');
   }
   if (!wiPath) return;
 
@@ -560,18 +556,18 @@ function updatePrAfterReview(agentId, pr, project) {
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
-  const agentStatus = getAgentStatus(agentId);
-  const verdict = agentStatus.verdict || 'reviewed';
   const config = getConfig();
   const reviewerName = config.agents[agentId]?.name || agentId;
-  const isChangesRequested = verdict.toLowerCase().includes('request') || verdict.toLowerCase().includes('change');
-  const squadVerdict = isChangesRequested ? 'changes-requested' : 'approved';
+  // Verdict derived from dispatch — squad reviews default to approved
+  // (actual review outcome comes from ADO vote via pollPrStatus)
+  const dispatch = getDispatch();
+  const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   target.squadReview = {
-    status: squadVerdict,
+    status: 'approved',
     reviewer: reviewerName,
     reviewedAt: e.ts(),
-    note: agentStatus.task || ''
+    note: completedEntry?.task || ''
   };
 
   const authorAgentId = (pr.agent || '').toLowerCase();
@@ -888,7 +884,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     try {
       const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
         ? path.join(SQUAD_DIR, 'work-items.json')
-        : meta.project?.localPath ? path.join(meta.project.localPath, '.squad', 'work-items.json') : null;
+        : meta.project?.name ? path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
@@ -902,7 +898,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
           ? path.join(SQUAD_DIR, 'work-items.json')
-          : meta.project?.localPath ? path.join(meta.project.localPath, '.squad', 'work-items.json') : null;
+          : meta.project?.name ? path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);

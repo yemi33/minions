@@ -8,12 +8,11 @@ items.filter(i => i.status !== 'done').forEach(i => {
   console.log(i.id, i.status.padEnd(12), (i.type || '').padEnd(12), (i.title || '').slice(0, 60));
 });
 
-console.log('\n=== Agent Status ===');
+console.log('\n=== Agent Status (derived from dispatch) ===');
+const { getAgentStatus } = require('./queries');
 for (const a of ['ripley', 'dallas', 'lambert', 'rebecca', 'ralph']) {
-  try {
-    const s = JSON.parse(fs.readFileSync(path.join(dir, 'agents', a, 'status.json'), 'utf8'));
-    console.log(a.padEnd(10), s.status.padEnd(10), (s.task || '-').slice(0, 60));
-  } catch { console.log(a.padEnd(10), 'unknown'); }
+  const s = getAgentStatus(a);
+  console.log(a.padEnd(10), s.status.padEnd(10), (s.task || '-').slice(0, 60));
 }
 
 console.log('\n=== Inbox ===');

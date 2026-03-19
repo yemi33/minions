@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite } = shared;
 const queries = require('./queries');
-const { getConfig, getControl, getDispatch, getAgentStatus, setAgentStatus,
+const { getConfig, getControl, getDispatch, getAgentStatus,
   SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
 
 // Lazy require — only for engine-specific functions (log, ts, tick, addToDispatch, etc.)
@@ -125,9 +125,19 @@ const commands = {
 
         if (agentPid) {
           e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true });
-          // Sync work item status to dispatched — it may have been reset to pending during restart
-          if (item.meta?.item?.id) {
-            try { e.updateWorkItemStatus(item.meta, 'dispatched', ''); } catch {}
+          // Sync work item status to dispatched — direct file write to avoid lifecycle lazy init issues
+          if (item.meta?.item?.id && item.meta?.project?.localPath) {
+            try {
+              const wiPath = path.join(SQUAD_DIR, "projects", item.meta.project.name, "work-items.json");
+              const wiItems = safeJson(wiPath) || [];
+              const wi = wiItems.find(w => w.id === item.meta.item.id);
+              if (wi && wi.status !== 'dispatched') {
+                wi.status = 'dispatched';
+                wi.dispatched_to = wi.dispatched_to || agentId;
+                wi.dispatched_at = wi.dispatched_at || new Date().toISOString();
+                safeWrite(wiPath, wiItems);
+              }
+            } catch (err) { console.log(`    Warning: failed to sync work item status: ${err.message}`); }
           }
           reattached++;
           e.log('info', `Re-attached to ${agentId} (${item.id}) — PID ${agentPid > 0 ? agentPid : 'unknown (active output)'}`);
@@ -149,6 +159,81 @@ const commands = {
       }
     }
 
+    // Orphan completion detection: for dispatch entries that couldn't re-attach,
+    // check if the agent actually completed by scanning its output file.
+    // If it did, run the post-completion hooks now so work items get updated.
+    (function detectOrphanCompletions() {
+      const shared = require('./shared');
+      const lifecycle = require('./lifecycle');
+      let recovered = 0;
+
+      for (const item of activeOnStart) {
+        if (e.activeProcesses.has(item.id)) continue; // re-attached, skip
+
+        const agentId = item.agent;
+        const outputPath = path.join(SQUAD_DIR, 'agents', agentId, 'live-output.log');
+        try {
+          const stat = fs.statSync(outputPath);
+          const output = fs.readFileSync(outputPath, 'utf8');
+
+          // Check for completion markers in output
+          const hasResult = output.includes('"type":"result"') || output.includes('"type": "result"');
+          const hasError = output.includes('"is_error":true') || output.includes('"is_error": true');
+          if (!hasResult && !hasError) continue;
+
+          const isSuccess = hasResult && !hasError;
+          const result = isSuccess ? 'success' : 'error';
+
+          e.log('info', `Orphan recovery: ${agentId} (${item.id}) completed while engine was down — result: ${result}`);
+
+          // Extract PRs from output
+          let prsCreated = 0;
+          try {
+            prsCreated = lifecycle.syncPrsFromOutput(output, agentId, item.meta, config);
+          } catch {}
+
+          // Update work item status
+          if (item.meta?.item?.id) {
+            const status = isSuccess ? 'done' : 'failed';
+            try {
+              lifecycle.updateWorkItemStatus(item.meta, status, isSuccess ? '' : 'Completed while engine was down');
+            } catch {
+              // Direct file write fallback
+              try {
+                const projName = item.meta.project?.name;
+                if (projName) {
+                  const wiPath = path.join(SQUAD_DIR, 'projects', projName, 'work-items.json');
+                  const items = safeJson(wiPath) || [];
+                  const wi = items.find(w => w.id === item.meta.item.id);
+                  if (wi) {
+                    wi.status = status;
+                    if (isSuccess) { wi.completedAt = new Date().toISOString(); delete wi.failReason; }
+                    else { wi.failedAt = new Date().toISOString(); wi.failReason = 'Completed while engine was down'; }
+                    safeWrite(wiPath, items);
+                  }
+                }
+              } catch {}
+            }
+          }
+
+          // Move from active to completed in dispatch
+          try { e.completeDispatch(item.id, result, isSuccess ? 'Completed (orphan recovery)' : 'Failed (orphan recovery)'); } catch {}
+
+          // Check plan completion
+          if (isSuccess && item.meta?.item?.sourcePlan) {
+            try { lifecycle.checkPlanCompletion(item.meta, config); } catch {}
+          }
+
+          recovered++;
+          console.log(`    ✓ Recovered ${agentId}: ${(item.task || '').slice(0, 60)} → ${result}${prsCreated ? ' (' + prsCreated + ' PR)' : ''}`);
+        } catch {}
+      }
+      if (recovered > 0) {
+        e.log('info', `Orphan recovery: processed ${recovered} completion(s) from previous session`);
+        console.log(`  Recovered ${recovered} orphaned completion(s)`);
+      }
+    })();
+
     // Recovery sweep
     (function recoverBrokenState() {
       const shared = require('./shared');
@@ -158,7 +243,7 @@ const commands = {
       const activeIds = new Set((dispatch.active || []).map(d => d.meta?.item?.id).filter(Boolean));
       const allWiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
       for (const p of projects) {
-        allWiPaths.push(path.join(p.localPath, '.squad', 'work-items.json'));
+        allWiPaths.push(path.join(SQUAD_DIR, "projects", p.name, "work-items.json"));
       }
       for (const wiPath of allWiPaths) {
         try {
@@ -615,10 +700,13 @@ const commands = {
         const status = src.enabled ? 'ENABLED' : 'DISABLED';
         console.log(`  ${name}: ${status}`);
 
-        const filePath = src.path ? path.resolve(root, src.path) : null;
+        let filePath = null;
+        if (name === 'workItems') filePath = shared.projectWorkItemsPath(project);
+        else if (name === 'pullRequests') filePath = shared.projectPrPath(project);
+        else if (src.path) filePath = path.resolve(root, src.path);
         const exists = filePath && fs.existsSync(filePath);
         if (filePath) {
-          console.log(`    Path: ${src.path} ${exists ? '(found)' : '(NOT FOUND)'}`);
+          console.log(`    Path: ${filePath} ${exists ? '(found)' : '(NOT FOUND)'}`);
         }
         console.log(`    Cooldown: ${src.cooldownMinutes || 0}m`);
 
@@ -641,7 +729,7 @@ const commands = {
           console.log(`    Items: ${queued.length} queued`);
         }
         if (name === 'specs' || name === 'mergedDesignDocs') {
-          const trackerFile = path.resolve(root, src.statePath || '.squad/spec-tracker.json');
+          const trackerFile = path.join(shared.projectStateDir(project), 'spec-tracker.json');
           const tracker = safeJson(trackerFile) || { processedPrs: {} };
           const processed = Object.keys(tracker.processedPrs).length;
           const matched = Object.values(tracker.processedPrs).filter(p => p.matched).length;
@@ -697,13 +785,8 @@ const commands = {
     dispatch.active = [];
     safeWrite(DISPATCH_PATH, dispatch);
 
-    for (const [agentId] of Object.entries(config.agents || {})) {
-      const status = getAgentStatus(agentId);
-      if (status.status === 'working' || status.status === 'error') {
-        setAgentStatus(agentId, { status: 'idle', task: null, started_at: null, completed_at: e.ts() });
-        console.log(`Reset ${agentId} to idle`);
-      }
-    }
+    // Agent status derived from dispatch.json — clearing dispatch.active is sufficient.
+    console.log('All agents reset to idle (dispatch cleared)');
 
     console.log(`\nDone: ${killed.length} dispatches killed, agents reset.`);
   },
