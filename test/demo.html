@@ -44,90 +44,70 @@
   <div class="feature"><h3>Live Dashboard</h3><p>Real-time agent status, work items, PRD progress, metrics</p></div>
 </div>
 
-<!-- Scenario 5: Dashboard Overview -->
+<!-- Scenario 1: Dashboard Overview -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">1</div><h2>Dashboard Overview</h2></div>
-  <p>The main dashboard shows <span class="highlight">agent cards</span>, <span class="highlight">work items</span>, <span class="highlight">PRD progress</span>, and <span class="highlight">dispatch queue</span> in a single view. Auto-refreshes every 4 seconds.</p>
+  <p>The main dashboard shows <span class="highlight">5 agent cards</span>, <span class="highlight">work items</span>, <span class="highlight">PRD progress</span>, and <span class="highlight">dispatch queue</span> in a single view. Auto-refreshes every 4 seconds. Watch the scroll through all panels.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/01-dashboard-overview.png" alt="Dashboard overview">
-    <div class="screenshot-caption">Full dashboard with Command Center, Squad Members, Work Items table, and PRD progress summary</div>
-  </div>
-  <div class="screenshot">
-    <img src="demo-screenshots/02-dashboard-workitems-prd.png" alt="Work items and PRD">
-    <div class="screenshot-caption">Work Items sorted by status (pending &rarr; in-pr &rarr; done) with PRD dependency graph below</div>
+    <img src="demo-screenshots/01-dashboard-overview.gif" alt="Dashboard overview">
+    <div class="screenshot-caption">Scrolling through the full dashboard: Squad Members (Ripley, Dallas, Lambert, Rebecca, Ralph), Work Items, and PRD Progress</div>
   </div>
 </div>
 
-<!-- Scenario 1: Command Center -->
+<!-- Scenario 2: Command Center -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">2</div><h2>Command Center &mdash; Create a Plan</h2></div>
-  <p>Type a natural language request to create plans, dispatch work items, or ask questions. The Command Center routes to the appropriate action.</p>
+  <p>Type a natural language request to create plans, dispatch work items, or ask questions. The Command Center routes to the appropriate action automatically.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/04-cc-plan-request.png" alt="Command Center - plan request">
-    <div class="screenshot-caption"><span class="badge badge-blue">CC</span> "Create a plan to add user authentication with OAuth2 and role-based access control" &rarr; creates a plan work item</div>
-  </div>
-  <div class="screenshot">
-    <img src="demo-screenshots/05-cc-work-item.png" alt="Command Center - work item">
-    <div class="screenshot-caption"><span class="badge badge-blue">CC</span> One-off work items can be dispatched directly: "Fix the login page CSS on mobile devices"</div>
+    <img src="demo-screenshots/02-command-center.gif" alt="Command Center typing">
+    <div class="screenshot-caption"><span class="badge badge-blue">CC</span> Typing "Create a plan to add user authentication with OAuth2" then switching to a one-off work item request</div>
   </div>
 </div>
 
-<!-- Scenario 2: Work Items -->
+<!-- Scenario 3: Work Items -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">3</div><h2>Work Items</h2></div>
   <p>Work items flow through statuses: <span class="badge badge-yellow">PENDING</span> <span class="badge badge-blue">DISPATCHED</span> <span class="badge badge-blue">IN-PR</span> <span class="badge badge-green">DONE</span> <span class="badge badge-red">FAILED</span>. Failed items can be retried, and items can be archived or deleted.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/06-work-items-table.png" alt="Work items table">
-    <div class="screenshot-caption">Work items with mixed statuses &mdash; note the <span class="badge badge-red">Retry</span> button on failed items and agent assignment column</div>
+    <img src="demo-screenshots/03-work-items.gif" alt="Work items">
+    <div class="screenshot-caption">Work Items table with mixed statuses &mdash; hovering over the <span class="badge badge-red">Retry</span> button on a failed item</div>
   </div>
 </div>
 
-<!-- Scenario 4: Plans & PRD -->
+<!-- Scenario 4: Plans & Doc Chat -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">4</div><h2>Plan Lifecycle &amp; Doc Chat</h2></div>
-  <p>Plans go through: <strong>create</strong> &rarr; <strong>review</strong> (doc chat) &rarr; <strong>execute</strong> (PRD generation) &rarr; <strong>approve</strong> &rarr; <strong>dispatch</strong>. The doc chat modal lets you steer and revise plans interactively.</p>
+  <p>Plans go through: <strong>create</strong> &rarr; <strong>review</strong> (doc chat) &rarr; <strong>execute</strong> (PRD generation) &rarr; <strong>approve</strong> &rarr; <strong>dispatch</strong>. Click a plan to open the detail modal with doc chat for interactive steering.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/08-plans-section.png" alt="Plans section">
-    <div class="screenshot-caption">Plans tab showing the auth plan with <span class="badge badge-yellow">Awaiting Approval</span> status and action buttons</div>
-  </div>
-  <div class="screenshot">
-    <img src="demo-screenshots/09-plan-detail-modal.png" alt="Plan detail with doc chat">
-    <div class="screenshot-caption">Plan detail modal with rendered markdown, <span class="badge badge-green">Execute</span> button, and doc chat input at the bottom</div>
+    <img src="demo-screenshots/04-plan-docchat.gif" alt="Plan detail with doc chat">
+    <div class="screenshot-caption">Opening a plan, viewing rendered markdown with <span class="badge badge-green">Execute</span> button, then typing a question in the doc chat</div>
   </div>
 </div>
 
-<!-- PRD Progress -->
+<!-- Scenario 5: PRD Progress -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">5</div><h2>PRD Progress &amp; Dependencies</h2></div>
   <p>PRD items show progress with a dependency graph. Items block on their dependencies before dispatching. The progress bar tracks done + in-pr items.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/10-prd-progress.png" alt="PRD progress">
-    <div class="screenshot-caption">PRD "User Authentication &amp; Authorization" &mdash; 40% complete, 5 items with dependency tracking</div>
+    <img src="demo-screenshots/05-prd-progress.gif" alt="PRD progress">
+    <div class="screenshot-caption">PRD "User Authentication &amp; Authorization" &mdash; 40% complete, 5 items with dependency tracking and status indicators</div>
   </div>
 </div>
 
-<!-- Scenario 7: Inbox & Dispatch -->
+<!-- Scenario 6: Inbox & Metrics -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">6</div><h2>Inbox, Dispatch &amp; Metrics</h2></div>
-  <p>Agent findings flow to the inbox, get consolidated into team notes, and classified into the knowledge base. The dispatch queue shows real-time agent activity.</p>
+  <p>Agent findings flow to the inbox, get consolidated into team notes, and classified into the knowledge base. The dispatch queue shows real-time agent activity and quality metrics.</p>
   <div class="screenshot">
-    <img src="demo-screenshots/11-inbox-section.png" alt="Inbox section">
-    <div class="screenshot-caption">Inbox with agent findings &mdash; Dallas's implementation notes and Ripley's PR review findings</div>
-  </div>
-  <div class="screenshot">
-    <img src="demo-screenshots/12-dispatch-queue.png" alt="Dispatch queue">
-    <div class="screenshot-caption">Dispatch queue showing completed tasks with agent assignments and results</div>
-  </div>
-  <div class="screenshot">
-    <img src="demo-screenshots/13-agent-metrics.png" alt="Agent metrics">
-    <div class="screenshot-caption">Agent quality metrics, MCP server connections, and squad skills</div>
+    <img src="demo-screenshots/06-inbox-metrics.gif" alt="Inbox and metrics">
+    <div class="screenshot-caption">Scrolling through Inbox (agent findings), Dispatch Queue (completed tasks), and Agent Metrics with MCP servers</div>
   </div>
 </div>
 
 </div>
 
 <footer>
-  <p>Squad v0.1.60 &mdash; Built with zero external dependencies, powered by Claude</p>
+  <p>Squad v0.1.60 &mdash; Zero dependencies, powered by Claude</p>
 </footer>
 
 </body>

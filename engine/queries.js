@@ -159,7 +159,11 @@ function getAgentCharter(agentId) {
 
 function getAgents(config) {
   config = config || getConfig();
-  const roster = Object.entries(config.agents || {}).map(([id, info]) => ({ id, ...info }));
+  // Fall back to DEFAULT_AGENTS if config has no agents (uninitialized repo)
+  const agents = (config.agents && Object.keys(config.agents).length > 0)
+    ? config.agents
+    : shared.DEFAULT_AGENTS;
+  const roster = Object.entries(agents).map(([id, info]) => ({ id, ...info }));
   const allInboxFiles = safeReadDir(INBOX_DIR);
 
   return roster.map(a => {
