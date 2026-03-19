@@ -1248,7 +1248,10 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     for (const { dir, archived } of dirs) {
       const allFiles = safeReadDir(dir).filter(f => f.endsWith('.json') || f.endsWith('.md'));
       for (const f of allFiles) {
-        const content = safeRead(path.join(dir, f)) || '';
+        const filePath = path.join(dir, f);
+        const content = safeRead(filePath) || '';
+        let updatedAt = '';
+        try { updatedAt = new Date(fs.statSync(filePath).mtimeMs).toISOString(); } catch {}
         const isJson = f.endsWith('.json');
         if (isJson) {
           try {
@@ -1265,6 +1268,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
               generatedBy: plan.generated_by || '',
               generatedAt: plan.generated_at || '',
               completedAt: plan.completedAt || '',
+              updatedAt,
               requiresApproval: plan.requires_approval || false,
               revisionFeedback: plan.revision_feedback || null,
               sourcePlan: plan.source_plan || null,
@@ -1285,6 +1289,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             itemCount: (content.match(/^\d+\.\s+\*\*/gm) || []).length,
             generatedBy: authorMatch ? authorMatch[1].trim() : '',
             generatedAt: dateMatch ? dateMatch[1].trim() : '',
+            updatedAt,
             requiresApproval: false,
             revisionFeedback: null,
           });

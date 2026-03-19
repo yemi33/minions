@@ -470,7 +470,8 @@ function getPrdInfo(config) {
               ...f, _source: pf, _planStatus: plan.status || 'active',
               _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
               _archived: archived, _sourcePlan: plan.source_plan || '',
-              _planStale: planStale, _lastSyncedFromPlan: plan.lastSyncedFromPlan || null,
+              _planStale: planStale || plan.planStale || false, _lastSyncedFromPlan: plan.lastSyncedFromPlan || null,
+              _prdUpdatedAt: new Date(stat.mtimeMs).toISOString(),
             });
           }
         } catch {}
@@ -562,7 +563,7 @@ function getPrdInfo(config) {
       description: (i.description || '').slice(0, 200), projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
-      planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null,
+      planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null,
     })),
   };
 

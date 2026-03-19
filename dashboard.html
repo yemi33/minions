@@ -787,6 +787,20 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+function timeAgo(isoStr) {
+  if (!isoStr) return '';
+  const ms = Date.now() - new Date(isoStr).getTime();
+  if (ms < 0) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  const d = Math.floor(h / 24);
+  return d + 'd ago';
+}
+
 function statusColor(s) {
   return s === 'working' ? 'working' : s === 'done' ? 'done' : '';
 }
@@ -1042,7 +1056,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null };
     grouped[key].items.push(i);
   }
 
@@ -1131,6 +1145,7 @@ function renderPrdProgress(prog) {
       '<span style="color:var(--muted);font-weight:400;font-size:10px">' + g.items.length + ' items' +
         (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
       '</span>' +
+      (g.prdUpdatedAt ? '<span style="color:var(--muted);font-weight:400;font-size:10px" title="PRD last updated: ' + g.prdUpdatedAt + '">PRD updated ' + timeAgo(g.prdUpdatedAt) + '</span>' : '') +
       runtimeLabel +
       (g.archived
         ? '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto;display:flex;align-items:center;gap:6px">' +
@@ -3522,6 +3537,7 @@ function renderPlans(plans) {
             '<span style="font-weight:600;color:' + (isArchived || isCompleted ? 'var(--green)' : isPrdPaused ? 'var(--yellow)' : isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
             '<span>' + p.itemCount + ' items</span>' +
+            (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
             (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
             executeBtn + pauseBtn + resumeBtn + deleteBtn +
