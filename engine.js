@@ -1800,8 +1800,16 @@ function materializePlansAsWorkItems(config) {
           plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
           plan.lastSyncedFromPlan = new Date().toISOString();
 
-          // If PRD is awaiting approval, invalidate and queue regeneration from revised plan
+          // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
+
+          // Approved/executing PRDs: flag as stale but don't disrupt in-flight work
+          if (prdStatus === 'approved' || prdStatus === 'completed') {
+            plan.planStale = true;
+            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
+          }
+
+          // Awaiting-approval PRDs: invalidate and auto-regenerate
           if (prdStatus === 'awaiting-approval') {
             plan.status = 'revision-requested';
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
@@ -1850,6 +1858,10 @@ function materializePlansAsWorkItems(config) {
     const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
     if (planStatus === 'awaiting-approval' || planStatus === 'paused' || planStatus === 'rejected' || planStatus === 'revision-requested') {
       continue; // Skip — waiting for human approval, paused, or revision
+    }
+    // Stale PRDs: source plan was revised — don't materialize NEW items until user regenerates
+    if (plan.planStale) {
+      continue;
     }
 
     const defaultProjectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');

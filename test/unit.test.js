@@ -1051,6 +1051,50 @@ async function testPrdStaleInvalidation() {
     assert.strictEqual(noDuplicate, false, 'Should not detect duplicate for different plan');
   });
 
+  await test('Approved PRDs are flagged stale (not invalidated) on plan revision', () => {
+    // Verify the stale flag logic exists for approved PRDs
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('plan.planStale = true'),
+      'engine.js should set planStale flag on approved PRDs when plan is revised');
+    assert.ok(src.includes("prdStatus === 'approved'"),
+      'Stale flag should be gated on approved status');
+  });
+
+  await test('Stale PRDs do not materialize new work items', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('plan.planStale'),
+      'engine.js should check planStale flag');
+    // The planStale continue should be after the approval gate
+    const staleCheck = src.indexOf('if (plan.planStale)');
+    const approvalGate = src.lastIndexOf("planStatus === 'awaiting-approval'", staleCheck);
+    assert.ok(staleCheck > approvalGate,
+      'planStale check should come after approval gate');
+  });
+
+  await test('Dashboard has Regenerate PRD button for stale plans', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes('prdRegenerate('),
+      'dashboard.html should have prdRegenerate function call');
+    assert.ok(html.includes('Regenerate PRD?'),
+      'dashboard.html should show Regenerate PRD? label');
+  });
+
+  await test('Dashboard has /api/prd/regenerate endpoint', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('/api/prd/regenerate'),
+      'dashboard.js should have /api/prd/regenerate endpoint');
+    assert.ok(src.includes("plan.planStale = false"),
+      'Regeneration should clear planStale flag');
+    assert.ok(src.includes("plan.status = 'awaiting-approval'"),
+      'Regeneration should reset PRD to awaiting-approval');
+  });
+
+  await test('Regeneration endpoint deduplicates queued items', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('alreadyQueued'),
+      'Regeneration endpoint should check for duplicate queue entries');
+  });
+
   await test('Approved PRDs are not invalidated on plan revision', () => {
     // If PRD is already approved and executing, plan revision should clean items
     // but NOT invalidate the PRD status

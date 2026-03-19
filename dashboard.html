@@ -1114,7 +1114,7 @@ function renderPrdProgress(prog) {
     }
 
     const pausedLabel = isPaused ? '<span style="color:var(--yellow);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--yellow);border-radius:3px">PAUSED</span>' : '';
-    const staleLabel = (!isPaused && g.planStale) ? '<span style="color:var(--orange);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--orange);border-radius:3px" title="Source plan was updated — pending items have been re-queued">Plan updated</span>' : '';
+    const staleLabel = (!isPaused && g.planStale) ? '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--orange);cursor:pointer;font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--orange);border-radius:3px;background:rgba(210,153,34,0.1)" title="Source plan was revised — click to regenerate PRD from updated plan">&#x26A0;&#xFE0F; Regenerate PRD?</span>' : '';
     const pauseResumeBtn = isPaused
       ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
       : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\')" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
@@ -3732,6 +3732,23 @@ async function planDelete(file) {
       refresh();
     } else {
       const d = await res.json();
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdRegenerate(prdFile) {
+  if (!confirm('Regenerate PRD from the revised plan? This will reset the PRD to awaiting-approval and re-run plan-to-prd conversion.')) return;
+  try {
+    const res = await fetch('/api/prd/regenerate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: prdFile })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      showToast('cmd-toast', 'PRD regeneration queued', true);
+      refresh();
+    } else {
       alert('Failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Error: ' + e.message); }

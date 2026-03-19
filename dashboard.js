@@ -1480,6 +1480,51 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/prd/regenerate — regenerate PRD from revised source plan
+  if (req.method === 'POST' && req.url === '/api/prd/regenerate') {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file is required' });
+      if (body.file.includes('..')) return jsonReply(res, 400, { error: 'invalid file path' });
+
+      const prdPath = path.join(PRD_DIR, body.file);
+      const plan = safeJson(prdPath);
+      if (!plan) return jsonReply(res, 404, { error: 'PRD file not found' });
+      if (!plan.source_plan) return jsonReply(res, 400, { error: 'PRD has no source_plan — cannot regenerate' });
+
+      const sourcePlanPath = path.join(PLANS_DIR, plan.source_plan);
+      if (!fs.existsSync(sourcePlanPath)) return jsonReply(res, 400, { error: `Source plan not found: ${plan.source_plan}` });
+
+      // Reset PRD to awaiting-approval, clear stale flag
+      plan.status = 'awaiting-approval';
+      plan.planStale = false;
+      safeWrite(prdPath, plan);
+
+      // Queue plan-to-prd regeneration (reuse execute logic for .md plans)
+      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      let items = [];
+      const existing = safeRead(wiPath);
+      if (existing) { try { items = JSON.parse(existing); } catch {} }
+
+      // Dedup: check if already queued
+      const alreadyQueued = items.find(w =>
+        w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+      );
+      if (alreadyQueued) return jsonReply(res, 200, { id: alreadyQueued.id, alreadyQueued: true });
+
+      const id = 'W-' + shared.uid();
+      items.push({
+        id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
+        type: 'plan-to-prd', priority: 'high',
+        description: `Plan file: plans/${plan.source_plan}\nRegeneration requested by user after plan revision.`,
+        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
+        project: plan.project || '', planFile: plan.source_plan,
+      });
+      safeWrite(wiPath, items);
+      return jsonReply(res, 200, { id, file: plan.source_plan });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   // POST /api/plans/execute — queue plan-to-prd conversion for a .md plan
   if (req.method === 'POST' && req.url === '/api/plans/execute') {
     try {
