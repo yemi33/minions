@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.60 (2026-03-19)
+
+### Engine
+- engine/check-status.js
+
+### Other
+- squad.js
+- test/unit.test.js
+
 ## 0.1.59 (2026-03-19)
 
 ### Engine
