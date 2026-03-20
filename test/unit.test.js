@@ -1692,6 +1692,16 @@ async function testStateIntegrity() {
     assert.ok(src.includes('const stillActive = (dispatchNow.active || []).some(d => d.id === id);'),
       'close handler should verify dispatch is still active before completing');
   });
+
+  await test('Live log appends heartbeat during silent runs', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('[heartbeat] running — no output for'),
+      'engine should append heartbeat lines to live-output when agent is silent');
+    assert.ok(src.includes('heartbeatTimer = setInterval('),
+      'engine should create a heartbeat timer for live-output');
+    assert.ok(src.includes('if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }'),
+      'engine should clear heartbeat timer on close/error');
+  });
 }
 
 // ─── Edge Cases ──────────────────────────────────────────────────────────────

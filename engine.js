@@ -888,24 +888,38 @@ function spawnAgent(dispatchItem, config) {
   const MAX_OUTPUT = 1024 * 1024; // 1MB
   let stdout = '';
   let stderr = '';
+  let lastOutputAt = Date.now();
+  let heartbeatTimer = null;
 
   // Live output file — written as data arrives so dashboard can tail it
   const liveOutputPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
   safeWrite(liveOutputPath, `# Live output for ${agentId} — ${id}\n# Started: ${startedAt}\n# Task: ${dispatchItem.task}\n\n`);
 
+  // Keep live log active even when the agent produces no stdout/stderr for long stretches.
+  // This makes "silent but running" states visible in the dashboard tail view.
+  heartbeatTimer = setInterval(() => {
+    const silentMs = Date.now() - lastOutputAt;
+    if (silentMs < 30000) return;
+    const silentSec = Math.round(silentMs / 1000);
+    try { fs.appendFileSync(liveOutputPath, `[heartbeat] running — no output for ${silentSec}s\n`); } catch {}
+  }, 30000);
+
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
+    lastOutputAt = Date.now();
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch {}
   });
 
   proc.stderr.on('data', (data) => {
     const chunk = data.toString();
+    lastOutputAt = Date.now();
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch {}
   });
 
   proc.on('close', (code) => {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
     activeProcesses.delete(id);
 
@@ -943,6 +957,7 @@ function spawnAgent(dispatchItem, config) {
   });
 
   proc.on('error', (err) => {
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
     completeDispatch(id, 'error', `Spawn error: ${err.message}`);
