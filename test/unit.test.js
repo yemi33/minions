@@ -1684,6 +1684,14 @@ async function testStateIntegrity() {
     assert.ok(src.includes('dispatchCooldowns.delete(key);'),
       'Pending discovery should clear in-memory cooldown for pending item key');
   });
+
+  await test('Close handler skips duplicate completion after timeout finalization', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('close event ignored — dispatch already completed elsewhere'),
+      'close handler should skip duplicate completion if dispatch no longer active');
+    assert.ok(src.includes('const stillActive = (dispatchNow.active || []).some(d => d.id === id);'),
+      'close handler should verify dispatch is still active before completing');
+  });
 }
 
 // ─── Edge Cases ──────────────────────────────────────────────────────────────

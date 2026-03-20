@@ -909,6 +909,18 @@ function spawnAgent(dispatchItem, config) {
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
     activeProcesses.delete(id);
 
+    // If timeout checker already finalized this dispatch, don't overwrite work-item status again.
+    // This avoids races where close-handler marks an auto-retried item as failed.
+    const dispatchNow = getDispatch();
+    const stillActive = (dispatchNow.active || []).some(d => d.id === id);
+    if (!stillActive) {
+      log('info', `Agent ${agentId} (${id}) close event ignored — dispatch already completed elsewhere`);
+      try { fs.unlinkSync(sysPromptPath); } catch {}
+      try { fs.unlinkSync(promptPath); } catch {}
+      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
+      return;
+    }
+
     // Save output — per-dispatch archive + latest symlink
     const outputContent = `# Output for dispatch ${id}\n# Exit code: ${code}\n# Completed: ${ts()}\n\n## stdout\n${stdout}\n\n## stderr\n${stderr}`;
     const archivePath = path.join(AGENTS_DIR, agentId, `output-${id}.log`);
