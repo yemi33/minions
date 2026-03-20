@@ -340,6 +340,11 @@ async function testEngineDefaults() {
     assert.ok(shared.KB_CATEGORIES.includes('reviews'));
     assert.strictEqual(shared.KB_CATEGORIES.length, 5);
   });
+
+  await test('shared exports lock-backed JSON mutator for cross-process safety', () => {
+    assert.ok(typeof shared.mutateJsonFileLocked === 'function',
+      'shared should export mutateJsonFileLocked');
+  });
 }
 
 async function testProjectHelpers() {
@@ -1588,6 +1593,22 @@ async function testStateIntegrity() {
     const stuck = allItems.filter(i => i.status === 'dispatched' && !activeItemIds.has(i.id));
     assert.strictEqual(stuck.length, 0,
       `${stuck.length} work item(s) stuck in dispatched: ${stuck.map(i => i.id).join(', ')}`);
+  });
+
+  await test('Engine uses lock-backed dispatch mutations', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function mutateDispatch('),
+      'engine should define dispatch lock helper');
+    assert.ok(src.includes('mutateJsonFileLocked(DISPATCH_PATH'),
+      'engine dispatch writes should use lock-backed mutation');
+  });
+
+  await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('mutateJsonFileLocked'),
+      'dashboard should use lock-backed dispatch mutation helper');
+    assert.ok(src.includes("defaultValue: { pending: [], active: [], completed: [] }"),
+      'dashboard dispatch mutations should normalize queue structure');
   });
 }
 

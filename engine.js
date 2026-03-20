@@ -94,6 +94,7 @@ function dateStamp() { return new Date().toISOString().slice(0, 10); }
 const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
+const mutateJsonFileLocked = shared.mutateJsonFileLocked;
 
 function log(level, msg, meta = {}) {
   const entry = { timestamp: ts(), level, message: msg, ...meta };
@@ -104,6 +105,16 @@ function log(level, msg, meta = {}) {
   logData.push(entry);
   if (logData.length > 500) logData.splice(0, logData.length - 500);
   safeWrite(LOG_PATH, logData);
+}
+
+function mutateDispatch(mutator) {
+  const defaultDispatch = { pending: [], active: [], completed: [] };
+  return mutateJsonFileLocked(DISPATCH_PATH, (dispatch) => {
+    dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
+    dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
+    dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+    return mutator(dispatch) || dispatch;
+  }, { defaultValue: defaultDispatch });
 }
 
 // ─── State Readers (delegated to engine/queries.js) ─────────────────────────
@@ -959,21 +970,16 @@ function spawnAgent(dispatchItem, config) {
     }
   }, 5000);
 
-  // Move dispatch item to active (atomic read-check-write to avoid race conditions)
-  {
-    const dispatch = getDispatch();
+  // Move pending -> active under a lock to avoid cross-process lost updates (engine/dashboard)
+  mutateDispatch((dispatch) => {
     const idx = dispatch.pending.findIndex(d => d.id === id);
-    if (idx >= 0) {
-      const item = dispatch.pending.splice(idx, 1)[0];
-      item.started_at = startedAt;
-      dispatch.active = dispatch.active || [];
-      // Guard against duplicate active entries from concurrent ticks
-      if (!dispatch.active.some(d => d.id === id)) {
-        dispatch.active.push(item);
-      }
-      safeWrite(DISPATCH_PATH, dispatch);
+    if (idx < 0) return;
+    const item = dispatch.pending.splice(idx, 1)[0];
+    item.started_at = startedAt;
+    if (!dispatch.active.some(d => d.id === id)) {
+      dispatch.active.push(item);
     }
-  }
+  });
 
   return proc;
 }
@@ -981,46 +987,43 @@ function spawnAgent(dispatchItem, config) {
 // ─── Dispatch Management ────────────────────────────────────────────────────
 
 function addToDispatch(item) {
-  const dispatch = getDispatch();
   item.id = item.id || `${item.agent}-${item.type}-${shared.uid()}`;
   item.created_at = ts();
-  dispatch.pending.push(item);
-  safeWrite(DISPATCH_PATH, dispatch);
+  mutateDispatch((dispatch) => {
+    dispatch.pending.push(item);
+  });
   log('info', `Queued dispatch: ${item.id} (${item.type} → ${item.agent})`);
   return item.id;
 }
 
 function completeDispatch(id, result = 'success', reason = '', resultSummary = '', opts = {}) {
   const { processWorkItemFailure = true } = opts;
-  const dispatch = getDispatch();
+  let item = null;
 
-  // Check active list first
-  let idx = (dispatch.active || []).findIndex(d => d.id === id);
-  let item;
-  if (idx >= 0) {
-    item = dispatch.active.splice(idx, 1)[0];
-  } else {
-    // Also check pending list (e.g., worktree failure before spawn)
-    idx = dispatch.pending.findIndex(d => d.id === id);
+  mutateDispatch((dispatch) => {
+    // Check active list first
+    let idx = dispatch.active.findIndex(d => d.id === id);
     if (idx >= 0) {
-      item = dispatch.pending.splice(idx, 1)[0];
+      item = dispatch.active.splice(idx, 1)[0];
+    } else {
+      // Also check pending list (e.g., worktree failure before spawn)
+      idx = dispatch.pending.findIndex(d => d.id === id);
+      if (idx >= 0) item = dispatch.pending.splice(idx, 1)[0];
     }
-  }
 
-  if (item) {
+    if (!item) return;
     item.completed_at = ts();
     item.result = result;
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
-    // Strip prompt from completed items (saves ~10KB per item, reduces file lock contention)
     delete item.prompt;
-    dispatch.completed = dispatch.completed || [];
-    // Cap at 100 entries — use slice instead of shift() to avoid O(n) per removal
     if (dispatch.completed.length >= 100) {
       dispatch.completed = dispatch.completed.slice(-99);
     }
     dispatch.completed.push(item);
-    safeWrite(DISPATCH_PATH, dispatch);
+  });
+
+  if (item) {
     log('info', `Completed dispatch: ${id} (${result}${reason ? ': ' + reason : ''})`);
 
     // Update source work item status on failure + auto-retry with backoff
@@ -1648,7 +1651,18 @@ function runCleanup(config, verbose = false) {
         changed = true;
       }
     }
-    if (changed) safeWrite(DISPATCH_PATH, dispatch);
+    if (changed) {
+      mutateDispatch((dp) => {
+        for (const queue of ['pending', 'active']) {
+          if (!dp[queue]) continue;
+          dp[queue] = dp[queue].filter(d => {
+            const itemId = d.meta?.item?.id;
+            if (!itemId) return true;
+            return allWiIds.has(itemId);
+          });
+        }
+      });
+    }
   } catch {}
 
   if (cleaned.tempFiles + cleaned.liveOutputs + cleaned.worktrees + cleaned.zombies + (cleaned.files || 0) + cleaned.orphanedDispatches > 0) {
@@ -2868,15 +2882,13 @@ async function tickInner() {
 
                 // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
                 try {
-                  const dispatchPath = path.join(ENGINE_DIR, 'dispatch.json');
-                  const dp = safeJson(dispatchPath) || {};
-                  if (dp.completed) {
                     const key = `work-${project.name}-${item.id}`;
-                    const before = dp.completed.length;
-                    dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                    if (dp.completed.length !== before) safeWrite(dispatchPath, dp);
-                  }
-                } catch {}
+                    mutateDispatch((dp) => {
+                      const before = dp.completed.length;
+                      dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                      if (dp.completed.length !== before) return dp;
+                    });
+                  } catch {}
 
                 // Clear cooldown so item isn't blocked by exponential backoff
                 try {
@@ -2905,13 +2917,10 @@ async function tickInner() {
                     delete dep.dispatched_to;
                     // Clear dispatch entries for this dependent too
                     try {
-                      const dispatchPath = path.join(ENGINE_DIR, 'dispatch.json');
-                      const dp = safeJson(dispatchPath) || {};
-                      if (dp.completed) {
-                        const key = `work-${project.name}-${dep.id}`;
+                      const key = `work-${project.name}-${dep.id}`;
+                      mutateDispatch((dp) => {
                         dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                        safeWrite(dispatchPath, dp);
-                      }
+                      });
                     } catch {}
                   }
                 }
@@ -2952,7 +2961,10 @@ async function tickInner() {
     const pa = itemPriority[a.meta?.item?.priority] ?? 1, pb = itemPriority[b.meta?.item?.priority] ?? 1;
     return pa - pb;
   });
-  safeWrite(DISPATCH_PATH, dispatch);
+  mutateDispatch((dp) => {
+    dp.pending = dispatch.pending;
+    dp.active = dispatch.active || dp.active;
+  });
 
   // Only dispatch to agents that aren't already busy (one task per agent at a time).
   // Build set of agents currently active.

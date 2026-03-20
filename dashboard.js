@@ -14,7 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, getProjects: _getProjects } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -515,32 +515,32 @@ function jsonReply(res, code, data, req) {
 function cleanDispatchEntries(matchFn) {
   const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
   try {
-    const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
     let removed = 0;
-    for (const queue of ['pending', 'active', 'completed']) {
-      if (!dispatch[queue]) continue;
-      const before = dispatch[queue].length;
-
-      // Kill agents for matched active entries
-      if (queue === 'active') {
-        for (const d of dispatch[queue]) {
-          if (matchFn(d) && d.agent) {
-            const statusPath = path.join(SQUAD_DIR, 'agents', d.agent, 'status.json');
-            try {
-              const status = JSON.parse(safeRead(statusPath) || '{}');
-              if (status.pid) try { process.kill(status.pid, 'SIGTERM'); } catch {}
-              status.status = 'idle';
-              delete status.currentTask;
-              safeWrite(statusPath, status);
-            } catch {}
+    mutateJsonFileLocked(dispatchPath, (dispatch) => {
+      dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
+      dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
+      dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+      for (const queue of ['pending', 'active', 'completed']) {
+        const before = dispatch[queue].length;
+        if (queue === 'active') {
+          for (const d of dispatch[queue]) {
+            if (matchFn(d) && d.agent) {
+              const statusPath = path.join(SQUAD_DIR, 'agents', d.agent, 'status.json');
+              try {
+                const status = JSON.parse(safeRead(statusPath) || '{}');
+                if (status.pid) try { process.kill(status.pid, 'SIGTERM'); } catch {}
+                status.status = 'idle';
+                delete status.currentTask;
+                safeWrite(statusPath, status);
+              } catch {}
+            }
           }
         }
+        dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
+        removed += before - dispatch[queue].length;
       }
-
-      dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
-      removed += before - dispatch[queue].length;
-    }
-    if (removed > 0) safeWrite(dispatchPath, dispatch);
+      return dispatch;
+    }, { defaultValue: { pending: [], active: [], completed: [] } });
     return removed;
   } catch { return 0; }
 }
@@ -642,16 +642,12 @@ const server = http.createServer(async (req, res) => {
       const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
       const dispatchKey = sourcePrefix + id;
       try {
-        const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
-        if (dispatch.completed) {
-          const before = dispatch.completed.length;
+        mutateJsonFileLocked(dispatchPath, (dispatch) => {
+          dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
           dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
-          // Also clear fan-out entries
           dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
-          if (dispatch.completed.length !== before) {
-            safeWrite(dispatchPath, dispatch);
-          }
-        }
+          return dispatch;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
       } catch {}
 
       // Clear cooldown so item isn't blocked by exponential backoff
@@ -1018,8 +1014,11 @@ const server = http.createServer(async (req, res) => {
       // Remove cancelled from active dispatch
       if (cancelled.length > 0) {
         const cancelledIds = new Set(cancelled.map(c => c.agent));
-        dispatch.active = active.filter(d => !cancelledIds.has(d.agent));
-        safeWrite(dispatchPath, dispatch);
+        mutateJsonFileLocked(dispatchPath, (dp) => {
+          dp.active = Array.isArray(dp.active) ? dp.active : [];
+          dp.active = dp.active.filter(d => !cancelledIds.has(d.agent));
+          return dp;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
       return jsonReply(res, 200, { ok: true, cancelled });
@@ -1399,12 +1398,12 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Clear dispatch completed entries for resumed items so they aren't dedup-blocked
       if (resumedItemIds.length > 0) {
         const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
-        const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
-        if (dispatch.completed?.length) {
-          const resumedSet = new Set(resumedItemIds);
+        const resumedSet = new Set(resumedItemIds);
+        mutateJsonFileLocked(dispatchPath, (dispatch) => {
+          dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
           dispatch.completed = dispatch.completed.filter(d => !resumedSet.has(d.meta?.item?.id));
-          safeWrite(dispatchPath, dispatch);
-        }
+          return dispatch;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
       invalidateStatusCache();
@@ -1492,8 +1491,11 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Remove killed agents from dispatch active
       if (killedAgents.length > 0) {
         const killedSet = new Set(killedAgents);
-        dispatch.active = (dispatch.active || []).filter(d => !killedSet.has(d.agent));
-        safeWrite(dispatchPath, dispatch);
+        mutateJsonFileLocked(dispatchPath, (dp) => {
+          dp.active = Array.isArray(dp.active) ? dp.active : [];
+          dp.active = dp.active.filter(d => !killedSet.has(d.agent));
+          return dp;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
       invalidateStatusCache();

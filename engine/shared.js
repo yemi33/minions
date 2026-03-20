@@ -58,6 +58,57 @@ function safeUnlink(p) {
   try { fs.unlinkSync(p); } catch {}
 }
 
+function sleepMs(ms) {
+  try {
+    const ab = new SharedArrayBuffer(4);
+    Atomics.wait(new Int32Array(ab), 0, 0, ms);
+  } catch {
+    const start = Date.now();
+    while (Date.now() - start < ms) {}
+  }
+}
+
+function withFileLock(lockPath, fn, {
+  timeoutMs = 5000,
+  retryDelayMs = 25
+} = {}) {
+  const start = Date.now();
+  let fd = null;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const dir = path.dirname(lockPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fd = fs.openSync(lockPath, 'wx');
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      sleepMs(retryDelayMs);
+    }
+  }
+  if (fd === null) throw new Error(`Lock timeout: ${lockPath}`);
+
+  try {
+    return fn();
+  } finally {
+    try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(lockPath); } catch {}
+  }
+}
+
+function mutateJsonFileLocked(filePath, mutateFn, {
+  defaultValue = {}
+} = {}) {
+  const lockPath = `${filePath}.lock`;
+  return withFileLock(lockPath, () => {
+    let data = safeJson(filePath);
+    if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
+    const next = mutateFn(data);
+    const finalData = next === undefined ? data : next;
+    safeWrite(filePath, finalData);
+    return finalData;
+  });
+}
+
 /**
  * Generate a unique ID suffix: timestamp + 4 random chars.
  * Use for filenames that could collide (dispatch IDs, temp files, etc.)
@@ -315,6 +366,8 @@ module.exports = {
   safeJson,
   safeWrite,
   safeUnlink,
+  withFileLock,
+  mutateJsonFileLocked,
   uid,
   uniquePath,
   exec,
