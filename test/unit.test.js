@@ -1432,6 +1432,16 @@ async function testWorktreeManagement() {
       'Should centralize worktree add with retry behavior');
   });
 
+  await test('Worktree creation recovers partially created worktrees after add failure', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function recoverPartialWorktree('),
+      'Should include partial worktree recovery helper');
+    assert.ok(src.includes('Recovered partially-created worktree'),
+      'Should log successful partial worktree recovery');
+    assert.ok(src.includes('Proceeding with recovered worktree after add failure'),
+      'Should continue dispatch when recovered worktree is usable');
+  });
+
   await test('findExistingWorktree validates directory exists on disk', () => {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('fs.existsSync(wtPath)'),

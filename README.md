@@ -468,7 +468,7 @@ Engine behavior is controlled via `config.json`. Key settings:
     "heartbeatTimeout": 300000,
     "maxTurns": 100,
     "inboxConsolidateThreshold": 5,
-    "worktreeCreateTimeout": 180000,
+    "worktreeCreateTimeout": 300000,
     "worktreeCreateRetries": 1
   }
 }
@@ -482,7 +482,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `heartbeatTimeout` | 300000 (5min) | Kill agents silent longer than this |
 | `maxTurns` | 100 | Max Claude CLI turns per agent session |
 | `inboxConsolidateThreshold` | 5 | Inbox files needed before consolidation |
-| `worktreeCreateTimeout` | 180000 (3min) | Timeout for each `git worktree add` attempt |
+| `worktreeCreateTimeout` | 300000 (5min) | Timeout for each `git worktree add` attempt |
 | `worktreeCreateRetries` | 1 | Retry count for transient `git worktree add` failures (0-3) |
 | `worktreeRoot` | `../worktrees` | Where git worktrees are created |
 | `idleAlertMinutes` | 15 | Alert after no dispatch for this many minutes |

@@ -185,7 +185,7 @@ const ENGINE_DEFAULTS = {
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min
   maxTurns: 100,
-  worktreeCreateTimeout: 180000, // 3min for git worktree add on large Windows repos
+  worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
   worktreeRoot: '../worktrees',
   idleAlertMinutes: 15,

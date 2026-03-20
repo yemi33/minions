@@ -382,7 +382,7 @@ All discovery behavior is controlled via `config.json`:
     "agentTimeout": 18000000,     // 5 hours — kill hung processes
     "heartbeatTimeout": 300000,  // 5min — kill stale/silent agents
     "maxTurns": 100,             // max claude CLI turns per agent
-    "worktreeCreateTimeout": 180000, // timeout for git worktree add on large repos
+    "worktreeCreateTimeout": 300000, // timeout for git worktree add on large repos
     "worktreeCreateRetries": 1   // retry count for transient add failures
   },
   "projects": [

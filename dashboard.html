@@ -4683,7 +4683,7 @@ async function openSettings() {
       settingsField('Agent Timeout', 'set-agentTimeout', e.agentTimeout || 18000000, 'ms', 'Kill agent after this duration') +
       settingsField('Max Turns', 'set-maxTurns', e.maxTurns || 100, '', 'Claude CLI --max-turns per agent') +
       settingsField('Heartbeat Timeout', 'set-heartbeatTimeout', e.heartbeatTimeout || 300000, 'ms', 'No output = dead after this') +
-      settingsField('Worktree Create Timeout', 'set-worktreeCreateTimeout', e.worktreeCreateTimeout || 180000, 'ms', 'Timeout for git worktree add (increase for large repos/Windows)') +
+      settingsField('Worktree Create Timeout', 'set-worktreeCreateTimeout', e.worktreeCreateTimeout || 300000, 'ms', 'Timeout for git worktree add (increase for large repos/Windows)') +
       settingsField('Worktree Create Retries', 'set-worktreeCreateRetries', e.worktreeCreateRetries || 1, '', 'Retry count for transient worktree add failures (0-3)') +
     '</div>' +
 

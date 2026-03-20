@@ -2444,7 +2444,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (e.agentTimeout !== undefined) config.engine.agentTimeout = Math.max(60000, Number(e.agentTimeout) || D.agentTimeout);
         if (e.maxTurns !== undefined) config.engine.maxTurns = Math.max(5, Math.min(500, Number(e.maxTurns) || D.maxTurns));
         if (e.heartbeatTimeout !== undefined) config.engine.heartbeatTimeout = Math.max(60000, Number(e.heartbeatTimeout) || D.heartbeatTimeout);
-        if (e.worktreeCreateTimeout !== undefined) config.engine.worktreeCreateTimeout = Math.max(30000, Number(e.worktreeCreateTimeout) || D.worktreeCreateTimeout);
+        if (e.worktreeCreateTimeout !== undefined) config.engine.worktreeCreateTimeout = Math.max(60000, Number(e.worktreeCreateTimeout) || D.worktreeCreateTimeout);
         if (e.worktreeCreateRetries !== undefined) config.engine.worktreeCreateRetries = Math.max(0, Math.min(3, Number(e.worktreeCreateRetries) || D.worktreeCreateRetries));
       }
 

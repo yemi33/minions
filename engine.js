@@ -660,6 +660,21 @@ function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetr
   if (lastErr) throw lastErr;
 }
 
+function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts) {
+  if (!branchName) return false;
+  const existingWt = findExistingWorktree(rootDir, branchName);
+  if (existingWt && fs.existsSync(existingWt)) return true;
+  if (!fs.existsSync(worktreePath)) return false;
+  try {
+    exec(`git -C "${worktreePath}" rev-parse --is-inside-work-tree`, { ...gitOpts, timeout: 10000 });
+    exec(`git -C "${worktreePath}" rev-parse --abbrev-ref HEAD`, { ...gitOpts, timeout: 10000 });
+    log('warn', `Recovered partially-created worktree for ${branchName} at ${worktreePath}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function spawnAgent(dispatchItem, config) {
   const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
   const claudeConfig = config.claude || {};
@@ -674,7 +689,7 @@ function spawnAgent(dispatchItem, config) {
   let cwd = rootDir;
   let worktreePath = null;
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
-  const worktreeCreateTimeout = Math.max(30000, Number(engineConfig.worktreeCreateTimeout) || DEFAULTS.worktreeCreateTimeout);
+  const worktreeCreateTimeout = Math.max(60000, Number(engineConfig.worktreeCreateTimeout) || DEFAULTS.worktreeCreateTimeout);
   const worktreeCreateRetries = Math.max(0, Math.min(3, Number(engineConfig.worktreeCreateRetries) || DEFAULTS.worktreeCreateRetries));
   const _gitOpts = { stdio: 'pipe', timeout: 30000, windowsHide: true, env: shared.gitEnv() };
   const _worktreeGitOpts = { ..._gitOpts, timeout: worktreeCreateTimeout };
@@ -773,6 +788,10 @@ function spawnAgent(dispatchItem, config) {
           try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch {}
         }
       } catch (err) {
+        if (recoverPartialWorktree(rootDir, worktreePath, branchName, _gitOpts)) {
+          cwd = worktreePath;
+          log('warn', `Proceeding with recovered worktree after add failure for ${branchName}`);
+        } else {
         log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
         // Fall back to main directory for non-writing tasks
         if (type === 'review' || type === 'analyze' || type === 'plan-to-prd' || type === 'plan') {
@@ -780,6 +799,7 @@ function spawnAgent(dispatchItem, config) {
         } else {
           completeDispatch(id, 'error', 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
           return null;
+        }
         }
       }
     }
