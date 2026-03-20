@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.102 (2026-03-20)
+
+### Dashboard
+- dashboard.html
+
 ## 0.1.101 (2026-03-20)
 
 ### Dashboard
