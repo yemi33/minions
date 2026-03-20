@@ -2315,8 +2315,20 @@ function discoverFromWorkItems(config, project) {
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
   const skipped = { gated: 0, noAgent: 0 };
+  let needsWrite = false;
 
   for (const item of items) {
+    // Re-evaluate failed items: if deps have recovered, reset to pending
+    if (item.status === 'failed' && item.failReason === 'Dependency failed — cannot proceed') {
+      const depStatus = areDependenciesMet(item, config);
+      if (depStatus === true) {
+        item.status = 'pending';
+        delete item.failReason;
+        log('info', `Recovered ${item.id} from dependency failure — deps now met`);
+        needsWrite = true;
+      }
+    }
+
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
@@ -2428,6 +2440,8 @@ function discoverFromWorkItems(config, project) {
     const workItemsPath = projectWorkItemsPath(project);
     safeWrite(workItemsPath, items);
   }
+
+  if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
 
   const skipTotal = skipped.gated + skipped.noAgent;
   if (skipTotal > 0) {
