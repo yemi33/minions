@@ -457,6 +457,16 @@
   .engine-badge.running { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .engine-badge.paused { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid var(--yellow); }
   .engine-badge.stopped { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); }
+  .engine-alert {
+    display: none; margin: 8px 24px 0; padding: 8px 10px; border: 1px solid rgba(248,81,73,0.45);
+    background: rgba(248,81,73,0.1); border-radius: var(--radius-sm); font-size: 11px; color: var(--text);
+    align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .engine-alert .engine-alert-msg { color: var(--red); font-weight: 600; }
+  .engine-alert .engine-alert-action {
+    color: var(--blue); cursor: pointer; font-size: 10px; padding: 2px 8px;
+    border: 1px solid rgba(56,139,253,0.35); border-radius: 4px; background: rgba(56,139,253,0.08);
+  }
 
   /* Dispatch Queue */
   .dispatch-stats { display: flex; gap: var(--space-7); margin-bottom: 14px; }
@@ -595,6 +605,7 @@
     <button onclick="openSettings()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--muted);padding:4px;line-height:1" title="Settings">&#9881;</button>
   </div>
 </header>
+<div class="engine-alert" id="engine-alert"></div>
 
 <!-- Command Center Drawer -->
 <div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:300;flex-direction:column">
@@ -2103,10 +2114,11 @@ function openArchive(i) {
 function renderEngineStatus(engine) {
   const badge = document.getElementById('engine-badge');
   let state = engine?.state || 'stopped';
+  let staleMs = 0;
 
   // Detect stale engine — says running but heartbeat is old (>2 min)
   if (state === 'running' && engine?.heartbeat) {
-    const staleMs = Date.now() - engine.heartbeat;
+    staleMs = Date.now() - engine.heartbeat;
     if (staleMs > 120000) {
       state = 'stale';
     }
@@ -2120,6 +2132,30 @@ function renderEngineStatus(engine) {
   badge.title = state === 'stale'
     ? 'Engine claims running but heartbeat is stale (>2min). It may have crashed. Run: node engine.js start'
     : state === 'stopped' ? 'Engine is stopped. Run: node engine.js start' : '';
+  renderEngineAlert(state, staleMs);
+}
+
+function copyEngineRestartCommand() {
+  const cmd = 'squad start';
+  navigator.clipboard.writeText(cmd)
+    .then(() => showToast('cmd-toast', 'Copied: ' + cmd + ' (run from your Squad install terminal)', true))
+    .catch(() => showToast('cmd-toast', 'Run from Squad install folder: node .\\engine.js start', false));
+}
+
+function renderEngineAlert(state, staleMs) {
+  const el = document.getElementById('engine-alert');
+  if (!el) return;
+  if (state !== 'stale') {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const mins = Math.max(1, Math.round(staleMs / 60000));
+  el.innerHTML =
+    '<span class="engine-alert-msg">&#x26A0;&#xFE0F; Engine heartbeat is stale (' + mins + 'm old). Dispatch may be stuck.</span>' +
+    '<span class="engine-alert-action" onclick="copyEngineRestartCommand()">Copy restart command</span>' +
+    '<span class="engine-alert-action" onclick="refresh()">Refresh now</span>';
+  el.style.display = 'flex';
 }
 
 function renderDispatch(dispatch) {

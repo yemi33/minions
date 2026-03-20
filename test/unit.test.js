@@ -1109,6 +1109,16 @@ async function testPrdStaleInvalidation() {
       'dashboard should present explicit stale recovery action');
   });
 
+  await test('Dashboard engine stale badge has explicit recovery UX', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes('function renderEngineAlert('),
+      'dashboard should render engine stale recovery alert');
+    assert.ok(html.includes('Engine heartbeat is stale'),
+      'engine stale alert should explain what stale means');
+    assert.ok(html.includes('Copy restart command'),
+      'engine stale alert should offer a clear restart recovery action');
+  });
+
   await test('Dashboard shows immediate PRD retry feedback states', () => {
     const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('window._prdRequeueUi'),
