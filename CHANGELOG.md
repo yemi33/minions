@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.94 (2026-03-20)
+
+### Engine
+- engine.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Documentation
+- README.md
+- auto-discovery.md
+
+### Other
+- test/unit.test.js
+
 ## 0.1.93 (2026-03-20)
 
 ### Dashboard
