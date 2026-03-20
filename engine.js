@@ -2844,19 +2844,19 @@ function discoverWork(config) {
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
 
-  // Gate reviews: do not dispatch reviews until all implement items are complete
-  let gatedReviews = [];
-  if (allReviews.length > 0) {
-    const hasIncompleteImplements = allWorkItems.some(w =>
-      w.meta?.source === 'work-item' && ['queued', 'pending', 'dispatched'].includes(w.meta?.workItemStatus)
-    ) || projects.some(project => {
-      const items = safeJson(projectWorkItemsPath(project)) || [];
-      return items.some(i => ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement'));
-    });
-    if (hasIncompleteImplements) {
+  // Gate reviews and fixes: do not dispatch until all implement items are complete
+  const hasIncompleteImplements = projects.some(project => {
+    const items = safeJson(projectWorkItemsPath(project)) || [];
+    return items.some(i => ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement'));
+  });
+  if (hasIncompleteImplements) {
+    if (allReviews.length > 0) {
       log('info', `Gating ${allReviews.length} reviews — implement items still in progress`);
-      gatedReviews = allReviews;
       allReviews = [];
+    }
+    if (allFixes.length > 0) {
+      log('info', `Gating ${allFixes.length} fixes — implement items still in progress`);
+      allFixes = [];
     }
   }
 
