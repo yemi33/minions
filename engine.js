@@ -2305,6 +2305,16 @@ function discoverFromWorkItems(config, project) {
     }
 
     const key = `work-${project?.name || 'default'}-${item.id}`;
+    // Self-heal: if an item is pending, stale completed/cooldown markers must not gate redispatch.
+    // This protects against persisted state drift from old runtime versions.
+    try {
+      mutateDispatch((dp) => {
+        const before = Array.isArray(dp.completed) ? dp.completed.length : 0;
+        dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== key) : [];
+        return dp.completed.length !== before ? dp : undefined;
+      });
+      dispatchCooldowns.delete(key);
+    } catch {}
     // Cooldown bypass for resumed items — clear in-memory cooldown so they dispatch immediately
     if (item._resumedAt) {
       dispatchCooldowns.delete(key);

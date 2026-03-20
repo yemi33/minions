@@ -1664,6 +1664,16 @@ async function testStateIntegrity() {
     assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)"),
       'Auto-retry should clear completed dedupe entry for the same dispatch key');
   });
+
+  await test('Pending work-item discovery self-heals stale dispatch gates', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('Self-heal: if an item is pending'),
+      'Pending discovery should include stale gate self-heal guard');
+    assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== key)"),
+      'Pending discovery should clear completed dedupe marker for pending item key');
+    assert.ok(src.includes('dispatchCooldowns.delete(key);'),
+      'Pending discovery should clear in-memory cooldown for pending item key');
+  });
 }
 
 // ─── Edge Cases ──────────────────────────────────────────────────────────────
