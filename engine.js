@@ -1822,7 +1822,7 @@ function saveCooldowns() {
 function isOnCooldown(key, cooldownMs) {
   const entry = dispatchCooldowns.get(key);
   if (!entry) return false;
-  const backoff = Math.min(Math.pow(2, entry.failures || 0), 8);
+  const backoff = Math.min(Math.pow(2, entry.failures || 0), 2);
   return (Date.now() - entry.timestamp) < (cooldownMs * backoff);
 }
 
@@ -1837,7 +1837,7 @@ function setCooldownFailure(key) {
   const failures = (existing?.failures || 0) + 1;
   dispatchCooldowns.set(key, { timestamp: Date.now(), failures });
   if (failures >= 3) {
-    log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 8)}x`);
+    log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 2)}x`);
   }
   saveCooldowns();
 }
@@ -2843,6 +2843,22 @@ function discoverWork(config) {
 
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
+
+  // Gate reviews: do not dispatch reviews until all implement items are complete
+  let gatedReviews = [];
+  if (allReviews.length > 0) {
+    const hasIncompleteImplements = allWorkItems.some(w =>
+      w.meta?.source === 'work-item' && ['queued', 'pending', 'dispatched'].includes(w.meta?.workItemStatus)
+    ) || projects.some(project => {
+      const items = safeJson(projectWorkItemsPath(project)) || [];
+      return items.some(i => ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement'));
+    });
+    if (hasIncompleteImplements) {
+      log('info', `Gating ${allReviews.length} reviews — implement items still in progress`);
+      gatedReviews = allReviews;
+      allReviews = [];
+    }
+  }
 
   const allWork = [...allFixes, ...allReviews, ...allWorkItems, ...centralWork];
 
