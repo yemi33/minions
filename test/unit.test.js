@@ -487,6 +487,16 @@ async function testQueriesAgents() {
       'getAgentStatus should prefer started_at for active dispatches');
   });
 
+  await test('getAgentStatus falls back to work-item dispatched markers', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
+      'getAgentStatus should include multi-source fallback from work-items');
+    assert.ok(src.includes("w.status === 'dispatched' || w.status === 'in-progress'"),
+      'fallback should only treat dispatched/in-progress work items as working');
+    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
+      'fallback should map by dispatched_to marker');
+  });
+
   await test('getAgents returns array with agent metadata', () => {
     const agents = queries.getAgents();
     assert.ok(Array.isArray(agents));

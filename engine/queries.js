@@ -147,6 +147,29 @@ function getAgentStatus(agentId) {
     }
   }
 
+  // Fallback: derive active state from work-item markers.
+  // This protects UI status when dispatch.json briefly desyncs from work-item files.
+  try {
+    const config = getConfig();
+    const allItems = getWorkItems(config);
+    const latestInFlight = allItems
+      .filter(w =>
+        (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
+        (w.status === 'dispatched' || w.status === 'in-progress')
+      )
+      .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
+    if (latestInFlight) {
+      return {
+        status: 'working',
+        task: latestInFlight.title || latestInFlight.id || '',
+        dispatch_id: null,
+        type: latestInFlight.type || '',
+        branch: latestInFlight.branch || '',
+        started_at: latestInFlight.dispatched_at || latestInFlight.created || null,
+      };
+    }
+  } catch {}
+
   return { status: 'idle', task: null, started_at: null, completed_at: null };
 }
 
