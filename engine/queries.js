@@ -463,7 +463,7 @@ function getWorkItems(config) {
     pending: 0,
     queued: 0,
     dispatched: 1,
-    'in-pr': 2,
+    'in-pr': 3, // backward compat — treated as done
     done: 3,
     implemented: 3,
     failed: 4,
@@ -577,12 +577,11 @@ function getPrdInfo(config) {
 
   const byStatus = {};
   items.forEach(item => { const s = item.status || 'missing'; byStatus[s] = byStatus[s] || []; byStatus[s].push(item); });
-  const complete = (byStatus['done'] || []).length;
-  const inPr = (byStatus['in-pr'] || []).length;
+  const complete = (byStatus['done'] || []).length + (byStatus['in-pr'] || []).length; // in-pr counted as done for backward compat
   const inProgress = (byStatus['in-progress'] || []).length;
   const paused = (byStatus['paused'] || []).length;
   const missing = (byStatus['missing'] || []).length;
-  const donePercent = total > 0 ? Math.round(((complete + inPr) / total) * 100) : 0;
+  const donePercent = total > 0 ? Math.round((complete / total) * 100) : 0;
 
   // Plan timings
   const planTimings = {};
@@ -595,13 +594,13 @@ function getPrdInfo(config) {
         const t = planTimings[wi.sourcePlan];
         if (wi.dispatched_at) { const d = new Date(wi.dispatched_at).getTime(); if (!t.firstDispatched || d < t.firstDispatched) t.firstDispatched = d; }
         if (wi.completedAt) { const c = new Date(wi.completedAt).getTime(); if (!t.lastCompleted || c > t.lastCompleted) t.lastCompleted = c; }
-        if (wi.status !== 'done') t.allDone = false;
+        if (wi.status !== 'done' && wi.status !== 'in-pr') t.allDone = false; // in-pr treated as done for backward compat
       }
     } catch {}
   }
 
   const progress = {
-    total, complete, inPr, inProgress, paused, missing, donePercent, planTimings,
+    total, complete, inProgress, paused, missing, donePercent, planTimings,
     items: items.map(i => ({
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',

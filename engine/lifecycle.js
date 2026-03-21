@@ -49,16 +49,16 @@ function checkPlanCompletion(meta, config) {
     return;
   }
 
-  // Hard completion gate: every PRD feature must be represented by a work item that reached in-pr.
+  // Hard completion gate: every PRD feature must be represented by a work item that reached done.
   const planFeatureIds = new Set((plan.missing_features || []).map(f => f.id).filter(Boolean));
-  const inPrFeatureIds = new Set(planItems.filter(w => w.status === 'in-pr').map(w => w.id).filter(Boolean));
-  const missingInPr = [...planFeatureIds].filter(id => !inPrFeatureIds.has(id));
-  if (missingInPr.length > 0) {
-    e.log('info', `Plan ${planFile}: waiting for in-pr on ${missingInPr.length}/${planFeatureIds.size} item(s)`);
+  const doneFeatureIds = new Set(planItems.filter(w => w.status === 'done' || w.status === 'in-pr').map(w => w.id).filter(Boolean));
+  const missingDone = [...planFeatureIds].filter(id => !doneFeatureIds.has(id));
+  if (missingDone.length > 0) {
+    e.log('info', `Plan ${planFile}: waiting for done on ${missingDone.length}/${planFeatureIds.size} item(s)`);
     return;
   }
 
-  const doneItems = planItems.filter(w => w.status === 'in-pr');
+  const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
   const failedItems = [];
 
   // 1. Mark plan as completed
@@ -1052,15 +1052,15 @@ function syncPrdFromPrs(config) {
       const reconciled = reconcileItemsWithPrs(items, allPrs);
       if (reconciled > 0) {
         safeWrite(wiPath, items);
-        // Sync in-pr status to PRD JSON for each newly reconciled item
+        // Sync done status to PRD JSON for each newly reconciled item
         for (const wi of items) {
-          if (wi.status === 'in-pr') syncPrdItemStatus(wi.id, 'in-pr', wi.sourcePlan);
+          if (wi.status === 'done') syncPrdItemStatus(wi.id, 'done', wi.sourcePlan);
         }
         totalReconciled += reconciled;
       }
     }
     if (totalReconciled > 0) {
-      engine().log('info', `PR sync: reconciled ${totalReconciled} pending work item(s) to in-pr`);
+      engine().log('info', `PR sync: reconciled ${totalReconciled} pending work item(s) to done`);
     }
   } catch (err) {
     // Non-fatal — log and continue

@@ -76,7 +76,7 @@ const wiPath = path.join(SQUAD_DIR, 'work-items.json');
 const existingItems = safeJson(wiPath) || [];
 const demoItems = [
   { id: 'DEMO-001', title: 'Add OAuth2 authentication middleware', type: 'implement', priority: 'high', status: 'done', created: '2026-03-18T10:00:00Z', createdBy: 'dashboard', completedAt: '2026-03-18T14:30:00Z', dispatched_to: 'dallas', _demo: true },
-  { id: 'DEMO-002', title: 'Implement role-based access control', type: 'implement', priority: 'high', status: 'in-pr', created: '2026-03-18T11:00:00Z', createdBy: 'dashboard', dispatched_to: 'rebecca', _pr: 'PR-4521', _demo: true },
+  { id: 'DEMO-002', title: 'Implement role-based access control', type: 'implement', priority: 'high', status: 'done', created: '2026-03-18T11:00:00Z', createdBy: 'dashboard', dispatched_to: 'rebecca', _pr: 'PR-4521', _demo: true },
   { id: 'DEMO-003', title: 'Fix login page CSS on mobile', type: 'implement', priority: 'medium', status: 'pending', created: '2026-03-19T08:00:00Z', createdBy: 'dashboard', _demo: true },
   { id: 'DEMO-004', title: 'Add rate limiting to API endpoints', type: 'implement', priority: 'high', status: 'dispatched', dispatched_to: 'dallas', dispatched_at: '2026-03-19T09:30:00Z', created: '2026-03-19T09:00:00Z', createdBy: 'dashboard', _demo: true },
   { id: 'DEMO-005', title: 'Review PR for auth middleware', type: 'review', priority: 'medium', status: 'done', created: '2026-03-18T15:00:00Z', createdBy: 'engine', dispatched_to: 'ripley', completedAt: '2026-03-18T16:00:00Z', _demo: true },
@@ -128,7 +128,7 @@ safeWrite(path.join(prdDir, 'demo-auth-prd.json'), {
   branch_strategy: 'parallel',
   missing_features: [
     { id: 'DEMO-P001', name: 'OAuth2 Authentication Middleware', description: 'JWT-based auth with refresh tokens using passport.js', priority: 'high', estimated_complexity: 'large', status: 'done', acceptance_criteria: ['JWT tokens issued on login', 'Refresh token rotation', 'Token blacklisting on logout'], depends_on: [] },
-    { id: 'DEMO-P002', name: 'Role-Based Access Control', description: 'Admin/Editor/Viewer roles with granular permissions', priority: 'high', estimated_complexity: 'large', status: 'in-pr', acceptance_criteria: ['Role assignment API', 'Permission middleware', 'Role hierarchy support'], depends_on: ['DEMO-P001'] },
+    { id: 'DEMO-P002', name: 'Role-Based Access Control', description: 'Admin/Editor/Viewer roles with granular permissions', priority: 'high', estimated_complexity: 'large', status: 'done', acceptance_criteria: ['Role assignment API', 'Permission middleware', 'Role hierarchy support'], depends_on: ['DEMO-P001'] },
     { id: 'DEMO-P003', name: 'API Rate Limiting', description: 'Per-user rate limits with Redis backing', priority: 'medium', estimated_complexity: 'medium', status: 'missing', acceptance_criteria: ['Configurable rate limits', 'Redis-backed counters', '429 response with retry-after'], depends_on: ['DEMO-P001'] },
     { id: 'DEMO-P004', name: 'Session Management', description: 'Secure sessions with configurable expiry', priority: 'medium', estimated_complexity: 'small', status: 'missing', acceptance_criteria: ['Session creation/destruction', 'Configurable TTL', 'Redis session store'], depends_on: ['DEMO-P001'] },
     { id: 'DEMO-P005', name: 'Audit Logging', description: 'Track all auth events for compliance', priority: 'low', estimated_complexity: 'small', status: 'missing', acceptance_criteria: ['Login/logout events logged', 'Permission changes tracked', 'Searchable audit trail'], depends_on: ['DEMO-P001', 'DEMO-P002'] },

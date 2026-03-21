@@ -40,6 +40,9 @@ prd/*.json
 prd/archive/
 prd/guides/
 
+# Claude Code runtime state (not skills/settings)
+.claude/scheduled_tasks.lock
+
 # Legacy
 agents/ralph/next-action.json
 agents/ralph/loop.log

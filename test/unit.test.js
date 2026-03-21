@@ -530,7 +530,7 @@ async function testQueriesWorkItems() {
       pending: 0,
       queued: 0,
       dispatched: 1,
-      'in-pr': 2,
+      'in-pr': 3,
       done: 3,
       implemented: 3,
       failed: 4,
@@ -848,7 +848,7 @@ async function testReconciliation() {
     ];
     const count = reconcileItemsWithPrs(items, prs);
     assert.strictEqual(count, 1);
-    assert.strictEqual(items[0].status, 'in-pr');
+    assert.strictEqual(items[0].status, 'done');
     assert.strictEqual(items[0]._pr, 'PR-100');
     assert.strictEqual(items[1].status, 'pending'); // unchanged
     assert.strictEqual(items[2].status, 'done');     // unchanged
@@ -877,7 +877,7 @@ async function testReconciliation() {
     ];
     const count = reconcileItemsWithPrs(items, prs, { onlyIds: new Set(['P001']) });
     assert.strictEqual(count, 1); // only P001 eligible
-    assert.strictEqual(items[0].status, 'in-pr');
+    assert.strictEqual(items[0].status, 'done');
     assert.strictEqual(items[1].status, 'pending'); // not in onlyIds
   });
 
@@ -1185,8 +1185,8 @@ async function testPrdStaleInvalidation() {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('completedItems'),
       'Regeneration should collect completed items');
-    assert.ok(src.includes("completedStatuses.has(w.status)"),
-      'Should preserve done/in-pr work items');
+    assert.ok(src.includes("completedStatuses.has(f.status)") || src.includes("completedStatuses.has(w.status)"),
+      'Should preserve done work items');
     assert.ok(src.includes('Previously completed items'),
       'Should pass completed items context to agent');
   });
@@ -1251,14 +1251,14 @@ async function testPrdStaleInvalidation() {
     assert.ok(states.indexOf('prd-approved') > states.indexOf('prd-regenerated:awaiting-approval'));
   });
 
-  await test('Plan completion requires every PRD feature to reach in-pr', () => {
+  await test('Plan completion requires every PRD feature to reach done', () => {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Hard completion gate: every PRD feature'),
-      'Plan completion should enforce strict in-pr gate');
-    assert.ok(src.includes('missingInPr.length > 0'),
-      'Plan completion should block when any PRD feature is not in-pr');
-    assert.ok(src.includes("w.status === 'in-pr'"),
-      'Completion gate should be based on in-pr status');
+      'Plan completion should enforce strict done gate');
+    assert.ok(src.includes('missingDone.length > 0'),
+      'Plan completion should block when any PRD feature is not done');
+    assert.ok(src.includes("w.status === 'done' || w.status === 'in-pr'"),
+      'Completion gate should be based on done status (with in-pr backward compat)');
   });
 }
 

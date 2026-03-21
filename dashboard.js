@@ -1522,12 +1522,12 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (!fs.existsSync(sourcePlanPath)) return jsonReply(res, 400, { error: `Source plan not found: ${plan.source_plan}` });
 
       // Collect completed item IDs from the old PRD to carry over
-      const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
+      const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
       const completedItems = (plan.missing_features || [])
         .filter(f => completedStatuses.has(f.status))
         .map(f => ({ id: f.id, name: f.name, status: f.status }));
 
-      // Clean pending/failed work items from old PRD (keep done/in-pr)
+      // Clean pending/failed work items from old PRD (keep done items)
       const { getProjects, projectWorkItemsPath } = shared;
       const config = queries.getConfig();
       for (const p of getProjects(config)) {

@@ -155,7 +155,6 @@
   .prd-progress-bar { width: 100%; height: 20px; background: var(--bg); border-radius: var(--radius-xl); overflow: hidden; display: flex; margin-bottom: var(--space-6); border: 1px solid var(--border); }
   .prd-progress-bar .seg { height: 100%; transition: width 0.5s ease; }
   .prd-progress-bar .seg.complete { background: var(--green); }
-  .prd-progress-bar .seg.in-pr { background: #2ea043; }
   .prd-progress-bar .seg.in-progress { background: var(--yellow); }
   .prd-progress-bar .seg.paused { background: var(--muted); opacity: 0.5; }
   .prd-progress-bar .seg.missing { background: var(--border); }
@@ -164,14 +163,13 @@
   .prd-legend-item { display: flex; align-items: center; gap: 5px; font-size: var(--text-base); color: var(--muted); }
   .prd-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
   .prd-legend-dot.complete { background: var(--green); }
-  .prd-legend-dot.in-pr { background: #2ea043; }
   .prd-legend-dot.in-progress { background: var(--yellow); }
   .prd-legend-dot.missing { background: var(--border); }
   .prd-items-list { display: flex; flex-direction: column; gap: 3px; max-height: 400px; overflow-y: auto; padding: 0 8px; }
   .prd-item-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius-sm); font-size: var(--text-base); background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--border); }
   .prd-item-row.st-done { border-left-color: var(--green); }
   .prd-item-row.st-implemented { border-left-color: var(--green); } /* legacy alias */
-  .prd-item-row.st-in-pr { border-left-color: #2ea043; }
+  .prd-item-row.st-in-pr { border-left-color: var(--green); } /* backward compat: treated as done */
   .prd-item-row.st-in-progress { border-left-color: var(--yellow); animation: prdWipPulse 2s infinite; }
   @keyframes prdWipPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0); } 50% { box-shadow: 0 0 0 4px rgba(210,153,34,0.2); } }
   .prd-item-row.st-failed { border-left-color: var(--red); }
@@ -1058,7 +1056,7 @@ function renderPrdProgress(prog) {
   // Compute progress from active (non-archived) items only
   const activeItems = (prog.items || []).filter(i => !i._archived);
   if (activeItems.length > 0) {
-    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length;
+    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
     countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
   } else {
     countEl.textContent = '—';
@@ -1067,8 +1065,7 @@ function renderPrdProgress(prog) {
   function renderGroupStats(items) {
     const total = items.length;
     if (total === 0) return '';
-    const done = items.filter(i => i.status === 'done' || i.status === 'implemented').length;
-    const inPr = items.filter(i => i.status === 'in-pr').length;
+    const done = items.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
     const inProgress = items.filter(i => i.status === 'in-progress').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
@@ -1077,7 +1074,6 @@ function renderPrdProgress(prog) {
 
     const stats = '<div class="prd-stats" style="margin:0">' +
       '<div class="prd-stat"><div class="prd-stat-num green">' + done + '</div><div class="prd-stat-label">Done</div></div>' +
-      '<div class="prd-stat"><div class="prd-stat-num" style="color:#2ea043">' + inPr + '</div><div class="prd-stat-label">In PR</div></div>' +
       '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--yellow)">' + inProgress + '</div><div class="prd-stat-label">Active</div></div>' +
       (failed ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--red)">' + failed + '</div><div class="prd-stat-label">Failed</div></div>' : '') +
       (paused ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--muted)">' + paused + '</div><div class="prd-stat-label">Paused</div></div>' : '') +
@@ -1087,7 +1083,6 @@ function renderPrdProgress(prog) {
 
     const bar = '<div class="prd-progress-bar">' +
       '<div class="seg complete" style="width:' + pct(done) + '%"></div>' +
-      '<div class="seg in-pr" style="width:' + pct(inPr) + '%"></div>' +
       '<div class="seg in-progress" style="width:' + pct(inProgress) + '%"></div>' +
       '<div class="seg paused" style="width:' + pct(paused) + '%"></div>' +
       '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
@@ -1096,17 +1091,17 @@ function renderPrdProgress(prog) {
     return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + '<div style="margin-top:8px">' + bar + '</div></div>';
   }
 
-  // PRD item statuses: missing → in-progress → in-pr → done
+  // PRD item statuses: missing → in-progress → done
   const statusBadge = (s) => {
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
       'implemented': 'background:rgba(63,185,80,0.15);color:var(--green)', /* legacy alias */
-      'in-pr':  'background:rgba(46,160,67,0.15);color:#2ea043',
+      'in-pr':  'background:rgba(63,185,80,0.15);color:var(--green)', /* backward compat: displayed as done */
       'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
     };
-    const labels = { 'done': 'DONE', 'implemented': 'DONE', 'in-pr': 'IN PR', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
+    const labels = { 'done': 'DONE', 'implemented': 'DONE', 'in-pr': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -1284,8 +1279,7 @@ function renderPrdProgress(prog) {
     });
 
     const statusColor = (s) => {
-      if (s === 'done' || s === 'implemented') return 'var(--green)';
-      if (s === 'in-pr') return '#2ea043';
+      if (s === 'done' || s === 'implemented' || s === 'in-pr') return 'var(--green)'; // in-pr treated as done
       if (s === 'in-progress') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
@@ -1552,7 +1546,7 @@ async function prdItemEdit(source, itemId) {
 
   // Build completion summary section
   let completionHtml = '';
-  const isDone = item.status === 'done' || item.status === 'implemented' || item.status === 'complete' || item.status === 'in-pr';
+  const isDone = item.status === 'done' || item.status === 'implemented' || item.status === 'complete' || item.status === 'in-pr'; // in-pr treated as done for backward compat
   const isFailed = item.status === 'failed';
   const isActive = item.status === 'in-progress' || item.status === 'dispatched';
 
@@ -2085,7 +2079,7 @@ function openArchive(i) {
       html += '<div class="archive-feature">' +
         '<span class="feat-id">' + escHtml(f.id) + '</span> ' +
         '<span class="prd-item-priority ' + pClass + '">' + escHtml(f.priority || '') + '</span>' +
-        (f.status ? ' <span class="pr-badge ' + (f.status === 'complete' ? 'approved' : f.status === 'in-pr' ? 'active' : 'draft') + '" style="font-size:9px">' + escHtml(f.status) + '</span>' : '') +
+        (f.status ? ' <span class="pr-badge ' + (f.status === 'complete' || f.status === 'done' || f.status === 'in-pr' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status === 'in-pr' ? 'done' : f.status) + '</span>' : '') +
         '<div class="feat-name">' + escHtml(f.name) + '</div>' +
         '<div class="feat-desc">' + escHtml(f.description || '') + '</div>' +
         (f.rationale ? '<div class="feat-desc" style="margin-top:4px;color:var(--yellow)">Rationale: ' + escHtml(f.rationale) + '</div>' : '') +

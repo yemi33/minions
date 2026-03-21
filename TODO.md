@@ -43,7 +43,7 @@ Ordered by difficulty: quick wins first, larger efforts later.
 - [ ] **Proactive work discovery** — agents can propose work items by writing to `proposals/` inbox, engine reviews and promotes to work queue
 - [ ] **Scheduled tasks** — cron-style recurring work (e.g., "every Monday Lambert regenerates the PRD", "every day Ripley explores recent commits")
 - [ ] **Work item → PR → review chain view** — trace a work item through its full lifecycle in the dashboard UI
-- [ ] **Auto-trigger new PRD analysis** — when all PRD items are complete/in-pr, automatically dispatch Lambert to generate the next version
+- [ ] **Auto-trigger new PRD analysis** — when all PRD items are complete/done, automatically dispatch Lambert to generate the next version
 - [ ] **Artifact query for agents** — inject recent artifact summaries into agent prompts so they can reference past investigations
 
 ## Large Effort (1–2 days each)

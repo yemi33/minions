@@ -83,7 +83,7 @@ When using `parallel`:
 
 Rules for items:
 - IDs must be `P-<uuid>` format (e.g. `P-a3f9b2c1`) — globally unique, never sequential
-- **`status` MUST always be `"missing"` — no exceptions.** Do NOT set `in-pr`, `done`, `complete`, `implemented`, or any other value, even if you observe active PRs or completed work in the codebase. Status is exclusively engine-managed after the PRD is written. Pre-setting any other status causes items to be silently skipped by the engine and breaks dependency resolution for all downstream items.
+- **`status` MUST always be `"missing"` — no exceptions.** Do NOT set `done`, `complete`, `implemented`, or any other value, even if you observe active PRs or completed work in the codebase. Status is exclusively engine-managed after the PRD is written. Pre-setting any other status causes items to be silently skipped by the engine and breaks dependency resolution for all downstream items.
 - **`project` field is REQUIRED** — set it to the project name where the code changes go (e.g., `"OfficeAgent"`, `"office-bohemia"`). Cross-repo plans must route each item to the correct project. The engine materializes items into that project's work queue.
 - `depends_on` lists IDs of items that must be done first
 - Keep descriptions actionable — an implementing agent should know exactly what to build

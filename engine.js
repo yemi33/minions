@@ -1162,22 +1162,22 @@ function areDependenciesMet(item, config) {
     } catch {}
   }
   // PRD item statuses that count as "done" for dep resolution
-  const PRD_MET_STATUSES = new Set(['in-pr', 'implemented', 'done', 'complete']);
+  const PRD_MET_STATUSES = new Set(['done', 'in-pr', 'implemented', 'complete']);
 
   for (const depId of deps) {
     const depItem = allWorkItems.find(w => w.id === depId);
     if (!depItem) {
-      // Fallback: check PRD JSON — plan-to-prd agents may pre-set items to in-pr/done
+      // Fallback: check PRD JSON — plan-to-prd agents may pre-set items to done
       try {
         const plan = safeJson(path.join(PRD_DIR, sourcePlan));
         const prdItem = (plan?.missing_features || []).find(f => f.id === depId);
-        if (prdItem && PRD_MET_STATUSES.has(prdItem.status)) continue; // PRD says done/in-pr — treat as met
+        if (prdItem && PRD_MET_STATUSES.has(prdItem.status)) continue; // PRD says done — treat as met
       } catch {}
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
     if (depItem.status === 'failed' && (depItem._retryCount || 0) >= 3) return 'failed'; // Only cascade after retries exhausted
-    if (depItem.status !== 'done' && depItem.status !== 'in-pr') return false; // Pending, dispatched, or retrying — wait
+    if (depItem.status !== 'done' && depItem.status !== 'in-pr') return false; // Pending, dispatched, or retrying — wait (in-pr accepted for backward compat)
   }
   return true;
 }
@@ -1223,7 +1223,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 
     const exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
     if (exactPr) {
-      wi.status = 'in-pr';
+      wi.status = 'done';
       wi._pr = exactPr.id;
       reconciled++;
     }
@@ -1971,7 +1971,7 @@ function materializePlansAsWorkItems(config) {
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
-            const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
+            const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
             const completedItems = (plan.missing_features || [])
               .filter(f => completedStatuses.has(f.status))
               .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -2118,7 +2118,7 @@ function materializePlansAsWorkItems(config) {
         // Reconciliation: exact prdItems match only, scoped to newly created items
         const allPrsForReconcile = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
         const reconciled = reconcileItemsWithPrs(existingItems, allPrsForReconcile, { onlyIds: newlyCreatedIds });
-        if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as in-pr → ${projName}`);
+        if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as done → ${projName}`);
 
         // PRD removal sync: cancel pending work items whose PRD item was removed from the plan
         const currentPrdIds = new Set(plan.missing_features.map(f => f.id));
@@ -2935,7 +2935,7 @@ async function tickInner() {
   if (tickCount % 6 === 0) {
     try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
-    // Sync PR status back to PRD items (missing → in-pr when active PR exists)
+    // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
   }
 
