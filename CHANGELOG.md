@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.118 (2026-03-21)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+
 ## 0.1.117 (2026-03-21)
 
 ### Dashboard
