@@ -1294,6 +1294,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           const projectMatch = content.match(/\*\*Project:\*\*\s*(.+)/m);
           const authorMatch = content.match(/\*\*Author:\*\*\s*(.+)/m);
           const dateMatch = content.match(/\*\*Date:\*\*\s*(.+)/m);
+          const versionMatch = f.match(/-v(\d+)/);
           plans.push({
             file: f, format: 'draft', archived,
             project: projectMatch ? projectMatch[1].trim() : '',
@@ -1307,6 +1308,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             updatedAt,
             requiresApproval: false,
             revisionFeedback: null,
+            version: versionMatch ? parseInt(versionMatch[1]) : null,
           });
         }
       }
@@ -1346,11 +1348,12 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     if (!content) content = safeRead(path.join(PRD_DIR, 'archive', file));
     if (!content) content = safeRead(path.join(PLANS_DIR, 'archive', file));
     if (!content) return jsonReply(res, 404, { error: 'not found' });
-    // Find the actual file path for Last-Modified header
+    // Find the actual file path for Last-Modified header + expose resolved relative path
     const planCandidates = [resolvePlanPath(file), path.join(PRD_DIR, file), path.join(PRD_DIR, 'guides', file), path.join(PLANS_DIR, file), path.join(PRD_DIR, 'archive', file), path.join(PLANS_DIR, 'archive', file)];
-    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); break; } } catch {} }
+    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); res.setHeader('X-Resolved-Path', path.relative(SQUAD_DIR, p).replace(/\\/g, '/')); break; } } catch {} }
     const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
     res.setHeader('Content-Type', contentType + '; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content);
     return;
@@ -2045,63 +2048,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       if (canEdit && fullPath) {
-        // Plan .md files: fork only if there's an active PRD running for this plan's project
-        const isPlanMd = body.filePath && /^plans\/[^/]+\.md$/.test(body.filePath);
-        if (isPlanMd) {
-          // Check if any non-completed PRD is actively running for this plan's project
-          const planContent = content;
-          const projectMatch = planContent.match(/\*\*Project:\*\*\s*(.+)/m);
-          const planProject = projectMatch ? projectMatch[1].trim() : '';
-          const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
-          const hasActivePrd = prdFiles.some(f => {
-            try {
-              const prd = JSON.parse(safeRead(path.join(PRD_DIR, f)) || '{}');
-              return prd.project === planProject && prd.status !== 'completed';
-            } catch { return false; }
-          });
-
-          const currentFile = path.basename(body.filePath);
-          const isAlreadyForked = /-v\d+/.test(currentFile);
-
-          if (hasActivePrd && !isAlreadyForked) {
-            // Fork: but first check if an unexecuted fork already exists (reuse it)
-            const origName = path.basename(fullPath, '.md');
-            const base = origName.replace(/-v\d+(-\d{4}-\d{2}-\d{2})?$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
-            const existing = safeReadDir(PLANS_DIR).filter(f => f.startsWith(base) && f.endsWith('.md') && /-v\d+/.test(f));
-
-            // Find an existing fork that hasn't been executed (no matching PRD or work items)
-            let reuseFile = null;
-            for (const f of existing) {
-              // Check if this fork has a PRD or work items — if not, it's unexecuted
-              const hasPrd = prdFiles.some(pf => {
-                try {
-                  const prd = JSON.parse(safeRead(path.join(PRD_DIR, pf)) || '{}');
-                  return prd.source_plan === f;
-                } catch { return false; }
-              });
-              if (!hasPrd) { reuseFile = f; break; }
-            }
-
-            const newName = reuseFile || (() => {
-              let maxV = 1;
-              for (const f of existing) {
-                const m = f.match(/-v(\d+)/);
-                if (m) maxV = Math.max(maxV, parseInt(m[1]));
-              }
-              const today = new Date().toISOString().slice(0, 10);
-              return `${base}-v${maxV + 1}-${today}.md`;
-            })();
-            const newPath = path.join(PLANS_DIR, newName);
-            safeWrite(newPath, content);
-            return jsonReply(res, 200, {
-              ok: true, answer, edited: true, content, actions,
-              versionedFile: newName,
-              originalFile: currentFile,
-              isNewVersion: true,
-            });
-          }
-          // No active PRD — overwrite in place (draft iteration)
-        }
+        // Always save in-place — the engine's staleness detection handles PRD sync
+        // if the source plan changes while an active PRD is running.
         safeWrite(fullPath, content);
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
       }

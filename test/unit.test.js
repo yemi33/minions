@@ -623,6 +623,21 @@ async function testQueriesPrd() {
       assert.ok(Array.isArray(info.progress.items));
     }
   });
+
+  await test('getPrdInfo includes sourcePlan for archived PRD items', () => {
+    const info = queries.getPrdInfo();
+    if (info.progress && info.progress.items.length > 0) {
+      // Every item should expose sourcePlan (may be empty string if none)
+      for (const item of info.progress.items) {
+        assert.ok('sourcePlan' in item, `item ${item.id} missing sourcePlan field`);
+      }
+      // Archived items should have _archived flag
+      const archivedItems = info.progress.items.filter(i => i._archived);
+      for (const item of archivedItems) {
+        assert.ok(typeof item.sourcePlan === 'string', `archived item ${item.id} sourcePlan should be string`);
+      }
+    }
+  });
 }
 
 async function testQueriesHelpers() {
@@ -1247,6 +1262,104 @@ async function testPrdStaleInvalidation() {
   });
 }
 
+// ─── Archive Path Resolution & Version Tests ─────────────────────────────────
+
+async function testArchivePathResolution() {
+  console.log('\n── Archive Path Resolution & Versions ──');
+
+  await test('resolvePlanPath checks archive directories', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path.join(PLANS_DIR, 'archive', file)"),
+      'resolvePlanPath should check plans/archive/ for .md files');
+    assert.ok(src.includes("path.join(PRD_DIR, 'archive', file)"),
+      'resolvePlanPath should check prd/archive/ for .json files');
+  });
+
+  await test('GET /api/plans/:file returns X-Resolved-Path header', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("res.setHeader('X-Resolved-Path'"),
+      'plan API should return X-Resolved-Path header');
+    assert.ok(src.includes("path.relative(SQUAD_DIR, p)"),
+      'resolved path should be relative to SQUAD_DIR');
+  });
+
+  await test('planView uses resolved path for _modalFilePath', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes("resolvedPath = planRes.headers.get('X-Resolved-Path')"),
+      'planView should read X-Resolved-Path header');
+    assert.ok(html.includes('_modalFilePath = resolvedPath ||'),
+      'planView should prefer resolved path over hardcoded prefix');
+  });
+
+  await test('planOpenInDocChat uses resolved path for _modalFilePath', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    // planOpenInDocChat should also fetch the header
+    const fnStart = html.indexOf('async function planOpenInDocChat');
+    const fnEnd = html.indexOf('} catch (e) { alert(', fnStart);
+    const fnBody = html.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes("resolvedPath = planRes.headers.get('X-Resolved-Path')"),
+      'planOpenInDocChat should read X-Resolved-Path header');
+    assert.ok(fnBody.includes('_modalFilePath = resolvedPath ||'),
+      'planOpenInDocChat should prefer resolved path');
+  });
+
+  await test('doc-chat saves plan edits in-place without forking', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    // Doc-chat should always save in-place; forking is reserved for /api/plans/revise
+    const docChatSection = src.slice(src.indexOf("POST /api/doc-chat"), src.indexOf("POST /api/inbox/persist"));
+    assert.ok(!docChatSection.includes('isNewVersion'),
+      'doc-chat handler should not produce isNewVersion (no forking)');
+    assert.ok(!docChatSection.includes('versionedFile'),
+      'doc-chat handler should not produce versionedFile (no forking)');
+    assert.ok(docChatSection.includes('safeWrite(fullPath, content)'),
+      'doc-chat should save directly to the original file');
+  });
+
+  await test('doc-chat does not trigger version actions or forking UI', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    // The doc-chat response handler should not reference isNewVersion or versionedFile
+    // since the server no longer forks on doc-chat edits
+    const sendFn = html.slice(html.indexOf('async function qaDocSend') || html.indexOf("fetch('/api/doc-chat'"));
+    const docChatBlock = sendFn.slice(0, sendFn.indexOf('_qaProcessing = false'));
+    assert.ok(!docChatBlock.includes('isNewVersion'),
+      'doc-chat response handler should not reference isNewVersion');
+    assert.ok(!docChatBlock.includes('showPlanVersionActions'),
+      'doc-chat response handler should not call showPlanVersionActions');
+  });
+
+  await test('Plan listing API extracts version number from filenames', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("f.match(/-v(\\d+)/)"),
+      'plan listing should extract version from -vN pattern');
+    assert.ok(src.includes('version: versionMatch ? parseInt('),
+      'plan listing should include numeric version field');
+  });
+
+  await test('Plan version regex correctly parses versioned filenames', () => {
+    const re = /-v(\d+)/;
+    assert.strictEqual(re.exec('plan-v2-2026-03-15.md')[1], '2', 'Should extract v2');
+    assert.strictEqual(re.exec('java-kotlin-conversion-v10.md')[1], '10', 'Should extract v10');
+    assert.strictEqual(re.exec('plan.md'), null, 'Should not match non-versioned files');
+    assert.strictEqual(re.exec('my-review-plan.md'), null, 'Should not false-match review in filename');
+  });
+
+  await test('Dashboard plan card shows version badge', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes("p.version ? ' <span"),
+      'plan card should show version badge when version exists');
+    assert.ok(html.includes("versionBadge"),
+      'plan card should use versionBadge variable');
+  });
+
+  await test('Plan view modal shows version label', () => {
+    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    assert.ok(html.includes("vMatch = normalizedFile.match(/-v("),
+      'planView should extract version from filename');
+    assert.ok(html.includes("versionLabel"),
+      'planView should use versionLabel in modal title');
+  });
+}
+
 // ─── LLM Module Tests ──────────────────────────────────────────────────────
 
 async function testLlmModule() {
@@ -1813,6 +1926,9 @@ async function main() {
     // Plan lifecycle tests
     await testPlanLifecycle();
     await testPrdStaleInvalidation();
+
+    // Archive path resolution & version tests
+    await testArchivePathResolution();
 
     // llm.js tests
     await testLlmModule();

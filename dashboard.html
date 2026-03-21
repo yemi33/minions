@@ -1691,7 +1691,9 @@ async function planRegeneratePRD(source) {
 async function planOpenInDocChat(file) {
   try {
     const normalizedFile = normalizePlanFile(file);
-    const raw = await fetch('/api/plans/' + encodeURIComponent(normalizedFile)).then(r => r.text());
+    const planRes = await fetch('/api/plans/' + encodeURIComponent(normalizedFile));
+    const resolvedPath = planRes.headers.get('X-Resolved-Path');
+    const raw = await planRes.text();
     let title = normalizedFile;
     let text = raw;
     if (normalizedFile.endsWith('.json')) {
@@ -1702,7 +1704,7 @@ async function planOpenInDocChat(file) {
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
     _modalDocContext = { title: title, content: text, selection: '' };
-    _modalFilePath = (normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile; showModalQa();
+    _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
     document.getElementById('modal').classList.add('open');
@@ -3488,10 +3490,8 @@ async function _processQaMessage(message, selection) {
     if (loadingEl) loadingEl.remove();
 
     if (data.ok) {
-      const isVersion = data.isNewVersion;
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
-      const suffix = isVersion ? '\n\n✓ New version saved: ' + data.versionedFile
-        : data.edited ? '\n\n✓ Document saved.' : '';
+      const suffix = data.edited ? '\n\n✓ Document saved.' : '';
       thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + escHtml(data.answer + suffix) + '</div>';
 
       // Track conversation history
@@ -3508,19 +3508,6 @@ async function _processQaMessage(message, selection) {
         const display = data.content.replace(/^---[\s\S]*?---\n*/m, '');
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
-
-        // Plan edit: show action prompt
-        const effectiveFilePath = _modalFilePath || capturedFilePath;
-        if (isVersion) {
-          _modalFilePath = 'plans/' + data.versionedFile;
-          _modalOriginalPlan = data.originalFile; // track original for PRD lookups on subsequent edits
-          refreshPlans();
-          showPlanVersionActions(thread, data.versionedFile, data.originalFile);
-        } else if (effectiveFilePath && effectiveFilePath.match(/^plans\/.*\.md$/)) {
-          const planFile = effectiveFilePath.replace('plans/', '');
-          const origFile = _modalOriginalPlan || planFile;
-          showPlanVersionActions(thread, planFile, origFile);
-        }
       }
     } else {
       thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '</div>';
@@ -3717,9 +3704,10 @@ function renderPlans(plans) {
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
+    const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
     return '<div class="plan-card ' + statusClass(status) + (isWorking && !isPrdBlocked ? ' working' : '') + (isPrdBlocked ? ' awaiting' : '') + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
-        '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + '</div>' +
+        '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
           '<div class="plan-card-meta">' +
             '<span style="font-weight:600;color:' + (isArchived || isCompleted ? 'var(--green)' : isPrdAwaitingApproval ? 'var(--yellow)' : isPrdPaused ? 'var(--muted)' : isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
@@ -4011,6 +3999,7 @@ async function planView(file) {
     const normalizedFile = normalizePlanFile(file);
     const planRes = await fetch('/api/plans/' + encodeURIComponent(normalizedFile));
     const lastMod = planRes.headers.get('Last-Modified');
+    const resolvedPath = planRes.headers.get('X-Resolved-Path');
     const raw = await planRes.text();
     let title = normalizedFile;
     let text = '';
@@ -4038,6 +4027,10 @@ async function planView(file) {
       const titleMatch = raw.match(/^#\s+(?:Plan:\s*)?(.+)/m);
       if (titleMatch) title = titleMatch[1];
     }
+
+    // Version badge for the modal title
+    const vMatch = normalizedFile.match(/-v(\d+)/);
+    const versionLabel = vMatch ? ' (v' + vMatch[1] + ')' : '';
 
     // Determine plan type and status for action buttons
     const isMdPlan = normalizedFile.endsWith('.md');
@@ -4069,12 +4062,12 @@ async function planView(file) {
       ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
       'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
     '</div>';
-    document.getElementById('modal-title').innerHTML = escHtml(title) + lastModLabel + actionBtns;
+    document.getElementById('modal-title').innerHTML = escHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;
     document.getElementById('modal-body').textContent = text;
     document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
     document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
     _modalDocContext = { title, content: text, selection: '' };
-    _modalFilePath = (normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile; showModalQa();
+    _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
     // Clear notification badge when opening this document
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
@@ -4618,18 +4611,7 @@ async function ccExecuteAction(action) {
           }),
         });
         const data = await res.json();
-        if (data.ok && data.isNewVersion) {
-          status.innerHTML = '&#10003; New plan version: <strong>' + escHtml(data.versionedFile) + '</strong>';
-          status.style.color = 'var(--green)';
-          msgs.appendChild(status);
-          // Show the version action buttons inline in CC
-          const actionDiv = document.createElement('div');
-          showPlanVersionActions(actionDiv, data.versionedFile, data.originalFile);
-          const btnEl = actionDiv.querySelector('#qa-generate-prd-btn');
-          if (btnEl) msgs.appendChild(btnEl);
-          refreshPlans();
-          return; // skip default append below
-        } else if (data.ok && data.edited) {
+        if (data.ok && data.edited) {
           status.innerHTML = '&#10003; Plan edited: <strong>' + escHtml(action.file) + '</strong>';
           status.style.color = 'var(--green)';
         } else {

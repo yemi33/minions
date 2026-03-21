@@ -17,21 +17,27 @@ function engine() {
 // ─── ADO Token Cache ─────────────────────────────────────────────────────────
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
+let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
 
 function getAdoToken() {
   if (_adoTokenCache.token && Date.now() < _adoTokenCache.expiresAt) {
     return _adoTokenCache.token;
   }
+  // If recent fetch failed, don't retry until backoff expires (avoids repeated browser popups)
+  if (Date.now() < _adoTokenFailedUntil) return null;
   try {
-    const token = exec('azureauth ado token --mode broker --output token --timeout 10', {
-      timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
+    const token = exec('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
+      timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
     if (token && token.startsWith('eyJ')) {
       _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
+      _adoTokenFailedUntil = 0;
       return token;
     }
   } catch (e) {
     engine().log('warn', `Failed to get ADO token: ${e.message}`);
   }
+  // Back off for 10 minutes to avoid spamming browser auth popups
+  _adoTokenFailedUntil = Date.now() + 10 * 60 * 1000;
   return null;
 }
 
@@ -43,8 +49,9 @@ async function adoFetch(url, token, _retryCount = 0) {
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
+    // Invalidate cached token — it's likely expired
+    _adoTokenCache = { token: null, expiresAt: 0 };
     if (_retryCount < MAX_RETRIES) {
-      _adoTokenCache = { token: null, expiresAt: 0 };
       const freshToken = getAdoToken();
       if (freshToken) {
         engine().log('info', 'ADO token expired mid-session — refreshed and retrying');
