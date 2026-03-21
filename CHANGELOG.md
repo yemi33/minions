@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.112 (2026-03-21)
+
+### Engine
+- engine/ado.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.111 (2026-03-20)
 
 ### Engine
