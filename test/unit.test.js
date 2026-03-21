@@ -588,6 +588,34 @@ async function testQueriesSkills() {
     const index = queries.getSkillIndex();
     assert.ok(typeof index === 'string');
   });
+
+  await test('collectSkillFiles discovers plugin skills from installed_plugins.json', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('installed_plugins.json'),
+      'collectSkillFiles should read installed_plugins.json');
+    assert.ok(src.includes("scope: 'plugin'"),
+      'plugin skills should have scope plugin');
+    assert.ok(src.includes("path.join(install.installPath, 'commands')"),
+      'should scan commands/ dir inside plugin installPath');
+  });
+
+  await test('plugin skills appear in getSkills with correct source', () => {
+    const skills = queries.getSkills();
+    const pluginSkills = skills.filter(s => s.scope === 'plugin');
+    // If plugins are installed, they should have source: 'plugin'
+    for (const s of pluginSkills) {
+      assert.strictEqual(s.source, 'plugin', `plugin skill ${s.name} should have source plugin`);
+      assert.ok(s.name, `plugin skill missing name`);
+    }
+  });
+
+  await test('getSkills includes all scope types', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    // source mapping should handle all scopes
+    assert.ok(src.includes("scope === 'claude-code'"), 'should handle claude-code scope');
+    assert.ok(src.includes("scope === 'plugin'"), 'should handle plugin scope');
+    assert.ok(src.includes("scope === 'project'"), 'should handle project scope');
+  });
 }
 
 async function testQueriesKnowledgeBase() {

@@ -2404,13 +2404,13 @@ function renderSkills(skills) {
     return;
   }
 
-  const sourceIcon = (s) => s === 'claude-code' ? '⚡' : s?.startsWith('project:') ? '📁' : '🔧';
-  const sourceLabel = (s) => s?.startsWith('project:') ? s.replace('project:', '') : 'global';
+  const sourceIcon = (s) => s === 'claude-code' ? '⚡' : s === 'plugin' ? '🔌' : s?.startsWith('project:') ? '📁' : '🔧';
+  const sourceLabel = (s) => s === 'plugin' ? 'plugin' : s?.startsWith('project:') ? s.replace('project:', '') : 'global';
 
   // Group by source
   const groups = {};
   for (const r of skills) {
-    const key = r.source?.startsWith('project:') ? r.source.replace('project:', '') : 'global';
+    const key = r.source === 'plugin' ? 'plugins' : r.source?.startsWith('project:') ? r.source.replace('project:', '') : 'global';
     if (!groups[key]) groups[key] = [];
     groups[key].push(r);
   }
