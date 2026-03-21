@@ -464,6 +464,10 @@
   .engine-alert .engine-alert-action {
     color: var(--blue); cursor: pointer; font-size: 10px; padding: 2px 8px;
     border: 1px solid rgba(56,139,253,0.35); border-radius: 4px; background: rgba(56,139,253,0.08);
+    transition: opacity 0.2s;
+  }
+  .engine-alert .engine-alert-action.clicked {
+    opacity: 0.5; pointer-events: none; cursor: default;
   }
 
   /* Dispatch Queue */
@@ -2137,13 +2141,6 @@ function renderEngineStatus(engine) {
   renderEngineAlert(state, staleMs);
 }
 
-function copyEngineRestartCommand() {
-  const cmd = 'squad start';
-  navigator.clipboard.writeText(cmd)
-    .then(() => showToast('cmd-toast', 'Copied: ' + cmd + ' (run from your Squad install terminal)', true))
-    .catch(() => showToast('cmd-toast', 'Run from Squad install folder: node .\\engine.js start', false));
-}
-
 function renderEngineAlert(state, staleMs) {
   const el = document.getElementById('engine-alert');
   if (!el) return;
@@ -2155,8 +2152,25 @@ function renderEngineAlert(state, staleMs) {
   const mins = Math.max(1, Math.round(staleMs / 60000));
   el.innerHTML =
     '<span class="engine-alert-msg">&#x26A0;&#xFE0F; Engine heartbeat is stale (' + mins + 'm old). Dispatch may be stuck.</span>' +
-    '<span class="engine-alert-action" onclick="copyEngineRestartCommand()">Copy restart command</span>' +
-    '<span class="engine-alert-action" onclick="refresh()">Refresh now</span>';
+    '<span class="engine-alert-action" id="engine-alert-restart">Restart engine</span>';
+  document.getElementById('engine-alert-restart').onclick = async function() {
+    this.classList.add('clicked');
+    this.textContent = 'Restarting...';
+    try {
+      const res = await fetch('/api/engine/restart', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        this.textContent = 'Restarted (PID ' + data.pid + ')';
+        setTimeout(() => refresh(), 3000);
+      } else {
+        this.textContent = 'Failed: ' + (data.error || 'unknown');
+        this.classList.remove('clicked');
+      }
+    } catch (e) {
+      this.textContent = 'Failed: ' + e.message;
+      this.classList.remove('clicked');
+    }
+  };
   el.style.display = 'flex';
 }
 
@@ -3486,7 +3500,9 @@ async function _processQaMessage(message, selection) {
     if (data.ok) {
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
       const suffix = data.edited ? '\n\n✓ Document saved.' : '';
-      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + escHtml(data.answer + suffix) + '</div>';
+      const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
+      const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsed + 's</div>';
+      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + escHtml(data.answer + suffix) + qaTimeLabel + '</div>';
 
       // Track conversation history
       _qaHistory.push({ role: 'user', text: message });
@@ -3504,13 +3520,15 @@ async function _processQaMessage(message, selection) {
         _modalDocContext.content = display;
       }
     } else {
-      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '</div>';
+      const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
+      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedErr + 's</div></div>';
     }
   } catch (e) {
     clearInterval(qaTimer);
     const loadingEl = document.getElementById(loadingId);
     if (loadingEl) loadingEl.remove();
-    thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '</div>';
+    const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
+    thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
   }
 
   _qaProcessing = false;
@@ -4464,10 +4482,11 @@ async function _ccDoSend(message, skipUserMsg) {
     }
 
     // Render markdown-ish response
+    const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
     const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
       .replace(/\n/g, '<br>');
-    ccAddMessage('assistant', rendered);
+    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + ccElapsed + 's</div>');
 
     // Execute actions
     if (data.actions && data.actions.length > 0) {
