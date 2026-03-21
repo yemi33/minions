@@ -2096,7 +2096,17 @@ function materializePlansAsWorkItems(config) {
     if (!defaultProject) continue;
 
     const statusFilter = ['missing', 'planned'];
-    const items = plan.missing_features.filter(f => statusFilter.includes(f.status));
+    // Also materialize in-pr/done items that never got a work item (race with PR status sync)
+    const allExistingWiIds = new Set();
+    for (const p of allProjects) {
+      for (const w of (safeJson(projectWorkItemsPath(p)) || [])) {
+        if (w.id) allExistingWiIds.add(w.id);
+      }
+    }
+    const items = plan.missing_features.filter(f =>
+      statusFilter.includes(f.status) ||
+      ((f.status === 'in-pr' || f.status === 'done') && f.id && !allExistingWiIds.has(f.id))
+    );
 
     // Group items by target project (per-item project field overrides plan-level project)
     const itemsByProject = new Map(); // projectName -> { project, items: [] }
@@ -2994,6 +3004,16 @@ async function tickInner() {
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
+    // Check if any plans can be marked completed (all features done/in-pr)
+    try {
+      const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
+      for (const file of prdFiles) {
+        const plan = safeJson(path.join(PRD_DIR, file));
+        if (plan && plan.missing_features && plan.status !== 'completed') {
+          checkPlanCompletion({ item: { sourcePlan: file } }, config);
+        }
+      }
+    } catch (err) { log('warn', `Plan completion check error: ${err?.message || err}`); }
   }
 
   // 2.7. Poll PR threads for human comments (every 12 ticks = ~6 minutes)

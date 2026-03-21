@@ -42,16 +42,13 @@ function checkPlanCompletion(meta, config) {
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
-  // Don't mark complete if not all plan features have been materialized as work items
-  const totalPlanFeatures = (plan.missing_features || []).length;
-  if (planItems.length < totalPlanFeatures) {
-    e.log('info', `Plan ${planFile}: ${planItems.length}/${totalPlanFeatures} items materialized — not complete yet`);
-    return;
-  }
-
-  // Hard completion gate: every PRD feature must be represented by a work item that reached done.
+  // Hard completion gate: every PRD feature must be done/in-pr via work item OR PRD status.
   const planFeatureIds = new Set((plan.missing_features || []).map(f => f.id).filter(Boolean));
   const doneFeatureIds = new Set(planItems.filter(w => w.status === 'done' || w.status === 'in-pr').map(w => w.id).filter(Boolean));
+  // Also consider PRD features that reached done/in-pr without a work item (e.g., resolved externally)
+  for (const f of (plan.missing_features || [])) {
+    if (f.id && (f.status === 'done' || f.status === 'in-pr')) doneFeatureIds.add(f.id);
+  }
   const missingDone = [...planFeatureIds].filter(id => !doneFeatureIds.has(id));
   if (missingDone.length > 0) {
     e.log('info', `Plan ${planFile}: waiting for done on ${missingDone.length}/${planFeatureIds.size} item(s)`);
