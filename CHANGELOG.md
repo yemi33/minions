@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.113 (2026-03-21)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/queries.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Playbooks
+- plan-to-prd.md
+
+### Documentation
+- deprecated.json
+- index.html
+
+### Other
+- .claude/skills/cleanup-deprecated/SKILL.md
+- CLAUDE.md
+- TODO.md
+- test/demo.html
+- test/seed-demo-data.js
+- test/unit.test.js
+
 ## 0.1.112 (2026-03-21)
 
 ### Engine
