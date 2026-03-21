@@ -42,16 +42,32 @@ function checkPlanCompletion(meta, config) {
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
-  // Hard completion gate: every PRD feature must be done/in-pr via work item OR PRD status.
+  // Hard completion gate: every PRD feature ID must have a corresponding work item in done status.
   const planFeatureIds = new Set((plan.missing_features || []).map(f => f.id).filter(Boolean));
-  const doneFeatureIds = new Set(planItems.filter(w => w.status === 'done' || w.status === 'in-pr').map(w => w.id).filter(Boolean));
-  // Also consider PRD features that reached done/in-pr without a work item (e.g., resolved externally)
-  for (const f of (plan.missing_features || [])) {
-    if (f.id && (f.status === 'done' || f.status === 'in-pr')) doneFeatureIds.add(f.id);
+  const workItemById = {};
+  for (const w of planItems) { if (w.id) workItemById[w.id] = w; }
+
+  // Check 1: every feature must have a work item (materialized)
+  // Fallback: also accept features marked done directly in the PRD JSON (resolved externally)
+  const unmaterialized = [...planFeatureIds].filter(id => {
+    if (workItemById[id]) return false;
+    const prdItem = (plan.missing_features || []).find(f => f.id === id);
+    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+  });
+  if (unmaterialized.length > 0) {
+    e.log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
+    return;
   }
-  const missingDone = [...planFeatureIds].filter(id => !doneFeatureIds.has(id));
-  if (missingDone.length > 0) {
-    e.log('info', `Plan ${planFile}: waiting for done on ${missingDone.length}/${planFeatureIds.size} item(s)`);
+
+  // Check 2: every feature's work item must be done (or PRD item marked done externally)
+  const notDone = [...planFeatureIds].filter(id => {
+    const w = workItemById[id];
+    if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
+    const prdItem = (plan.missing_features || []).find(f => f.id === id);
+    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+  });
+  if (notDone.length > 0) {
+    e.log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
     return;
   }
 
@@ -271,27 +287,39 @@ function checkPlanCompletion(meta, config) {
     }
   } catch {}
 
-  // 6. Clean up shared-branch worktree if plan used shared-branch strategy
-  if (plan.branch_strategy === 'shared-branch' && plan.feature_branch) {
-    try {
-      const branchSlug = shared.sanitizeBranch(plan.feature_branch).toLowerCase();
-      for (const p of projects) {
-        const root = path.resolve(p.localPath);
-        const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
-        if (!fs.existsSync(wtRoot)) continue;
-        const dirs = fs.readdirSync(wtRoot);
-        for (const dir of dirs) {
-          if (dir.toLowerCase().includes(branchSlug)) {
-            const wtPath = path.join(wtRoot, dir);
-            try {
-              execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
-              e.log('info', `Plan completion: cleaned shared-branch worktree ${dir}`);
-            } catch (err) { e.log('warn', `Failed to remove shared-branch worktree ${dir}: ${err.message}`); }
-          }
+  // 6. Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
+  try {
+    // Collect all branch slugs: shared-branch + per-item branches + item IDs
+    const branchSlugs = new Set();
+    if (plan.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
+    for (const w of doneItems) {
+      if (w.branch) branchSlugs.add(shared.sanitizeBranch(w.branch).toLowerCase());
+      if (w.id) branchSlugs.add(w.id.toLowerCase());
+    }
+    for (const pr of uniquePrs) {
+      if (pr.branch) branchSlugs.add(shared.sanitizeBranch(pr.branch).toLowerCase());
+    }
+
+    let cleanedWt = 0;
+    for (const p of projects) {
+      const root = path.resolve(p.localPath);
+      const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+      if (!fs.existsSync(wtRoot)) continue;
+      const dirs = fs.readdirSync(wtRoot);
+      for (const dir of dirs) {
+        const dirLower = dir.toLowerCase();
+        const matches = [...branchSlugs].some(slug => dirLower.includes(slug));
+        if (matches) {
+          const wtPath = path.join(wtRoot, dir);
+          try {
+            execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
+            cleanedWt++;
+          } catch (err) { e.log('warn', `Failed to remove worktree ${dir}: ${err.message}`); }
         }
       }
-    } catch {}
-  }
+    }
+    if (cleanedWt > 0) e.log('info', `Plan completion: cleaned ${cleanedWt} worktree(s)`);
+  } catch {}
 
   e.log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }

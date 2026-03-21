@@ -1173,7 +1173,7 @@ async function testPrdStaleInvalidation() {
       'dashboard should render engine stale recovery alert');
     assert.ok(html.includes('Engine heartbeat is stale'),
       'engine stale alert should explain what stale means');
-    assert.ok(html.includes('Copy restart command'),
+    assert.ok(html.includes('Restart engine'),
       'engine stale alert should offer a clear restart recovery action');
   });
 
@@ -1279,14 +1279,22 @@ async function testPrdStaleInvalidation() {
     assert.ok(states.indexOf('prd-approved') > states.indexOf('prd-regenerated:awaiting-approval'));
   });
 
-  await test('Plan completion requires every PRD feature to reach done', () => {
+  await test('Plan completion requires every PRD feature ID to have a done work item', () => {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('Hard completion gate: every PRD feature'),
-      'Plan completion should enforce strict done gate');
-    assert.ok(src.includes('missingDone.length > 0'),
-      'Plan completion should block when any PRD feature is not done');
-    assert.ok(src.includes("w.status === 'done' || w.status === 'in-pr'"),
-      'Completion gate should be based on done status (with in-pr backward compat)');
+    assert.ok(src.includes('every PRD feature ID must have a corresponding work item'),
+      'Plan completion should enforce strict per-ID gate');
+    assert.ok(src.includes('unmaterialized.length > 0'),
+      'Plan completion should block when any feature lacks a work item');
+    assert.ok(src.includes('notDone.length > 0'),
+      'Plan completion should block when any feature work item is not done');
+  });
+
+  await test('Plan completion cleans all worktrees, not just shared-branch', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('Clean up ALL worktrees'),
+      'Worktree cleanup should handle all plan worktrees');
+    assert.ok(src.includes('w.branch') && src.includes('w.id') && src.includes('pr.branch'),
+      'Should collect branch slugs from work items, item IDs, and PR branches');
   });
 }
 
@@ -1592,12 +1600,12 @@ async function testWorktreeManagement() {
       'Post-merge cleanup should scan worktree directory');
   });
 
-  await test('Shared-branch worktrees cleaned on plan completion', () => {
+  await test('All plan worktrees cleaned on plan completion', () => {
     const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('shared-branch worktree'),
-      'Plan completion should clean shared-branch worktrees');
-    assert.ok(src.includes('plan.branch_strategy') && src.includes('plan.feature_branch'),
-      'Should check both branch_strategy and feature_branch');
+    assert.ok(src.includes('Clean up ALL worktrees'),
+      'Plan completion should clean all worktrees, not just shared-branch');
+    assert.ok(src.includes('branchSlugs'),
+      'Should collect branch slugs from items and PRs');
   });
 
   await test('Shared-branch plan protection checks both prd/ and plans/', () => {

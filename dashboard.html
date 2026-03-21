@@ -3699,13 +3699,13 @@ function renderPlans(plans) {
     const isAwaitingApproval = status === 'awaiting-approval';
     const isPaused = status === 'paused';
     const isApproved = status === 'approved' || status === 'active';
-    // For .md drafts: show Execute only if no PRD exists and not paused
-    const executeBtn = isDraft && !isWorking && !isPrdBlocked && !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
+    // For .md drafts: show Execute only if no PRD exists yet (not already executed)
+    const prdFile = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
+    const executeBtn = isDraft && !isWorking && !isPrdBlocked && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
     // Pause/Resume: target the PRD .json file if it exists, otherwise the plan itself
-    const prdFile = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
     const effectivelyPaused = isPrdBlocked || isAwaitingApproval || isPaused;
-    const showPause = !effectivelyPaused && prdFile && !isArchived;
+    const showPause = !effectivelyPaused && prdFile && !isArchived && !isCompleted;
     const showResume = effectivelyPaused && prdFile && !isArchived;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\')">Pause</button>' : '';
@@ -4059,11 +4059,14 @@ async function planView(file) {
         (isMdPlan && w.sourcePlan && w.sourcePlan.endsWith('.json')))
     );
     const prdCompleted = wi.some(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === normalizedFile);
-    const modalExecuteBtn = isMdPlan && !hasActiveWork && !prdCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
+    // Check if a PRD already exists for this plan (via plans list sourcePlan linkage)
+    const hasPrd = (window._lastStatus?.plans || []).some(p => p.sourcePlan === normalizedFile && p.format === 'prd');
+    const modalExecuteBtn = isMdPlan && !hasActiveWork && !prdCompleted && !hasPrd ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
       'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button>' : '';
     const modalCompletedLabel = prdCompleted && !hasActiveWork ? '<span style="font-size:10px;color:var(--green);font-weight:600">Completed</span>' : '';
     const modalInProgressLabel = hasActiveWork ? '<span style="font-size:10px;color:var(--blue)">In Progress</span>' : '';
-    const modalPauseBtn = isActive && !isMdPlan ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow)" ' +
+    const isModalCompleted = planStatus === 'completed';
+    const modalPauseBtn = isActive && !isMdPlan && !isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow)" ' +
       'onclick="planPause(\'' + escHtml(normalizedFile) + '\');closeModal()">Pause</button>' : '';
     const modalResumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
       'onclick="planApprove(\'' + escHtml(normalizedFile) + '\');closeModal()">Resume</button>' : '';
