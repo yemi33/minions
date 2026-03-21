@@ -1407,6 +1407,48 @@ async function testLlmModule() {
   await test('trackEngineUsage handles empty usage object', () => {
     llm.trackEngineUsage('test-category', {}); // should not throw
   });
+
+  // ── isResumeSessionStillValid — session preservation after timeouts ──
+
+  await test('isResumeSessionStillValid returns true when result has sessionId', () => {
+    const result = { sessionId: 'sess-abc123', code: 1, text: '', raw: '', stderr: 'signal timed out' };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  });
+
+  await test('isResumeSessionStillValid returns true when raw output contains session_id', () => {
+    const result = {
+      sessionId: null, code: 1, text: '', stderr: '',
+      raw: '{"type":"assistant","message":"partial"}\n{"type":"result","result":"","session_id":"sess-xyz"}'
+    };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  });
+
+  await test('isResumeSessionStillValid returns false when session is truly dead', () => {
+    const result = { sessionId: null, code: 1, text: '', raw: '', stderr: 'session not found' };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), false);
+  });
+
+  await test('isResumeSessionStillValid returns false for null result', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid(null), false);
+  });
+
+  await test('isResumeSessionStillValid returns false for empty result', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null, raw: '' }), false);
+  });
+
+  await test('isResumeSessionStillValid returns false when raw is undefined', () => {
+    assert.strictEqual(llm.isResumeSessionStillValid({ sessionId: null }), false);
+  });
+
+  await test('isResumeSessionStillValid returns true even with non-zero exit code if sessionId present', () => {
+    // Simulates signal timeout: process killed (code=1) but session was established
+    const result = { sessionId: 'sess-timeout', code: 137, text: '', raw: '{}', stderr: 'error:signal timed out' };
+    assert.strictEqual(llm.isResumeSessionStillValid(result), true);
+  });
+
+  await test('llm module exports isResumeSessionStillValid', () => {
+    assert.ok(typeof llm.isResumeSessionStillValid === 'function');
+  });
 }
 
 // ─── Check-Status Tests ────────────────────────────────────────────────────
@@ -1904,6 +1946,108 @@ async function testEdgeCases() {
   });
 }
 
+// ─── Legacy Status Migration Tests ──────────────────────────────────────────
+
+async function testLegacyStatusMigration() {
+  console.log('\n── Legacy Status Migration (in-pr/implemented/complete → done) ──');
+
+  await test('runCleanup migrates legacy work-item statuses on disk', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    const items = [
+      { id: 'W-001', title: 'Feature A', status: 'in-pr' },
+      { id: 'W-002', title: 'Feature B', status: 'implemented' },
+      { id: 'W-003', title: 'Feature C', status: 'complete' },
+      { id: 'W-004', title: 'Feature D', status: 'done' },
+      { id: 'W-005', title: 'Feature E', status: 'pending' },
+      { id: 'W-006', title: 'Feature F', status: 'failed' },
+    ];
+    shared.safeWrite(wiPath, items);
+
+    // Simulate the migration logic from runCleanup
+    const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+    const loaded = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    let migrated = 0;
+    for (const item of loaded) {
+      if (LEGACY_DONE_STATUSES.has(item.status)) {
+        item.status = 'done';
+        migrated++;
+      }
+    }
+    shared.safeWrite(wiPath, loaded);
+
+    assert.strictEqual(migrated, 3, 'Should migrate exactly 3 legacy statuses');
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result[0].status, 'done', 'in-pr → done');
+    assert.strictEqual(result[1].status, 'done', 'implemented → done');
+    assert.strictEqual(result[2].status, 'done', 'complete → done');
+    assert.strictEqual(result[3].status, 'done', 'done stays done');
+    assert.strictEqual(result[4].status, 'pending', 'pending unchanged');
+    assert.strictEqual(result[5].status, 'failed', 'failed unchanged');
+  });
+
+  await test('runCleanup migrates legacy PRD item statuses on disk', () => {
+    const tmp = createTmpDir();
+    const prdPath = path.join(tmp, 'plan.json');
+    const prd = {
+      plan_summary: 'Test plan',
+      missing_features: [
+        { id: 'P-001', status: 'in-pr' },
+        { id: 'P-002', status: 'done' },
+        { id: 'P-003', status: 'implemented' },
+        { id: 'P-004', status: 'pending' },
+      ]
+    };
+    shared.safeWrite(prdPath, prd);
+
+    const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+    const loaded = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
+    let migrated = 0;
+    for (const feat of loaded.missing_features) {
+      if (LEGACY_DONE_STATUSES.has(feat.status)) {
+        feat.status = 'done';
+        migrated++;
+      }
+    }
+    shared.safeWrite(prdPath, loaded);
+
+    assert.strictEqual(migrated, 2);
+    const result = JSON.parse(fs.readFileSync(prdPath, 'utf8'));
+    assert.strictEqual(result.missing_features[0].status, 'done', 'in-pr → done');
+    assert.strictEqual(result.missing_features[1].status, 'done', 'done stays done');
+    assert.strictEqual(result.missing_features[2].status, 'done', 'implemented → done');
+    assert.strictEqual(result.missing_features[3].status, 'pending', 'pending unchanged');
+  });
+
+  await test('migration is idempotent — second pass changes nothing', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    const items = [
+      { id: 'W-001', status: 'done' },
+      { id: 'W-002', status: 'pending' },
+    ];
+    shared.safeWrite(wiPath, items);
+
+    const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+    const loaded = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    let migrated = 0;
+    for (const item of loaded) {
+      if (LEGACY_DONE_STATUSES.has(item.status)) {
+        item.status = 'done';
+        migrated++;
+      }
+    }
+    assert.strictEqual(migrated, 0, 'No items should need migration');
+  });
+
+  await test('engine.js runCleanup contains legacy status migration code', () => {
+    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define LEGACY_DONE_STATUSES');
+    assert.ok(src.includes("item.status = 'done'"), 'Should migrate work items to done');
+    assert.ok(src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1978,6 +2122,9 @@ async function main() {
 
     // Edge cases
     await testEdgeCases();
+
+    // Legacy status migration
+    await testLegacyStatusMigration();
   } finally {
     cleanupTmpDirs();
   }

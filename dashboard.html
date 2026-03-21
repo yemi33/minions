@@ -4431,7 +4431,7 @@ async function _ccDoSend(message, skipUserMsg) {
   }, 500);
 
   try {
-    const ccAbort = AbortSignal.timeout(330000);
+    const ccAbort = AbortSignal.timeout(960000);
     const res = await fetch('/api/command-center', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message, sessionId: _ccSessionId }),

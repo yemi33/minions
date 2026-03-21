@@ -135,7 +135,7 @@ const CC_SESSION_MAX_TURNS = 50;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 let ccInFlight = false;
 let ccInFlightSince = 0; // timestamp — auto-release stuck guard
-const CC_INFLIGHT_TIMEOUT_MS = 6 * 60 * 1000; // 6 minutes (slightly > LLM timeout)
+const CC_INFLIGHT_TIMEOUT_MS = 11 * 60 * 1000; // 11 minutes (slightly > LLM timeout)
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
@@ -386,7 +386,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 600000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model = 'sonnet' } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model = 'sonnet' } = {}) {
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
@@ -408,7 +408,19 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
     }
-    console.log(`[${label}] Resume failed (code=${result.code}, empty=${!result.text}), retrying fresh...`);
+
+    // Distinguish "session exists but call failed" (e.g. tool timeout, signal timeout)
+    // from "session is truly dead" (no sessionId returned, or stderr indicates invalid session).
+    // If the session still exists, preserve it so the next "try again" can resume.
+    const sessionStillValid = llm.isResumeSessionStillValid(result);
+    if (sessionStillValid) {
+      console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
+      // Update lastActiveAt so session doesn't expire while user retries
+      updateSession(store, sessionKey, result.sessionId || sessionId, true);
+      return result;
+    }
+
+    console.log(`[${label}] Resume failed — session appears dead (code=${result.code}, empty=${!result.text}), retrying fresh...`);
     sessionId = null;
     // Invalidate the dead session so future calls don't try to resume it
     if (store === 'cc') {
@@ -2349,8 +2361,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC] LLM failed after retries ${debugInfo}: ${stderrTail}`);
+          const hasSession = !!ccSession.sessionId;
+          const retryHint = hasSession
+            ? 'Your session is still active — just send your message again to retry.'
+            : 'Try clicking **New Session** and sending your message again.';
           return jsonReply(res, 200, {
-            text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\nTry clicking **New Session** and sending your message again.`,
+            text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`,
             actions: [], sessionId: ccSession.sessionId
           });
         }

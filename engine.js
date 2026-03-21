@@ -1782,6 +1782,63 @@ function runCleanup(config, verbose = false) {
     }
   } catch {}
 
+  // 6. Migrate legacy work-item statuses to canonical values
+  // in-pr, implemented, complete → done (one-time correction per item)
+  const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+  for (const project of projects) {
+    try {
+      const wiPath = projectWorkItemsPath(project);
+      const items = safeJson(wiPath) || [];
+      let migrated = 0;
+      for (const item of items) {
+        if (LEGACY_DONE_STATUSES.has(item.status)) {
+          item.status = 'done';
+          migrated++;
+        }
+      }
+      if (migrated > 0) {
+        safeWrite(wiPath, items);
+        log('info', `Migrated ${migrated} legacy status(es) → done in ${project.name} work items`);
+      }
+    } catch {}
+  }
+  // Central work items
+  try {
+    const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+    const centralItems = safeJson(centralPath) || [];
+    let migrated = 0;
+    for (const item of centralItems) {
+      if (LEGACY_DONE_STATUSES.has(item.status)) {
+        item.status = 'done';
+        migrated++;
+      }
+    }
+    if (migrated > 0) {
+      safeWrite(centralPath, centralItems);
+      log('info', `Migrated ${migrated} legacy status(es) → done in central work items`);
+    }
+  } catch {}
+  // PRD items (missing_features[].status)
+  try {
+    const prdFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json'));
+    for (const pf of prdFiles) {
+      const prdPath = path.join(PRD_DIR, pf);
+      const prd = safeJson(prdPath);
+      if (!prd?.missing_features) continue;
+      let migrated = 0;
+      for (const feat of prd.missing_features) {
+        if (LEGACY_DONE_STATUSES.has(feat.status)) {
+          feat.status = 'done';
+          migrated++;
+        }
+      }
+      if (migrated > 0) {
+        safeWrite(prdPath, prd);
+        log('info', `Migrated ${migrated} legacy PRD item status(es) → done in ${pf}`);
+      }
+    }
+  } catch {}
+
   return cleaned;
 }
 

@@ -91,7 +91,25 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
   });
 }
 
+/**
+ * After a --resume call fails (non-zero exit or empty text), determine whether
+ * the underlying session still exists (e.g. a tool timeout mid-turn) vs the
+ * session is truly dead (expired, invalid ID, etc.).
+ *
+ * When the session still exists we should preserve it so the user can retry
+ * with "try again" and resume into the same conversation.
+ */
+function isResumeSessionStillValid(result) {
+  if (!result) return false;
+  // If the CLI returned a session_id in the parsed output or raw stream,
+  // the session is alive — the call just failed mid-execution.
+  if (result.sessionId) return true;
+  if (result.raw && result.raw.includes('"session_id"')) return true;
+  return false;
+}
+
 module.exports = {
   callLLM,
   trackEngineUsage,
+  isResumeSessionStillValid,
 };
