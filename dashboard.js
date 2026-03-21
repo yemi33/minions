@@ -557,6 +557,45 @@ function cleanDispatchEntries(matchFn) {
   } catch { return 0; }
 }
 
+// ── Engine Restart Helpers (used by watchdog + API) ─────────────────────────
+
+function spawnEngine() {
+  const controlPath = path.join(ENGINE_DIR, 'control.json');
+  safeWrite(controlPath, { state: 'stopped', pid: null, restarted_at: new Date().toISOString() });
+  const { spawn: cpSpawn } = require('child_process');
+  const childEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) {
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
+  }
+  const engineProc = cpSpawn(process.execPath, [path.join(SQUAD_DIR, 'engine.js'), 'start'], {
+    cwd: SQUAD_DIR, stdio: 'ignore', detached: true, env: childEnv,
+  });
+  engineProc.unref();
+  return engineProc.pid;
+}
+
+function killEnginePid(pid) {
+  const { execSync } = require('child_process');
+  try {
+    if (process.platform === 'win32') {
+      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'pipe', timeout: 5000 });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+  } catch {}
+}
+
+function restartEngine() {
+  const control = getEngineState();
+  if (control.pid) {
+    killEnginePid(control.pid);
+    console.log(`[watchdog] Killed engine PID ${control.pid}`);
+  }
+  const newPid = spawnEngine();
+  console.log(`[watchdog] Engine restarted (new PID: ${newPid})`);
+  return newPid;
+}
+
 // -- Server --
 
 const server = http.createServer(async (req, res) => {
@@ -1148,7 +1187,7 @@ ${m.content.slice(0, 1500)}
 
 ## Instructions
 
-1. **Find duplicates**: entries with substantially the same content or insights (same findings from different agents or dispatch runs). List pairs/groups by index.
+1. **Find duplicates**: entries with substantially the same content or insights (same findings from different agents or dispatch runs). List pairs/groups by index. When choosing which to keep, prefer the more recent entry (later date) as it likely reflects the current state of the codebase.
 
 2. **Find misclassified**: entries in the wrong category. Common: build reports in conventions, reviews in architecture.
 
@@ -1251,7 +1290,19 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         } catch {}
       }
 
-      const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified`;
+      // Prune swept files older than 30 days
+      let pruned = 0;
+      const SWEPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+      try {
+        for (const f of fs.readdirSync(kbArchiveDir)) {
+          const fp = path.join(kbArchiveDir, f);
+          try {
+            if (Date.now() - fs.statSync(fp).mtimeMs > SWEPT_RETENTION_MS) { safeUnlink(fp); pruned++; }
+          } catch {}
+        }
+      } catch {}
+
+      const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
       return jsonReply(res, 200, { ok: true, summary, plan });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { global._kbSweepInFlight = false; }
@@ -2379,6 +2430,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
   }
 
+  // POST /api/engine/restart — force-kill engine and restart immediately
+  if (req.method === 'POST' && req.url === '/api/engine/restart') {
+    try {
+      const newPid = restartEngine();
+      return jsonReply(res, 200, { ok: true, pid: newPid });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   // GET /api/settings — return current engine + claude + routing config
   if (req.method === 'GET' && req.url === '/api/settings') {
     try {
@@ -2524,7 +2583,7 @@ server.listen(PORT, '127.0.0.1', () => {
   // ─── Engine Watchdog ─────────────────────────────────────────────────────
   // Every 30s, check if engine PID is alive. If dead but control.json says
   // running, auto-restart it. Prevents silent engine death.
-  const { execSync, spawn: cpSpawn } = require('child_process');
+  const { execSync } = require('child_process');
   setInterval(() => {
     try {
       const control = getEngineState();
@@ -2544,24 +2603,7 @@ server.listen(PORT, '127.0.0.1', () => {
 
       if (!alive) {
         console.log(`[watchdog] Engine PID ${control.pid} is dead — auto-restarting...`);
-
-        // Set state to stopped first
-        const controlPath = path.join(SQUAD_DIR, 'engine', 'control.json');
-        safeWrite(controlPath, { state: 'stopped', pid: null, crashed_at: new Date().toISOString() });
-
-        // Restart engine
-        const childEnv = { ...process.env };
-        for (const key of Object.keys(childEnv)) {
-          if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
-        }
-        const engineProc = cpSpawn(process.execPath, [path.join(SQUAD_DIR, 'engine.js'), 'start'], {
-          cwd: SQUAD_DIR,
-          stdio: 'ignore',
-          detached: true,
-          env: childEnv,
-        });
-        engineProc.unref();
-        console.log(`[watchdog] Engine restarted (new PID: ${engineProc.pid})`);
+        restartEngine();
       }
     } catch (e) {
       console.error(`[watchdog] Error: ${e.message}`);
