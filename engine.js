@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 /**
- * Squad Engine — Auto-assigning orchestrator
+ * Minions Engine — Auto-assigning orchestrator
  *
  * Discovers work from configurable sources (PRD gaps, PR tracker, manual queue),
  * renders playbook templates with agent charters as system prompts, and spawns
  * isolated `claude` CLI processes in git worktrees.
  *
  * Usage:
- *   node .squad/engine.js              Start the engine (daemon mode)
- *   node .squad/engine.js status       Show current state
- *   node .squad/engine.js pause        Pause dispatching
- *   node .squad/engine.js resume       Resume dispatching
- *   node .squad/engine.js stop         Stop the engine
- *   node .squad/engine.js queue        Show dispatch queue
- *   node .squad/engine.js dispatch     Force a dispatch cycle
- *   node .squad/engine.js complete <id>  Mark dispatch as done
- *   node .squad/engine.js spawn <agent> <prompt>  Manually spawn an agent
- *   node .squad/engine.js work <title> [opts-json]  Add to work queue
- *   node .squad/engine.js sources      Show work source status
- *   node .squad/engine.js discover     Dry-run work discovery
+ *   node .minions/engine.js              Start the engine (daemon mode)
+ *   node .minions/engine.js status       Show current state
+ *   node .minions/engine.js pause        Pause dispatching
+ *   node .minions/engine.js resume       Resume dispatching
+ *   node .minions/engine.js stop         Stop the engine
+ *   node .minions/engine.js queue        Show dispatch queue
+ *   node .minions/engine.js dispatch     Force a dispatch cycle
+ *   node .minions/engine.js complete <id>  Mark dispatch as done
+ *   node .minions/engine.js spawn <agent> <prompt>  Manually spawn an agent
+ *   node .minions/engine.js work <title> [opts-json]  Add to work queue
+ *   node .minions/engine.js sources      Show work source status
+ *   node .minions/engine.js discover     Dry-run work discovery
  */
 
 const fs = require('fs');
@@ -29,11 +29,11 @@ const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
 
-const SQUAD_DIR = __dirname;
-const ROUTING_PATH = path.join(SQUAD_DIR, 'routing.md');
-const PLAYBOOKS_DIR = path.join(SQUAD_DIR, 'playbooks');
-const ARCHIVE_DIR = path.join(SQUAD_DIR, 'notes', 'archive');
-const IDENTITY_DIR = path.join(SQUAD_DIR, 'identity');
+const MINIONS_DIR = __dirname;
+const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
+const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
+const ARCHIVE_DIR = path.join(MINIONS_DIR, 'notes', 'archive');
+const IDENTITY_DIR = path.join(MINIONS_DIR, 'identity');
 
 // Re-export from queries for internal use (avoid changing every call site)
 const { CONFIG_PATH, NOTES_PATH, AGENTS_DIR, ENGINE_DIR, CONTROL_PATH,
@@ -41,8 +41,8 @@ const { CONFIG_PATH, NOTES_PATH, AGENTS_DIR, ENGINE_DIR, CONTROL_PATH,
 
 // ─── Multi-Project Support ──────────────────────────────────────────────────
 // Config can have either:
-//   "project": { ... }           — single project (legacy, .squad inside repo)
-//   "projects": [ { ... }, ... ] — multi-project (central .squad)
+//   "project": { ... }           — single project (legacy, .minions inside repo)
+//   "projects": [ { ... }, ... ] — multi-project (central .minions)
 // Each project must have "localPath" pointing to the repo root.
 
 function validateConfig(config) {
@@ -237,16 +237,16 @@ function resolveTaskContext(item, config) {
     if (matchesPlan) {
       // Find plans created by this agent (check work items for plan tasks dispatched to this agent)
       try {
-        const plans = fs.readdirSync(path.join(SQUAD_DIR, 'plans')).filter(f => f.endsWith('.md') || f.endsWith('.json'));
+        const plans = fs.readdirSync(path.join(MINIONS_DIR, 'plans')).filter(f => f.endsWith('.md') || f.endsWith('.json'));
         // Check work-items to find which plan file this agent created
-        const workItems = safeJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+        const workItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
         const agentPlanItems = workItems.filter(w =>
           w.type === 'plan' && w.dispatched_to === agent.id && w.status === 'done' && w._planFileName
         ).sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));
 
         if (agentPlanItems.length > 0) {
           const planFile = agentPlanItems[0]._planFileName;
-          const planPath = path.join(SQUAD_DIR, 'plans', planFile);
+          const planPath = path.join(MINIONS_DIR, 'plans', planFile);
           try {
             const content = safeRead(planPath);
             resolved.additionalContext += `\n\n## Referenced Plan: ${planFile} (created by ${agent.name})\n\n${content}`;
@@ -257,7 +257,7 @@ function resolveTaskContext(item, config) {
           // Fallback: try to find a plan file with the agent's name or ID in it
           const match = plans.find(f => f.toLowerCase().includes(agent.id) || f.toLowerCase().includes(agent.name));
           if (match) {
-            const planPath = path.join(SQUAD_DIR, 'plans', match);
+            const planPath = path.join(MINIONS_DIR, 'plans', match);
             try {
               const content = safeRead(planPath);
               resolved.additionalContext += `\n\n## Referenced Plan: ${match}\n\n${content}`;
@@ -277,7 +277,7 @@ function resolveTaskContext(item, config) {
     if (outputPatterns.some(p => p.test(text))) {
       // Find the agent's latest inbox notes
       try {
-        const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+        const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
         const files = fs.readdirSync(inboxDir)
           .filter(f => f.startsWith(agent.id + '-'))
           .sort().reverse();
@@ -295,11 +295,11 @@ function resolveTaskContext(item, config) {
   // find the most recent plan
   if (!resolved.additionalContext && /\b(the|latest|last|recent)\s+plan\b/i.test(text)) {
     try {
-      const plans = fs.readdirSync(path.join(SQUAD_DIR, 'plans'))
+      const plans = fs.readdirSync(path.join(MINIONS_DIR, 'plans'))
         .filter(f => f.endsWith('.md') || f.endsWith('.json'))
         .sort().reverse();
       if (plans.length > 0) {
-        const planPath = path.join(SQUAD_DIR, 'plans', plans[0]);
+        const planPath = path.join(MINIONS_DIR, 'plans', plans[0]);
         const content = safeRead(planPath);
         resolved.additionalContext += `\n\n## Referenced Plan (latest): ${plans[0]}\n\n${content}`;
         resolved.referencedFiles.push(planPath);
@@ -334,7 +334,7 @@ function renderPlaybook(type, vars) {
   // Inject learnings requirement
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
   content += `After completing your task, you MUST write a findings/learnings file to:\n`;
-  content += `\`${SQUAD_DIR}/notes/inbox/${vars.agent_id || 'agent'}-${dateStamp()}.md\`\n\n`;
+  content += `\`${MINIONS_DIR}/notes/inbox/${vars.agent_id || 'agent'}-${dateStamp()}.md\`\n\n`;
   content += `Include:\n`;
   content += `- What you learned about the codebase\n`;
   content += `- Patterns you discovered or established\n`;
@@ -345,9 +345,9 @@ function renderPlaybook(type, vars) {
   content += `If during this task you discovered a **repeatable workflow** — a multi-step procedure, workaround, build process, or pattern that other agents should follow in similar situations — output it as a fenced skill block. The engine will automatically extract it.\n\n`;
   content += `Format your skill as a fenced code block with the \`skill\` language tag:\n\n`;
   content += '````\n```skill\n';
-  content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: squad\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
+  content += `---\nname: short-descriptive-name\ndescription: One-line description of what this skill does\nallowed-tools: Bash, Read, Edit\ntrigger: when should an agent use this\nscope: minions\nproject: any\n---\n\n# Skill Title\n\n## Steps\n1. ...\n2. ...\n\n## Notes\n...\n`;
   content += '```\n````\n\n';
-  content += `- Set \`scope: squad\` for cross-project skills (engine writes to ~/.claude/skills/ automatically)\n`;
+  content += `- Set \`scope: minions\` for cross-project skills (engine writes to ~/.claude/skills/ automatically)\n`;
   content += `- Set \`scope: project\` + \`project: <name>\` for repo-specific skills (engine queues a PR to <project>/.claude/skills/)\n`;
   content += `- Only output a skill block if you genuinely discovered something reusable — don't force it\n`;
 
@@ -465,7 +465,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `1. Use git worktrees — NEVER checkout on main working tree\n`;
   prompt += `2. ${getRepoHostToolRule(project)}\n`;
   prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
-  prompt += `4. Write learnings to: ${SQUAD_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
+  prompt += `4. Write learnings to: ${MINIONS_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
   prompt += `5. Agent status is managed by the engine via dispatch.json — agents do not need to track their own status\n`;
   prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — the engine auto-extracts it to ~/.claude/skills/\n\n`;
 
@@ -501,7 +501,7 @@ function buildAgentContext(agentId, config, project) {
   // This saves ~27KB per dispatch. Reference note so agents know they exist:
   context += `## Reference Files\n\nKnowledge base entries are in \`knowledge/{category}/*.md\`. Skills are in \`skills/*.md\` and \`.claude/skills/\`. Use Glob/Read to browse when relevant.\n\n`;
 
-  // Squad awareness: what's in flight, who's doing what
+  // Minions awareness: what's in flight, who's doing what
   const dispatch = getDispatch();
   const activeItems = (dispatch.active || []).map(d =>
     `- **${d.agent}**: ${d.type} — ${(d.task || '').slice(0, 100)}${d.agent === agentId ? ' ← (you)' : ''}`
@@ -694,7 +694,7 @@ function spawnAgent(dispatchItem, config) {
 
   // Resolve project context for this dispatch
   const project = meta?.project || getProjects(config)[0] || {};
-  const rootDir = project.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
+  const rootDir = project.localPath ? path.resolve(project.localPath) : path.resolve(MINIONS_DIR, '..');
 
   // Determine working directory
   let cwd = rootDir;
@@ -1092,7 +1092,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
         // Increment retry counter on the source work item
         try {
           const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
-            ? path.join(SQUAD_DIR, 'work-items.json')
+            ? path.join(MINIONS_DIR, 'work-items.json')
             : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
           if (wiPath) {
             const items = safeJson(wiPath) || [];
@@ -1125,7 +1125,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
             items.filter(w => w.status === 'pending' && (w.depends_on || []).includes(failedId))
               .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
           }
-          const centralItems = safeJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+          const centralItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
           centralItems.filter(w => w.status === 'pending' && (w.depends_on || []).includes(failedId))
             .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
 
@@ -1244,7 +1244,7 @@ function updateSnapshot(config) {
   const agents = config.agents || {};
   const projects = getProjects(config);
 
-  let snapshot = `# Squad State — ${ts()}\n\n`;
+  let snapshot = `# Minions State — ${ts()}\n\n`;
   snapshot += `## Projects: ${projects.map(p => p.name).join(', ')}\n\n`;
 
   snapshot += `## Agents\n\n`;
@@ -1447,7 +1447,7 @@ function checkTimeouts(config) {
 
   // Reconcile: find work items stuck in "dispatched" with no matching active dispatch
   const activeKeys = new Set((dispatch.active || []).map(d => d.meta?.dispatchKey).filter(Boolean));
-  const allWiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+  const allWiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
   for (const project of getProjects(config)) {
     allWiPaths.push(projectWorkItemsPath(project));
   }
@@ -1597,7 +1597,7 @@ function runCleanup(config, verbose = false) {
         // Skip worktrees for active shared-branch plans (check both prd/ and plans/ for .json PRDs)
         if (shouldClean || !isProtected) {
           try {
-            for (const checkDir of [PRD_DIR, path.join(SQUAD_DIR, 'plans')]) {
+            for (const checkDir of [PRD_DIR, path.join(MINIONS_DIR, 'plans')]) {
               if (!fs.existsSync(checkDir)) continue;
               for (const pf of fs.readdirSync(checkDir).filter(f => f.endsWith('.json'))) {
                 const plan = safeJson(path.join(checkDir, pf));
@@ -1649,7 +1649,7 @@ function runCleanup(config, verbose = false) {
   }
 
   // 4. Kill zombie claude processes not tracked by the engine
-  // List all node processes, check if any are running spawn-agent.js for our squad
+  // List all node processes, check if any are running spawn-agent.js for our minions
   try {
     const dispatch = getDispatch();
     const activePids = new Set();
@@ -1673,7 +1673,7 @@ function runCleanup(config, verbose = false) {
 
   // 6. Prune old output archive files (keep last 30 per agent)
   for (const agentId of Object.keys(config.agents || {})) {
-    const agentDir = path.join(SQUAD_DIR, 'agents', agentId);
+    const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     if (!fs.existsSync(agentDir)) continue;
     try {
       const outputFiles = fs.readdirSync(agentDir)
@@ -1693,7 +1693,7 @@ function runCleanup(config, verbose = false) {
     // Collect all work item IDs across all sources
     const allWiIds = new Set();
     try {
-      const central = safeJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+      const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
       central.forEach(w => allWiIds.add(w.id));
     } catch {}
     for (const project of projects) {
@@ -1738,7 +1738,7 @@ function runCleanup(config, verbose = false) {
 
   // 8. Clean swept KB files older than 7 days
   try {
-    const sweptDir = path.join(SQUAD_DIR, 'knowledge', '_swept');
+    const sweptDir = path.join(MINIONS_DIR, 'knowledge', '_swept');
     if (fs.existsSync(sweptDir)) {
       const sevenDaysAgo = Date.now() - 7 * 86400000;
       for (const f of fs.readdirSync(sweptDir)) {
@@ -1759,7 +1759,7 @@ function runCleanup(config, verbose = false) {
     const checkpoint = safeJson(path.join(ENGINE_DIR, 'kb-checkpoint.json'));
     if (checkpoint && checkpoint.count > 0) {
       const { KB_CATEGORIES: cats } = shared;
-      const knowledgeDir = path.join(SQUAD_DIR, 'knowledge');
+      const knowledgeDir = path.join(MINIONS_DIR, 'knowledge');
       let current = 0;
       for (const cat of cats) {
         const d = path.join(knowledgeDir, cat);
@@ -1768,11 +1768,11 @@ function runCleanup(config, verbose = false) {
       if (current < checkpoint.count) {
         log('warn', `KB watchdog: file count dropped ${checkpoint.count} → ${current}, restoring from git`);
         try {
-          const trackedCheck = execSilent('git ls-tree --name-only HEAD -- knowledge', { cwd: SQUAD_DIR }).toString().trim();
+          const trackedCheck = execSilent('git ls-tree --name-only HEAD -- knowledge', { cwd: MINIONS_DIR }).toString().trim();
           if (!trackedCheck) {
             log('warn', 'KB watchdog: knowledge/ is not tracked in git HEAD — skipping restore');
           } else {
-            execSilent('git checkout HEAD -- knowledge', { cwd: SQUAD_DIR });
+            execSilent('git checkout HEAD -- knowledge', { cwd: MINIONS_DIR });
             log('info', 'KB watchdog: restored knowledge/ from git HEAD');
           }
         } catch (err) {
@@ -1804,7 +1804,7 @@ function runCleanup(config, verbose = false) {
   }
   // Central work items
   try {
-    const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+    const centralPath = path.join(MINIONS_DIR, 'work-items.json');
     const centralItems = safeJson(centralPath) || [];
     let migrated = 0;
     for (const item of centralItems) {
@@ -1915,7 +1915,7 @@ function isAlreadyDispatched(key) {
 
 
 /**
- * Scan ~/.squad/plans/ for plan-generated PRD files → queue implement tasks.
+ * Scan ~/.minions/plans/ for plan-generated PRD files → queue implement tasks.
  * Plans are project-scoped JSON files written by the plan-to-prd playbook.
  */
 /**
@@ -1925,7 +1925,7 @@ function isAlreadyDispatched(key) {
 // Auto-clean pending/failed work items for a PRD so they re-materialize with updated plan data
 function autoCleanPrdWorkItems(prdFile, config) {
   const allProjects = getProjects(config);
-  const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+  const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
   for (const proj of allProjects) wiPaths.push(projectWorkItemsPath(proj));
   const deletedIds = [];
   for (const wiPath of wiPaths) {
@@ -2047,7 +2047,7 @@ function materializePlansAsWorkItems(config) {
               const allProjects = getProjects(config);
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
-                const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+                const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
                 const centralItems = safeJson(centralWiPath) || [];
                 const alreadyQueued = centralItems.some(w =>
                   w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
@@ -2237,7 +2237,7 @@ function buildBaseVars(agentId, config, project) {
     agent_id: agentId,
     agent_name: config.agents[agentId]?.name || agentId,
     agent_role: config.agents[agentId]?.role || 'Agent',
-    team_root: SQUAD_DIR,
+    team_root: MINIONS_DIR,
     repo_id: project?.repositoryId || '',
     project_name: project?.name || 'Unknown Project',
     ado_org: project?.adoOrg || 'Unknown',
@@ -2299,10 +2299,10 @@ function discoverFromPrs(config, project) {
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
 
     const prNumber = (pr.id || '').replace(/^PR-/, '');
-    const squadStatus = pr.squadReview?.status;
+    const minionsStatus = pr.minionsReview?.status;
 
     // PRs needing review
-    const needsReview = !squadStatus || squadStatus === 'waiting';
+    const needsReview = !minionsStatus || minionsStatus === 'waiting';
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -2322,7 +2322,7 @@ function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
-    if (squadStatus === 'changes-requested') {
+    if (minionsStatus === 'changes-requested') {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -2330,7 +2330,7 @@ function discoverFromPrs(config, project) {
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
-        review_note: pr.squadReview?.note || pr.reviewNote || 'See PR thread comments',
+        review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }
@@ -2377,7 +2377,7 @@ function discoverFromWorkItems(config, project) {
   const src = project?.workSources?.workItems || config.workSources?.workItems;
   if (!src?.enabled) return [];
 
-  const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(SQUAD_DIR, '..');
+  const root = project?.localPath ? path.resolve(project.localPath) : path.resolve(MINIONS_DIR, '..');
   const items = safeJson(projectWorkItemsPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
@@ -2456,14 +2456,14 @@ function discoverFromWorkItems(config, project) {
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
       notes_content: '',
     };
-    try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+    try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
 
     // Inject ask-specific variables for the ask playbook
     if (workType === 'ask') {
       vars.question = item.title + (item.description ? '\n\n' + item.description : '');
       vars.task_id = item.id;
       vars.notes_content = '';
-      try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
     }
 
     // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
@@ -2689,11 +2689,11 @@ function extractSpecInfo(filePath, projectRoot_) {
 }
 
 /**
- * Scan central ~/.squad/work-items.json for project-agnostic tasks.
+ * Scan central ~/.minions/work-items.json for project-agnostic tasks.
  * Uses the shared work-item.md playbook with multi-project context injected.
  */
 function discoverCentralWorkItems(config) {
-  const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+  const centralPath = path.join(MINIONS_DIR, 'work-items.json');
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
@@ -2747,7 +2747,7 @@ function discoverCentralWorkItems(config) {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
           vars.task_id = item.id;
           vars.notes_content = '';
-          try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+          try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
         }
 
         const resolvedCtx = resolveTaskContext(item, config);
@@ -2808,7 +2808,7 @@ function discoverCentralWorkItems(config) {
         project_path: firstProject?.localPath || '',
         notes_content: '',
       };
-      try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {
@@ -2820,7 +2820,7 @@ function discoverCentralWorkItems(config) {
         vars.plan_file = planFileName;
         vars.task_description = item.title;
         vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
         // Track expected plan filename in meta for chainPlanToPrd
         item._planFileName = planFileName;
       }
@@ -2849,7 +2849,7 @@ function discoverCentralWorkItems(config) {
         vars.question = item.title + (item.description ? '\n\n' + item.description : '');
         vars.task_id = item.id;
         vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(SQUAD_DIR, 'notes.md'), 'utf8'); } catch {}
+        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
       }
 
       // Resolve implicit context references
@@ -2919,7 +2919,7 @@ function discoverWork(config) {
     allWorkItems.push(...discoverFromWorkItems(config, project));
   }
 
-  // Source 2: Squad-level PRD → implements (multi-project, called once outside project loop)
+  // Source 2: Minions-level PRD → implements (multi-project, called once outside project loop)
   // PRD items now flow through plans/*.json → materializePlansAsWorkItems → discoverFromWorkItems
 
   // Central work items (project-agnostic — agent decides where to work)
@@ -3176,7 +3176,7 @@ async function tickInner() {
 
 module.exports = {
   // Paths
-  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLAYBOOKS_DIR, PLANS_DIR, PRD_DIR,
+  MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLAYBOOKS_DIR, PLANS_DIR, PRD_DIR,
   CONTROL_PATH, DISPATCH_PATH, LOG_PATH, INBOX_DIR, KNOWLEDGE_DIR, ARCHIVE_DIR,
   IDENTITY_DIR, CONFIG_PATH, ROUTING_PATH, NOTES_PATH, SKILLS_DIR,
 
@@ -3224,3 +3224,4 @@ if (require.main === module) {
   const [cmd, ...args] = process.argv.slice(2);
   handleCommand(cmd, args);
 }
+

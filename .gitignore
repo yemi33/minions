@@ -29,13 +29,13 @@ agents/*/output-*
 agents/*/live-output.log
 identity/now.md
 
-# Plan-generated PRDs (squad-internal work records)
+# Plan-generated PRDs (minions-internal work records)
 plans/
 
 # Machine-specific (synced from ~/.claude.json on engine start)
 mcp-servers.json
 
-# Squad-specific PRDs (project-specific, not for distribution)
+# Minions-specific PRDs (project-specific, not for distribution)
 prd/*.json
 prd/archive/
 prd/guides/
@@ -48,3 +48,4 @@ agents/ralph/next-action.json
 agents/ralph/loop.log
 sessions/
 engine/spawn-debug.log
+

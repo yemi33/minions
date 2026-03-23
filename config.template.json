@@ -13,15 +13,16 @@
       "workSources": {
         "pullRequests": {
           "enabled": true,
-          "path": ".squad/pull-requests.json",
+          "path": ".minions/pull-requests.json",
           "cooldownMinutes": 30
         },
         "workItems": {
           "enabled": true,
-          "path": ".squad/work-items.json",
+          "path": ".minions/work-items.json",
           "cooldownMinutes": 0
         }
       }
     }
   ]
 }
+

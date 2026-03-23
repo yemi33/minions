@@ -4,7 +4,7 @@
 
 ## Context
 
-Repository ID: from `.squad/config.json` under `project.repositoryId`
+Repository ID: from `.minions/config.json` under `project.repositoryId`
 Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 Team root: {{team_root}}
 

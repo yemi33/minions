@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Squad Unit Tests — Comprehensive test suite for core logic.
+ * Minions Unit Tests — Comprehensive test suite for core logic.
  *
  * Run: node test/unit.test.js
  *
@@ -20,7 +20,7 @@ const results = [];
 const tmpDirs = [];
 
 function createTmpDir() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'squad-test-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'minions-test-'));
   tmpDirs.push(dir);
   return dir;
 }
@@ -52,9 +52,9 @@ function skip(name, reason) {
 
 // ─── Module Imports ──────────────────────────────────────────────────────────
 
-const SQUAD_DIR = path.resolve(__dirname, '..');
-const shared = require(path.join(SQUAD_DIR, 'engine', 'shared'));
-const queries = require(path.join(SQUAD_DIR, 'engine', 'queries'));
+const MINIONS_DIR = path.resolve(__dirname, '..');
+const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 
 // ─── shared.js Tests ─────────────────────────────────────────────────────────
 
@@ -482,13 +482,13 @@ async function testQueriesAgents() {
   });
 
   await test('getAgentStatus prefers started_at over created_at for active dispatch', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('active.started_at || active.created_at'),
       'getAgentStatus should prefer started_at for active dispatches');
   });
 
   await test('getAgentStatus falls back to work-item dispatched markers', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
     assert.ok(src.includes("w.status === 'dispatched' || w.status === 'in-progress'"),
@@ -590,7 +590,7 @@ async function testQueriesSkills() {
   });
 
   await test('collectSkillFiles discovers plugin skills from installed_plugins.json', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('installed_plugins.json'),
       'collectSkillFiles should read installed_plugins.json');
     assert.ok(src.includes("scope: 'plugin'"),
@@ -610,7 +610,7 @@ async function testQueriesSkills() {
   });
 
   await test('getSkills includes all scope types', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'queries.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     // source mapping should handle all scopes
     assert.ok(src.includes("scope === 'claude-code'"), 'should handle claude-code scope');
     assert.ok(src.includes("scope === 'plugin'"), 'should handle plugin scope');
@@ -694,7 +694,7 @@ async function testRoutingParser() {
 
   // We can test parseRoutingTable indirectly by checking the routing.md file
   await test('routing.md exists and has valid format', () => {
-    const routingPath = path.join(SQUAD_DIR, 'routing.md');
+    const routingPath = path.join(MINIONS_DIR, 'routing.md');
     assert.ok(fs.existsSync(routingPath), 'routing.md not found');
     const content = fs.readFileSync(routingPath, 'utf8');
     assert.ok(content.includes('| Work Type'), 'routing.md missing header row');
@@ -703,7 +703,7 @@ async function testRoutingParser() {
   });
 
   await test('routing.md has all required work types', () => {
-    const content = fs.readFileSync(path.join(SQUAD_DIR, 'routing.md'), 'utf8');
+    const content = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
     const requiredTypes = ['implement', 'review', 'fix', 'plan', 'explore', 'test', 'ask', 'verify'];
     for (const type of requiredTypes) {
       assert.ok(content.includes(type), `routing.md missing work type: ${type}`);
@@ -718,7 +718,7 @@ async function testDependencyCycleDetection() {
   let detectDependencyCycles;
   try {
     // The function is defined inline in engine.js, we need to require it
-    const engineModule = require(path.join(SQUAD_DIR, 'engine'));
+    const engineModule = require(path.join(MINIONS_DIR, 'engine'));
     detectDependencyCycles = engineModule.detectDependencyCycles;
   } catch {
     skip('dependency-cycles', 'engine.js not loadable in test context');
@@ -774,7 +774,7 @@ async function testDependencyCycleDetection() {
 async function testLifecycleHelpers() {
   console.log('\n── lifecycle.js — Output Parsing ──');
 
-  const lifecycle = require(path.join(SQUAD_DIR, 'engine', 'lifecycle'));
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
 
   await test('parseAgentOutput extracts summary from stream-json', () => {
     const stdout = '{"type":"system"}\n{"type":"result","result":"Task completed successfully","total_cost_usd":0.02}';
@@ -801,7 +801,7 @@ async function testLifecycleHelpers() {
 async function testSyncPrdItemStatus() {
   console.log('\n── lifecycle.js — PRD Sync ──');
 
-  const lifecycle = require(path.join(SQUAD_DIR, 'engine', 'lifecycle'));
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
 
   await test('syncPrdItemStatus handles null itemId gracefully', () => {
     // Should not throw
@@ -853,7 +853,7 @@ async function testReconciliation() {
 
   let reconcileItemsWithPrs;
   try {
-    const engineModule = require(path.join(SQUAD_DIR, 'engine'));
+    const engineModule = require(path.join(MINIONS_DIR, 'engine'));
     reconcileItemsWithPrs = engineModule.reconcileItemsWithPrs;
   } catch {
     skip('reconciliation', 'engine.js not loadable');
@@ -920,7 +920,7 @@ async function testReconciliation() {
 async function testGithubHelpers() {
   console.log('\n── github.js — Helper Functions ──');
 
-  const github = require(path.join(SQUAD_DIR, 'engine', 'github'));
+  const github = require(path.join(MINIONS_DIR, 'engine', 'github'));
 
   await test('github module exports required functions', () => {
     assert.ok(typeof github.pollPrStatus === 'function');
@@ -934,7 +934,7 @@ async function testGithubHelpers() {
 async function testPrCommentProcessing() {
   console.log('\n── PR Comment Processing — Full Thread Context ──');
 
-  await test('Fix playbook should receive ALL comments, not just @squad', () => {
+  await test('Fix playbook should receive ALL comments, not just @minions', () => {
     // Simulate what ado.js/github.js does: collect all human comments
     // and mark new ones with [NEW] prefix
     const cutoff = '2024-01-15T00:00:00Z';
@@ -967,10 +967,10 @@ async function testPrCommentProcessing() {
     assert.ok(!bobLine.includes('[NEW]'), 'Old comment incorrectly marked as [NEW]');
   });
 
-  await test('Squad own comments are filtered out', () => {
+  await test('Minions own comments are filtered out', () => {
     const comments = [
       { content: 'Please fix this', commentType: 'text' },
-      { content: 'Fixed by Squad (Dallas — Engineer)', commentType: 'text' },
+      { content: 'Fixed by Minions (Dallas — Engineer)', commentType: 'text' },
       { content: null, commentType: 'system' },
       { content: 'System update', commentType: 'system' },
     ];
@@ -978,7 +978,7 @@ async function testPrCommentProcessing() {
     // Simulate the filtering logic from ado.js/github.js
     const humanComments = comments.filter(c => {
       if (!c.content || c.commentType === 'system') return false;
-      if (/\bSquad\s*\(/i.test(c.content)) return false;
+      if (/\bMinions\s*\(/i.test(c.content)) return false;
       return true;
     });
 
@@ -986,8 +986,8 @@ async function testPrCommentProcessing() {
     assert.strictEqual(humanComments[0].content, 'Please fix this');
   });
 
-  await test('No @squad filter required — all comments trigger fix', () => {
-    // Previously, multi-reviewer PRs required @squad mention
+  await test('No @minions filter required — all comments trigger fix', () => {
+    // Previously, multi-reviewer PRs required @minions mention
     // Now ALL human comments should trigger
     const comments = [
       { author: 'Alice', date: '2024-01-16T10:00:00Z', content: 'Fix the typo on line 42' },
@@ -997,7 +997,7 @@ async function testPrCommentProcessing() {
     const cutoff = '2024-01-15T00:00:00Z';
     const newComments = comments.filter(c => c.date > cutoff);
 
-    // Both should trigger (no @squad filter)
+    // Both should trigger (no @minions filter)
     assert.strictEqual(newComments.length, 2, 'Both comments should trigger fix');
   });
 
@@ -1044,14 +1044,14 @@ async function testPlanLifecycle() {
   });
 
   await test('lifecycle.js no longer exports chainPlanToPrd', () => {
-    const lifecycle = require(path.join(SQUAD_DIR, 'engine', 'lifecycle'));
+    const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
     assert.strictEqual(lifecycle.chainPlanToPrd, undefined,
       'chainPlanToPrd should not be exported — auto-chaining is removed');
   });
 
   await test('runPostCompletionHooks does not chain plan-to-prd on plan success', () => {
     // Verify the chain call was removed from runPostCompletionHooks
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     // Find the runPostCompletionHooks function body and check it doesn't call chainPlanToPrd
     const hookStart = src.indexOf('function runPostCompletionHooks(');
     const hookBody = src.slice(hookStart, src.indexOf('\nfunction ', hookStart + 1) || src.length);
@@ -1062,7 +1062,7 @@ async function testPlanLifecycle() {
   });
 
   await test('plan-to-prd playbook sets PRD status to awaiting-approval', () => {
-    const playbook = fs.readFileSync(path.join(SQUAD_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
     assert.ok(playbook.includes('"status": "awaiting-approval"'),
       'plan-to-prd playbook should set status to awaiting-approval');
     assert.ok(playbook.includes('"requires_approval": true'),
@@ -1072,7 +1072,7 @@ async function testPlanLifecycle() {
   });
 
   await test('cli.js recovery does not re-queue plan-to-prd chains', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'cli.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
     assert.ok(!src.includes("chain === 'plan-to-prd'"),
       'cli.js should not contain plan-to-prd chain recovery logic');
     assert.ok(src.includes('Plan chain recovery removed'),
@@ -1084,7 +1084,7 @@ async function testPrdStaleInvalidation() {
   console.log('\n── PRD Staleness — Auto-Invalidation on Plan Revision ──');
 
   await test('engine.js materializePlansAsWorkItems handles stale awaiting-approval PRD', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('engine:plan-revision'),
       'engine.js should queue regeneration with createdBy engine:plan-revision');
     assert.ok(src.includes('alreadyQueued'),
@@ -1094,7 +1094,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Stale PRD invalidation only targets awaiting-approval status', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("prdStatus === 'awaiting-approval'"),
       'Auto-regeneration should only trigger for awaiting-approval PRDs');
   });
@@ -1131,7 +1131,7 @@ async function testPrdStaleInvalidation() {
 
   await test('Approved PRDs are flagged stale (not invalidated) on plan revision', () => {
     // Verify the stale flag logic exists for approved PRDs
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
       'engine.js should set planStale flag on approved PRDs when plan is revised');
     assert.ok(src.includes("prdStatus === 'approved'"),
@@ -1139,7 +1139,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Stale PRDs do not materialize new work items', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale'),
       'engine.js should check planStale flag');
     // The planStale continue should be after the approval gate
@@ -1150,7 +1150,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard has Regenerate PRD button for stale plans', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('prdRegenerate('),
       'dashboard.html should have prdRegenerate function call');
     assert.ok(html.includes('Regenerate now'),
@@ -1158,7 +1158,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard stale PRD UX explains meaning and recovery', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('STALE'),
       'dashboard should visibly label stale PRDs');
     assert.ok(html.includes('Source plan was revised. This PRD may be outdated.'),
@@ -1168,7 +1168,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard engine stale badge has explicit recovery UX', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('function renderEngineAlert('),
       'dashboard should render engine stale recovery alert');
     assert.ok(html.includes('Engine heartbeat is stale'),
@@ -1178,7 +1178,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard shows immediate PRD retry feedback states', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('window._prdRequeueUi'),
       'dashboard should maintain transient PRD requeue UI state');
     assert.ok(html.includes('requeuing…'),
@@ -1190,7 +1190,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard normalizes plan file paths before plan modal fetch', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('function normalizePlanFile(file)'),
       'dashboard should normalize path-like plan references');
     assert.ok(html.includes("fetch('/api/plans/' + encodeURIComponent(normalizedFile))"),
@@ -1200,7 +1200,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard has /api/prd/regenerate endpoint', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('/api/prd/regenerate'),
       'dashboard.js should have /api/prd/regenerate endpoint');
     assert.ok(src.includes('fs.unlinkSync(prdPath)'),
@@ -1210,7 +1210,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Regeneration carries over completed items from old PRD', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('completedItems'),
       'Regeneration should collect completed items');
     assert.ok(src.includes("completedStatuses.has(f.status)") || src.includes("completedStatuses.has(w.status)"),
@@ -1220,7 +1220,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Engine auto-regeneration also carries over completed items', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('completedItems.length'),
       'Engine regeneration should track completed items');
     assert.ok(src.includes('completed items to carry over'),
@@ -1228,13 +1228,13 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Regeneration endpoint deduplicates queued items', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('alreadyQueued'),
       'Regeneration endpoint should check for duplicate queue entries');
   });
 
   await test('Approved PRDs are not auto-regenerated on plan revision', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Approved PRDs get planStale flag, not deletion/regeneration
     const staleBlock = src.indexOf('plan.planStale = true');
     const approvedCheck = src.lastIndexOf("prdStatus === 'approved'", staleBlock);
@@ -1280,7 +1280,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Plan completion requires every PRD feature ID to have a done work item', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('every PRD feature ID must have a corresponding work item'),
       'Plan completion should enforce strict per-ID gate');
     assert.ok(src.includes('unmaterialized.length > 0'),
@@ -1290,7 +1290,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Plan completion cleans all worktrees, not just shared-branch', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Clean up ALL worktrees'),
       'Worktree cleanup should handle all plan worktrees');
     assert.ok(src.includes('w.branch') && src.includes('w.id') && src.includes('pr.branch'),
@@ -1304,7 +1304,7 @@ async function testArchivePathResolution() {
   console.log('\n── Archive Path Resolution & Versions ──');
 
   await test('resolvePlanPath checks archive directories', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes("path.join(PLANS_DIR, 'archive', file)"),
       'resolvePlanPath should check plans/archive/ for .md files');
     assert.ok(src.includes("path.join(PRD_DIR, 'archive', file)"),
@@ -1312,15 +1312,15 @@ async function testArchivePathResolution() {
   });
 
   await test('GET /api/plans/:file returns X-Resolved-Path header', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes("res.setHeader('X-Resolved-Path'"),
       'plan API should return X-Resolved-Path header');
-    assert.ok(src.includes("path.relative(SQUAD_DIR, p)"),
-      'resolved path should be relative to SQUAD_DIR');
+    assert.ok(src.includes("path.relative(MINIONS_DIR, p)"),
+      'resolved path should be relative to MINIONS_DIR');
   });
 
   await test('planView uses resolved path for _modalFilePath', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes("resolvedPath = planRes.headers.get('X-Resolved-Path')"),
       'planView should read X-Resolved-Path header');
     assert.ok(html.includes('_modalFilePath = resolvedPath ||'),
@@ -1328,7 +1328,7 @@ async function testArchivePathResolution() {
   });
 
   await test('planOpenInDocChat uses resolved path for _modalFilePath', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     // planOpenInDocChat should also fetch the header
     const fnStart = html.indexOf('async function planOpenInDocChat');
     const fnEnd = html.indexOf('} catch (e) { alert(', fnStart);
@@ -1340,7 +1340,7 @@ async function testArchivePathResolution() {
   });
 
   await test('doc-chat saves plan edits in-place without forking', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Doc-chat should always save in-place; forking is reserved for /api/plans/revise
     const docChatSection = src.slice(src.indexOf("POST /api/doc-chat"), src.indexOf("POST /api/inbox/persist"));
     assert.ok(!docChatSection.includes('isNewVersion'),
@@ -1352,7 +1352,7 @@ async function testArchivePathResolution() {
   });
 
   await test('doc-chat does not trigger version actions or forking UI', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     // The doc-chat response handler should not reference isNewVersion or versionedFile
     // since the server no longer forks on doc-chat edits
     const sendFn = html.slice(html.indexOf('async function qaDocSend') || html.indexOf("fetch('/api/doc-chat'"));
@@ -1364,7 +1364,7 @@ async function testArchivePathResolution() {
   });
 
   await test('Plan listing API extracts version number from filenames', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes("f.match(/-v(\\d+)/)"),
       'plan listing should extract version from -vN pattern');
     assert.ok(src.includes('version: versionMatch ? parseInt('),
@@ -1380,7 +1380,7 @@ async function testArchivePathResolution() {
   });
 
   await test('Dashboard plan card shows version badge', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes("p.version ? ' <span"),
       'plan card should show version badge when version exists');
     assert.ok(html.includes("versionBadge"),
@@ -1388,7 +1388,7 @@ async function testArchivePathResolution() {
   });
 
   await test('Plan view modal shows version label', () => {
-    const html = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.html'), 'utf8');
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes("vMatch = normalizedFile.match(/-v("),
       'planView should extract version from filename');
     assert.ok(html.includes("versionLabel"),
@@ -1401,7 +1401,7 @@ async function testArchivePathResolution() {
 async function testLlmModule() {
   console.log('\n── llm.js — LLM Utilities ──');
 
-  const llm = require(path.join(SQUAD_DIR, 'engine', 'llm'));
+  const llm = require(path.join(MINIONS_DIR, 'engine', 'llm'));
 
   await test('llm module exports callLLM and trackEngineUsage', () => {
     assert.ok(typeof llm.callLLM === 'function');
@@ -1468,7 +1468,7 @@ async function testCheckStatus() {
     // The module executes on require, so we just verify it doesn't throw
     // We can't actually require it since it has side effects (console.log)
     // Instead verify the file exists and has the right imports
-    const content = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'check-status.js'), 'utf8');
+    const content = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'check-status.js'), 'utf8');
     assert.ok(content.includes('getAgentStatus'), 'check-status.js should use getAgentStatus');
     assert.ok(content.includes('dispatch'), 'check-status.js should reference dispatch');
   });
@@ -1480,7 +1480,7 @@ async function testPrReviewFixCycle() {
   console.log('\n── PR → Review → Fix Cycle ──');
 
   await test('No self-review: review agent cannot be PR author', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('prAuthor'),
       'discoverFromPrs should extract PR author for self-review check');
     assert.ok(src.includes('agentId === prAuthor'),
@@ -1488,7 +1488,7 @@ async function testPrReviewFixCycle() {
   });
 
   await test('Review verdict is waiting (not hardcoded approved)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
     assert.ok(reviewFn.includes("status: 'waiting'"),
       'updatePrAfterReview should set status to waiting, not approved');
@@ -1497,7 +1497,7 @@ async function testPrReviewFixCycle() {
   });
 
   await test('Human feedback fix triggers re-review (reset to waiting)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fixFn = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterFix(') + 1));
     // Both branches should set status to 'waiting'
     const waitingCount = (fixFn.match(/status: 'waiting'/g) || []).length;
@@ -1506,7 +1506,7 @@ async function testPrReviewFixCycle() {
   });
 
   await test('Human feedback cooldown key uses PR ID only (no timestamp)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The key should NOT include lastProcessedCommentDate
     assert.ok(!src.includes('human-fix-${project?.name || \'default\'}-${pr.id}-${pr.humanFeedback.lastProcessedCommentDate}'),
       'Human fix key should not include timestamp (prevents cooldown bypass)');
@@ -1515,7 +1515,7 @@ async function testPrReviewFixCycle() {
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('function getRoutingTableCached()'),
       'engine should use a cached routing table helper');
     assert.ok(src.includes('_routingCacheMtime'),
@@ -1525,7 +1525,7 @@ async function testPrReviewFixCycle() {
   });
 
   await test('PRs with active dispatch are skipped (race prevention)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('activePrIds'),
       'discoverFromPrs should track active PR dispatches');
     assert.ok(src.includes('activePrIds.has(pr.id)'),
@@ -1533,26 +1533,26 @@ async function testPrReviewFixCycle() {
   });
 
   await test('Only active PRs are considered for review/fix', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("pr.status !== 'active') continue"),
       'Should skip merged/abandoned PRs');
   });
 
   await test('Fix routes to PR author via _author_ token', () => {
-    const routing = fs.readFileSync(path.join(SQUAD_DIR, 'routing.md'), 'utf8');
+    const routing = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
     assert.ok(routing.includes('_author_'),
       'routing.md should have _author_ token for fix routing');
   });
 
   await test('Review playbook includes PR context variables', () => {
-    const playbook = fs.readFileSync(path.join(SQUAD_DIR, 'playbooks', 'review.md'), 'utf8');
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
     assert.ok(playbook.includes('{{pr_id}}'), 'Review playbook needs pr_id');
     assert.ok(playbook.includes('{{pr_branch}}'), 'Review playbook needs pr_branch');
     assert.ok(playbook.includes('{{pr_title}}'), 'Review playbook needs pr_title');
   });
 
   await test('Fix playbook includes review feedback variable', () => {
-    const playbook = fs.readFileSync(path.join(SQUAD_DIR, 'playbooks', 'fix.md'), 'utf8');
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
     assert.ok(playbook.includes('{{review_note}}'), 'Fix playbook needs review_note for feedback');
     assert.ok(playbook.includes('{{pr_branch}}'), 'Fix playbook needs pr_branch');
   });
@@ -1583,7 +1583,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Worktree cleanup uses sanitized branch matching (not fuzzy substring)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Should use sanitizeBranch for consistent matching
     assert.ok(src.includes('sanitizeBranch(branch).toLowerCase()') || src.includes('sanitizeBranch(d.meta.branch).toLowerCase()'),
       'Cleanup should sanitize branches before comparison');
@@ -1593,7 +1593,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Post-merge cleanup finds worktrees by branch slug (not exact path)', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('dirLower.includes(branchSlug)'),
       'Post-merge cleanup should match by sanitized branch slug');
     assert.ok(src.includes('readdirSync(wtRoot)'),
@@ -1601,7 +1601,7 @@ async function testWorktreeManagement() {
   });
 
   await test('All plan worktrees cleaned on plan completion', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Clean up ALL worktrees'),
       'Plan completion should clean all worktrees, not just shared-branch');
     assert.ok(src.includes('branchSlugs'),
@@ -1609,13 +1609,13 @@ async function testWorktreeManagement() {
   });
 
   await test('Shared-branch plan protection checks both prd/ and plans/', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('PRD_DIR') && src.includes("'plans'"),
       'Worktree protection should check both prd/ and plans/ directories');
   });
 
   await test('MAX_WORKTREES cap enforced during cleanup', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('MAX_WORKTREES'),
       'Should reference MAX_WORKTREES constant');
     assert.ok(src.includes('excess'),
@@ -1623,7 +1623,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Only implement tasks may create new worktrees', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("type !== 'implement'"),
       'Non-implement tasks should skip worktree creation');
     assert.ok(src.includes('creation disabled for non-implement tasks'),
@@ -1631,7 +1631,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Worktree creation handles stale index.lock', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('index.lock'),
       'Should check for and handle stale index.lock');
     assert.ok(src.includes('300000'),
@@ -1639,7 +1639,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Worktree creation supports configurable timeout and retries', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('worktreeCreateTimeout'),
       'Should support configurable worktree create timeout');
     assert.ok(src.includes('worktreeCreateRetries'),
@@ -1649,7 +1649,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Worktree creation recovers partially created worktrees after add failure', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('function recoverPartialWorktree('),
       'Should include partial worktree recovery helper');
     assert.ok(src.includes('Recovered partially-created worktree'),
@@ -1659,13 +1659,13 @@ async function testWorktreeManagement() {
   });
 
   await test('findExistingWorktree validates directory exists on disk', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('fs.existsSync(wtPath)'),
       'findExistingWorktree should verify directory exists');
   });
 
   await test('KB watchdog skips git restore when knowledge is untracked', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('git ls-tree --name-only HEAD -- knowledge'),
       'KB watchdog should check whether knowledge is tracked before restore');
     assert.ok(src.includes('knowledge/ is not tracked in git HEAD'),
@@ -1689,13 +1689,13 @@ async function testConfigAndPlaybooks() {
     const required = ['implement', 'implement-shared', 'review', 'fix', 'explore',
       'test', 'build-and-test', 'plan', 'plan-to-prd', 'ask', 'verify', 'work-item'];
     for (const pb of required) {
-      const pbPath = path.join(SQUAD_DIR, 'playbooks', `${pb}.md`);
+      const pbPath = path.join(MINIONS_DIR, 'playbooks', `${pb}.md`);
       assert.ok(fs.existsSync(pbPath), `Missing playbook: ${pb}.md`);
     }
   });
 
   await test('Playbooks contain template variables', () => {
-    const pbPath = path.join(SQUAD_DIR, 'playbooks', 'implement.md');
+    const pbPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
     const content = fs.readFileSync(pbPath, 'utf8');
     // Should have at least some template variables
     assert.ok(content.includes('{{') && content.includes('}}'), 'Playbook has no template variables');
@@ -1706,27 +1706,27 @@ async function testConfigAndPlaybooks() {
     if (!config.agents || Object.keys(config.agents).length === 0) {
       // Running from repo without installed config — check default agents
       for (const agentId of Object.keys(shared.DEFAULT_AGENTS)) {
-        const charterPath = path.join(SQUAD_DIR, 'agents', agentId, 'charter.md');
+        const charterPath = path.join(MINIONS_DIR, 'agents', agentId, 'charter.md');
         assert.ok(fs.existsSync(charterPath), `Missing charter for ${agentId}`);
       }
     } else {
       for (const agentId of Object.keys(config.agents)) {
-        const charterPath = path.join(SQUAD_DIR, 'agents', agentId, 'charter.md');
+        const charterPath = path.join(MINIONS_DIR, 'agents', agentId, 'charter.md');
         assert.ok(fs.existsSync(charterPath), `Missing charter for ${agentId}`);
       }
     }
   });
 
-  await test('bin/squad init guards against home under package root', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'bin', 'squad.js'), 'utf8');
+  await test('bin/minions init guards against home under package root', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     assert.ok(src.includes('function isSubpath('),
-      'bin/squad.js should define subpath helper');
-    assert.ok(src.includes('Refusing to initialize Squad home inside package directory'),
-      'init should fail fast when SQUAD_HOME is inside PKG_ROOT');
+      'bin/minions.js should define subpath helper');
+    assert.ok(src.includes('Refusing to initialize Minions home inside package directory'),
+      'init should fail fast when MINIONS_HOME is inside PKG_ROOT');
   });
 
-  await test('bin/squad force init restarts engine and dashboard automatically', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'bin', 'squad.js'), 'utf8');
+  await test('bin/minions force init restarts engine and dashboard automatically', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
     assert.ok(src.includes('Upgrade complete (') && src.includes('Restarting engine and dashboard'),
       'force upgrade should announce automatic restart');
     assert.ok(src.includes('engine.js') && src.includes('stop'),
@@ -1735,16 +1735,16 @@ async function testConfigAndPlaybooks() {
       'init flow should still auto-start dashboard');
   });
 
-  await test('bin/squad resolves runtime root from init location and pointer', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'bin', 'squad.js'), 'utf8');
-    assert.ok(src.includes('resolveSquadHome('),
-      'bin/squad.js should resolve runtime root dynamically');
-    assert.ok(src.includes("return path.join(process.cwd(), '.squad')"),
-      'init should default runtime root to <cwd>/.squad');
-    assert.ok(src.includes(".squad-root"),
-      'bin/squad.js should persist/read runtime root pointer');
-    assert.ok(src.includes('findNearestLocalSquadRoot('),
-      'bin/squad.js should detect nearest local .squad root');
+  await test('bin/minions resolves runtime root from init location and pointer', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'bin', 'minions.js'), 'utf8');
+    assert.ok(src.includes('resolveMinionsHome('),
+      'bin/minions.js should resolve runtime root dynamically');
+    assert.ok(src.includes("return path.join(process.cwd(), '.minions')"),
+      'init should default runtime root to <cwd>/.minions');
+    assert.ok(src.includes(".minions-root"),
+      'bin/minions.js should persist/read runtime root pointer');
+    assert.ok(src.includes('findNearestLocalMinionsRoot('),
+      'bin/minions.js should detect nearest local .minions root');
   });
 }
 
@@ -1788,7 +1788,7 @@ async function testStateIntegrity() {
   });
 
   await test('All plan JSON files are valid', () => {
-    const plansDir = path.join(SQUAD_DIR, 'plans');
+    const plansDir = path.join(MINIONS_DIR, 'plans');
     if (!fs.existsSync(plansDir)) return;
     const jsonFiles = fs.readdirSync(plansDir).filter(f => f.endsWith('.json'));
     for (const f of jsonFiles) {
@@ -1819,7 +1819,7 @@ async function testStateIntegrity() {
   });
 
   await test('Engine uses lock-backed dispatch mutations', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('function mutateDispatch('),
       'engine should define dispatch lock helper');
     assert.ok(src.includes('mutateJsonFileLocked(DISPATCH_PATH'),
@@ -1827,7 +1827,7 @@ async function testStateIntegrity() {
   });
 
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'dashboard.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('mutateJsonFileLocked'),
       'dashboard should use lock-backed dispatch mutation helper');
     assert.ok(src.includes("defaultValue: { pending: [], active: [], completed: [] }"),
@@ -1835,7 +1835,7 @@ async function testStateIntegrity() {
   });
 
   await test('Hung timeout path uses normal auto-retry flow', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("completeDispatch(item.id, 'error', reason);"),
       'Hung/orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
@@ -1843,7 +1843,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry is gated by retryable failure reason classification', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
     assert.ok(src.includes('retryableFailure && retries < 3'),
@@ -1853,7 +1853,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry writes retry metadata on work items', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('_lastRetryReason'),
       'Auto-retry should persist last retry reason');
     assert.ok(src.includes('_lastRetryAt'),
@@ -1861,13 +1861,13 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry clears completed dedupe marker for dispatch key', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)"),
       'Auto-retry should clear completed dedupe entry for the same dispatch key');
   });
 
   await test('Pending work-item discovery self-heals stale dispatch gates', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('Self-heal: if an item is pending'),
       'Pending discovery should include stale gate self-heal guard');
     assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== key)"),
@@ -1877,7 +1877,7 @@ async function testStateIntegrity() {
   });
 
   await test('Close handler skips duplicate completion after timeout finalization', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('close event ignored — dispatch already completed elsewhere'),
       'close handler should skip duplicate completion if dispatch no longer active');
     assert.ok(src.includes('const stillActive = (dispatchNow.active || []).some(d => d.id === id);'),
@@ -1885,7 +1885,7 @@ async function testStateIntegrity() {
   });
 
   await test('Live log appends heartbeat during silent runs', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('[heartbeat] running — no output for'),
       'engine should append heartbeat lines to live-output when agent is silent');
     assert.ok(src.includes('heartbeatTimer = setInterval('),
@@ -1948,7 +1948,7 @@ async function testEdgeCases() {
   });
 
   await test('engine validateConfig uses filtered getProjects list', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('const projects = getProjects(config);'),
       'validateConfig should use shared.getProjects filtering');
   });
@@ -2049,7 +2049,7 @@ async function testLegacyStatusMigration() {
   });
 
   await test('engine.js runCleanup contains legacy status migration code', () => {
-    const src = fs.readFileSync(path.join(SQUAD_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define LEGACY_DONE_STATUSES');
     assert.ok(src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
@@ -2059,9 +2059,9 @@ async function testLegacyStatusMigration() {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('Squad Unit Tests');
+  console.log('Minions Unit Tests');
   console.log('================');
-  console.log(`Squad dir: ${SQUAD_DIR}\n`);
+  console.log(`Minions dir: ${MINIONS_DIR}\n`);
 
   try {
     // shared.js tests
@@ -2142,7 +2142,7 @@ async function main() {
   console.log(`══════════════════════════════\n`);
 
   // Write results for CI
-  const resultsPath = path.join(SQUAD_DIR, 'engine', 'test-results.json');
+  const resultsPath = path.join(MINIONS_DIR, 'engine', 'test-results.json');
   shared.safeWrite(resultsPath, {
     suite: 'unit',
     timestamp: new Date().toISOString(),

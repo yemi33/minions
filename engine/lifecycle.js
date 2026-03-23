@@ -10,7 +10,7 @@ const { safeRead, safeJson, safeWrite, execSilent, projectPrPath, getPrLinks, ad
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
-  SQUAD_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
+  MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
 // Lazy require — only for log(), ts(), dateStamp() and engine-specific functions
 let _engine = null;
@@ -133,7 +133,7 @@ function checkPlanCompletion(meta, config) {
 
   // Write summary to notes/inbox
   const summaryFile = `prd-completion-${planFile.replace('.json', '')}-${e.ts().slice(0, 10)}.md`;
-  shared.safeWrite(shared.uniquePath(path.join(SQUAD_DIR, 'notes', 'inbox', summaryFile)), summary);
+  shared.safeWrite(shared.uniquePath(path.join(MINIONS_DIR, 'notes', 'inbox', summaryFile)), summary);
   e.log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
 
   // Resolve the primary project for writing new work items (PR, verify)
@@ -327,7 +327,7 @@ function checkPlanCompletion(meta, config) {
 // ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
 function chainPlanToPrd(dispatchItem, meta, config) {
   const e = engine();
-  const planDir = path.join(SQUAD_DIR, 'plans');
+  const planDir = path.join(MINIONS_DIR, 'plans');
   if (!fs.existsSync(planDir)) fs.mkdirSync(planDir, { recursive: true });
 
   let planFileName = meta?.planFileName || meta?.item?._planFileName;
@@ -351,7 +351,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
     // Check plans/ first, then prd/ for .json files
     const jsonPath = fs.existsSync(path.join(planDir, planFileName))
       ? path.join(planDir, planFileName)
-      : path.join(SQUAD_DIR, 'prd', planFileName);
+      : path.join(MINIONS_DIR, 'prd', planFileName);
     const mdPath = path.join(planDir, mdName);
     try {
       const content = fs.readFileSync(jsonPath, 'utf8');
@@ -390,7 +390,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
   }
 
   e.log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
-  const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+  const wiPath = path.join(MINIONS_DIR, 'work-items.json');
   let items = [];
   try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch {}
   items.push({
@@ -416,9 +416,9 @@ function updateWorkItemStatus(meta, status, reason) {
 
   let wiPath;
   if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    wiPath = path.join(SQUAD_DIR, 'work-items.json');
+    wiPath = path.join(MINIONS_DIR, 'work-items.json');
   } else if (meta.source === 'work-item' && meta.project?.name) {
-    wiPath = path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json');
+    wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
   }
   if (!wiPath) return;
 
@@ -476,7 +476,7 @@ function updateWorkItemStatus(meta, status, reason) {
 function syncPrdItemStatus(itemId, status, sourcePlan) {
   if (!itemId) return;
   try {
-    const prdDir = path.join(SQUAD_DIR, 'prd');
+    const prdDir = path.join(MINIONS_DIR, 'prd');
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
@@ -616,13 +616,13 @@ function updatePrAfterReview(agentId, pr, project) {
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
-  target.squadReview = {
+  target.minionsReview = {
     status: 'waiting',
     reviewer: reviewerName,
     reviewedAt: e.ts(),
     note: completedEntry?.task || ''
   };
-  const squadVerdict = target.squadReview.status;
+  const minionsVerdict = target.minionsReview.status;
 
   const authorAgentId = (pr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
@@ -631,18 +631,18 @@ function updatePrAfterReview(agentId, pr, project) {
     if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
     if (!metrics[authorAgentId]._reviewedPrs) metrics[authorAgentId]._reviewedPrs = {};
     const prevVerdict = metrics[authorAgentId]._reviewedPrs[pr.id];
-    if (prevVerdict !== squadVerdict) {
+    if (prevVerdict !== minionsVerdict) {
       if (prevVerdict === 'approved') metrics[authorAgentId].prsApproved = Math.max(0, (metrics[authorAgentId].prsApproved || 0) - 1);
       else if (prevVerdict === 'changes-requested') metrics[authorAgentId].prsRejected = Math.max(0, (metrics[authorAgentId].prsRejected || 0) - 1);
-      if (squadVerdict === 'approved') metrics[authorAgentId].prsApproved++;
-      else if (squadVerdict === 'changes-requested') metrics[authorAgentId].prsRejected++;
-      metrics[authorAgentId]._reviewedPrs[pr.id] = squadVerdict;
+      if (minionsVerdict === 'approved') metrics[authorAgentId].prsApproved++;
+      else if (minionsVerdict === 'changes-requested') metrics[authorAgentId].prsRejected++;
+      metrics[authorAgentId]._reviewedPrs[pr.id] = minionsVerdict;
     }
     shared.safeWrite(metricsPath, metrics);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(SQUAD_DIR, '..'), '.squad', 'pull-requests.json'), prs);
-  e.log('info', `Updated ${pr.id} → squad review: ${squadVerdict} by ${reviewerName}`);
+  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  e.log('info', `Updated ${pr.id} → minions review: ${minionsVerdict} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
 
@@ -656,8 +656,8 @@ function updatePrAfterFix(pr, project, source) {
   if (source === 'pr-human-feedback') {
     // Human feedback fix: clear pendingFix AND reset to waiting for re-review
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
-    target.squadReview = {
-      ...target.squadReview,
+    target.minionsReview = {
+      ...target.minionsReview,
       status: 'waiting',
       note: 'Fixed human feedback, awaiting re-review',
       fixedAt: e.ts()
@@ -665,16 +665,16 @@ function updatePrAfterFix(pr, project, source) {
     e.log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
   } else {
     // Review fix: reset to waiting for re-review
-    target.squadReview = {
-      ...target.squadReview,
+    target.minionsReview = {
+      ...target.minionsReview,
       status: 'waiting',
       note: 'Fixed, awaiting re-review',
       fixedAt: e.ts()
     };
-    e.log('info', `Updated ${pr.id} → squad review: waiting (fix pushed)`);
+    e.log('info', `Updated ${pr.id} → minions review: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(SQUAD_DIR, '..'), '.squad', 'pull-requests.json'), prs);
+  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -708,7 +708,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   const mergedItemId = getPrLinks()[pr.id];
   if (mergedItemId) {
-    const prdDir = path.join(SQUAD_DIR, 'prd');
+    const prdDir = path.join(MINIONS_DIR, 'prd');
     try {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
@@ -791,7 +791,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     const m = (key) => { const r = fm.match(new RegExp(`^${key}:\\s*(.+)$`, 'm')); return r ? r[1].trim() : ''; };
     const name = m('name');
     if (!name) { e.log('warn', `Skill block from ${agentName} has no name, skipping`); continue; }
-    const scope = m('scope') || 'squad';
+    const scope = m('scope') || 'minions';
     const project = m('project');
     let enrichedBlock = block;
     if (!m('author')) enrichedBlock = enrichedBlock.replace('---\n', `---\nauthor: ${agentName}\n`);
@@ -800,7 +800,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
-        const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+        const centralPath = path.join(MINIONS_DIR, 'work-items.json');
         const items = safeJson(centralPath) || [];
         const alreadyExists = items.some(i => i.title === `Add skill: ${name}` && i.status !== 'failed');
         if (!alreadyExists) {
@@ -949,8 +949,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     let retries = (meta.item._retryCount || 0);
     try {
       const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-        ? path.join(SQUAD_DIR, 'work-items.json')
-        : meta.project?.name ? path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        ? path.join(MINIONS_DIR, 'work-items.json')
+        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
@@ -963,8 +963,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       updateWorkItemStatus(meta, 'pending', '');
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(SQUAD_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(SQUAD_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+          ? path.join(MINIONS_DIR, 'work-items.json')
+          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
@@ -1026,7 +1026,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       // Set noPr flag on the work item so the dashboard can surface this
       let wiPath;
       if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
       } else if (meta.project?.localPath) {
         wiPath = shared.projectWorkItemsPath(meta.project);
       }
@@ -1110,3 +1110,4 @@ module.exports = {
   runPostCompletionHooks,
   syncPrdFromPrs,
 };
+

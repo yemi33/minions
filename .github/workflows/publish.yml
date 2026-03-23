@@ -23,7 +23,7 @@ jobs:
       - name: Bump version, update changelog, and publish
         run: |
           # Get the latest published version from npm (or default to 0.1.0)
-          CURRENT=$(npm view @yemi33/squad version 2>/dev/null || echo "0.1.0")
+          CURRENT=$(npm view @yemi33/minions version 2>/dev/null || echo "0.1.0")
           echo "Current npm version: $CURRENT"
 
           # Bump patch
@@ -106,3 +106,4 @@ jobs:
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+

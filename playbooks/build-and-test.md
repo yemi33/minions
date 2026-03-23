@@ -113,7 +113,7 @@ If the build OR tests fail, you MUST create a work item so another agent can fix
 # Read existing items, append new one, write back
 node -e "
 const fs = require('fs');
-const p = '{{project_path}}/.squad/work-items.json';
+const p = '{{project_path}}/.minions/work-items.json';
 const items = JSON.parse(fs.readFileSync(p, 'utf8') || '[]');
 const id = 'W' + String(items.reduce((m,i) => Math.max(m, parseInt((i.id||'').match(/(\d+)$/)?.[1]||0)), 0) + 1).padStart(3, '0');
 items.push({

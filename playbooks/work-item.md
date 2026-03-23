@@ -4,7 +4,7 @@
 
 ## Context
 
-Repository ID: from `.squad/config.json` under `project.repositoryId`
+Repository ID: from `.minions/config.json` under `project.repositoryId`
 Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 Team root: {{team_root}}
 
@@ -45,7 +45,7 @@ Keep branch names lowercase, use hyphens, max 60 chars.
    - title: `feat({{item_id}}): <description>`
 8. **Post implementation notes** as a PR thread comment:
    {{pr_comment_instructions}}
-9. **Add PR to tracker** — append to `{{project_path}}/.squad/pull-requests.json`:
+9. **Add PR to tracker** — append to `{{project_path}}/.minions/pull-requests.json`:
    ```json
    { "id": "PR-<number>", "title": "...", "agent": "{{agent_name}}", "branch": "...", "reviewStatus": "pending", "status": "active", "created": "<date>", "url": "<pr-url>", "prdItems": ["{{item_id}}"] }
    ```

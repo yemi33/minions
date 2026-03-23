@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Squad Mission Control</title>
+<title>Minions Mission Control</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👽</text></svg>">
 <style>
   :root {
@@ -599,7 +599,7 @@
 <body>
 
 <header>
-  <h1>Squad Mission Control <span id="header-projects">—</span></h1>
+  <h1>Minions Mission Control <span id="header-projects">—</span></h1>
   <div style="display:flex;align-items:center;gap:8px;">
     <span class="engine-badge stopped" id="engine-badge">STOPPED</span>
     <div class="timestamp" id="ts">—</div>
@@ -627,7 +627,7 @@
       <textarea id="cc-input" rows="2" placeholder="Ask anything or give a command..." style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;resize:none;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ccSend()}"></textarea>
       <button onclick="ccSend()" style="background:var(--blue);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-end">Send</button>
     </div>
-    <div style="font-size:9px;color:var(--muted);margin-top:4px">Sonnet-powered. Full squad context. Enter to send, Shift+Enter for newline.</div>
+    <div style="font-size:9px;color:var(--muted);margin-top:4px">Sonnet-powered. Full minions context. Enter to send, Shift+Enter for newline.</div>
   </div>
 </div>
 
@@ -637,9 +637,9 @@
 </div>
 
 <div id="setup-banner" style="display:none;margin:16px 24px;padding:16px 20px;background:var(--surface2);border:1px dashed var(--blue);border-radius:8px;text-align:center;color:var(--text)">
-  <div style="font-size:18px;margin-bottom:6px">Welcome to Squad</div>
-  <div style="color:var(--muted);font-size:13px;margin-bottom:10px">Your squad hasn't been initialized yet. Run the following command to get started:</div>
-  <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">squad init</code>
+  <div style="font-size:18px;margin-bottom:6px">Welcome to Minions</div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:10px">Your minions hasn't been initialized yet. Run the following command to get started:</div>
+  <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">minions init</code>
 </div>
 
 <div class="layout">
@@ -662,7 +662,7 @@
   </section>
 
   <section>
-    <h2>Squad Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
+    <h2>Minions Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
     <div class="agents" id="agents-grid">Loading...</div>
   </section>
 
@@ -705,7 +705,7 @@
   </section>
 
   <section>
-    <h2>Squad Skills <span class="count" id="skills-count">0</span></h2>
+    <h2>Minions Skills <span class="count" id="skills-count">0</span></h2>
     <div id="skills-list"><p class="empty">No skills yet. Agents create these when they discover repeatable workflows.</p></div>
   </section>
 
@@ -1897,11 +1897,11 @@ let prPage = 0;
 const PR_PER_PAGE = 3;
 
 function prRow(pr) {
-  // Squad review (agent) state — separate from ADO human review
-  const sq = pr.squadReview || {};
+  // Minions review (agent) state — separate from ADO human review
+  const sq = pr.minionsReview || {};
   const reviewSource = sq.status || pr.reviewStatus || 'pending';
-  const reviewClass = reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'active' : 'draft';
-  const reviewLabel = sq.status ? sq.status + ' (squad)' : (pr.reviewStatus || 'pending');
+  const reviewClass = reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'building' : 'draft';
+  const reviewLabel = sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (pr.reviewStatus || 'pending');
   const buildClass = pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
   const buildLabel = pr.buildStatus || 'none';
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
@@ -1914,7 +1914,7 @@ function prRow(pr) {
     '<td><span class="pr-agent">' + escHtml(pr.agent || '—') + '</span></td>' +
     '<td><span class="pr-branch">' + escHtml(pr.branch || '—') + '</span></td>' +
     '<td><span class="pr-badge ' + reviewClass + '">' + escHtml(reviewLabel) + '</span></td>' +
-    '<td>' + (sq.reviewer ? '<span class="pr-agent" title="' + escHtml(sq.note || '') + '">' + escHtml(sq.reviewer) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
+    '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escHtml(sq.note || '') + '">' + escHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escHtml(sq.reviewer) + '…</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
     '<td><span class="pr-badge ' + buildClass + '">' + escHtml(buildLabel) + '</span></td>' +
     '<td><span class="pr-badge ' + statusClass + '">' + escHtml(statusLabel) + '</span></td>' +
     '<td><span class="pr-date">' + escHtml(pr.created || '—') + '</span></td>' +
@@ -2304,12 +2304,12 @@ async function refresh() {
     const data = await fetch('/api/status').then(r => r.json());
     // Detect fresh install — clear stale browser state if install ID changed
     if (data.installId) {
-      const prev = localStorage.getItem('squad-install-id');
+      const prev = localStorage.getItem('minions-install-id');
       if (prev && prev !== data.installId) {
         localStorage.clear();
-        console.log('Squad: fresh install detected, cleared browser state');
+        console.log('Minions: fresh install detected, cleared browser state');
       }
-      localStorage.setItem('squad-install-id', data.installId);
+      localStorage.setItem('minions-install-id', data.installId);
     }
     document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
     const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
@@ -2351,7 +2351,7 @@ function renderProjects(projects) {
   const list = document.getElementById('projects-list');
   if (!projects.length) {
     header.textContent = 'No projects';
-    list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked. Run: node squad.js add &lt;dir&gt;</span>';
+    list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked. Run: node minions.js add &lt;dir&gt;</span>';
     return;
   }
   header.textContent = projects.map(p => p.name).join(' + ');
@@ -2404,7 +2404,7 @@ function renderMcpServers(servers) {
   '<p style="font-size:10px;color:var(--muted);margin:0">Synced from <code style="color:var(--blue)">~/.claude.json</code> — add MCP servers there to make them available to all agents.</p>';
 }
 
-// -- Squad Skills --
+// -- Minions Skills --
 let _skillsTab = 'all';
 let _skillsPage = 0;
 const SKILLS_PER_PAGE = 5;
@@ -4233,7 +4233,7 @@ async function kbOpenItem(category, file) {
 }
 
 // ─── Command History ──────────────────────────────────────────────────────────
-const CMD_HISTORY_KEY = 'squad-cmd-history';
+const CMD_HISTORY_KEY = 'minions-cmd-history';
 const CMD_HISTORY_MAX = 50;
 let _cmdHistoryIdx = -1; // -1 = not browsing history
 let _cmdHistoryDraft = ''; // saves current draft when browsing
@@ -4430,7 +4430,7 @@ async function _ccDoSend(message, skipUserMsg) {
   const ccStartTime = Date.now();
   const phases = [
     [0, 'Thinking...'],
-    [3000, 'Reading squad context...'],
+    [3000, 'Reading minions context...'],
     [8000, 'Analyzing...'],
     [15000, 'Using tools to dig deeper...'],
     [30000, 'Still working (multi-turn)...'],
@@ -4819,3 +4819,4 @@ async function saveSettings() {
 </script>
 </body>
 </html>
+

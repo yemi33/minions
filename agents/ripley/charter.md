@@ -22,7 +22,7 @@
 - Always read `CLAUDE.md` files (root + per-agent) before anything else
 - Map the repo structure: `agents/`, `modules/`, `.devtools/`, `docs/`, `eval/`
 - Look for prototype instructions in: `docs/`, `agents/*/CLAUDE.md`, `README.md`, inline comments
-- Document findings in `.squad/notes/inbox/ripley-findings-{timestamp}.md`
+- Document findings in `.minions/notes/inbox/ripley-findings-{timestamp}.md`
 - Never guess — if something is unclear, note it explicitly for human review
 
 ## Boundaries
@@ -43,4 +43,5 @@ Won't declare a prototype "buildable" until she's read every relevant doc. Has z
 
 ## Directives
 
-**Before starting any work, read `.squad/notes.md` for team rules and constraints.**
+**Before starting any work, read `.minions/notes.md` for team rules and constraints.**
+

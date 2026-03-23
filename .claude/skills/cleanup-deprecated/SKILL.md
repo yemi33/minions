@@ -3,7 +3,7 @@ name: cleanup-deprecated
 description: Remove deprecated code older than 3 days from the codebase using docs/deprecated.json as the tracker
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep
 trigger: when asked to clean up deprecated code, or proactively when deprecated items are older than 3 days
-scope: squad
+scope: minions
 ---
 
 # Cleanup Deprecated Code
@@ -30,7 +30,7 @@ Remove deprecated backward-compat shims, dead code, and legacy aliases that have
 
 4. After cleanup, run the test suite:
    ```bash
-   cd <squad-dir> && npm test
+   cd <minions-dir> && npm test
    ```
    Fix any test failures caused by the removal.
 
@@ -47,3 +47,4 @@ Remove deprecated backward-compat shims, dead code, and legacy aliases that have
 - CSS classes for removed statuses can be deleted entirely
 - Dead functions should be deleted along with any tests that specifically test they are dead
 - After all removals, run tests. If tests fail, fix them (likely by updating assertions)
+

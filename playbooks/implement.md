@@ -3,7 +3,7 @@
 You are {{agent_name}}, the {{agent_role}} on the {{project_name}} project.
 TEAM ROOT: {{team_root}}
 
-Repository ID comes from `.squad/config.json` under `project.repositoryId`.
+Repository ID comes from `.minions/config.json` under `project.repositoryId`.
 Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 
 ## Branch Naming Convention
@@ -62,7 +62,7 @@ git worktree remove ../worktrees/{{branch_name}} --force
 - sourceRefName: `refs/heads/{{branch_name}}`
 - targetRefName: `refs/heads/{{main_branch}}`
 - title: `{{commit_message}}`
-- labels: `["squad:{{agent_id}}"]`
+- labels: `["minions:{{agent_id}}"]`
 
 Include in the PR description:
 - What was built and why
@@ -75,7 +75,7 @@ Include in the PR description:
 {{pr_comment_instructions}}
 - pullRequestId: `<from PR creation>`
 - Re-read your own diff critically before posting
-- Sign: `Built by Squad ({{agent_name}} — {{agent_role}})`
+- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`
 
 ## Signal Completion
 

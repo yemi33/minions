@@ -1,6 +1,6 @@
 # Command Center
 
-The Command Center (CC) is the squad's conversational AI brain. It powers the dashboard's chat panel, document editing modals, and plan steering — all through a single persistent Sonnet session with full squad awareness.
+The Command Center (CC) is the minions's conversational AI brain. It powers the dashboard's chat panel, document editing modals, and plan steering — all through a single persistent Sonnet session with full minions awareness.
 
 ## Access
 
@@ -21,16 +21,16 @@ Click **New Session** in the drawer header to start fresh.
 
 ### Fresh State Each Turn
 
-The system prompt is baked into the session at creation (persona, rules, action format, tool access). Dynamic squad state is injected as a preamble in each user message, so CC always sees current data even in a resumed session.
+The system prompt is baked into the session at creation (persona, rules, action format, tool access). Dynamic minions state is injected as a preamble in each user message, so CC always sees current data even in a resumed session.
 
 ```
-Turn 1: system prompt (static) + [Current Squad State] + user message
-Turn 2+: [Updated Squad State] + user message  (system prompt already in session)
+Turn 1: system prompt (static) + [Current Minions State] + user message
+Turn 2+: [Updated Minions State] + user message  (system prompt already in session)
 ```
 
 ## What It Knows
 
-Full squad context is injected every turn:
+Full minions context is injected every turn:
 
 | Context | Details |
 |---------|---------|
@@ -72,7 +72,7 @@ All LLM-powered features in the dashboard route through the same CC session:
 This means:
 - A question in the doc chat modal shares context with the CC panel
 - CC remembers what you discussed in a document editing session
-- Doc modals can cross-reference other squad knowledge, PRs, work items
+- Doc modals can cross-reference other minions knowledge, PRs, work items
 - All turns accumulate in the same session
 
 ## Actions
@@ -153,3 +153,4 @@ Frontend
 ## Command Bar
 
 The command bar at the top of the dashboard routes all input to the CC panel. Typing in the command bar opens the CC drawer and sends the message as a CC turn.
+

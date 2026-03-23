@@ -1,25 +1,25 @@
 ---
 name: run-tests
-description: Run the full Squad test suite (unit + integration) and report results
+description: Run the full Minions test suite (unit + integration) and report results
 ---
 
 # Run Tests
 
-Run the Squad test suite and validate system stability.
+Run the Minions test suite and validate system stability.
 
 ## Usage
 
 Invoke this skill to run all tests. It supports three modes:
 
 - **Unit tests only** (fast, no dependencies): `node test/unit.test.js`
-- **Integration tests** (requires dashboard on port 7331): `node test/squad-tests.js`
+- **Integration tests** (requires dashboard on port 7331): `node test/minions-tests.js`
 - **Full suite**: `npm test` (runs unit tests by default)
 
 ## Steps
 
 1. Run unit tests:
    ```bash
-   cd <squad-dir> && node test/unit.test.js
+   cd <minions-dir> && node test/unit.test.js
    ```
 
 2. Check the exit code:
@@ -28,7 +28,7 @@ Invoke this skill to run all tests. It supports three modes:
 
 3. If integration tests are needed (dashboard must be running):
    ```bash
-   node test/squad-tests.js
+   node test/minions-tests.js
    ```
 
 4. For CI pipelines, use:
@@ -55,6 +55,7 @@ The unit test suite covers:
 Add to your CI pipeline:
 ```yaml
 - script: node test/unit.test.js
-  displayName: 'Squad Unit Tests'
-  workingDirectory: $(squadDir)
+  displayName: 'Minions Unit Tests'
+  workingDirectory: $(minionsDir)
 ```
+

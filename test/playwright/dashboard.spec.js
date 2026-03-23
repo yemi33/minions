@@ -1,5 +1,5 @@
 /**
- * Squad Dashboard — Comprehensive E2E Test Suite
+ * Minions Dashboard — Comprehensive E2E Test Suite
  *
  * Covers every section, button, modal, form, and interactive element.
  * Run: npx playwright test
@@ -52,7 +52,7 @@ async function load(page) {
 test.describe('Page Load', () => {
   test('dashboard loads with correct title', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle(/Squad Mission Control/);
+    await expect(page).toHaveTitle(/Minions Mission Control/);
   });
 
   test('header shows engine badge and timestamp', async ({ page }) => {
@@ -93,7 +93,7 @@ test.describe('Page Load', () => {
     const headings = [
       'Work Items', 'PRD', 'Pull Requests', 'Plans',
       'Notes Inbox', 'Team Notes', 'Knowledge Base',
-      'Squad Skills', 'MCP Servers', 'Engine Log',
+      'Minions Skills', 'MCP Servers', 'Engine Log',
       'Recent Completions',
     ];
     for (const h of headings) {
@@ -793,7 +793,7 @@ test.describe('Knowledge Base', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test.describe('Skills & MCP', () => {
-  test('squad skills section renders', async ({ page }) => {
+  test('minions skills section renders', async ({ page }) => {
     await load(page);
     await expect(page.locator('#skills-list')).toBeVisible();
     await expect(page.locator('#skills-count')).toBeAttached();

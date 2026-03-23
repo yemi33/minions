@@ -1,4 +1,4 @@
-# Squad — Future Improvements
+# Minions — Future Improvements
 
 Ordered by difficulty: quick wins first, larger efforts later.
 
@@ -54,10 +54,11 @@ Ordered by difficulty: quick wins first, larger efforts later.
 - [ ] **Live agent output streaming** — real-time stdout/stderr while agents work, not just after completion. Requires WebSocket or SSE from engine to dashboard.
 - [ ] **Task decomposition** — large work items auto-decompose into subtasks via analyst agent (similar to plan-to-prd but for individual work items)
 - [ ] **Artifact browser in dashboard** — browse past dispatch artifacts, view reasoning chains, search across agent outputs
-- [ ] **Temp agent support** — spawn short-lived agents for housekeeping without consuming a permanent squad slot. Minimal system prompt, low maxTurns, auto-cleanup.
+- [ ] **Temp agent support** — spawn short-lived agents for housekeeping without consuming a permanent minions slot. Minimal system prompt, low maxTurns, auto-cleanup.
 - [ ] **Skill editor** — create/edit skills directly in the dashboard UI
 - [ ] **PRD diffing** — show what changed between PRD versions in the dashboard
 
 ## Ambitious (multi-day)
 
 - [ ] **Dedicated ops agent** — permanent 6th agent scoped to housekeeping: cleanup, status checks, metric collection. Never assigned feature work.
+

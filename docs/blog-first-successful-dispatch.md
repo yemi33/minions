@@ -1,7 +1,7 @@
 # Blog: First Successful Agent Dispatch — The Spawn Debugging Saga
 
 **Date:** 2026-03-12
-**Author:** Squad Team + Claude Opus 4.6
+**Author:** Minions Team + Claude Opus 4.6
 **Result:** PR #4959092 created by Dallas on office-bohemia
 
 ## The Task
@@ -125,3 +125,4 @@ engine.js (tick loop)
 ```
 
 No bash. No shell. No metacharacter interpretation. Just Node spawning Node.
+

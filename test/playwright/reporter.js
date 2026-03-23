@@ -35,7 +35,7 @@ class SummaryReporter {
     const duration = ((Date.now() - this.start) / 1000).toFixed(1);
 
     console.log('\n' + '═'.repeat(60));
-    console.log('  SQUAD DASHBOARD — E2E TEST SUMMARY');
+    console.log('  MINIONS DASHBOARD — E2E TEST SUMMARY');
     console.log('═'.repeat(60));
 
     for (const [suite, tests] of Object.entries(this.suites)) {

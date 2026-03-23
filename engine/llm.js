@@ -1,5 +1,5 @@
 /**
- * engine/llm.js — Shared LLM utilities for Squad engine + dashboard
+ * engine/llm.js — Shared LLM utilities for Minions engine + dashboard
  * Provides callLLM() (with optional session resume) and trackEngineUsage().
  */
 
@@ -7,7 +7,7 @@ const path = require('path');
 const shared = require('./shared');
 const { safeRead, safeWrite, safeUnlink, uid, runFile, cleanChildEnv, parseStreamJsonOutput } = shared;
 
-const SQUAD_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = path.resolve(__dirname, '..');
 const ENGINE_DIR = __dirname;
 
 function trackEngineUsage(category, usage) {
@@ -65,7 +65,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
 
     if (sessionId) args.push('--resume', sessionId);
 
-    const proc = runFile(process.execPath, args, { cwd: SQUAD_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+    const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
 
     let stdout = '';
     let stderr = '';
@@ -113,3 +113,4 @@ module.exports = {
   trackEngineUsage,
   isResumeSessionStillValid,
 };
+

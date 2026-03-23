@@ -1,5 +1,5 @@
 /**
- * engine/cli.js — CLI command handlers for Squad engine.
+ * engine/cli.js — CLI command handlers for Minions engine.
  * Extracted from engine.js to reduce monolith size.
  */
 
@@ -9,7 +9,7 @@ const shared = require('./shared');
 const { safeRead, safeJson, safeWrite } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus,
-  SQUAD_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
+  MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
 
 // Lazy require — only for engine-specific functions (log, ts, tick, addToDispatch, etc.)
 let _engine = null;
@@ -128,7 +128,7 @@ const commands = {
           // Sync work item status to dispatched — direct file write to avoid lifecycle lazy init issues
           if (item.meta?.item?.id && item.meta?.project?.localPath) {
             try {
-              const wiPath = path.join(SQUAD_DIR, "projects", item.meta.project.name, "work-items.json");
+              const wiPath = path.join(MINIONS_DIR, "projects", item.meta.project.name, "work-items.json");
               const wiItems = safeJson(wiPath) || [];
               const wi = wiItems.find(w => w.id === item.meta.item.id);
               if (wi && wi.status !== 'dispatched') {
@@ -171,7 +171,7 @@ const commands = {
         if (e.activeProcesses.has(item.id)) continue; // re-attached, skip
 
         const agentId = item.agent;
-        const outputPath = path.join(SQUAD_DIR, 'agents', agentId, 'live-output.log');
+        const outputPath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
         try {
           const stat = fs.statSync(outputPath);
           const output = fs.readFileSync(outputPath, 'utf8');
@@ -202,7 +202,7 @@ const commands = {
               try {
                 const projName = item.meta.project?.name;
                 if (projName) {
-                  const wiPath = path.join(SQUAD_DIR, 'projects', projName, 'work-items.json');
+                  const wiPath = path.join(MINIONS_DIR, 'projects', projName, 'work-items.json');
                   const items = safeJson(wiPath) || [];
                   const wi = items.find(w => w.id === item.meta.item.id);
                   if (wi) {
@@ -249,9 +249,9 @@ const commands = {
       let fixes = 0;
 
       const activeIds = new Set((dispatch.active || []).map(d => d.meta?.item?.id).filter(Boolean));
-      const allWiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      const allWiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const p of projects) {
-        allWiPaths.push(path.join(SQUAD_DIR, "projects", p.name, "work-items.json"));
+        allWiPaths.push(path.join(MINIONS_DIR, "projects", p.name, "work-items.json"));
       }
       for (const wiPath of allWiPaths) {
         try {
@@ -313,7 +313,7 @@ const commands = {
     const e = engine();
     safeWrite(CONTROL_PATH, { state: 'paused', paused_at: e.ts() });
     e.log('info', 'Engine paused');
-    console.log('Engine paused. Run `node .squad/engine.js resume` to resume.');
+    console.log('Engine paused. Run `node .minions/engine.js resume` to resume.');
   },
 
   resume() {
@@ -338,7 +338,7 @@ const commands = {
     const { getProjects } = require('./shared');
     const projects = getProjects(config);
 
-    console.log('\n=== Squad Engine ===\n');
+    console.log('\n=== Minions Engine ===\n');
     console.log(`State: ${control.state}`);
     console.log(`PID: ${control.pid || 'N/A'}`);
     console.log(`Projects: ${projects.map(p => p.name || 'unnamed').join(', ')}`);
@@ -404,7 +404,7 @@ const commands = {
 
   complete(id) {
     if (!id) {
-      console.log('Usage: node .squad/engine.js complete <dispatch-id>');
+      console.log('Usage: node .minions/engine.js complete <dispatch-id>');
       return;
     }
     engine().completeDispatch(id, 'success');
@@ -428,7 +428,7 @@ const commands = {
     const e = engine();
     const prompt = promptParts.join(' ');
     if (!agentId || !prompt) {
-      console.log('Usage: node .squad/engine.js spawn <agent-id> "<prompt>"');
+      console.log('Usage: node .minions/engine.js spawn <agent-id> "<prompt>"');
       return;
     }
 
@@ -458,7 +458,7 @@ const commands = {
   work(title, ...rest) {
     const e = engine();
     if (!title) {
-      console.log('Usage: node .squad/engine.js work "<title>" [options-json]');
+      console.log('Usage: node .minions/engine.js work "<title>" [options-json]');
       console.log('Options: {"type":"implement","priority":"high","agent":"dallas","description":"...","branch":"feature/..."}');
       return;
     }
@@ -504,7 +504,7 @@ const commands = {
   plan(source, projectName) {
     const e = engine();
     if (!source) {
-      console.log('Usage: node .squad/engine.js plan <source> [project]');
+      console.log('Usage: node .minions/engine.js plan <source> [project]');
       console.log('');
       console.log('Source can be:');
       console.log('  - A file path (markdown, txt, or json)');
@@ -525,7 +525,7 @@ const commands = {
       : projects[0];
 
     if (!targetProject) {
-      console.log('No projects configured. Run: node squad.js add <dir>');
+      console.log('No projects configured. Run: node minions.js add <dir>');
       return;
     }
 
@@ -562,7 +562,7 @@ const commands = {
       ado_org: targetProject.adoOrg || 'Unknown',
       ado_project: targetProject.adoProject || 'Unknown',
       repo_name: targetProject.repoName || 'Unknown',
-      team_root: SQUAD_DIR,
+      team_root: MINIONS_DIR,
       date: e.dateStamp(),
       plan_content: planContent,
       plan_summary: planSummary,
@@ -685,7 +685,7 @@ const commands = {
         const itemId = item.meta.item?.id;
         if (itemId) {
           const wiPath = (item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout')
-            ? path.join(SQUAD_DIR, 'work-items.json')
+            ? path.join(MINIONS_DIR, 'work-items.json')
             : item.meta.project?.localPath
               ? shared.projectWorkItemsPath({ localPath: item.meta.project.localPath, name: item.meta.project.name, workSources: config.projects?.find(p => p.name === item.meta.project.name)?.workSources })
               : null;
@@ -751,3 +751,4 @@ const commands = {
 };
 
 module.exports = { handleCommand };
+

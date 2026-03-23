@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * Squad Init — Link a project to the central squad
+ * Minions Init — Link a project to the central minions
  *
  * Usage:
- *   node squad.js <project-dir>           Add a project interactively
- *   node squad.js <project-dir> --remove  Remove a project
- *   node squad.js --list                  List linked projects
+ *   node minions.js <project-dir>           Add a project interactively
+ *   node minions.js <project-dir> --remove  Remove a project
+ *   node minions.js --list                  List linked projects
  *
- * This adds the project to ~/.squad/config.json's projects array.
- * The squad engine and dashboard run centrally from ~/.squad/.
+ * This adds the project to ~/.minions/config.json's projects array.
+ * The minions engine and dashboard run centrally from ~/.minions/.
  * Each project just needs its own work-items.json and pull-requests.json.
  */
 
@@ -18,8 +18,8 @@ const readline = require('readline');
 const { execSync } = require('child_process');
 const { ENGINE_DEFAULTS, DEFAULT_AGENTS, DEFAULT_CLAUDE } = require('./engine/shared');
 
-const SQUAD_HOME = __dirname;
-const CONFIG_PATH = path.join(SQUAD_HOME, 'config.json');
+const MINIONS_HOME = __dirname;
+const CONFIG_PATH = path.join(MINIONS_HOME, 'config.json');
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); } catch {
@@ -142,17 +142,17 @@ function buildProjectEntry({ name, description, localPath, repoHost, repositoryI
     mainBranch: mainBranch || 'main',
     prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName }),
     workSources: {
-      pullRequests: { enabled: true, path: '.squad/pull-requests.json', cooldownMinutes: 30 },
-      workItems: { enabled: true, path: '.squad/work-items.json', cooldownMinutes: 0 },
+      pullRequests: { enabled: true, path: '.minions/pull-requests.json', cooldownMinutes: 30 },
+      workItems: { enabled: true, path: '.minions/work-items.json', cooldownMinutes: 0 },
     }
   };
 }
 
 function ensureProjectStateFiles(projectPath) {
-  const squadDir = path.join(projectPath, '.squad');
-  if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
+  const minionsDir = path.join(projectPath, '.minions');
+  if (!fs.existsSync(minionsDir)) fs.mkdirSync(minionsDir, { recursive: true });
   for (const f of ['pull-requests.json', 'work-items.json']) {
-    const fp = path.join(squadDir, f);
+    const fp = path.join(minionsDir, f);
     if (!fs.existsSync(fp)) fs.writeFileSync(fp, '[]');
   }
 }
@@ -178,9 +178,9 @@ async function addProject(targetDir) {
     config.projects = config.projects.filter(p => path.resolve(p.localPath) !== target);
   }
 
-  console.log('\n  Link Project to Squad');
+  console.log('\n  Link Project to Minions');
   console.log('  ─────────────────────────────');
-  console.log(`  Squad home: ${SQUAD_HOME}`);
+  console.log(`  Minions home: ${MINIONS_HOME}`);
   console.log(`  Project:    ${target}\n`);
 
   const detected = autoDiscover(target);
@@ -205,10 +205,10 @@ async function addProject(targetDir) {
 
   console.log(`\n  Linked "${name}" (${target})`);
   console.log(`  Total projects: ${config.projects.length}`);
-  console.log(`\n  Start the squad from anywhere:`);
-  console.log(`    node ${SQUAD_HOME}/engine.js         # Engine`);
-  console.log(`    node ${SQUAD_HOME}/dashboard.js      # Dashboard`);
-  console.log(`    node ${SQUAD_HOME}/engine.js status   # Status\n`);
+  console.log(`\n  Start the minions from anywhere:`);
+  console.log(`    node ${MINIONS_HOME}/engine.js         # Engine`);
+  console.log(`    node ${MINIONS_HOME}/dashboard.js      # Dashboard`);
+  console.log(`    node ${MINIONS_HOME}/engine.js status   # Status\n`);
 }
 
 function removeProject(targetDir) {
@@ -231,9 +231,9 @@ function removeProject(targetDir) {
 function listProjects() {
   const config = loadConfig();
   const projects = config.projects || [];
-  console.log(`\n  Squad Projects (${projects.length})\n`);
+  console.log(`\n  Minions Projects (${projects.length})\n`);
   if (projects.length === 0) {
-    console.log('  No projects linked. Run: node squad.js <project-dir>\n');
+    console.log('  No projects linked. Run: node minions.js <project-dir>\n');
     rl.close();
     return;
   }
@@ -381,7 +381,7 @@ async function scanAndAdd({ root, depth } = {}) {
 
   saveConfig(config);
   console.log(`\n  Done. ${config.projects.length} total project(s) linked.`);
-  console.log(`  Run "node squad.js list" to verify.\n`);
+  console.log(`  Run "node minions.js list" to verify.\n`);
   rl.close();
 }
 
@@ -389,7 +389,7 @@ async function scanAndAdd({ root, depth } = {}) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 
-async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
+async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
   const removedPlaceholders = cleanupPlaceholderProjects(config);
@@ -399,14 +399,14 @@ async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
     config.agents = { ...DEFAULT_AGENTS };
   }
   saveConfig(config);
-  console.log(`\n  Squad initialized at ${SQUAD_HOME}`);
+  console.log(`\n  Minions initialized at ${MINIONS_HOME}`);
   console.log(`  Config, agents, and engine defaults created.\n`);
   if (removedPlaceholders > 0) {
     console.log(`  Removed ${removedPlaceholders} placeholder project entr${removedPlaceholders === 1 ? 'y' : 'ies'} from config.\n`);
   }
 
   if (skipScan) {
-    console.log('  Skipping repo scan (--skip-scan). Run "node squad.js scan" later to link projects.\n');
+    console.log('  Skipping repo scan (--skip-scan). Run "node minions.js scan" later to link projects.\n');
   } else {
     // Auto-chain into scan
     console.log('  Now let\'s find your repos...\n');
@@ -416,12 +416,12 @@ async function initSquad({ skipScan = false, scanRoot, scanDepth } = {}) {
   rl.close();
 }
 
-function nukeSquad() {
-  console.log('\n  Squad Factory Reset');
+function nukeMinions() {
+  console.log('\n  Minions Factory Reset');
   console.log('  ===================\n');
 
   // 1. Kill engine process
-  const controlPath = path.join(SQUAD_HOME, 'engine', 'control.json');
+  const controlPath = path.join(MINIONS_HOME, 'engine', 'control.json');
   try {
     const control = JSON.parse(fs.readFileSync(controlPath, 'utf8'));
     if (control.pid) {
@@ -448,7 +448,7 @@ function nukeSquad() {
   } catch {}
 
   // 3. Kill all agent processes (PID files in engine/tmp/)
-  const pidDir = path.join(SQUAD_HOME, 'engine', 'tmp');
+  const pidDir = path.join(MINIONS_HOME, 'engine', 'tmp');
   try {
     const pidFiles = fs.readdirSync(pidDir).filter(f => f.endsWith('.pid'));
     for (const f of pidFiles) {
@@ -459,17 +459,17 @@ function nukeSquad() {
     }
   } catch {}
 
-  // 4. Kill any remaining squad-related node processes
+  // 4. Kill any remaining minions-related node processes
   try {
     const { execSync } = require('child_process');
     if (process.platform === 'win32') {
-      // Find node processes with squad in their command line
+      // Find node processes with minions in their command line
       const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
       for (const line of out.split('\n')) {
-        if (line.includes('squad') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
+        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
           const pid = line.split(',').pop()?.trim();
           if (pid && pid !== String(process.pid)) {
-            try { execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, timeout: 5000 }); console.log(`  Killed squad process (PID: ${pid})`); } catch {}
+            try { execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, timeout: 5000 }); console.log(`  Killed minions process (PID: ${pid})`); } catch {}
           }
         }
       }
@@ -483,14 +483,14 @@ function nukeSquad() {
   const engineRuntimeFiles = ['control.json', 'dispatch.json', 'log.json', 'metrics.json', 'cooldowns.json', 'pr-links.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json'];
 
   for (const dir of runtimeDirs) {
-    const p = path.join(SQUAD_HOME, dir);
+    const p = path.join(MINIONS_HOME, dir);
     if (fs.existsSync(p)) { try { fs.rmSync(p, { recursive: true, force: true }); console.log(`  Deleted ${dir}/`); } catch {} }
   }
   for (const f of runtimeFiles) {
-    const p = path.join(SQUAD_HOME, f);
+    const p = path.join(MINIONS_HOME, f);
     if (fs.existsSync(p)) { try { fs.unlinkSync(p); console.log(`  Deleted ${f}`); } catch {} }
   }
-  const engineDir = path.join(SQUAD_HOME, 'engine');
+  const engineDir = path.join(MINIONS_HOME, 'engine');
   for (const f of engineRuntimeFiles) {
     const p = path.join(engineDir, f);
     if (fs.existsSync(p)) { try { fs.unlinkSync(p); console.log(`  Deleted engine/${f}`); } catch {} }
@@ -499,7 +499,7 @@ function nukeSquad() {
   const tmpDir = path.join(engineDir, 'tmp');
   if (fs.existsSync(tmpDir)) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); console.log('  Deleted engine/tmp/'); } catch {} }
   // Clean agent history and output logs (preserve charters)
-  const agentsDir = path.join(SQUAD_HOME, 'agents');
+  const agentsDir = path.join(MINIONS_HOME, 'agents');
   if (fs.existsSync(agentsDir)) {
     for (const agent of fs.readdirSync(agentsDir)) {
       const agentDir = path.join(agentsDir, agent);
@@ -512,7 +512,7 @@ function nukeSquad() {
     console.log('  Cleaned agent state (charters preserved)');
   }
 
-  console.log('  Factory reset complete. Run "squad init" to start fresh.\n');
+  console.log('  Factory reset complete. Run "minions init" to start fresh.\n');
   rl.close();
 }
 
@@ -521,35 +521,36 @@ const commands = {
     const skipScanFlag = rest.includes('--skip-scan');
     const initArgs = rest.filter(arg => arg !== '--skip-scan');
     const [scanRoot, scanDepth] = initArgs;
-    initSquad({ skipScan: skipScanFlag, scanRoot, scanDepth })
+    initMinions({ skipScan: skipScanFlag, scanRoot, scanDepth })
       .catch(e => { console.error(e); process.exit(1); });
   },
   add: () => {
     const dir = rest[0];
-    if (!dir) { console.log('Usage: node squad add <project-dir>'); process.exit(1); }
+    if (!dir) { console.log('Usage: node minions add <project-dir>'); process.exit(1); }
     addProject(dir).catch(e => { console.error(e); process.exit(1); });
   },
   remove: () => {
     const dir = rest[0];
-    if (!dir) { console.log('Usage: node squad remove <project-dir>'); process.exit(1); }
+    if (!dir) { console.log('Usage: node minions remove <project-dir>'); process.exit(1); }
     removeProject(dir);
   },
   list: () => listProjects(),
   scan: () => scanAndAdd({ root: rest[0], depth: rest[1] })
     .catch(e => { console.error(e); process.exit(1); }),
-  nuke: () => nukeSquad(),
+  nuke: () => nukeMinions(),
 };
 
 if (cmd && commands[cmd]) {
   commands[cmd]();
 } else {
-  console.log('\n  Squad — Central AI dev team manager\n');
-  console.log('  Usage: node squad <command>\n');
+  console.log('\n  Minions — Central AI dev team manager\n');
+  console.log('  Usage: node minions <command>\n');
   console.log('  Commands:');
-  console.log('    init                    Initialize squad and scan for repos');
+  console.log('    init                    Initialize minions and scan for repos');
   console.log('    scan [dir] [depth]      Scan for git repos and multi-select to add');
   console.log('    add <project-dir>       Link a single project');
   console.log('    remove <project-dir>    Unlink a project');
   console.log('    list                    List linked projects');
-  console.log('    nuke                    Factory reset — kill all processes, delete ~/.squad/\n');
+  console.log('    nuke                    Factory reset — kill all processes, delete ~/.minions/\n');
 }
+

@@ -26,18 +26,18 @@ if (!command.includes('git commit')) {
 
 // Skip if it's just a git commit --amend or other non-standard commit
 // Also skip if running inside the test suite itself
-if (process.env.SQUAD_TESTING) {
+if (process.env.MINIONS_TESTING) {
   process.exit(0);
 }
 
 process.stderr.write('Running regression tests before commit...\n');
 
 try {
-  const result = execSync('node test/squad-tests.js', {
-    cwd: 'C:/Users/yemishin/.squad',
+  const result = execSync('node test/minions-tests.js', {
+    cwd: 'C:/Users/yemishin/.minions',
     encoding: 'utf8',
     timeout: 60000,
-    env: { ...process.env, SQUAD_TESTING: '1' },
+    env: { ...process.env, MINIONS_TESTING: '1' },
     stdio: ['pipe', 'pipe', 'pipe']
   });
 

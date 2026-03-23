@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Squad Mission Control Dashboard
- * Run: node .squad/dashboard.js
+ * Minions Mission Control Dashboard
+ * Run: node .minions/dashboard.js
  * Opens: http://localhost:7331
  */
 
@@ -18,7 +18,7 @@ const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLo
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
-  SQUAD_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH, PRD_DIR } = queries;
+  MINIONS_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH, PRD_DIR } = queries;
 
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
@@ -31,7 +31,7 @@ function reloadConfig() {
   projectNames = PROJECTS.map(p => p.name || 'Project').join(' + ');
 }
 
-const PLANS_DIR = path.join(SQUAD_DIR, 'plans');
+const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 
 // Resolve a plan/PRD file path: .json files live in prd/, .md files in plans/
 function resolvePlanPath(file) {
@@ -49,8 +49,8 @@ function resolvePlanPath(file) {
   return active;
 }
 
-const HTML_RAW = safeRead(path.join(SQUAD_DIR, 'dashboard.html')) || '';
-const HTML = HTML_RAW.replace('Squad Mission Control', `Squad Mission Control — ${projectNames}`);
+const HTML_RAW = safeRead(path.join(MINIONS_DIR, 'dashboard.html')) || '';
+const HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
 const HTML_GZ = zlib.gzipSync(HTML);
 const HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
 
@@ -58,7 +58,7 @@ const HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest(
 // -- Data Collectors (most moved to engine/queries.js) --
 
 function getVerifyGuides() {
-  const guidesDir = path.join(SQUAD_DIR, 'prd', 'guides');
+  const guidesDir = path.join(MINIONS_DIR, 'prd', 'guides');
   const guides = [];
   try {
     const files = safeReadDir(guidesDir).filter(f => f.endsWith('.md'));
@@ -98,7 +98,7 @@ function getStatus() {
   const now = Date.now();
   if (_statusCache && (now - _statusCacheTs) < STATUS_CACHE_TTL) return _statusCache;
 
-  // Reload config on each cache miss — picks up external changes (squad init, squad add)
+  // Reload config on each cache miss — picks up external changes (minions init, minions add)
   reloadConfig();
 
   const prdInfo = getPrdInfo();
@@ -120,7 +120,7 @@ function getStatus() {
     mcpServers: getMcpServers(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
-    installId: safeRead(path.join(SQUAD_DIR, '.install-id')).trim() || null,
+    installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
     timestamp: new Date().toISOString(),
   };
   _statusCacheTs = now;
@@ -153,18 +153,18 @@ try {
 } catch {}
 
 // Static system prompt — baked into session on creation, never changes
-const CC_STATIC_SYSTEM_PROMPT = `You are the Command Center AI for a software engineering squad called "Squad."
-You have full CLI-level power — you can read, write, edit files, run shell commands, and execute builds just like a Claude Code CLI session. You also have squad-specific actions to delegate work to agents.
+const CC_STATIC_SYSTEM_PROMPT = `You are the Command Center AI for a software engineering minions called "Minions."
+You have full CLI-level power — you can read, write, edit files, run shell commands, and execute builds just like a Claude Code CLI session. You also have minions-specific actions to delegate work to agents.
 
 ## Guardrails — What You Must NOT Touch
 
-These files are the live engine. Modifying them can crash the squad or corrupt state:
-- \`${SQUAD_DIR}/engine.js\` and \`${SQUAD_DIR}/engine/*.js\` — engine source code
-- \`${SQUAD_DIR}/dashboard.js\` and \`${SQUAD_DIR}/dashboard.html\` — dashboard source
-- \`${SQUAD_DIR}/squad.js\` and \`${SQUAD_DIR}/bin/*.js\` — CLI source
-- \`${SQUAD_DIR}/engine/control.json\` — engine state (use CLI commands instead)
-- \`${SQUAD_DIR}/engine/dispatch.json\` — dispatch queue (use actions instead)
-- \`${SQUAD_DIR}/config.json\` — engine config (use actions or CLI instead)
+These files are the live engine. Modifying them can crash the minions or corrupt state:
+- \`${MINIONS_DIR}/engine.js\` and \`${MINIONS_DIR}/engine/*.js\` — engine source code
+- \`${MINIONS_DIR}/dashboard.js\` and \`${MINIONS_DIR}/dashboard.html\` — dashboard source
+- \`${MINIONS_DIR}/minions.js\` and \`${MINIONS_DIR}/bin/*.js\` — CLI source
+- \`${MINIONS_DIR}/engine/control.json\` — engine state (use CLI commands instead)
+- \`${MINIONS_DIR}/engine/dispatch.json\` — dispatch queue (use actions instead)
+- \`${MINIONS_DIR}/config.json\` — engine config (use actions or CLI instead)
 
 You CAN freely read any of these files. You just must not write/edit them.
 
@@ -173,7 +173,7 @@ You CAN freely modify: notes, plans, knowledge base, work items, pull-requests.j
 ## Filesystem — What's Where
 
 \`\`\`
-${SQUAD_DIR}/
+${MINIONS_DIR}/
 ├── config.json                    # Engine + project config (READ ONLY)
 ├── routing.md                     # Agent dispatch routing rules
 ├── notes.md                       # Consolidated team notes
@@ -198,7 +198,7 @@ ${SQUAD_DIR}/
 └── notes/inbox/*.md               # Unconsolidated agent findings
 \`\`\`
 
-Projects are configured in \`config.json\` under \`projects[]\`. Per-project state lives centrally in \`${SQUAD_DIR}/projects/{name}/\` — NOT inside project repos. There are no \`.squad/\` folders inside project repos.
+Projects are configured in \`config.json\` under \`projects[]\`. Per-project state lives centrally in \`${MINIONS_DIR}/projects/{name}/\` — NOT inside project repos. There are no \`.minions/\` folders inside project repos.
 
 ## Direct Execution
 
@@ -214,7 +214,7 @@ You have Bash, Write, Edit, and all standard tools. Use them directly when the t
 - Complex multi-file code changes, PR creation, code review → dispatch to an agent
 - Anything that needs deep codebase knowledge or iterative coding → dispatch to an agent
 
-## Squad Actions (Delegation)
+## Minions Actions (Delegation)
 
 When you want to delegate work to agents, append actions at the END of your response.
 
@@ -242,7 +242,7 @@ Available action types:
 - **delete-work-item**: Delete a work item. Fields: id, source (project name or "central")
 - **plan-edit**: Revise/edit a plan .md file. Fields: file (plan .md filename from plans/), instruction (what to change).
 - **execute-plan**: Execute an existing plan .md file. Fields: file (plan .md filename), project (optional)
-- **file-edit**: Edit any squad file via LLM. Fields: file (path relative to squad dir), instruction (what to change).
+- **file-edit**: Edit any minions file via LLM. Fields: file (path relative to minions dir), instruction (what to change).
 
 ## Rules
 
@@ -252,7 +252,7 @@ Available action types:
 4. Resolve references like "ripley's plan", "the failing PR" by reading files.
 5. When recommending which agent to assign, read \`routing.md\` and agent charters.
 6. Keep responses concise but informative. Use markdown.
-7. **Never modify engine source code** (engine.js, engine/*.js, dashboard.js/html, squad.js, bin/).
+7. **Never modify engine source code** (engine.js, engine/*.js, dashboard.js/html, minions.js, bin/).
 8. **Never push to git remotes** without the user explicitly confirming.
 9. For long-running processes (dev servers), start them detached so they survive after your session.`;
 
@@ -283,7 +283,7 @@ PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs on disk: ${planFiles.lengt
 ### Projects
 ${projects}
 
-For details on any of the above, use your tools to read files under \`${SQUAD_DIR}\`.`;
+For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
 }
 
 function parseCCActions(text) {
@@ -390,7 +390,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
-  const parts = skipStatePreamble ? [] : [`## Current Squad State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`];
+  const parts = skipStatePreamble ? [] : [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`];
   if (extraContext) parts.push(extraContext);
   parts.push(message);
   const prompt = parts.join('\n\n---\n\n');
@@ -525,7 +525,7 @@ function jsonReply(res, code, data, req) {
  * @returns {number} count of removed entries
  */
 function cleanDispatchEntries(matchFn) {
-  const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+  const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
   try {
     let removed = 0;
     mutateJsonFileLocked(dispatchPath, (dispatch) => {
@@ -537,7 +537,7 @@ function cleanDispatchEntries(matchFn) {
         if (queue === 'active') {
           for (const d of dispatch[queue]) {
             if (matchFn(d) && d.agent) {
-              const statusPath = path.join(SQUAD_DIR, 'agents', d.agent, 'status.json');
+              const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
               try {
                 const status = JSON.parse(safeRead(statusPath) || '{}');
                 if (status.pid) try { process.kill(status.pid, 'SIGTERM'); } catch {}
@@ -567,8 +567,8 @@ function spawnEngine() {
   for (const key of Object.keys(childEnv)) {
     if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
   }
-  const engineProc = cpSpawn(process.execPath, [path.join(SQUAD_DIR, 'engine.js'), 'start'], {
-    cwd: SQUAD_DIR, stdio: 'ignore', detached: true, env: childEnv,
+  const engineProc = cpSpawn(process.execPath, [path.join(MINIONS_DIR, 'engine.js'), 'start'], {
+    cwd: MINIONS_DIR, stdio: 'ignore', detached: true, env: childEnv,
   });
   engineProc.unref();
   return engineProc.pid;
@@ -616,7 +616,7 @@ const server = http.createServer(async (req, res) => {
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
 
       // Find the PRD — check active and archive
-      const prdDir = path.join(SQUAD_DIR, 'prd');
+      const prdDir = path.join(MINIONS_DIR, 'prd');
       let prdPath = path.join(prdDir, body.file);
       let fromArchive = false;
       if (!fs.existsSync(prdPath)) {
@@ -666,7 +666,7 @@ const server = http.createServer(async (req, res) => {
       // Find the right file
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -689,7 +689,7 @@ const server = http.createServer(async (req, res) => {
       safeWrite(wiPath, items);
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
-      const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+      const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
       const dispatchKey = sourcePrefix + id;
       try {
@@ -703,7 +703,7 @@ const server = http.createServer(async (req, res) => {
 
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
-        const cooldownPath = path.join(SQUAD_DIR, 'engine', 'cooldowns.json');
+        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
         const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
         if (cooldowns[dispatchKey]) {
           delete cooldowns[dispatchKey];
@@ -725,7 +725,7 @@ const server = http.createServer(async (req, res) => {
       // Find the right work-items file
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -766,7 +766,7 @@ const server = http.createServer(async (req, res) => {
 
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -807,7 +807,7 @@ const server = http.createServer(async (req, res) => {
     try {
       let allArchived = [];
       // Central archive
-      const centralPath = path.join(SQUAD_DIR, 'work-items-archive.json');
+      const centralPath = path.join(MINIONS_DIR, 'work-items-archive.json');
       const central = safeRead(centralPath);
       if (central) { try { allArchived.push(...JSON.parse(central).map(i => ({ ...i, _source: 'central' }))); } catch {} }
       // Project archives
@@ -832,7 +832,7 @@ const server = http.createServer(async (req, res) => {
         wiPath = shared.projectWorkItemsPath(targetProject);
       } else {
         // Write to central queue — agent decides which project
-        wiPath = path.join(SQUAD_DIR, 'work-items.json');
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
       }
       let items = [];
       const existing = safeRead(wiPath);
@@ -857,7 +857,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
-      const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+      const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
       fs.mkdirSync(inboxDir, { recursive: true });
       const today = new Date().toISOString().slice(0, 10);
       const author = body.author || os.userInfo().username;
@@ -875,7 +875,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
       // Write as a work item with type 'plan' — user must explicitly execute plan-to-prd after reviewing
-      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -957,7 +957,7 @@ const server = http.createServer(async (req, res) => {
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
-      const wiSyncPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      const wiSyncPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) {
         wiSyncPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1011,7 +1011,7 @@ const server = http.createServer(async (req, res) => {
         } catch {}
       }
       // Also check central work-items
-      const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
       try {
         const items = safeJson(centralPath);
         const before = items.length;
@@ -1032,7 +1032,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/api/agents/cancel') {
     try {
       const body = await readBody(req);
-      const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+      const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
       const active = dispatch.active || [];
       const cancelled = [];
@@ -1043,7 +1043,7 @@ const server = http.createServer(async (req, res) => {
         if (!matchAgent && !matchTask) continue;
 
         // Kill agent process
-        const statusPath = path.join(SQUAD_DIR, 'agents', d.agent, 'status.json');
+        const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
         try {
           const status = JSON.parse(safeRead(statusPath) || '{}');
           if (status.pid) {
@@ -1080,7 +1080,7 @@ const server = http.createServer(async (req, res) => {
   const liveMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/);
   if (liveMatch && req.method === 'GET') {
     const agentId = liveMatch[1];
-    const livePath = path.join(SQUAD_DIR, 'agents', agentId, 'live-output.log');
+    const livePath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
     const content = safeRead(livePath);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1099,7 +1099,7 @@ const server = http.createServer(async (req, res) => {
   const outputMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/);
   if (outputMatch && req.method === 'GET') {
     const agentId = outputMatch[1];
-    const outputPath = path.join(SQUAD_DIR, 'agents', agentId, 'output.log');
+    const outputPath = path.join(MINIONS_DIR, 'agents', agentId, 'output.log');
     const content = safeRead(outputPath);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1109,7 +1109,7 @@ const server = http.createServer(async (req, res) => {
 
   // GET /api/notes-full — return full notes.md content
   if (req.method === 'GET' && req.url === '/api/notes-full') {
-    const content = safeRead(path.join(SQUAD_DIR, 'notes.md'));
+    const content = safeRead(path.join(MINIONS_DIR, 'notes.md'));
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.end(content || 'No notes file found.');
@@ -1124,7 +1124,7 @@ const server = http.createServer(async (req, res) => {
       const file = body.file || 'notes.md';
       // Only allow saving notes.md (prevent arbitrary file writes)
       if (file !== 'notes.md') return jsonReply(res, 400, { error: 'only notes.md can be edited' });
-      safeWrite(path.join(SQUAD_DIR, file), body.content);
+      safeWrite(path.join(MINIONS_DIR, file), body.content);
       return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1152,7 +1152,7 @@ const server = http.createServer(async (req, res) => {
     if (file.includes('..') || file.includes('/') || file.includes('\\')) {
       return jsonReply(res, 400, { error: 'invalid file name' });
     }
-    const content = safeRead(path.join(SQUAD_DIR, 'knowledge', cat, file));
+    const content = safeRead(path.join(MINIONS_DIR, 'knowledge', cat, file));
     if (content === null) return jsonReply(res, 404, { error: 'not found' });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1171,7 +1171,7 @@ const server = http.createServer(async (req, res) => {
       // Build a manifest of all KB entries with their content
       const manifest = [];
       for (const e of entries) {
-        const content = safeRead(path.join(SQUAD_DIR, 'knowledge', e.cat, e.file));
+        const content = safeRead(path.join(MINIONS_DIR, 'knowledge', e.cat, e.file));
         if (!content) continue;
         manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });
       }
@@ -1228,7 +1228,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
 
       let removed = 0, reclassified = 0, merged = 0;
-      const kbDir = path.join(SQUAD_DIR, 'knowledge');
+      const kbDir = path.join(MINIONS_DIR, 'knowledge');
 
       // If nothing to do, return early
       const totalActions = (plan.remove || []).length + (plan.duplicates || []).reduce((n, d) => n + (d.remove || []).length, 0) + (plan.reclassify || []).length;
@@ -1317,7 +1317,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
-    const centralWi = JSON.parse(safeRead(path.join(SQUAD_DIR, 'work-items.json')) || '[]');
+    const centralWi = JSON.parse(safeRead(path.join(MINIONS_DIR, 'work-items.json')) || '[]');
     const completedPrdFiles = new Set(
       centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
         .map(w => w.planFile)
@@ -1413,7 +1413,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     if (!content) return jsonReply(res, 404, { error: 'not found' });
     // Find the actual file path for Last-Modified header + expose resolved relative path
     const planCandidates = [resolvePlanPath(file), path.join(PRD_DIR, file), path.join(PRD_DIR, 'guides', file), path.join(PLANS_DIR, file), path.join(PRD_DIR, 'archive', file), path.join(PLANS_DIR, 'archive', file)];
-    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); res.setHeader('X-Resolved-Path', path.relative(SQUAD_DIR, p).replace(/\\/g, '/')); break; } } catch {} }
+    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); res.setHeader('X-Resolved-Path', path.relative(MINIONS_DIR, p).replace(/\\/g, '/')); break; } } catch {} }
     const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
     res.setHeader('Content-Type', contentType + '; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
@@ -1438,7 +1438,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Resume paused work items across all projects
       let resumed = 0;
       const resumedItemIds = [];
-      const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1463,7 +1463,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Clear dispatch completed entries for resumed items so they aren't dedup-blocked
       if (resumedItemIds.length > 0) {
-        const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+        const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
         const resumedSet = new Set(resumedItemIds);
         mutateJsonFileLocked(dispatchPath, (dispatch) => {
           dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
@@ -1491,7 +1491,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Propagate pause to materialized work items across all projects
       // But skip items that already have active PRs — those are past the point of pausing
       let paused = 0;
-      const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       const allPrItemIds = new Set();
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
@@ -1504,7 +1504,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           }
         } catch {}
       }
-      const dispatchPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+      const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
       const killedAgents = [];
 
@@ -1527,7 +1527,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
               // Kill the agent working on this item
               const activeEntry = (dispatch.active || []).find(d => d.meta?.dispatchKey?.includes(w.id));
               if (activeEntry) {
-                const statusPath = path.join(SQUAD_DIR, 'agents', activeEntry.agent, 'status.json');
+                const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                 try {
                   const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
                   if (agentStatus.pid) {
@@ -1608,7 +1608,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       try { fs.unlinkSync(prdPath); } catch {}
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
-      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -1643,11 +1643,11 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       if (!body.file.endsWith('.md')) return jsonReply(res, 400, { error: 'only .md plans can be executed' });
-      const planPath = path.join(SQUAD_DIR, 'plans', body.file);
+      const planPath = path.join(MINIONS_DIR, 'plans', body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
 
       // Check if already queued
-      const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
       const items = JSON.parse(safeRead(centralPath) || '[]');
       const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
       if (existing) return jsonReply(res, 200, { ok: true, id: existing.id, alreadyQueued: true });
@@ -1697,7 +1697,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const deletedItemIds = [];
 
       // Scan all work item sources for materialized items from this plan
-      const wiPaths = [{ path: path.join(SQUAD_DIR, 'work-items.json'), label: 'central' }];
+      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
       for (const proj of PROJECTS) {
         wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
       }
@@ -1766,7 +1766,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Clean up materialized work items from all projects + central
       let cleaned = 0;
-      const wiPaths = [path.join(SQUAD_DIR, 'work-items.json')];
+      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1791,7 +1791,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // If deleting a PRD .json, reset the plan-to-prd work item so the source .md reverts to draft
       if (prdSourcePlan) {
         try {
-          const centralPath = path.join(SQUAD_DIR, 'work-items.json');
+          const centralPath = path.join(MINIONS_DIR, 'work-items.json');
           const centralItems = safeJson(centralPath) || [];
           let changed = false;
           for (const w of centralItems) {
@@ -1824,7 +1824,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       safeWrite(planPath, plan);
 
       // Create a work item to revise the plan
-      const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -1921,7 +1921,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Step 3: Clean up pending/failed work items from old PRD
       let reset = 0, kept = 0;
-      const wiPaths = [{ path: path.join(SQUAD_DIR, 'work-items.json'), label: 'central' }];
+      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
       for (const proj of PROJECTS) {
         wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
       }
@@ -1953,7 +1953,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
 
       // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
-      const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+      const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
       let centralItems = [];
       try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
       const wiId = 'W-' + shared.uid();
@@ -1998,7 +1998,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Build the session launch script
       const sessionName = 'plan-review-' + body.file.replace(/\.json$/, '');
-      const sysPrompt = `You are a Plan Advisor helping a human review and refine a feature plan before it gets dispatched to an agent squad.
+      const sysPrompt = `You are a Plan Advisor helping a human review and refine a feature plan before it gets dispatched to an agent minions.
 
 ## Your Role
 - Help the user understand, question, and refine the plan
@@ -2055,7 +2055,7 @@ ${plan.open_questions?.length ? '\n**Open Questions:**\n' + plan.open_questions.
 What would you like to discuss or change? When you're happy, say "approve" and I'll finalize it.`;
 
       // Write session files
-      const sessionDir = path.join(SQUAD_DIR, 'engine');
+      const sessionDir = path.join(MINIONS_DIR, 'engine');
       const id = shared.uid();
       const sysFile = path.join(sessionDir, `plan-discuss-sys-${id}.md`);
       const promptFile = path.join(sessionDir, `plan-discuss-prompt-${id}.md`);
@@ -2063,10 +2063,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       safeWrite(promptFile, initialPrompt);
 
       // Generate the launch command
-      const cmd = `claude --system-prompt "$(cat '${sysFile.replace(/\\/g, '/')}')" --name "${sessionName}" --add-dir "${SQUAD_DIR.replace(/\\/g, '/')}" < "${promptFile.replace(/\\/g, '/')}"`;
+      const cmd = `claude --system-prompt "$(cat '${sysFile.replace(/\\/g, '/')}')" --name "${sessionName}" --add-dir "${MINIONS_DIR.replace(/\\/g, '/')}" < "${promptFile.replace(/\\/g, '/')}"`;
 
       // Also generate a PowerShell-friendly version
-      const psCmd = `Get-Content "${promptFile}" | claude --system-prompt (Get-Content "${sysFile}" -Raw) --name "${sessionName}" --add-dir "${SQUAD_DIR}"`;
+      const psCmd = `Get-Content "${promptFile}" | claude --system-prompt (Get-Content "${sysFile}" -Raw) --name "${sessionName}" --add-dir "${MINIONS_DIR}"`;
 
       return jsonReply(res, 200, {
         ok: true,
@@ -2080,7 +2080,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/doc-chat — routes through CC session for squad-aware doc Q&A + editing
+  // POST /api/doc-chat — routes through CC session for minions-aware doc Q&A + editing
   if (req.method === 'POST' && req.url === '/api/doc-chat') {
     try {
       const body = await readBody(req);
@@ -2092,8 +2092,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       let currentContent = body.document;
       let fullPath = null;
       if (canEdit) {
-        fullPath = path.resolve(SQUAD_DIR, body.filePath);
-        if (!fullPath.startsWith(path.resolve(SQUAD_DIR))) return jsonReply(res, 400, { error: 'path must be under squad directory' });
+        fullPath = path.resolve(MINIONS_DIR, body.filePath);
+        if (!fullPath.startsWith(path.resolve(MINIONS_DIR))) return jsonReply(res, 400, { error: 'path must be under minions directory' });
         const diskContent = safeRead(fullPath);
         if (diskContent !== null) currentContent = diskContent;
       }
@@ -2127,7 +2127,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { name } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
 
-      const inboxPath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
+      const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       const content = safeRead(inboxPath);
       if (!content) return jsonReply(res, 404, { error: 'inbox item not found' });
 
@@ -2136,8 +2136,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const title = titleMatch ? titleMatch[1].trim() : name.replace('.md', '');
 
       // Append to notes.md as a new team note
-      const notesPath = path.join(SQUAD_DIR, 'notes.md');
-      let notes = safeRead(notesPath) || '# Squad Notes\n\n## Active Notes\n';
+      const notesPath = path.join(MINIONS_DIR, 'notes.md');
+      let notes = safeRead(notesPath) || '# Minions Notes\n\n## Active Notes\n';
       const today = new Date().toISOString().slice(0, 10);
       const entry = `\n### ${today}: ${title}\n**By:** Persisted from inbox (${name})\n**What:** ${content.slice(0, 500)}\n\n---\n`;
 
@@ -2152,7 +2152,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       safeWrite(notesPath, notes);
 
       // Move to archive
-      const archiveDir = path.join(SQUAD_DIR, 'notes', 'archive');
+      const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
       try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `persisted-${name}`), _c); safeUnlink(inboxPath); } catch {}
 
@@ -2170,7 +2170,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 400, { error: 'category required: ' + shared.KB_CATEGORIES.join(', ') });
       }
 
-      const inboxPath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
+      const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       const content = safeRead(inboxPath);
       if (!content) return jsonReply(res, 404, { error: 'inbox item not found' });
 
@@ -2184,13 +2184,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       // Write to knowledge base
-      const kbDir = path.join(SQUAD_DIR, 'knowledge', category);
+      const kbDir = path.join(MINIONS_DIR, 'knowledge', category);
       if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
       const kbFile = path.join(kbDir, name);
       safeWrite(kbFile, kbContent);
 
       // Move inbox item to archive
-      const archiveDir = path.join(SQUAD_DIR, 'notes', 'archive');
+      const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
       try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `kb-${category}-${name}`), _c); safeUnlink(inboxPath); } catch {}
 
@@ -2206,7 +2206,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid name' });
       }
-      const filePath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
+      const filePath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       if (!fs.existsSync(filePath)) return jsonReply(res, 404, { error: 'file not found' });
 
       const { execFile } = require('child_process');
@@ -2233,7 +2233,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid name' });
       }
-      const filePath = path.join(SQUAD_DIR, 'notes', 'inbox', name);
+      const filePath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       if (!fs.existsSync(filePath)) return jsonReply(res, 404, { error: 'file not found' });
       safeUnlink(filePath);
       return jsonReply(res, 200, { ok: true });
@@ -2299,7 +2299,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const target = path.resolve(body.path);
       if (!fs.existsSync(target)) return jsonReply(res, 400, { error: 'Directory not found: ' + target });
 
-      const configPath = path.join(SQUAD_DIR, 'config.json');
+      const configPath = path.join(MINIONS_DIR, 'config.json');
       const config = safeJson(configPath);
       if (!config.projects) config.projects = [];
 
@@ -2364,11 +2364,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig(); // Update in-memory project list immediately
 
       // Create project-local state files
-      const squadDir = path.join(target, '.squad');
-      if (!fs.existsSync(squadDir)) fs.mkdirSync(squadDir, { recursive: true });
+      const minionsDir = path.join(target, '.minions');
+      if (!fs.existsSync(minionsDir)) fs.mkdirSync(minionsDir, { recursive: true });
       const stateFiles = { 'pull-requests.json': '[]', 'work-items.json': '[]' };
       for (const [f, content] of Object.entries(stateFiles)) {
-        const fp = path.join(squadDir, f);
+        const fp = path.join(minionsDir, f);
         if (!fs.existsSync(fp)) safeWrite(fp, content);
       }
 
@@ -2386,7 +2386,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true });
   }
 
-  // POST /api/command-center — conversational command center with full squad context
+  // POST /api/command-center — conversational command center with full minions context
   if (req.method === 'POST' && req.url === '/api/command-center') {
     try {
       const body = await readBody(req);
@@ -2442,7 +2442,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   if (req.method === 'GET' && req.url === '/api/settings') {
     try {
       const config = queries.getConfig();
-      const routing = safeRead(path.join(SQUAD_DIR, 'routing.md')) || '';
+      const routing = safeRead(path.join(MINIONS_DIR, 'routing.md')) || '';
       return jsonReply(res, 200, {
         engine: config.engine || {},
         claude: config.claude || {},
@@ -2456,7 +2456,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   if (req.method === 'POST' && req.url === '/api/settings') {
     try {
       const body = await readBody(req);
-      const configPath = path.join(SQUAD_DIR, 'config.json');
+      const configPath = path.join(MINIONS_DIR, 'config.json');
       const config = safeJson(configPath);
 
       if (body.engine) {
@@ -2496,7 +2496,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       if (!body.content) return jsonReply(res, 400, { error: 'content required' });
-      safeWrite(path.join(SQUAD_DIR, 'routing.md'), body.content);
+      safeWrite(path.join(MINIONS_DIR, 'routing.md'), body.content);
       return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
@@ -2558,11 +2558,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 });
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`\n  Squad Mission Control`);
+  console.log(`\n  Minions Mission Control`);
   console.log(`  -----------------------------------`);
   console.log(`  http://localhost:${PORT}`);
   console.log(`\n  Watching:`);
-  console.log(`  Squad dir:  ${SQUAD_DIR}`);
+  console.log(`  Minions dir:  ${MINIONS_DIR}`);
   console.log(`  Projects:   ${PROJECTS.map(p => `${p.name} (${p.localPath})`).join(', ')}`);
   console.log(`\n  Auto-refreshes every 4s. Ctrl+C to stop.\n`);
 
@@ -2620,3 +2620,4 @@ server.on('error', e => {
   }
   process.exit(1);
 });
+

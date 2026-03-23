@@ -1,10 +1,10 @@
 # Self-Improvement Loop
 
-How the squad learns from its own work and gets better over time.
+How the minions learns from its own work and gets better over time.
 
 ## Overview
 
-The squad has six self-improvement mechanisms that form a continuous feedback loop:
+The minions has six self-improvement mechanisms that form a continuous feedback loop:
 
 ```
 Agent completes task
@@ -158,13 +158,13 @@ Without this, review findings only exist in the inbox file under the reviewer's 
 
 ## 4. Human Feedback on PRs
 
-Humans can leave comments on ADO PRs containing `@squad` to trigger fix tasks. The engine polls PR threads every ~6 minutes and dispatches fixes to the PR's author agent.
+Humans can leave comments on ADO PRs containing `@minions` to trigger fix tasks. The engine polls PR threads every ~6 minutes and dispatches fixes to the PR's author agent.
 
 ### Flow
 
 ```
-Human comments on PR with "@squad fix the error handling here"
-  → pollPrHumanComments() detects new @squad comment
+Human comments on PR with "@minions fix the error handling here"
+  → pollPrHumanComments() detects new @minions comment
   → sets pr.humanFeedback.pendingFix = true with comment text
   → discoverFromPrs() sees pendingFix flag
   → dispatches fix task to PR author agent
@@ -174,10 +174,10 @@ Human comments on PR with "@squad fix the error handling here"
 
 ### How it works
 
-- **Trigger:** If you're the only human commenter, **any** comment triggers a fix. If multiple humans are commenting, `@squad` keyword is required to avoid noise
-- **Agent detection:** Comments matching `/\bSquad\s*\(/i` are skipped (agent signature pattern)
+- **Trigger:** If you're the only human commenter, **any** comment triggers a fix. If multiple humans are commenting, `@minions` keyword is required to avoid noise
+- **Agent detection:** Comments matching `/\bMinions\s*\(/i` are skipped (agent signature pattern)
 - **Dedup:** Only comments newer than `pr.humanFeedback.lastProcessedCommentDate` are processed
-- **Multiple comments:** All new `@squad` comments are concatenated into a single fix task
+- **Multiple comments:** All new `@minions` comments are concatenated into a single fix task
 - **After fix:** `pendingFix` is cleared; PR re-enters normal review cycle
 
 ## 5. Quality Metrics
@@ -257,7 +257,7 @@ Metrics are currently informational — displayed in status and dashboard. Plann
 
 When an agent discovers a repeatable multi-step procedure, it can save it as a **skill** — a structured, reusable workflow compatible with Claude Code's skill system. Skills are stored in two locations:
 
-- **Squad-wide:** `~/.squad/skills/<name>.md` — shared across all agents, no PR required
+- **Minions-wide:** `~/.minions/skills/<name>.md` — shared across all agents, no PR required
 - **Project-specific:** `<project>/.claude/skills/<name>/SKILL.md` — scoped to one repo, requires a PR
 
 ### Flow
@@ -341,3 +341,4 @@ When a git merge or rebase produces conflicts in yarn.lock.
 | `agents/<name>/history.md` | Per-agent task history | Engine (post-completion) |
 | `engine/metrics.json` | Quality metrics per agent | Engine (post-completion + review) |
 | `notes/inbox/feedback-*.md` | Review feedback for authors | Engine (post-review) |
+

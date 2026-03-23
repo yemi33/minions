@@ -21,7 +21,7 @@ agents/*/output-*
 agents/*/live-output.log
 agents/*/history.md
 
-# Squad-specific state (stripped for distribution)
+# Minions-specific state (stripped for distribution)
 notes/
 notes.md
 knowledge/
@@ -48,3 +48,4 @@ team.md
 test/
 playwright.config.js
 make-video.js
+

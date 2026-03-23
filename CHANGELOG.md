@@ -147,7 +147,7 @@
 ## 0.1.103 (2026-03-20)
 
 ### Other
-- bin/squad.js
+- bin/minions.js
 - test/unit.test.js
 
 ## 0.1.102 (2026-03-20)
@@ -271,7 +271,7 @@
 ## 0.1.89 (2026-03-19)
 
 ### Other
-- bin/squad.js
+- bin/minions.js
 - test/unit.test.js
 
 ## 0.1.88 (2026-03-19)
@@ -280,7 +280,7 @@
 - engine/shared.js
 
 ### Other
-- squad.js
+- minions.js
 - test/unit.test.js
 
 ## 0.1.87 (2026-03-19)
@@ -315,7 +315,7 @@
 ## 0.1.83 (2026-03-19)
 
 ### Other
-- bin/squad.js
+- bin/minions.js
 - test/unit.test.js
 
 ## 0.1.81 (2026-03-19)
@@ -358,18 +358,18 @@
 - index.html
 
 ### Other
-- bin/squad.js
-- squad.js
+- bin/minions.js
+- minions.js
 
 ## 0.1.78 (2026-03-19)
 
 ### Other
-- squad.js
+- minions.js
 
 ## 0.1.77 (2026-03-19)
 
 ### Other
-- squad.js
+- minions.js
 
 ## 0.1.76 (2026-03-19)
 
@@ -379,7 +379,7 @@
 ## 0.1.75 (2026-03-19)
 
 ### Other
-- squad.js
+- minions.js
 
 ## 0.1.74 (2026-03-19)
 
@@ -549,7 +549,7 @@
 - engine/check-status.js
 
 ### Other
-- squad.js
+- minions.js
 - test/unit.test.js
 
 ## 0.1.59 (2026-03-19)
@@ -561,7 +561,7 @@
 
 ### Other
 - .claude/skills/run-tests/SKILL.md
-- test/squad-tests.js
+- test/minions-tests.js
 - test/unit.test.js
 
 ## 0.1.58 (2026-03-19)
@@ -619,17 +619,17 @@
 ### Other
 - .github/workflows/publish.yml
 - TODO.md
-- bin/squad.js
+- bin/minions.js
 - config.template.json
 - playwright.config.js
 - routing.md
-- squad.js
+- minions.js
 - team.md
 - test/playwright/accept-baseline.js
 - test/playwright/dashboard.spec.js
 - test/playwright/reporter.js
 - test/pre-commit-hook.js
-- test/squad-tests.js
+- test/minions-tests.js
 
 ## 0.1.57 (2026-03-18)
 
@@ -686,39 +686,39 @@
 ### Other
 - .github/workflows/publish.yml
 - TODO.md
-- bin/squad.js
+- bin/minions.js
 - config.template.json
 - playwright.config.js
 - routing.md
-- squad.js
+- minions.js
 - team.md
 - test/playwright/accept-baseline.js
 - test/playwright/dashboard.spec.js
 - test/playwright/reporter.js
 - test/pre-commit-hook.js
-- test/squad-tests.js
+- test/minions-tests.js
 
-All notable changes to Squad are documented here. Versions are auto-published to npm on each sync.
+All notable changes to Minions are documented here. Versions are auto-published to npm on each sync.
 
 ## 0.2.x (2026-03-15)
 
 ### Upgrade System
-- **Smart upgrade** — `squad init --force` now copies new files, updates engine code, and preserves user customizations
-- **Version tracking** — `.squad-version` file tracks installed version for upgrade detection
-- **`squad version`** — shows installed vs package version, prompts to upgrade if outdated
+- **Smart upgrade** — `minions init --force` now copies new files, updates engine code, and preserves user customizations
+- **Version tracking** — `.minions-version` file tracks installed version for upgrade detection
+- **`minions version`** — shows installed vs package version, prompts to upgrade if outdated
 - **Upgrade summary** — shows what was updated, added, and preserved during upgrade
 - **New files auto-added** — new playbooks, charters, and docs added in updates are automatically installed
 
 ### Engine
 - **`/plan` command** — full pipeline: feature description → PRD items → agent dispatch across projects
 - **Shared feature branches** — dependency-aware dispatch ensures agents work on the same branch
-- **Human PR feedback loop** — `@squad` comments on PRs trigger agent fix tasks
-- **Squad-level PRD** — multi-project PRD support
+- **Human PR feedback loop** — `@minions` comments on PRs trigger agent fix tasks
+- **Minions-level PRD** — multi-project PRD support
 - **`/ask` command** — ask questions via Command Center, get answers in inbox
 - **Auto-detect user questions** — drop `ask-*.md` files in inbox, engine routes to an agent
-- **Solo reviewer skip** — `@squad` keyword not required when you're the only reviewer
+- **Solo reviewer skip** — `@minions` keyword not required when you're the only reviewer
 - **Knowledge base** — categorized agent learnings stored in `knowledge/` (architecture, conventions, reviews, etc.)
-- **Command Center** — persistent multi-turn Sonnet sessions with full squad awareness and tool access
+- **Command Center** — persistent multi-turn Sonnet sessions with full minions awareness and tool access
 - **Zombie engine elimination** — EPERM file lock fixes, stale PID detection, Windows-safe atomic writes
 - **ADO token auto-refresh** — handles expired Azure DevOps authentication tokens
 - **Cooldown system** — prevents re-dispatching recently completed work
@@ -733,8 +733,8 @@ All notable changes to Squad are documented here. Versions are auto-published to
 - **Health check endpoint** — `/api/health` for monitoring
 
 ### Distribution
-- **npm package `@yemi33/squad`** — install with `npm install -g @yemi33/squad`
-- **Unified CLI** — single `squad` command for all operations
+- **npm package `@yemi33/minions`** — install with `npm install -g @yemi33/minions`
+- **Unified CLI** — single `minions` command for all operations
 - **GitHub Action** — auto-publishes to npm on every push to master
 - **ADO integration docs** — Azure DevOps MCP server setup instructions in README
 
@@ -750,3 +750,4 @@ All notable changes to Squad are documented here. Versions are auto-published to
 - MCP server auto-sync from Claude Code settings
 - Fan-out dispatch for parallel multi-agent tasks
 - Heartbeat monitoring and automated cleanup
+

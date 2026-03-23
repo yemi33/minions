@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Squad — Multi-Agent AI Dev Team</title>
-<meta name="description" content="5 autonomous AI agents, one engine, one dashboard. Squad orchestrates Claude-powered agents to plan, implement, review, and ship code autonomously.">
+<title>Minions — Multi-Agent AI Dev Team</title>
+<meta name="description" content="5 autonomous AI agents, one engine, one dashboard. Minions orchestrates Claude-powered agents to plan, implement, review, and ship code autonomously.">
 <style>
   :root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #c9d1d9; --muted: #8b949e; --blue: #58a6ff; --green: #3fb950; --yellow: #d29922; --red: #f85149; --purple: #bc8cff; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -82,7 +82,7 @@
 
 <!-- Hero -->
 <div class="hero">
-  <h1>Squad <span>Mission Control</span></h1>
+  <h1>Minions <span>Mission Control</span></h1>
   <p class="tagline">5 autonomous AI agents, one engine, one dashboard. Plan, implement, review, and ship code — hands-free.</p>
   <div class="hero-badges">
     <span class="hero-badge green">Zero Dependencies</span>
@@ -91,7 +91,7 @@
     <span class="hero-badge purple">Self-Improving</span>
   </div>
   <div class="cta">
-    <a href="https://github.com/yemi33/squad" class="cta-primary">View on GitHub</a>
+    <a href="https://github.com/yemi33/minions" class="cta-primary">View on GitHub</a>
     <a href="#quickstart" class="cta-secondary">Quick Start</a>
   </div>
 </div>
@@ -111,7 +111,7 @@
   <div class="feature"><h3>Autonomous Dispatch</h3><p>Engine discovers work from PRDs, PRs, and manual queue — routes to the right agent based on skills and availability.</p></div>
   <div class="feature"><h3>Plan Lifecycle</h3><p>Plan &rarr; Review &rarr; Approve &rarr; PRD &rarr; Execute &rarr; Verify. Human-in-the-loop at every gate.</p></div>
   <div class="feature"><h3>Git Worktree Isolation</h3><p>Each agent works in its own worktree. No conflicts, no cross-contamination, safe parallel execution.</p></div>
-  <div class="feature"><h3>Knowledge Consolidation</h3><p>Agent findings auto-consolidate into team notes and a searchable knowledge base. The squad learns as it works.</p></div>
+  <div class="feature"><h3>Knowledge Consolidation</h3><p>Agent findings auto-consolidate into team notes and a searchable knowledge base. The minions learns as it works.</p></div>
   <div class="feature"><h3>PR Integration</h3><p>Auto-syncs PRs from Azure DevOps and GitHub. Detects review feedback, build failures, and human comments.</p></div>
   <div class="feature"><h3>Live Dashboard</h3><p>Real-time mission control on port 7331. Agent status, work items, PRD progress, dispatch queue, and metrics.</p></div>
 </div>
@@ -122,7 +122,7 @@
   <p>All 5 agents visible with live status — <span class="hl">3 working</span>, <span class="hl">2 idle</span>. Work items sorted by priority, PRD progress with dependency tracking.</p>
   <div class="demo-frame">
     <img src="demo/01-dashboard-overview.gif" alt="Dashboard overview with agents working">
-    <div class="demo-caption">Scrolling through: Squad Members, Work Items (6 items across statuses), and PRD Progress (40% complete)</div>
+    <div class="demo-caption">Scrolling through: Minions Members, Work Items (6 items across statuses), and PRD Progress (40% complete)</div>
   </div>
 </div>
 
@@ -175,10 +175,10 @@
 <div class="quickstart" id="quickstart">
   <h2>Quick Start</h2>
   <pre><span class="comment"># Install</span>
-npm install -g @yemi33/squad
+npm install -g @yemi33/minions
 
 <span class="comment"># Initialize — scans for repos, starts engine + dashboard</span>
-squad init
+minions init
 
 <span class="comment"># Open dashboard</span>
 open http://localhost:7331
@@ -192,7 +192,7 @@ open http://localhost:7331
   <h2>Architecture</h2>
   <pre>
   ┌─────────────────────────────────────────────────────┐
-  │                  ~/.squad/ (central hub)              │
+  │                  ~/.minions/ (central hub)              │
   │                                                       │
   │   engine.js ──── 60s tick loop ────┐                 │
   │       │                            │                  │
@@ -213,8 +213,9 @@ open http://localhost:7331
 </div>
 
 <footer>
-  <p>Squad &mdash; <a href="https://github.com/yemi33/squad">GitHub</a> &mdash; MIT License &mdash; Zero dependencies, powered by Claude</p>
+  <p>Minions &mdash; <a href="https://github.com/yemi33/minions">GitHub</a> &mdash; MIT License &mdash; Zero dependencies, powered by Claude</p>
 </footer>
 
 </body>
 </html>
+

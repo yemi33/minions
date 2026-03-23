@@ -111,7 +111,7 @@ The verify agent and the user can then build and run from these paths.
 
 ## Human Feedback on PRs
 
-After PRs are created, humans can leave comments containing `@squad` to trigger fix tasks. If you're the only human commenting, any comment triggers a fix — no keyword needed. See `pollPrHumanComments()` in `engine/ado.js`.
+After PRs are created, humans can leave comments containing `@minions` to trigger fix tasks. If you're the only human commenting, any comment triggers a fix — no keyword needed. See `pollPrHumanComments()` in `engine/ado.js`.
 
 ## Routing
 
@@ -137,3 +137,4 @@ After PRs are created, humans can leave comments containing `@squad` to trigger 
 | `playbooks/plan-to-prd.md` | Plan → PRD conversion playbook |
 | `engine/lifecycle.js` | `checkPlanCompletion`, `chainPlanToPrd` |
 | `engine.js` | `spawnAgent` (dependency merging), `resolveDependencyBranches` |
+

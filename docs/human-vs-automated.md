@@ -14,12 +14,12 @@
 | Cleanup | Engine (every 10 min) | Engine | — | — |
 | Metrics | Engine (auto-collect) | Engine | You (view) | — |
 | Error recovery | Engine (detect) | — | You (retry/delete) | You |
-| Project linking | You (`squad add/scan`) | — | — | — |
+| Project linking | You (`minions add/scan`) | — | — | — |
 | MCP servers | You (`~/.claude.json`) | Inherited by agents | — | — |
 
 ## The Two Human Gates
 
-Squad is designed around **two approval gates** where humans make decisions. Everything else is automated.
+Minions is designed around **two approval gates** where humans make decisions. Everything else is automated.
 
 ### Gate 1: Plan Approval
 
@@ -34,7 +34,7 @@ This is the only point where you decide *what* gets built.
 
 When agents create PRs, they need human review votes before merging. You can:
 - **Approve** → PR is merge-ready
-- **Comment** → engine detects `@squad` mentions, auto-dispatches a fix task
+- **Comment** → engine detects `@minions` mentions, auto-dispatches a fix task
 - **Request changes** → same as comment, triggers auto-fix
 
 This is the only point where you decide if the *quality* is good enough.
@@ -68,7 +68,7 @@ You kick these off, then they run without you:
 - **Retry** — click retry on failed item, engine re-dispatches fresh
 - **Notes** — `/note` in dashboard, flows through inbox → consolidation → team knowledge
 - **KB promotion** — click "Add to Knowledge Base", pick category, done
-- **Project linking** — `squad scan` or `squad add`, engine discovers work on next tick
+- **Project linking** — `minions scan` or `minions add`, engine discovers work on next tick
 
 ## Human-in-the-Loop
 
@@ -83,7 +83,7 @@ These pause and wait for your input:
 
 These are entirely on you:
 
-- **Project setup** — `squad init`, `squad scan`, `squad add`
+- **Project setup** — `minions init`, `minions scan`, `minions add`
 - **Agent customization** — edit `agents/*/charter.md`, `routing.md`
 - **Config changes** — edit `config.json` (engine settings, projects)
 - **MCP server setup** — add servers to `~/.claude.json`
@@ -105,3 +105,4 @@ If you start the engine and dashboard, then leave:
 9. Worktrees cleaned up after PRs merge
 
 **What blocks:** Plans waiting for approval. PRs waiting for your review vote. Failed tasks waiting for retry. Everything else keeps moving.
+

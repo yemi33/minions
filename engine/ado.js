@@ -1,5 +1,5 @@
 /**
- * engine/ado.js — Azure DevOps integration for Squad engine.
+ * engine/ado.js — Azure DevOps integration for Minions engine.
  * Extracted from engine.js: ADO token management, PR status polling, human comment polling.
  */
 
@@ -224,7 +224,7 @@ async function pollPrHumanComments(config) {
     for (const thread of threads) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
-        if (/\bSquad\s*\(/i.test(comment.content)) continue; // skip squad's own comments
+        if (/\bMinions\s*\(/i.test(comment.content)) continue; // skip minions's own comments
 
         const entry = {
           threadId: thread.id,
@@ -253,7 +253,7 @@ async function pollPrHumanComments(config) {
     const feedbackContent = allHumanComments
       .map(c => {
         const isNew = c.date > cutoff;
-        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`;
+        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@minions\s*/gi, '').trim()}`;
       })
       .join('\n\n---\n\n');
 
@@ -275,7 +275,7 @@ async function pollPrHumanComments(config) {
 // ─── PR Reconciliation Sweep ─────────────────────────────────────────────────
 
 /**
- * Reconcile PRs: find active ADO PRs created by the squad that aren't tracked
+ * Reconcile PRs: find active ADO PRs created by the minions that aren't tracked
  * in pull-requests.json, and add them. Matches PRs to work items by branch name.
  */
 async function reconcilePrs(config) {
@@ -319,7 +319,7 @@ async function reconcilePrs(config) {
     // Load work items to match branches to work item IDs
     const wiPath = shared.projectWorkItemsPath(project);
     const workItems = shared.safeJson(wiPath) || [];
-    const centralWiPath = require('path').join(shared.SQUAD_DIR, 'work-items.json');
+    const centralWiPath = require('path').join(shared.MINIONS_DIR, 'work-items.json');
     const centralItems = shared.safeJson(centralWiPath) || [];
     const allItems = [...workItems, ...centralItems];
 
@@ -380,3 +380,4 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
 };
+

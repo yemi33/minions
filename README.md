@@ -1,10 +1,10 @@
-# Squad — Autonomous AI Development Team
+# Minions — Autonomous AI Development Team
 
-A multi-project AI dev team that runs from `~/.squad/`. Five autonomous agents share a single engine, dashboard, knowledge base, and MCP toolchain — working across any number of linked repos with self-improving workflows.
+A multi-project AI dev team that runs from `~/.minions/`. Five autonomous agents share a single engine, dashboard, knowledge base, and MCP toolchain — working across any number of linked repos with self-improving workflows.
 
 Zero dependencies — uses only Node.js built-in modules.
 
-Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradygaster.github.io/squad/).
+Inspired by and initially scaffolded from [Brady Gaster's Minions](https://bradygaster.github.io/minions/).
 
 ## Prerequisites
 
@@ -17,92 +17,102 @@ Inspired by and initially scaffolded from [Brady Gaster's Squad](https://bradyga
 
 ```bash
 # Install globally from npm
-npm install -g @yemi33/squad
+npm install -g @yemi33/minions
 
-# Bootstrap ~/.squad/ with default config and agents
-squad init
+# Bootstrap ~/.minions/ with default config and agents
+minions init
 
 # Link your first project (interactive — auto-detects from git remote)
-squad add ~/my-project
+minions add ~/my-project
 ```
 
 Or try without installing:
 
 ```bash
-npx @yemi33/squad init
+npx @yemi33/minions init
 ```
 
-No dependencies — Squad uses only Node.js built-in modules.
+No dependencies — Minions uses only Node.js built-in modules.
 
 **Alternative: clone directly**
 ```bash
-git clone https://github.com/yemi33/squad.git ~/.squad
-node ~/.squad/squad.js init
+git clone https://github.com/yemi33/minions.git ~/.minions
+node ~/.minions/minions.js init
 ```
 
 ## Upgrading
 
 ```bash
 # Check if an update is available
-squad version
+minions version
 
 # Update the npm package and apply changes
-npm update -g @yemi33/squad
-squad init --force
+npm update -g @yemi33/minions
+minions init --force
 ```
 
 **What gets updated:** Engine code (`.js`, `.html`), new playbooks, new agent charters, new docs, `CHANGELOG.md`.
 
 **What's preserved:** Your `config.json`, agent history, notes, knowledge base, routing, skills, and any `.md` files you've customized (charters, playbooks). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
 
-Upgrades now skip the interactive repo scan automatically. If you want to re-run discovery later, run `squad scan`. To skip scanning during the very first install, pass `--skip-scan` and link projects manually when ready.
+Upgrades now skip the interactive repo scan automatically. If you want to re-run discovery later, run `minions scan`. To skip scanning during the very first install, pass `--skip-scan` and link projects manually when ready.
 
 **What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
+
+### Migrating from legacy `squad`
+
+If you previously used `squad`, run:
+
+```bash
+minions init --force
+```
+
+`minions` will auto-detect legacy installs (`~/.squad`, `.squad-root`, and `SQUAD_HOME`), migrate state into `~/.minions`, rename legacy runtime markers (`.squad-version` → `.minions-version`), and record the action in `~/.minions/migration.log`.
 
 ## Quick Start
 
 ```bash
 # 1. Init + scan — finds all git repos on your machine, multi-select to add
-squad init
+minions init
 #    → creates config, agents, engine defaults
 #    → scans ~ for git repos (auto-detects host, org, branch)
 #    → shows numbered list, pick with "1,3,5-7" or "all"
 
 # 2. Start the engine (runs in foreground, ticks every 60s)
-squad start
+minions start
 
 # 3. Open the dashboard (separate terminal)
-squad dash
+minions dash
 # → http://localhost:7331
 ```
 
 You can also add/scan repos later:
 ```bash
-squad scan              # Re-scan and add more repos
-squad scan ~/code 4     # Scan specific dir, depth 4
-squad add ~/repo        # Add a single repo interactively
+minions scan              # Re-scan and add more repos
+minions scan ~/code 4     # Scan specific dir, depth 4
+minions add ~/repo        # Add a single repo interactively
 ```
 
 ## Setup via Claude Code
 
-If you use Claude Code as your daily driver, you can set up Squad by prompting Claude directly:
+If you use Claude Code as your daily driver, you can set up Minions by prompting Claude directly:
 
 **First-time setup:**
 ```
-Install squad with `npm install -g @yemi33/squad`, run `squad init`,
-then link my project at ~/my-project with `squad add ~/my-project` —
+Install minions with `npm install -g @yemi33/minions`, run `minions init`,
+then link my project at ~/my-project with `minions add ~/my-project` —
 answer the interactive prompts using what you can auto-detect from the repo.
 ```
 
-**Give the squad work:**
+**Give the minions work:**
 ```
-Add a work item to my squad: "Explore the codebase and document the architecture"
-— run `squad work "Explore the codebase and document the architecture"`
+Add a work item to my minions: "Explore the codebase and document the architecture"
+— run `minions work "Explore the codebase and document the architecture"`
 ```
 
 **Check status:**
 ```
-Run `squad status` and tell me what my squad is doing
+Run `minions status` and tell me what my minions is doing
 ```
 
 ### What happens on first run
@@ -110,43 +120,43 @@ Run `squad status` and tell me what my squad is doing
 1. The engine starts ticking every 60 seconds
 2. It scans each linked project for work: PRs needing review, plan items, queued work items
 3. If it finds work and an agent is idle, it spawns a Claude Code session with the right playbook
-4. You can watch progress on the dashboard or via `squad status`
+4. You can watch progress on the dashboard or via `minions status`
 
-To give the squad its first task, open the dashboard Command Center and add a work item, or use the CLI:
+To give the minions its first task, open the dashboard Command Center and add a work item, or use the CLI:
 ```bash
-squad work "Explore the codebase and document the architecture"
+minions work "Explore the codebase and document the architecture"
 ```
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `squad init` | Bootstrap `~/.squad/` with default agents and config (`--skip-scan` to skip repo scan) |
-| `squad init --force` | Upgrade engine code + add new files (preserves customizations) |
-| `squad version` | Show installed vs package version |
-| `squad scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
-| `squad add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
-| `squad remove <dir>` | Unlink a project |
-| `squad list` | List all linked projects with descriptions |
-| `squad start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
-| `squad stop` | Stop the engine |
-| `squad status` | Show agents, projects, dispatch queue, quality metrics |
-| `squad pause` / `resume` | Pause/resume dispatching |
-| `squad dispatch` | Force a dispatch cycle |
-| `squad discover` | Dry-run work discovery |
-| `squad work <title> [opts]` | Add to central work queue |
-| `squad spawn <agent> <prompt>` | Manually spawn an agent |
-| `squad plan <file\|text> [proj]` | Run a plan |
-| `squad cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
-| `squad dash` | Start web dashboard (default port 7331) |
+| `minions init` | Bootstrap `~/.minions/` with default agents and config (`--skip-scan` to skip repo scan) |
+| `minions init --force` | Upgrade engine code + add new files (preserves customizations) |
+| `minions version` | Show installed vs package version |
+| `minions scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
+| `minions add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
+| `minions remove <dir>` | Unlink a project |
+| `minions list` | List all linked projects with descriptions |
+| `minions start` | Start engine daemon (ticks every 60s, auto-syncs MCP servers) |
+| `minions stop` | Stop the engine |
+| `minions status` | Show agents, projects, dispatch queue, quality metrics |
+| `minions pause` / `resume` | Pause/resume dispatching |
+| `minions dispatch` | Force a dispatch cycle |
+| `minions discover` | Dry-run work discovery |
+| `minions work <title> [opts]` | Add to central work queue |
+| `minions spawn <agent> <prompt>` | Manually spawn an agent |
+| `minions plan <file\|text> [proj]` | Run a plan |
+| `minions cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
+| `minions dash` | Start web dashboard (default port 7331) |
 
-You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squad/dashboard.js`, etc.
+You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.minions/dashboard.js`, etc.
 
 ## Architecture
 
 ```
                     ┌───────────────────────────────┐
-                    │      ~/.squad/ (central)       │
+                    │      ~/.minions/ (central)       │
                     │                               │
                     │  engine.js        ← tick 60s  │
                     │  dashboard.js     ← :7331     │
@@ -189,7 +199,7 @@ You can also run scripts directly: `node ~/.squad/engine.js start`, `node ~/.squ
 - **Supports cross-repo tasks** — a single work item can span multiple repositories
 - **Fan-out dispatch** — broad tasks can be split across all idle agents in parallel, each assigned a project
 - **Auto-syncs PRs** — engine scans agent output for PR URLs and updates project trackers automatically. PR reconciliation sweep catches any missed PRs from ADO.
-- **Human feedback on PRs** — comment on any ADO PR to trigger agent fix tasks. `@squad` keyword required when multiple humans are commenting; optional when you're the only reviewer.
+- **Human feedback on PRs** — comment on any ADO PR to trigger agent fix tasks. `@minions` keyword required when multiple humans are commenting; optional when you're the only reviewer.
 - **Dependency-aware spawning** — when a work item depends on others, the engine merges dependency PR branches into the worktree before the agent starts
 - **Plan verification** — when all PRD items complete, engine auto-dispatches a verify task that builds all repos, starts the webapp, and writes a manual testing guide
 - **PRD modification** — edit plans via doc-chat in the modal, then "Generate PRD" to regenerate. Dashboard supports regenerating, retrying failed items, and syncing edits to pending work items.
@@ -203,7 +213,7 @@ The web dashboard at `http://localhost:7331` provides:
 
 - **Projects bar** — all linked projects with descriptions (hover for full text)
 - **Command Center** — add work items, notes, plans (multi-project via `#project` tags). "make a plan for..." auto-detection, "remember" keyword, `--parallel`/`--shared` flags, arrow key history, Past Commands modal.
-- **Squad Members** — agent cards with status and result summary, click for charter/history/output detail panel
+- **Minions Members** — agent cards with status and result summary, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
 - **Work Items** — paginated table with status, source, type, priority, assigned agent, linked PRs, fan-out badges, and retry button for failed items
 - **Plans** — plan approval UI with Approve / Discuss & Revise / Reject. Click to open in doc-chat modal for natural language editing; "Generate PRD" button appears after edits.
@@ -211,7 +221,7 @@ The web dashboard at `http://localhost:7331` provides:
 - **PRD Progress** — dependency graph view, per-item retry button, "Edit PRD" and "Regenerate" actions. Failed items show green retry button.
 - **Token Usage** — per-agent and per-day token tracking, plus engine LLM usage (command-center, doc-chat, consolidation)
 - **Pull Requests** — paginated PR tracker sorted by date, with review/build/merge status
-- **Skills** — agent-created reusable workflows (squad-wide + project-specific), click to view full content
+- **Skills** — agent-created reusable workflows (minions-wide + project-specific), click to view full content
 - **Notes Inbox + Team Notes** — learnings and team rules, editable from dashboard modal
 - **Dispatch Queue + Engine Log** — active/pending work and audit trail
 - **Agent Metrics** — tasks completed, errors, PRs created/approved/rejected, approval rates
@@ -219,7 +229,7 @@ The web dashboard at `http://localhost:7331` provides:
 
 ## Project Config
 
-When you run `squad add <dir>`, it prompts for project details and saves them to `config.json`. Each project entry looks like:
+When you run `minions add <dir>`, it prompts for project details and saves them to `config.json`. Each project entry looks like:
 
 ```json
 {
@@ -233,8 +243,8 @@ When you run `squad add <dir>`, it prompts for project details and saves them to
   "repoName": "MyProject",
   "mainBranch": "main",
   "workSources": {
-    "pullRequests": { "enabled": true, "path": ".squad/pull-requests.json" },
-    "workItems":    { "enabled": true, "path": ".squad/work-items.json" }
+    "pullRequests": { "enabled": true, "path": ".minions/pull-requests.json" },
+    "workItems":    { "enabled": true, "path": ".minions/work-items.json" }
   }
 }
 ```
@@ -247,11 +257,11 @@ When you run `squad add <dir>`, it prompts for project details and saves them to
 - `adoProject` — ADO project name (leave blank for GitHub).
 - `workSources` — toggle which work sources the engine scans for each project.
 
-Per-project runtime state is stored centrally at `~/.squad/projects/<project-name>/work-items.json` and `~/.squad/projects/<project-name>/pull-requests.json`.
+Per-project runtime state is stored centrally at `~/.minions/projects/<project-name>/work-items.json` and `~/.minions/projects/<project-name>/pull-requests.json`.
 
 ### Auto-Discovery
 
-When you run `squad add`, the tool automatically detects what it can from the repo:
+When you run `minions add`, the tool automatically detects what it can from the repo:
 
 | What | How |
 |------|-----|
@@ -273,7 +283,7 @@ Agents need MCP tools to interact with your repo host (create PRs, post review c
 
 **Example:** If you use Azure DevOps, configure the `azure-ado` MCP server in your Claude Code settings. If you use GitHub, configure the `github` MCP server. Agents will discover and use whichever tools are available.
 
-Manually refresh with `squad mcp-sync`.
+Manually refresh with `minions mcp-sync`.
 
 ### Azure DevOps Users
 
@@ -298,7 +308,7 @@ All work items use the shared `playbooks/work-item.md` template, which provides 
 
 **Per-project** — scoped to one repo. Select a project in the Command Center dropdown.
 
-**Central (auto-route)** — agent gets all project descriptions and decides where to work. Use "Auto (agent decides)" in the dropdown, or `squad work "title"`. Can span multiple repos.
+**Central (auto-route)** — agent gets all project descriptions and decides where to work. Use "Auto (agent decides)" in the dropdown, or `minions work "title"`. Can span multiple repos.
 
 ### Fan-Out (Parallel Multi-Agent)
 
@@ -326,7 +336,7 @@ The engine discovers work from 5 sources, in priority order:
 | Priority | Source | Dispatch Type |
 |----------|--------|---------------|
 | 1 | PRs with changes-requested | `fix` |
-| 2 | PRs with human `@squad` feedback | `fix` |
+| 2 | PRs with human `@minions` feedback | `fix` |
 | 3 | PRs with build failures | `fix` |
 | 4 | PRs pending review | `review` |
 | 5 | PRs needing build/test verification | `test` |
@@ -429,11 +439,11 @@ Agents can run for hours as long as they're producing output. The `heartbeatTime
 | Orphaned worktrees | >24 hours old, no active dispatch references them |
 | Zombie processes | In memory but no matching dispatch |
 
-Manual cleanup: `squad cleanup`
+Manual cleanup: `minions cleanup`
 
 ## Self-Improvement Loop
 
-Six mechanisms that make the squad get better over time:
+Six mechanisms that make the minions get better over time:
 
 ### 1. Learnings Inbox → notes.md
 Agents write findings to `notes/inbox/`. Engine consolidates at 5+ files using Haiku LLM summarization (regex fallback) into `notes.md` — categorized with source references. Auto-prunes at 50KB. Injected into every future playbook.
@@ -493,8 +503,8 @@ Engine behavior is controlled via `config.json`. Key settings:
 The engine and all spawned agents use the Node binary that started the engine (`process.execPath`). After upgrading Node, restart the engine:
 
 ```bash
-squad stop
-squad start
+minions stop
+minions start
 ```
 
 ## Portability
@@ -502,19 +512,19 @@ squad start
 **Portable (works on any machine):** Engine code, dashboard, playbooks, charters, docs, `config.template.json`.
 
 **Machine-specific (reconfigure per machine):**
-- `config.json` — contains absolute paths to project directories. Re-link via `squad add <dir>`.
+- `config.json` — contains absolute paths to project directories. Re-link via `minions add <dir>`.
 
 **Generated at runtime:** routing, notes, knowledge, skills, plans, PRDs, work items, dispatch queue, metrics — all created by the engine as agents work.
 
-To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, then re-run `squad add` for each project.
+To move to a new machine: `npm install -g @yemi33/minions && minions init --force`, then re-run `minions add` for each project.
 
 ## File Layout
 
 ```
-~/.squad/
+~/.minions/
   bin/
-    squad.js             <- Unified CLI entry point (npm package)
-  squad.js               <- Project management: init, add, remove, list
+    minions.js             <- Unified CLI entry point (npm package)
+  minions.js               <- Project management: init, add, remove, list
   engine.js              <- Engine daemon + orchestrator
   engine/
     shared.js            <- Shared utilities: IO, process spawning, config helpers
@@ -534,7 +544,7 @@ To move to a new machine: `npm install -g @yemi33/squad && squad init --force`, 
     cooldowns.json       <- Dispatch cooldown tracking (runtime, generated)
   dashboard.js           <- Web dashboard server
   dashboard.html         <- Dashboard UI (single-file)
-  config.json            <- projects[], agents, engine, claude settings (generated by squad init)
+  config.json            <- projects[], agents, engine, claude settings (generated by minions init)
   config.template.json   <- Template for new installs
   package.json           <- npm package definition
   plans/                 <- Approved plans: plans/{project}-{date}.json (generated)
@@ -580,8 +590,9 @@ Each linked project keeps locally:
     skills/              <- Project-specific skills (requires PR)
 
 Per-project engine state remains centralized:
-  ~/.squad/projects/<project-name>/
+  ~/.minions/projects/<project-name>/
     work-items.json      <- Per-project work queue
     pull-requests.json   <- PR tracker
 ```
+
 

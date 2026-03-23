@@ -153,11 +153,11 @@ For each project worktree:
    - **Do NOT auto-complete** — this is for review only
    - **Mark as draft** if the option is available
 
-3. Add the E2E PR to the project's `.squad/pull-requests.json`:
+3. Add the E2E PR to the project's `.minions/pull-requests.json`:
    ```bash
    node -e "
    const fs = require('fs');
-   const p = '<project-path>/.squad/pull-requests.json';
+   const p = '<project-path>/.minions/pull-requests.json';
    const prs = JSON.parse(fs.readFileSync(p, 'utf8'));
    prs.push({
      id: 'PR-<number>',

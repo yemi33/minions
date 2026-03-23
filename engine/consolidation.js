@@ -1,5 +1,5 @@
 /**
- * engine/consolidation.js — Inbox note consolidation for Squad engine.
+ * engine/consolidation.js — Inbox note consolidation for Minions engine.
  * Extracted from engine.js: LLM-powered and regex fallback consolidation,
  * knowledge base classification, inbox archival.
  */
@@ -11,7 +11,7 @@ const { safeRead, safeWrite, safeUnlink, runFile, cleanChildEnv,
   parseStreamJsonOutput, classifyInboxItem, KB_CATEGORIES } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
-const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR, SQUAD_DIR,
+const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR, MINIONS_DIR,
   NOTES_PATH, KNOWLEDGE_DIR, ARCHIVE_DIR } = queries;
 
 // Lazy require — only for log() and dateStamp() which live on engine.js
@@ -63,7 +63,7 @@ function buildConsolidationPrompt(items, existingNotes, kbPaths) {
     ? '...\n' + existingNotes.slice(-2000)
     : existingNotes;
 
-  return `You are a knowledge manager for a software engineering squad. Your job is to consolidate agent notes into team memory.
+  return `You are a knowledge manager for a software engineering minions. Your job is to consolidate agent notes into team memory.
 
 ## Inbox Notes to Process
 
@@ -155,7 +155,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   e.log('info', 'Spawning Haiku for LLM consolidation...');
 
   const proc = runFile(process.execPath, [spawnScript, promptPath, sysPromptPath, ...args], {
-    cwd: SQUAD_DIR,
+    cwd: MINIONS_DIR,
     stdio: ['pipe', 'pipe', 'pipe'],
     env: cleanChildEnv()
   });
@@ -414,3 +414,4 @@ module.exports = {
   consolidateInbox,
   classifyToKnowledgeBase,
 };
+

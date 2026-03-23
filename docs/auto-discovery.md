@@ -1,6 +1,6 @@
 # Auto-Discovery & Execution Pipeline
 
-How the squad engine finds work and dispatches agents automatically.
+How the minions engine finds work and dispatches agents automatically.
 
 ## The Tick Loop
 
@@ -12,7 +12,7 @@ tick()
   2. consolidateInbox()         Merge learnings into notes.md (Haiku-powered)
   2.5 runCleanup()              Periodic cleanup (every 10 ticks ≈ 10min)
   2.6 pollPrStatus()            Poll ADO for build, review, merge status (every 6 ticks ≈ 6min)
-  2.7 pollPrHumanComments()     Poll PR threads for human @squad comments (every 12 ticks ≈ 12min)
+  2.7 pollPrHumanComments()     Poll PR threads for human @minions comments (every 12 ticks ≈ 12min)
   3. discoverWork()             Scan ALL linked projects for new tasks
   4. updateSnapshot()           Write identity/now.md
   5. dispatch                   Spawn agents for pending items (up to maxConcurrent)
@@ -26,18 +26,18 @@ Before scanning, the engine materializes plans and specs into project work items
 
 ### Source 1: Pull Requests (`discoverFromPrs`)
 
-**Reads:** `~/.squad/projects/<project>/pull-requests.json`
+**Reads:** `~/.minions/projects/<project>/pull-requests.json`
 
 | PR State | Action | Dispatch Type |
 |----------|--------|---------------|
-| Squad review pending/waiting | Queue a code review | `review` |
-| Squad review `changes-requested` | Route back to author for fixes | `fix` |
+| Minions review pending/waiting | Queue a code review | `review` |
+| Minions review `changes-requested` | Route back to author for fixes | `fix` |
 | `buildStatus: "failing"` | Route to any agent for build fix | `fix` |
 Skips PRs where `status !== "active"`.
 
 ### Source 2: PRD Gap Analysis (via `materializePlansAsWorkItems`)
 
-PRD items flow through `materializePlansAsWorkItems()`, which scans `~/.squad/prd/*.json` for PRD files with `missing`/`planned` items and creates work items in the target project's queue.
+PRD items flow through `materializePlansAsWorkItems()`, which scans `~/.minions/prd/*.json` for PRD files with `missing`/`planned` items and creates work items in the target project's queue.
 
 **Reads:** `<project>/docs/prd-gaps.json` (or custom path from `workSources.prd.path`)
 
@@ -48,7 +48,7 @@ PRD items flow through `materializePlansAsWorkItems()`, which scans `~/.squad/pr
 
 ### Source 3: Per-Project Work Items (`discoverFromWorkItems`)
 
-**Reads:** `~/.squad/projects/<project>/work-items.json`
+**Reads:** `~/.minions/projects/<project>/work-items.json`
 
 | Item State | Action | Dispatch Type |
 |------------|--------|---------------|
@@ -58,7 +58,7 @@ After dispatching, the engine writes `status: "dispatched"` back to the item. Th
 
 ### Source 4: Central Work Items (`discoverCentralWorkItems`)
 
-**Reads:** `~/.squad/work-items.json` (central, project-agnostic)
+**Reads:** `~/.minions/work-items.json` (central, project-agnostic)
 
 These are tasks where the agent decides which project to work in. The engine builds a prompt that includes a list of all linked projects with their paths and repo config. The agent then navigates to the appropriate project directory based on the task.
 
@@ -67,7 +67,7 @@ These are tasks where the agent decides which project to work in. The engine bui
 | `status: "queued"` or `"pending"` | Queue based on item's `type` field | Item's `type` (default: `implement`) |
 
 **How it differs from per-project work items:**
-- No `cwd` is set — agent starts in the squad directory and navigates itself
+- No `cwd` is set — agent starts in the minions directory and navigates itself
 - The prompt includes all project paths and **descriptions** so the agent can choose
 - No branch/worktree is pre-created — agent handles this
 - Useful for cross-project tasks, exploratory work, or when you don't know which repo is relevant
@@ -95,13 +95,13 @@ This means a single work item like "Add telemetry to the document creation pipel
 **Adding central work items:**
 - Dashboard Command Center → type your intent (no `#project` = central queue)
 - CLI: `node engine.js work "task title"` (defaults to central queue)
-- Direct edit: `~/.squad/work-items.json`
+- Direct edit: `~/.minions/work-items.json`
 
 ### Materialization: Specs and Plans → Work Items
 
 Before the 3 core sources run, the engine materializes indirect sources into work items:
 
-**Specs** (`materializeSpecsAsWorkItems`): When a PR merges that added/modified `.md` files under `docs/` (configurable via `workSources.specs.filePatterns`), the engine reads each doc and checks for `type: spec` in its frontmatter. Only docs with this marker are treated as actionable specs — regular documentation is ignored. For matching docs, it extracts title/summary/priority and creates implementation work items with `createdBy: 'engine:spec-discovery'`. State tracked in `.squad/spec-tracker.json` to avoid re-processing merged PRs.
+**Specs** (`materializeSpecsAsWorkItems`): When a PR merges that added/modified `.md` files under `docs/` (configurable via `workSources.specs.filePatterns`), the engine reads each doc and checks for `type: spec` in its frontmatter. Only docs with this marker are treated as actionable specs — regular documentation is ignored. For matching docs, it extracts title/summary/priority and creates implementation work items with `createdBy: 'engine:spec-discovery'`. State tracked in `.minions/spec-tracker.json` to avoid re-processing merged PRs.
 
 Example spec frontmatter:
 ```markdown
@@ -114,7 +114,7 @@ priority: high
 ...
 ```
 
-**Plans** (`materializePlansAsWorkItems`): Scans `~/.squad/prd/*.json` for PRD files with `missing`/`planned` items. Creates work items in the target project's queue with `createdBy: 'engine:plan-discovery'`. Work item ID = PRD item ID (e.g. `P-43e5ac28`). Deduped by `id`.
+**Plans** (`materializePlansAsWorkItems`): Scans `~/.minions/prd/*.json` for PRD files with `missing`/`planned` items. Creates work items in the target project's queue with `createdBy: 'engine:plan-discovery'`. Work item ID = PRD item ID (e.g. `P-43e5ac28`). Deduped by `id`.
 
 Both write to `work-items.json` and are picked up by Source 3 on the same or next tick.
 
@@ -227,7 +227,7 @@ Variables injected from config and item metadata:
 - `{{project_name}}`, `{{ado_org}}`, `{{ado_project}}`, `{{repo_name}}` — from project config
 - `{{agent_name}}`, `{{agent_id}}`, `{{agent_role}}` — from agent roster
 - `{{item_id}}`, `{{item_name}}`, `{{branch_name}}`, `{{repo_id}}` — from work item
-- `{{team_root}}` — path to central `.squad/` directory
+- `{{team_root}}` — path to central `.minions/` directory
 
 ### 4. Build System Prompt
 Combines:
@@ -269,8 +269,8 @@ proc.on('close')
   ├─ Sync PRs from output (scan for PR URLs → pull-requests.json)
   │
   ├─ Post-completion hooks:
-  │    review     → update PR squadReview in pull-requests.json, vote on ADO
-  │    fix        → set PR squadReview back to "waiting"
+  │    review     → update PR minionsReview in pull-requests.json, vote on ADO
+  │    fix        → set PR minionsReview back to "waiting"
   │    build-test → (agent auto-files fix work items on failure)
   │
   ├─ Check for learnings in notes/inbox/
@@ -315,7 +315,7 @@ prd-gaps.json ────┤
 pull-requests.json┤  discoverWork()   dispatch.json
 docs/**/*.md (specs)┤  (each tick)      ┌──────────┐
                   │       │           │ pending   │
-~/.squad/         │       │           │ active    │
+~/.minions/         │       │           │ active    │
   work-items.json ┤       │           │ completed │
   plans/*.md ─────┘       ▼           └─────┬────┘
                      addToDispatch()─────────┘
@@ -413,3 +413,4 @@ All discovery behavior is controlled via `config.json`:
 ```
 
 To disable a work source for a project, set `"enabled": false`. To change where the engine looks for PRD or PR files, change the `path` field (resolved relative to `localPath`).
+

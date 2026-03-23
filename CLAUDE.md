@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## What is Squad
+## What is Minions
 
-Squad is a multi-agent orchestration engine that dispatches Claude Code instances as autonomous agents to implement features, review PRs, fix bugs, and manage plans across multiple repositories. It runs as two Node.js processes: an **engine** (tick-based orchestrator) and a **dashboard** (web UI on port 7331).
+Minions is a multi-agent orchestration engine that dispatches Claude Code instances as autonomous agents to implement features, review PRs, fix bugs, and manage plans across multiple repositories. It runs as two Node.js processes: an **engine** (tick-based orchestrator) and a **dashboard** (web UI on port 7331).
 
 ## Commands
 
@@ -142,9 +142,23 @@ Key endpoints: `GET /api/status`, `GET /api/plans`, `POST /api/command`, `POST /
 ## Testing
 
 - **Unit tests** (`test/unit.test.js`): Custom async runner, 190+ tests, no external deps. Uses `createTmpDir()` for isolation.
-- **Integration tests** (`test/squad-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
+- **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 
 ## Deprecation Tracker
 
 `docs/deprecated.json` tracks backward-compat shims with dates. Run `/cleanup-deprecated` to remove items older than 3 days.
+
+**When deprecating code**, always add an entry to `docs/deprecated.json` with:
+```json
+{
+  "id": "short-kebab-id",
+  "summary": "what it is — one line",
+  "deprecated": "YYYY-MM-DD",
+  "reason": "why it was deprecated",
+  "locations": ["file:line description of each backward-compat shim"],
+  "cleanup": "what to do when removing (delete X, replace Y with Z, etc.)"
+}
+```
+This ensures the cleanup skill can find and remove stale shims automatically after 3 days.
+

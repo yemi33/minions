@@ -86,7 +86,7 @@ High-level design decisions and rationale.
 
 ## Important
 
-- Do NOT create a git branch, worktree, or PR — this playbook writes squad-internal state only
+- Do NOT create a git branch, worktree, or PR — this playbook writes minions-internal state only
 - Do NOT modify any files in the project repo
 - The engine will automatically chain this plan into a PRD conversion step
 - Focus on being thorough but actionable — the PRD agent needs clear items to convert

@@ -1,13 +1,13 @@
 /**
- * engine/shared.js — Shared utilities for Squad engine, dashboard, and LLM modules.
+ * engine/shared.js — Shared utilities for Minions engine, dashboard, and LLM modules.
  * Extracted from engine.js and dashboard.js to eliminate duplication.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const SQUAD_DIR = path.resolve(__dirname, '..');
-const PR_LINKS_PATH = path.join(SQUAD_DIR, 'engine', 'pr-links.json');
+const MINIONS_DIR = path.resolve(__dirname, '..');
+const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -227,7 +227,7 @@ function classifyInboxItem(name, content) {
 
 // ── Engine Defaults ─────────────────────────────────────────────────────────
 // Single source of truth for engine configuration defaults.
-// Used by: engine.js, squad.js (init). config.template.json only has the project schema.
+// Used by: engine.js, minions.js (init). config.template.json only has the project schema.
 
 const ENGINE_DEFAULTS = {
   tickInterval: 60000,
@@ -277,11 +277,11 @@ function projectRoot(project) {
   return path.resolve(project.localPath);
 }
 
-// All project state files live centrally in .squad/projects/{name}/
+// All project state files live centrally in .minions/projects/{name}/
 // No state files in project repos — avoids worktree/git interference.
 function projectStateDir(project) {
   const name = project.name || path.basename(project.localPath);
-  const dir = path.join(SQUAD_DIR, 'projects', name);
+  const dir = path.join(MINIONS_DIR, 'projects', name);
   if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -359,7 +359,7 @@ function addPrLink(prId, itemId) {
 }
 
 module.exports = {
-  SQUAD_DIR,
+  MINIONS_DIR,
   PR_LINKS_PATH,
   safeRead,
   safeReadDir,
@@ -394,3 +394,4 @@ module.exports = {
   sanitizeBranch,
   parseSkillFrontmatter,
 };
+

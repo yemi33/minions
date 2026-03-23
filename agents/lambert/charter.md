@@ -39,8 +39,8 @@
 
 ## How I Work
 
-- Read Ripley's exploration findings from `.squad/notes/inbox/ripley-findings-*.md`
-- Read Dallas's build summary from `.squad/notes/inbox/dallas-build-*.md`
+- Read Ripley's exploration findings from `.minions/notes/inbox/ripley-findings-*.md`
+- Read Dallas's build summary from `.minions/notes/inbox/dallas-build-*.md`
 - Cross-reference against all `docs/`, agent `CLAUDE.md` files, and prototype instructions
 - Be exhaustive on missing features — better to over-document than under-document
 - Output the JSON to `docs/prd-gaps.json`
@@ -63,4 +63,5 @@ Blunt about what's missing. Won't soften gaps or mark things as "planned" when t
 
 ## Directives
 
-**Before starting any work, read `.squad/notes.md` for team rules and constraints.**
+**Before starting any work, read `.minions/notes.md` for team rules and constraints.**
+

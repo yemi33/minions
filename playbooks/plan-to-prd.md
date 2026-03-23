@@ -5,7 +5,7 @@ TEAM ROOT: {{team_root}}
 
 ## Your Task
 
-A user has provided a plan. Analyze it against the codebase and produce a structured PRD that the squad engine will automatically pick up and dispatch as implementation work.
+A user has provided a plan. Analyze it against the codebase and produce a structured PRD that the minions engine will automatically pick up and dispatch as implementation work.
 
 ## The Plan
 
@@ -93,7 +93,7 @@ Rules for items:
 ## Important
 
 - Write ONLY the single `.json` PRD file to `{{team_root}}/prd/` — do NOT write any `.md` files there
-- Do NOT create a git branch, worktree, or PR — this playbook writes squad-internal state only
+- Do NOT create a git branch, worktree, or PR — this playbook writes minions-internal state only
 - Do NOT modify any files in the project repo
 - The engine will dispatch implementation agents automatically once the JSON file exists
 - For `shared-branch`: agents commit to a single branch — one PR is created automatically when all items are done

@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const SQUAD_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = path.resolve(__dirname, '..');
 const safeWrite = (p, data) => {
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -21,14 +21,14 @@ if (process.argv.includes('--clean')) {
   console.log('Cleaning demo data...');
 
   // Clean work items
-  const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+  const wiPath = path.join(MINIONS_DIR, 'work-items.json');
   const items = safeJson(wiPath) || [];
   const filtered = items.filter(i => !i._demo);
   safeWrite(wiPath, filtered);
   console.log(`  Work items: removed ${items.length - filtered.length} demo items`);
 
   // Clean plans
-  const plansDir = path.join(SQUAD_DIR, 'plans');
+  const plansDir = path.join(MINIONS_DIR, 'plans');
   if (fs.existsSync(plansDir)) {
     for (const f of fs.readdirSync(plansDir)) {
       if (f.startsWith('demo-')) { fs.unlinkSync(path.join(plansDir, f)); console.log(`  Removed plans/${f}`); }
@@ -36,7 +36,7 @@ if (process.argv.includes('--clean')) {
   }
 
   // Clean PRDs
-  const prdDir = path.join(SQUAD_DIR, 'prd');
+  const prdDir = path.join(MINIONS_DIR, 'prd');
   if (fs.existsSync(prdDir)) {
     for (const f of fs.readdirSync(prdDir)) {
       if (f.startsWith('demo-')) { fs.unlinkSync(path.join(prdDir, f)); console.log(`  Removed prd/${f}`); }
@@ -44,7 +44,7 @@ if (process.argv.includes('--clean')) {
   }
 
   // Clean inbox
-  const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
   if (fs.existsSync(inboxDir)) {
     for (const f of fs.readdirSync(inboxDir)) {
       if (f.startsWith('demo-')) { fs.unlinkSync(path.join(inboxDir, f)); console.log(`  Removed inbox/${f}`); }
@@ -52,14 +52,14 @@ if (process.argv.includes('--clean')) {
   }
 
   // Clean dispatch demo entries
-  const dispPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+  const dispPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
   const disp = safeJson(dispPath) || { pending: [], active: [], completed: [] };
   disp.active = (disp.active || []).filter(d => !d._demo);
   disp.completed = (disp.completed || []).filter(d => !d._demo);
   safeWrite(dispPath, disp);
 
   // Clean live output logs for demo agents
-  const agentsDir = path.join(SQUAD_DIR, 'agents');
+  const agentsDir = path.join(MINIONS_DIR, 'agents');
   for (const agentId of ['dallas', 'ripley', 'rebecca']) {
     const livePath = path.join(agentsDir, agentId, 'live-output.log');
     if (fs.existsSync(livePath)) { try { fs.unlinkSync(livePath); console.log(`  Removed ${agentId}/live-output.log`); } catch {} }
@@ -72,7 +72,7 @@ if (process.argv.includes('--clean')) {
 console.log('Seeding demo data...');
 
 // 1. Work items (mix of statuses)
-const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+const wiPath = path.join(MINIONS_DIR, 'work-items.json');
 const existingItems = safeJson(wiPath) || [];
 const demoItems = [
   { id: 'DEMO-001', title: 'Add OAuth2 authentication middleware', type: 'implement', priority: 'high', status: 'done', created: '2026-03-18T10:00:00Z', createdBy: 'dashboard', completedAt: '2026-03-18T14:30:00Z', dispatched_to: 'dallas', _demo: true },
@@ -87,7 +87,7 @@ safeWrite(wiPath, mergedItems);
 console.log(`  Work items: ${demoItems.length} demo items seeded`);
 
 // 2. Plans (.md draft)
-const plansDir = path.join(SQUAD_DIR, 'plans');
+const plansDir = path.join(MINIONS_DIR, 'plans');
 if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
 safeWrite(path.join(plansDir, 'demo-auth-plan.md'), `# Plan: User Authentication & Authorization
 
@@ -115,7 +115,7 @@ Implement comprehensive authentication and authorization for the OfficeAgent pla
 console.log('  Plans: demo-auth-plan.md created');
 
 // 3. PRD (.json with awaiting-approval)
-const prdDir = path.join(SQUAD_DIR, 'prd');
+const prdDir = path.join(MINIONS_DIR, 'prd');
 if (!fs.existsSync(prdDir)) fs.mkdirSync(prdDir, { recursive: true });
 safeWrite(path.join(prdDir, 'demo-auth-prd.json'), {
   project: 'OfficeAgent',
@@ -137,7 +137,7 @@ safeWrite(path.join(prdDir, 'demo-auth-prd.json'), {
 console.log('  PRD: demo-auth-prd.json created (awaiting-approval)');
 
 // 4. Inbox notes
-const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
 if (!fs.existsSync(inboxDir)) fs.mkdirSync(inboxDir, { recursive: true });
 safeWrite(path.join(inboxDir, 'demo-dallas-2026-03-18.md'), `# Auth Middleware Implementation Notes
 
@@ -168,7 +168,7 @@ The middleware chain pattern established here should become the standard for all
 console.log('  Inbox: 2 demo notes created');
 
 // 5. Dispatch completed entries (for agent history)
-const dispPath = path.join(SQUAD_DIR, 'engine', 'dispatch.json');
+const dispPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
 const disp = safeJson(dispPath) || { pending: [], active: [], completed: [] };
 // Active dispatches — these make agents show as "working"
 const now = new Date().toISOString();
@@ -189,7 +189,7 @@ safeWrite(dispPath, disp);
 console.log(`  Dispatch: ${demoActive.length} active + ${demoCompleted.length} completed seeded`);
 
 // 6. Live output logs — makes working agents show recent activity
-const agentsDir = path.join(SQUAD_DIR, 'agents');
+const agentsDir = path.join(MINIONS_DIR, 'agents');
 const liveOutputs = {
   dallas: `# Live output for dallas — demo-a1
 # Started: ${now}

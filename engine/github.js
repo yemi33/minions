@@ -1,11 +1,11 @@
 /**
- * engine/github.js — GitHub integration for Squad engine.
+ * engine/github.js — GitHub integration for Minions engine.
  * Parallel to ado.js: PR status polling, comment polling, reconciliation for GitHub-hosted projects.
  * Uses `gh` CLI for all GitHub API calls.
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, SQUAD_DIR } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -90,7 +90,7 @@ async function pollPrStatus(config) {
 
     let updated = false;
 
-    // Map GitHub PR state to squad status
+    // Map GitHub PR state to minions status
     let newStatus = pr.status;
     if (prData.merged) newStatus = 'merged';
     else if (prData.state === 'closed') newStatus = 'abandoned';
@@ -189,10 +189,10 @@ async function pollPrHumanComments(config) {
       ...((reviewComments || []).map(c => ({ ...c, _type: 'review' })))
     ];
 
-    // Filter out bot comments and squad's own comments
+    // Filter out bot comments and minions's own comments
     const humanComments = allComments.filter(c => {
       if (c.user?.type === 'Bot') return false;
-      if (/\bSquad\s*\(/i.test(c.body || '')) return false;
+      if (/\bMinions\s*\(/i.test(c.body || '')) return false;
       return true;
     });
 
@@ -212,7 +212,7 @@ async function pollPrHumanComments(config) {
       };
       allCommentEntries.push(entry);
 
-      // Any new comment triggers a fix — no @squad filter needed
+      // Any new comment triggers a fix — no @minions filter needed
       if (date > cutoff) {
         newComments.push(entry);
       }
@@ -229,7 +229,7 @@ async function pollPrHumanComments(config) {
     const feedbackContent = allCommentEntries
       .map(c => {
         const isNew = c.date > cutoff;
-        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@squad\s*/gi, '').trim()}`;
+        return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@minions\s*/gi, '').trim()}`;
       })
       .join('\n\n---\n\n');
 
@@ -279,7 +279,7 @@ async function reconcilePrs(config) {
     // Load work items to match branches
     const wiPath = projectWorkItemsPath(project);
     const workItems = safeJson(wiPath) || [];
-    const centralWiPath = path.join(SQUAD_DIR, 'work-items.json');
+    const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
     const centralItems = safeJson(centralWiPath) || [];
     const allItems = [...workItems, ...centralItems];
 
@@ -328,3 +328,4 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
 };
+

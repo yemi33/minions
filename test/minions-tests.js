@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Squad System Regression Tests
+ * Minions System Regression Tests
  *
- * Run: node test/squad-tests.js
+ * Run: node test/minions-tests.js
  *
  * Tests against the live dashboard API and verifies file-system state.
  * Dashboard must be running on port 7331.
@@ -14,9 +14,9 @@ const path = require('path');
 const assert = require('assert');
 
 const BASE = 'http://localhost:7331';
-const SQUAD_DIR = path.resolve(__dirname, '..');
-const PLANS_DIR = path.join(SQUAD_DIR, 'plans');
-const ENGINE_DIR = path.join(SQUAD_DIR, 'engine');
+const MINIONS_DIR = path.resolve(__dirname, '..');
+const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
+const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -151,7 +151,7 @@ async function testWorkItemCrud() {
   await test('POST /api/work-items/retry resets status', async () => {
     // Create a failed item
     const cr = await POST('/api/work-items', { title: 'Retry test', type: 'implement' });
-    const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+    const wiPath = path.join(MINIONS_DIR, 'work-items.json');
     const items = readJson(wiPath);
     const item = items.find(i => i.id === cr.json.id);
     item.status = 'failed';
@@ -176,7 +176,7 @@ async function testWorkItemCrud() {
     const cr = await POST('/api/work-items', { title: 'Delete test', type: 'implement' });
     const r = await POST('/api/work-items/delete', { id: cr.json.id, source: 'central' });
     assert.strictEqual(r.status, 200);
-    const items = readJson(path.join(SQUAD_DIR, 'work-items.json'));
+    const items = readJson(path.join(MINIONS_DIR, 'work-items.json'));
     assert.ok(!items.find(i => i.id === cr.json.id), 'item still exists');
   });
 }
@@ -188,7 +188,7 @@ async function testPlanFlow() {
     const r = await POST('/api/plan', { title: 'Test plan', priority: 'medium' });
     assert.strictEqual(r.status, 200);
     assert.ok(r.json.id);
-    const items = readJson(path.join(SQUAD_DIR, 'work-items.json'));
+    const items = readJson(path.join(MINIONS_DIR, 'work-items.json'));
     const item = items.find(i => i.id === r.json.id);
     assert.strictEqual(item.type, 'plan');
     assert.strictEqual(item.chain, 'plan-to-prd');
@@ -204,7 +204,7 @@ async function testPlanFlow() {
       const r = await POST('/api/plans/execute', { file: 'test-execute.md' });
       assert.strictEqual(r.status, 200);
       assert.ok(r.json.id);
-      const items = readJson(path.join(SQUAD_DIR, 'work-items.json'));
+      const items = readJson(path.join(MINIONS_DIR, 'work-items.json'));
       const item = items.find(i => i.id === r.json.id);
       assert.strictEqual(item.type, 'plan-to-prd');
       assert.strictEqual(item.planFile, 'test-execute.md');
@@ -254,7 +254,7 @@ async function testPlanFlow() {
       missing_features: [{ id: 'T001', name: 'Test', status: 'missing', priority: 'medium' }]
     });
     // Seed a work item referencing this plan
-    const wiPath = path.join(SQUAD_DIR, 'work-items.json');
+    const wiPath = path.join(MINIONS_DIR, 'work-items.json');
     const items = readJson(wiPath);
     items.push({ id: 'T001', sourcePlan: testFile, status: 'pending', title: 'Test' });
     writeJson(wiPath, items);
@@ -347,7 +347,7 @@ async function testInboxAndNotes() {
     const r = await POST('/api/notes', { title: 'Test note', what: 'Testing', context: 'test' });
     assert.strictEqual(r.status, 200);
     // Verify file exists in inbox
-    const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+    const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
     const files = fs.readdirSync(inboxDir).filter(f => f.includes('test-note'));
     assert.ok(files.length > 0, 'no inbox file created');
     // Clean up
@@ -355,7 +355,7 @@ async function testInboxAndNotes() {
   });
 
   await test('POST /api/inbox/delete removes file', async () => {
-    const inboxDir = path.join(SQUAD_DIR, 'notes', 'inbox');
+    const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
     const testFile = 'test-delete-note.md';
     fs.writeFileSync(path.join(inboxDir, testFile), 'test');
     const r = await POST('/api/inbox/delete', { name: testFile });
@@ -385,12 +385,12 @@ async function testDispatchIntegrity() {
     if (!dispatch || !dispatch.active) return;
     // Collect all work item IDs
     const allIds = new Set();
-    const centralItems = readJson(path.join(SQUAD_DIR, 'work-items.json')) || [];
+    const centralItems = readJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
     centralItems.forEach(i => allIds.add(i.id));
-    const config = readJson(path.join(SQUAD_DIR, 'config.json'));
+    const config = readJson(path.join(MINIONS_DIR, 'config.json'));
     for (const proj of (config.projects || [])) {
       try {
-        const items = readJson(path.join(proj.localPath, '.squad', 'work-items.json')) || [];
+        const items = readJson(path.join(proj.localPath, '.minions', 'work-items.json')) || [];
         items.forEach(i => allIds.add(i.id));
       } catch {}
     }
@@ -412,7 +412,7 @@ async function testDataIntegrity() {
   console.log('\n── Data Integrity ──');
 
   await test('config.json is valid', async () => {
-    const config = readJson(path.join(SQUAD_DIR, 'config.json'));
+    const config = readJson(path.join(MINIONS_DIR, 'config.json'));
     assert.ok(config, 'config.json missing or invalid');
     assert.ok(config.agents, 'no agents defined');
     assert.ok(Array.isArray(config.projects), 'projects not array');
@@ -454,10 +454,10 @@ async function testDataIntegrity() {
     if (!r.json.prdProgress || !r.json.prdProgress.items) return;
     const statusMap = { 'done': 'implemented', 'failed': 'failed', 'dispatched': 'in-progress', 'pending': 'missing' };
     const projectWi = [];
-    const config = readJson(path.join(SQUAD_DIR, 'config.json'));
+    const config = readJson(path.join(MINIONS_DIR, 'config.json'));
     for (const proj of (config.projects || [])) {
       try {
-        const items = readJson(path.join(proj.localPath, '.squad', 'work-items.json')) || [];
+        const items = readJson(path.join(proj.localPath, '.minions', 'work-items.json')) || [];
         projectWi.push(...items);
       } catch {}
     }
@@ -475,10 +475,10 @@ async function testDataIntegrity() {
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('Squad Regression Tests');
+  console.log('Minions Regression Tests');
   console.log('======================');
   console.log(`Dashboard: ${BASE}`);
-  console.log(`Squad dir: ${SQUAD_DIR}\n`);
+  console.log(`Minions dir: ${MINIONS_DIR}\n`);
 
   // Verify dashboard is running
   try {
