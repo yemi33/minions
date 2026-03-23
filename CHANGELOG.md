@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.1.1 (2026-03-23)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cli.js
+- engine/consolidation.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/llm.js
+- engine/queries.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Playbooks
+- build-and-test.md
+- explore.md
+- fix.md
+- implement-shared.md
+- implement.md
+- plan-to-prd.md
+- plan.md
+- review.md
+- verify.md
+- work-item.md
+
+### Agents
+- agents/dallas/charter.md
+- agents/lambert/charter.md
+- agents/ralph/charter.md
+- agents/rebecca/charter.md
+- agents/ripley/charter.md
+
+### Documentation
+- README.md
+- auto-discovery.md
+- blog-first-successful-dispatch.md
+- command-center.md
+- distribution.md
+- human-vs-automated.md
+- index.html
+- plan-lifecycle.md
+- self-improvement.md
+
+### Other
+- .claude/skills/cleanup-deprecated/SKILL.md
+- .claude/skills/run-tests/SKILL.md
+- .github/workflows/publish.yml
+- CLAUDE.md
+- TODO.md
+- bin/minions.js
+- config.template.json
+- minions.js
+- package-lock.json
+- team.md
+- test/demo.html
+- test/minions-tests.js
+- test/playwright/dashboard.spec.js
+- test/playwright/reporter.js
+- test/pre-commit-hook.js
+- test/seed-demo-data.js
+- test/unit.test.js
+
 ## 0.1.119 (2026-03-21)
 
 ### Engine
