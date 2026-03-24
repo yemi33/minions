@@ -913,6 +913,39 @@ async function testReconciliation() {
     assert.strictEqual(reconcileItemsWithPrs([], []), 0);
     assert.strictEqual(reconcileItemsWithPrs([], [{ id: 'PR-1', prdItems: ['P1'] }]), 0);
   });
+
+  await test('reconcileItemsWithPrs falls back to pr-links when prdItems missing', () => {
+    const items = [{ id: 'P001', status: 'pending' }];
+    const prs = [{ id: 'PR-200', status: 'active' }]; // no prdItems linkage
+    const originalGetPrLinks = shared.getPrLinks;
+    shared.getPrLinks = () => ({ 'PR-200': 'P001' });
+    try {
+      const count = reconcileItemsWithPrs(items, prs);
+      assert.strictEqual(count, 1);
+      assert.strictEqual(items[0].status, 'done');
+      assert.strictEqual(items[0]._pr, 'PR-200');
+    } finally {
+      shared.getPrLinks = originalGetPrLinks;
+    }
+  });
+
+  await test('reconcileItemsWithPrs fallback respects onlyIds filter', () => {
+    const items = [
+      { id: 'P001', status: 'pending' },
+      { id: 'P002', status: 'pending' },
+    ];
+    const prs = [{ id: 'PR-201', status: 'active' }]; // no prdItems linkage
+    const originalGetPrLinks = shared.getPrLinks;
+    shared.getPrLinks = () => ({ 'PR-201': 'P002' });
+    try {
+      const count = reconcileItemsWithPrs(items, prs, { onlyIds: new Set(['P001']) });
+      assert.strictEqual(count, 0);
+      assert.strictEqual(items[0].status, 'pending');
+      assert.strictEqual(items[1].status, 'pending');
+    } finally {
+      shared.getPrLinks = originalGetPrLinks;
+    }
+  });
 }
 
 // ─── GitHub Helpers Tests ───────────────────────────────────────────────────
@@ -1892,6 +1925,56 @@ async function testStateIntegrity() {
       'engine should create a heartbeat timer for live-output');
     assert.ok(src.includes('if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }'),
       'engine should clear heartbeat timer on close/error');
+  });
+
+  await test('Human feedback pendingFix is cleared only after dispatch enqueue', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(!src.includes('pr.humanFeedback.pendingFix = false'),
+      'discoverFromPrs should not clear pendingFix during discovery');
+    assert.ok(src.includes('clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id)'),
+      'pendingFix should be cleared after addToDispatch in discoverWork');
+  });
+
+  await test('Work-item dispatched sync writes work items before PRD status sync', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
+    const writeIdx = src.indexOf('safeWrite(workItemsPath, items);');
+    const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
+    assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
+      'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
+    assert.ok(writeIdx < syncIdx,
+      'work item write must happen before PRD dispatched sync to reduce divergence windows');
+  });
+
+  await test('Auto-retry reads live work-item retry count before decision', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('let retries = (item.meta.item._retryCount || 0);'),
+      'auto-retry should initialize retries from dispatch metadata');
+    assert.ok(src.includes('const wi = items.find(i => i.id === item.meta.item.id);'),
+      'auto-retry should load latest retry count from persisted work-item state');
+    assert.ok(src.includes('if (wi) retries = wi._retryCount || 0;'),
+      'auto-retry should prefer live retry count before applying retry cap');
+  });
+
+  await test('Dependency gate fail-fast treats failed dependency as failed immediately', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("if (depItem.status === 'failed') return 'failed';"),
+      'dependency gate should fail fast on failed dependency');
+    assert.ok(!src.includes("depItem.status === 'failed' && (depItem._retryCount || 0) >= 3"),
+      'dependency gate should not wait for retryCount threshold before propagating failure');
+  });
+
+  await test('Dispatch completed dedupe cleanup always persists mutation', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const completeDispatchStart = src.indexOf('function completeDispatch(');
+    const completeDispatchEnd = src.indexOf('\nfunction areDependenciesMet(', completeDispatchStart);
+    const completeDispatchBody = src.slice(completeDispatchStart, completeDispatchEnd);
+    assert.ok(src.includes('dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];'),
+      'auto-retry path should remove completed dedupe marker by dispatch key');
+    assert.ok(completeDispatchBody.includes('return dp;'),
+      'dispatch dedupe cleanup should always return mutated dispatch object');
+    assert.ok(!completeDispatchBody.includes('return dp.completed.length !== before ? dp : undefined;'),
+      'completeDispatch auto-retry dedupe cleanup should not skip persist when no length delta is detected');
   });
 }
 
