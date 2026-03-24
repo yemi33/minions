@@ -59,15 +59,15 @@ Upgrades now skip the interactive repo scan automatically. If you want to re-run
 
 **What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
 
-### Migrating from legacy `squad`
+### Migrating from legacy installs
 
-If you previously used `squad`, run:
+If you previously used an older install layout, run:
 
 ```bash
 minions init --force
 ```
 
-`minions` will auto-detect legacy installs (`~/.squad`, `.squad-root`, and `SQUAD_HOME`), migrate state into `~/.minions`, rename legacy runtime markers (`.squad-version` → `.minions-version`), and record the action in `~/.minions/migration.log`.
+`minions` will auto-detect legacy runtime locations and markers, migrate state into `~/.minions`, normalize runtime marker names, and record the action in `~/.minions/migration.log`.
 
 ## Quick Start
 
