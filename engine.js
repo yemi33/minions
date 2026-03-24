@@ -1075,7 +1075,17 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
     if (result === 'error' && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
 
     if (processWorkItemFailure && result === 'error' && item.meta?.item?.id) {
-      const retries = (item.meta.item._retryCount || 0);
+      let retries = (item.meta.item._retryCount || 0);
+      try {
+        const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
+          ? path.join(MINIONS_DIR, 'work-items.json')
+          : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          const wi = items.find(i => i.id === item.meta.item.id);
+          if (wi) retries = wi._retryCount || 0;
+        }
+      } catch {}
       if (retryableFailure && retries < 3) {
         log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/3`);
         updateWorkItemStatus(item.meta, 'pending', '');
@@ -1083,9 +1093,8 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
         if (item.meta?.dispatchKey) {
           try {
             mutateDispatch((dp) => {
-              const before = Array.isArray(dp.completed) ? dp.completed.length : 0;
               dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];
-              return dp.completed.length !== before ? dp : undefined;
+              return dp;
             });
           } catch {}
         }
@@ -1176,7 +1185,7 @@ function areDependenciesMet(item, config) {
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
-    if (depItem.status === 'failed' && (depItem._retryCount || 0) >= 3) return 'failed'; // Only cascade after retries exhausted
+    if (depItem.status === 'failed') return 'failed';
     if (depItem.status !== 'done' && depItem.status !== 'in-pr') return false; // Pending, dispatched, or retrying — wait (in-pr accepted for backward compat)
   }
   return true;
@@ -2280,6 +2289,18 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
   };
 }
 
+function clearPendingHumanFeedbackFlag(projectMeta, prId) {
+  if (!prId) return;
+  try {
+    const prsPath = projectPrPath(projectMeta);
+    const prs = safeJson(prsPath) || [];
+    const target = prs.find(p => p.id === prId);
+    if (!target?.humanFeedback?.pendingFix) return;
+    target.humanFeedback.pendingFix = false;
+    safeWrite(prsPath, prs);
+  } catch {}
+}
+
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
@@ -2352,7 +2373,7 @@ function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: pr.humanFeedback.feedbackContent || 'See PR thread comments',
       }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); pr.humanFeedback.pendingFix = false; setCooldown(key); }
+      if (item) { newWork.push(item); setCooldown(key); }
     }
 
     // PRs with build failures
@@ -2386,6 +2407,7 @@ function discoverFromWorkItems(config, project) {
   const items = safeJson(projectWorkItemsPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
+  const prdSyncQueue = [];
   const skipped = { gated: 0, noAgent: 0 };
   let needsWrite = false;
 
@@ -2492,7 +2514,7 @@ function discoverFromWorkItems(config, project) {
     item.status = 'dispatched';
     item.dispatched_at = ts();
     item.dispatched_to = agentId;
-    syncPrdItemStatus(item.id, 'dispatched', item.sourcePlan);
+    prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });
 
     newWork.push({
       type: workType,
@@ -2511,6 +2533,7 @@ function discoverFromWorkItems(config, project) {
   if (newWork.length > 0) {
     const workItemsPath = projectWorkItemsPath(project);
     safeWrite(workItemsPath, items);
+    for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
   }
 
   if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
@@ -2950,6 +2973,9 @@ function discoverWork(config) {
 
   for (const item of allWork) {
     addToDispatch(item);
+    if (item.meta?.source === 'pr-human-feedback') {
+      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+    }
   }
 
   if (allWork.length > 0) {
