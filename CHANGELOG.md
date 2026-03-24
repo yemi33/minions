@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 (2026-03-24)
+
+### Engine
+- engine/lifecycle.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
 ## 0.1.1 (2026-03-23)
 
 ### Engine
