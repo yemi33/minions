@@ -339,6 +339,11 @@ async function reconcilePrs(config) {
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
+          const existing = existingPrs.find(p => p.id === prId);
+          if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
+            existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
+            existing.prdItems.push(confirmedItemId);
+          }
           projectUpdated++;
         }
         continue;
@@ -354,6 +359,7 @@ async function reconcilePrs(config) {
         status: 'active',
         created: (adoPr.creationDate || '').slice(0, 10) || e.dateStamp(),
         url: prUrl,
+        prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
       if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);

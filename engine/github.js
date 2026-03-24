@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -285,13 +285,23 @@ async function reconcilePrs(config) {
 
     for (const ghPr of ghPrs) {
       const prId = `PR-${ghPr.number}`;
-      if (existingIds.has(prId)) continue;
-
       const branch = ghPr.head?.ref || '';
       const wiMatch = branch.match(/(P-[a-f0-9]{6,})/i) || branch.match(/(PL-W\d+)/i);
       const linkedItemId = wiMatch ? wiMatch[1] : null;
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;
+
+      if (existingIds.has(prId)) {
+        if (confirmedItemId) {
+          addPrLink(prId, confirmedItemId);
+          const existing = existingPrs.find(p => p.id === prId);
+          if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
+            existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
+            existing.prdItems.push(confirmedItemId);
+          }
+        }
+        continue;
+      }
 
       const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
 
@@ -306,6 +316,7 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
+      if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
 

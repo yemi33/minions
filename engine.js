@@ -1211,17 +1211,22 @@ function writeInboxAlert(slug, content) {
   } catch {}
 }
 
-// Reconciles work items against known PRs via exact prdItems match only.
-// reconcilePrs (ado.js) and syncPrsFromOutput (lifecycle.js) are responsible for
-// correctly populating prdItems on PRs — this function just reads that linkage.
+// Reconciles work items against known PRs.
+// Primary linkage comes from prdItems in pull-requests.json; fallback linkage
+// uses engine/pr-links.json so matching does not depend on branch/title parsing.
 // onlyIds: if provided, only items whose ID is in this Set are eligible.
 function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
+  const prLinks = shared.getPrLinks();
   let reconciled = 0;
   for (const wi of items) {
     if (wi.status !== 'pending' || wi._pr) continue;
     if (onlyIds && !onlyIds.has(wi.id)) continue;
 
-    const exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
+    let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
+    if (!exactPr) {
+      const linkedPrId = Object.keys(prLinks).find(prId => prLinks[prId] === wi.id);
+      if (linkedPrId) exactPr = allPrs.find(pr => pr.id === linkedPrId) || { id: linkedPrId };
+    }
     if (exactPr) {
       wi.status = 'done';
       wi._pr = exactPr.id;
