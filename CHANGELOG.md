@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7 (2026-03-24)
+
+### Documentation
+- README.md
+
 ## 0.1.6 (2026-03-24)
 
 ### Other
