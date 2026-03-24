@@ -519,7 +519,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
           const resultText = parsed.result;
           const createdPattern = /(?:created|opened|submitted|new PR|PR created)[^\n]*?(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
           while ((match = createdPattern.exec(resultText)) !== null) prMatches.add(match[1] || match[2]);
-          const createdIdPattern = /(?:created|opened|submitted|new)\s+PR[# -]*(\d{5,})/gi;
+          const createdIdPattern = /(?:created|opened|submitted|new)\s+PR[# -]*(\d{1,})/gi;
           while ((match = createdIdPattern.exec(resultText)) !== null) prMatches.add(match[1]);
         }
       } catch {}

@@ -1477,7 +1477,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/pause — pause a plan (stops new item materialization + pauses work items)
+  // POST /api/plans/pause — pause a plan (stops new item materialization + resets active items to pending)
   if (req.method === 'POST' && req.url === '/api/plans/pause') {
     try {
       const body = await readBody(req);
@@ -1488,25 +1488,17 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.pausedAt = new Date().toISOString();
       safeWrite(planPath, plan);
 
-      // Propagate pause to materialized work items across all projects
-      // But skip items that already have active PRs — those are past the point of pausing
-      let paused = 0;
+      // Propagate pause to materialized work items across all projects:
+      // kill any active agent process and reset non-completed items back to pending.
+      let reset = 0;
       const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
-      const allPrItemIds = new Set();
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
-        try {
-          const prs = safeJson(shared.projectPrPath(proj)) || [];
-          for (const pr of prs) {
-            if (pr.status === 'active' && pr.prdItems?.length) {
-              pr.prdItems.forEach(id => allPrItemIds.add(id));
-            }
-          }
-        } catch {}
       }
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
-      const killedAgents = [];
+      const killedAgents = new Set();
+      const resetItemIds = new Set();
 
       for (const wiPath of wiPaths) {
         try {
@@ -1515,17 +1507,12 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           let changed = false;
           for (const w of items) {
             if (w.sourcePlan !== body.file) continue;
-            // Don't pause if this item already has an active PR
-            if (allPrItemIds.has(w.id) || allPrItemIds.has(w.sourcePlanItem)) continue;
+            // Keep completed items as-is, reset everything else to pending.
+            if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
 
-            if (w.status === 'pending') {
-              w.status = 'paused';
-              w._pausedBy = 'prd-pause';
-              paused++;
-              changed = true;
-            } else if (w.status === 'dispatched') {
-              // Kill the agent working on this item
-              const activeEntry = (dispatch.active || []).find(d => d.meta?.dispatchKey?.includes(w.id));
+            if (w.status === 'dispatched') {
+              // Kill the agent working on this item, if any.
+              const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
               if (activeEntry) {
                 const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                 try {
@@ -1542,30 +1529,41 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
                   delete agentStatus.dispatched;
                   safeWrite(statusPath, agentStatus);
                 } catch {}
-                killedAgents.push(activeEntry.agent);
+                killedAgents.add(activeEntry.agent);
               }
-              w.status = 'paused';
-              w._pausedBy = 'prd-pause';
-              paused++;
-              changed = true;
             }
+
+            if (w.status !== 'pending') reset++;
+            w.status = 'pending';
+            delete w._pausedBy;
+            delete w._resumedAt;
+            delete w.dispatched_at;
+            delete w.dispatched_to;
+            delete w.failReason;
+            delete w.failedAt;
+            changed = true;
+            if (w.id) resetItemIds.add(w.id);
           }
           if (changed) safeWrite(wiPath, items);
         } catch {}
       }
 
-      // Remove killed agents from dispatch active
-      if (killedAgents.length > 0) {
-        const killedSet = new Set(killedAgents);
+      // Remove dispatch active entries for reset items or killed agents.
+      if (resetItemIds.size > 0 || killedAgents.size > 0) {
         mutateJsonFileLocked(dispatchPath, (dp) => {
           dp.active = Array.isArray(dp.active) ? dp.active : [];
-          dp.active = dp.active.filter(d => !killedSet.has(d.agent));
+          dp.active = dp.active.filter(d => {
+            const itemId = d.meta?.item?.id;
+            if (itemId && resetItemIds.has(itemId)) return false;
+            if (killedAgents.has(d.agent)) return false;
+            return true;
+          });
           return dp;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, status: 'paused', pausedWorkItems: paused });
+      return jsonReply(res, 200, { ok: true, status: 'paused', resetWorkItems: reset });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
