@@ -112,7 +112,7 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
   },
   "engine": {
     "tickInterval": 60000,
-    "maxConcurrent": 3,
+    "maxConcurrent": 5,
     "agentTimeout": 18000000,
     "heartbeatTimeout": 300000
   }

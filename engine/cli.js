@@ -40,18 +40,41 @@ function handleCommand(cmd, args) {
     console.log('  complete <id>    Mark dispatch as done');
     console.log('  cleanup           Clean temp files, worktrees, zombies');
     console.log('  mcp-sync         Sync MCP servers from ~/.claude.json');
+    console.log('  doctor           Check prerequisites and runtime health');
     process.exit(1);
   }
 }
 
 const commands = {
   start() {
+    // Run preflight checks (warn but don't block — engine may still be useful)
+    try {
+      const { runPreflight, printPreflight } = require('./preflight');
+      const { results } = runPreflight();
+      const hasFatal = results.some(r => r.ok === false);
+      if (hasFatal) {
+        printPreflight(results, { label: 'Preflight checks' });
+        console.log('  Some checks failed — agents may not work. Run `minions doctor` for details.\n');
+      }
+    } catch {}
+
     const e = engine();
     const control = getControl();
     if (control.state === 'running') {
       let alive = false;
       if (control.pid) {
-        try { process.kill(control.pid, 0); alive = true; } catch {}
+        try {
+          if (process.platform === 'win32') {
+            // On Windows, process.kill(pid, 0) can false-positive if the PID was recycled.
+            // Use tasklist and verify the process is actually node.
+            const { execSync } = require('child_process');
+            const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+            alive = out.includes(String(control.pid)) && out.toLowerCase().includes('node');
+          } else {
+            process.kill(control.pid, 0);
+            alive = true;
+          }
+        } catch {}
       }
       if (alive) {
         console.log(`Engine is already running (PID ${control.pid}).`);
@@ -283,7 +306,7 @@ const commands = {
 
     // Start tick loop
     setInterval(() => e.tick(), interval);
-    console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 3}`);
+    console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
   },
 
@@ -338,10 +361,52 @@ const commands = {
     const { getProjects } = require('./shared');
     const projects = getProjects(config);
 
+    // Version info
+    let version = '?';
+    try {
+      const vFile = path.join(MINIONS_DIR, '.minions-version');
+      version = fs.readFileSync(vFile, 'utf8').trim();
+    } catch {}
+
     console.log('\n=== Minions Engine ===\n');
-    console.log(`State: ${control.state}`);
-    console.log(`PID: ${control.pid || 'N/A'}`);
-    console.log(`Projects: ${projects.map(p => p.name || 'unnamed').join(', ')}`);
+    console.log(`Version: ${version}`);
+
+    // Engine state with liveness check
+    let engineAlive = false;
+    if (control.state === 'running' && control.pid) {
+      try {
+        if (process.platform === 'win32') {
+          const { execSync } = require('child_process');
+          const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', windowsHide: true, timeout: 3000 });
+          engineAlive = out.includes(String(control.pid)) && out.toLowerCase().includes('node');
+        } else {
+          process.kill(control.pid, 0);
+          engineAlive = true;
+        }
+      } catch {}
+    }
+    if (control.state === 'running' && !engineAlive) {
+      console.log(`Engine: stale (PID ${control.pid} is dead) — run: minions start`);
+    } else {
+      console.log(`Engine: ${control.state} (PID ${control.pid || 'N/A'})`);
+    }
+
+    // Dashboard check
+    const http = require('http');
+    const dashCheck = new Promise(resolve => {
+      const req = http.get('http://localhost:7331/api/health', { timeout: 2000 }, () => resolve(true));
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
+    dashCheck.then(dashUp => {
+      if (dashUp) console.log('Dashboard: running (http://localhost:7331)');
+      else console.log('Dashboard: not running — start with: minions dash');
+    }).catch(() => {});
+
+    // Projects with health
+    const healthyProjects = projects.filter(p => p.localPath && fs.existsSync(path.resolve(p.localPath)));
+    const missingProjects = projects.filter(p => !p.localPath || !fs.existsSync(path.resolve(p.localPath)));
+    console.log(`Projects: ${healthyProjects.length} linked${missingProjects.length ? ` (${missingProjects.length} path missing)` : ''}`);
     console.log('');
 
     console.log('Agents:');
@@ -725,6 +790,13 @@ const commands = {
 
   'mcp-sync'() {
     console.log('MCP servers are read directly from ~/.claude.json — no sync needed.');
+  },
+
+  doctor() {
+    const { doctor } = require('./preflight');
+    doctor(MINIONS_DIR).then(ok => {
+      if (!ok) process.exit(1);
+    });
   },
 
   discover() {

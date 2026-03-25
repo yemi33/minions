@@ -1,28 +1,4 @@
 {
-  "projects": [
-    {
-      "name": "YOUR_PROJECT_NAME",
-      "localPath": "/path/to/your/project",
-      "repoHost": "ado",
-      "repositoryId": "YOUR_REPO_ID",
-      "adoOrg": "YOUR_ORG",
-      "adoProject": "YOUR_PROJECT",
-      "repoName": "YOUR_REPO_NAME",
-      "mainBranch": "main",
-      "prUrlBase": "",
-      "workSources": {
-        "pullRequests": {
-          "enabled": true,
-          "path": ".minions/pull-requests.json",
-          "cooldownMinutes": 30
-        },
-        "workItems": {
-          "enabled": true,
-          "path": ".minions/work-items.json",
-          "cooldownMinutes": 0
-        }
-      }
-    }
-  ]
+  "projects": []
 }
 

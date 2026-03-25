@@ -473,7 +473,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 {
   "engine": {
     "tickInterval": 60000,
-    "maxConcurrent": 3,
+    "maxConcurrent": 5,
     "agentTimeout": 18000000,
     "heartbeatTimeout": 300000,
     "maxTurns": 100,
@@ -487,7 +487,7 @@ Engine behavior is controlled via `config.json`. Key settings:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `tickInterval` | 60000 (1min) | Milliseconds between engine ticks |
-| `maxConcurrent` | 3 | Max agents running simultaneously |
+| `maxConcurrent` | 5 | Max agents running simultaneously |
 | `agentTimeout` | 18000000 (5h) | Max total agent runtime |
 | `heartbeatTimeout` | 300000 (5min) | Kill agents silent longer than this |
 | `maxTurns` | 100 | Max Claude CLI turns per agent session |

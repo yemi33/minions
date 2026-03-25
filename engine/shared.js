@@ -231,7 +231,7 @@ function classifyInboxItem(name, content) {
 
 const ENGINE_DEFAULTS = {
   tickInterval: 60000,
-  maxConcurrent: 3,
+  maxConcurrent: 5,
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
   heartbeatTimeout: 300000, // 5min

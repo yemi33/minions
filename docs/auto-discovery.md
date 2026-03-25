@@ -196,7 +196,7 @@ Discovered items land in `engine/dispatch.json`:
 Each tick, the engine checks available slots:
 
 ```
-slotsAvailable = maxConcurrent (3) - activeCount
+slotsAvailable = maxConcurrent (5) - activeCount
 ```
 
 It takes up to `slotsAvailable` items from pending and spawns them. Items are processed in discovery-priority order (fixes first, then reviews, then implements, then work-items).
@@ -378,7 +378,7 @@ All discovery behavior is controlled via `config.json`:
 {
   "engine": {
     "tickInterval": 60000,       // ms between ticks
-    "maxConcurrent": 3,          // max agents running at once
+    "maxConcurrent": 5,          // max agents running at once
     "agentTimeout": 18000000,     // 5 hours — kill hung processes
     "heartbeatTimeout": 300000,  // 5min — kill stale/silent agents
     "maxTurns": 100,             // max claude CLI turns per agent

@@ -67,8 +67,10 @@ if (isResume) {
 }
 
 if (!claudeBin) {
-  fs.appendFileSync(debugPath, 'FATAL: Cannot find claude-code cli.js\n');
-  process.exit(1);
+  const msg = 'FATAL: Cannot find claude-code cli.js — install with: npm install -g @anthropic-ai/claude-code';
+  fs.appendFileSync(debugPath, msg + '\n');
+  console.error(msg);
+  process.exit(78); // 78 = configuration error (distinct from runtime failures)
 }
 
 // Check if --system-prompt-file is supported (cached to avoid spawning claude --help every call)

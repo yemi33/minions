@@ -942,6 +942,17 @@ function spawnAgent(dispatchItem, config) {
     safeWrite(archivePath, outputContent);
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
+    // Detect configuration errors (e.g. Claude CLI not found) — fail immediately with clear message
+    if (code === 78) {
+      const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
+      log('error', `Agent ${agentId} (${id}) failed: ${errMsg}`);
+      completeDispatch(id, 'error', errMsg, '');
+      try { fs.unlinkSync(sysPromptPath); } catch {}
+      try { fs.unlinkSync(promptPath); } catch {}
+      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
+      return;
+    }
+
     // Parse output and run all post-completion hooks
     const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
@@ -1186,7 +1197,7 @@ function areDependenciesMet(item, config) {
       return false;
     }
     if (depItem.status === 'failed') return 'failed';
-    if (depItem.status !== 'done' && depItem.status !== 'in-pr') return false; // Pending, dispatched, or retrying — wait (in-pr accepted for backward compat)
+    if (!PRD_MET_STATUSES.has(depItem.status)) return false; // Pending, dispatched, or retrying — wait (legacy aliases accepted)
   }
   return true;
 }
@@ -1893,7 +1904,7 @@ function saveCooldowns() {
 function isOnCooldown(key, cooldownMs) {
   const entry = dispatchCooldowns.get(key);
   if (!entry) return false;
-  const backoff = Math.min(Math.pow(2, entry.failures || 0), 2);
+  const backoff = Math.min(Math.pow(2, entry.failures || 0), 8);
   return (Date.now() - entry.timestamp) < (cooldownMs * backoff);
 }
 
@@ -1908,7 +1919,7 @@ function setCooldownFailure(key) {
   const failures = (existing?.failures || 0) + 1;
   dispatchCooldowns.set(key, { timestamp: Date.now(), failures });
   if (failures >= 3) {
-    log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 2)}x`);
+    log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 8)}x`);
   }
   saveCooldowns();
 }
@@ -3158,7 +3169,7 @@ async function tickInner() {
   // 5. Process pending dispatches — auto-spawn agents
   const dispatch = getDispatch();
   const activeCount = (dispatch.active || []).length;
-  const maxConcurrent = config.engine?.maxConcurrent || 3;
+  const maxConcurrent = config.engine?.maxConcurrent || 5;
 
   if (activeCount >= maxConcurrent) {
     log('info', `At max concurrency (${activeCount}/${maxConcurrent}) — skipping dispatch`);

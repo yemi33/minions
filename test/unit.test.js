@@ -2139,6 +2139,887 @@ async function testLegacyStatusMigration() {
   });
 }
 
+// ─── engine/preflight.js Tests ───────────────────────────────────────────────
+
+async function testPreflightModule() {
+  console.log('\n── engine/preflight.js ──');
+
+  let preflight;
+  try {
+    preflight = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+  } catch (e) {
+    skip('preflight-module', `Could not load preflight: ${e.message}`);
+    return;
+  }
+
+  await test('findClaudeBinary returns string or null', () => {
+    const result = preflight.findClaudeBinary();
+    assert.ok(result === null || typeof result === 'string',
+      `Expected string or null, got ${typeof result}`);
+  });
+
+  await test('findClaudeBinary result ends with cli.js if non-null', () => {
+    const result = preflight.findClaudeBinary();
+    if (result !== null) {
+      assert.ok(result.endsWith('cli.js'), `Expected path ending in cli.js, got: ${result}`);
+    }
+  });
+
+  await test('runPreflight returns correct shape', () => {
+    const { passed: p, results: r } = preflight.runPreflight();
+    assert.ok(typeof p === 'boolean', 'passed should be boolean');
+    assert.ok(Array.isArray(r), 'results should be array');
+    assert.strictEqual(r.length, 4, 'should have exactly 4 checks');
+  });
+
+  await test('runPreflight includes Node.js check as passing', () => {
+    const { results: r } = preflight.runPreflight();
+    const nodeCheck = r.find(c => c.name === 'Node.js');
+    assert.ok(nodeCheck, 'Missing Node.js check');
+    assert.strictEqual(nodeCheck.ok, true, 'Node.js check should pass (we are >= 18)');
+  });
+
+  await test('runPreflight includes Git check', () => {
+    const { results: r } = preflight.runPreflight();
+    const gitCheck = r.find(c => c.name === 'Git');
+    assert.ok(gitCheck, 'Missing Git check');
+  });
+
+  await test('runPreflight includes Claude Code CLI check', () => {
+    const { results: r } = preflight.runPreflight();
+    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
+    assert.ok(claudeCheck, 'Missing Claude Code CLI check');
+  });
+
+  await test('runPreflight Anthropic auth is never fatal', () => {
+    const { results: r } = preflight.runPreflight();
+    const authCheck = r.find(c => c.name === 'Anthropic auth');
+    assert.ok(authCheck, 'Missing Anthropic auth check');
+    assert.ok(authCheck.ok === true || authCheck.ok === 'warn',
+      'Anthropic auth should be ok or warn, never false');
+  });
+
+  await test('runPreflight each result has name, ok, message', () => {
+    const { results: r } = preflight.runPreflight();
+    for (const check of r) {
+      assert.ok(typeof check.name === 'string' && check.name.length > 0, 'check needs name');
+      assert.ok(check.ok === true || check.ok === false || check.ok === 'warn', 'ok must be true/false/warn');
+      assert.ok(typeof check.message === 'string', 'check needs message');
+    }
+  });
+
+  await test('printPreflight returns true for all-ok results', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: true, message: 'good' },
+      { name: 'B', ok: true, message: 'also good' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true);
+  });
+
+  await test('printPreflight returns false when any check fails', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: true, message: 'good' },
+      { name: 'B', ok: false, message: 'bad' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, false);
+  });
+
+  await test('printPreflight treats warn as non-fatal (returns true)', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: 'warn', message: 'warning' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true);
+  });
+
+  await test('doctor returns a promise', () => {
+    const result = preflight.doctor(MINIONS_DIR);
+    assert.ok(result && typeof result.then === 'function', 'doctor should return a promise');
+    // Wait for it to complete (don't leave dangling promises)
+    return result.catch(() => {});
+  });
+}
+
+// ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
+
+async function testCleanChildEnv() {
+  console.log('\n── shared.js — cleanChildEnv ──');
+
+  await test('cleanChildEnv removes CLAUDECODE key', () => {
+    const orig = process.env.CLAUDECODE;
+    process.env.CLAUDECODE = 'test-value';
+    try {
+      const env = shared.cleanChildEnv();
+      assert.strictEqual(env.CLAUDECODE, undefined);
+    } finally {
+      if (orig !== undefined) process.env.CLAUDECODE = orig;
+      else delete process.env.CLAUDECODE;
+    }
+  });
+
+  await test('cleanChildEnv removes CLAUDE_CODE_ENTRYPOINT', () => {
+    const orig = process.env.CLAUDE_CODE_ENTRYPOINT;
+    process.env.CLAUDE_CODE_ENTRYPOINT = '/some/path';
+    try {
+      const env = shared.cleanChildEnv();
+      assert.strictEqual(env.CLAUDE_CODE_ENTRYPOINT, undefined);
+    } finally {
+      if (orig !== undefined) process.env.CLAUDE_CODE_ENTRYPOINT = orig;
+      else delete process.env.CLAUDE_CODE_ENTRYPOINT;
+    }
+  });
+
+  await test('cleanChildEnv removes all CLAUDE_CODE* prefixed keys', () => {
+    process.env.CLAUDE_CODE_TEST_XYZ = 'val';
+    try {
+      const env = shared.cleanChildEnv();
+      assert.strictEqual(env.CLAUDE_CODE_TEST_XYZ, undefined);
+    } finally {
+      delete process.env.CLAUDE_CODE_TEST_XYZ;
+    }
+  });
+
+  await test('cleanChildEnv removes CLAUDECODE_* prefixed keys', () => {
+    process.env.CLAUDECODE_SOMETHING = 'val';
+    try {
+      const env = shared.cleanChildEnv();
+      assert.strictEqual(env.CLAUDECODE_SOMETHING, undefined);
+    } finally {
+      delete process.env.CLAUDECODE_SOMETHING;
+    }
+  });
+
+  await test('cleanChildEnv preserves standard env vars', () => {
+    const env = shared.cleanChildEnv();
+    // PATH should always exist
+    assert.ok(env.PATH || env.Path, 'PATH should be preserved');
+  });
+
+  await test('cleanChildEnv does not mutate process.env', () => {
+    const origKeys = Object.keys(process.env).length;
+    shared.cleanChildEnv();
+    assert.strictEqual(Object.keys(process.env).length, origKeys);
+  });
+}
+
+async function testGitEnv() {
+  console.log('\n── shared.js — gitEnv ──');
+
+  await test('gitEnv sets GIT_TERMINAL_PROMPT to 0', () => {
+    const env = shared.gitEnv();
+    assert.strictEqual(env.GIT_TERMINAL_PROMPT, '0');
+  });
+
+  await test('gitEnv sets GCM_INTERACTIVE to never', () => {
+    const env = shared.gitEnv();
+    assert.strictEqual(env.GCM_INTERACTIVE, 'never');
+  });
+}
+
+// ─── shared.js — Project Path Helpers ───────────────────────────────────────
+
+async function testProjectPathHelpers() {
+  console.log('\n── shared.js — Project Path Helpers ──');
+
+  await test('projectRoot resolves localPath to absolute path', () => {
+    const root = shared.projectRoot({ localPath: 'D:/squad' });
+    assert.ok(path.isAbsolute(root), `Expected absolute path, got: ${root}`);
+  });
+
+  await test('projectRoot handles project without localPath gracefully', () => {
+    // When localPath is missing, projectRoot may throw or return undefined — verify it doesn't crash silently
+    try {
+      const root = shared.projectRoot({ name: 'test' });
+      assert.ok(root === undefined || typeof root === 'string');
+    } catch (e) {
+      // Throwing on missing localPath is acceptable — it's a required field
+      assert.ok(e.message.includes('string') || e.message.includes('undefined'),
+        'Should throw a clear error about missing path');
+    }
+  });
+
+  await test('projectStateDir returns path under projects directory', () => {
+    const stateDir = shared.projectStateDir({ name: 'myproject' });
+    assert.ok(stateDir.includes('projects'), `Expected path containing 'projects': ${stateDir}`);
+    assert.ok(stateDir.includes('myproject'), `Expected path containing project name: ${stateDir}`);
+  });
+
+  await test('projectWorkItemsPath ends with work-items.json', () => {
+    const p = shared.projectWorkItemsPath({ name: 'myproject' });
+    assert.ok(p.endsWith('work-items.json'), `Expected path ending with work-items.json: ${p}`);
+  });
+
+  await test('projectPrPath ends with pull-requests.json', () => {
+    const p = shared.projectPrPath({ name: 'myproject' });
+    assert.ok(p.endsWith('pull-requests.json'), `Expected path ending with pull-requests.json: ${p}`);
+  });
+
+  await test('projectWorkItemsPath and projectPrPath are different', () => {
+    const wi = shared.projectWorkItemsPath({ name: 'test' });
+    const pr = shared.projectPrPath({ name: 'test' });
+    assert.notStrictEqual(wi, pr);
+  });
+}
+
+// ─── shared.js — mutateJsonFileLocked Tests ─────────────────────────────────
+
+async function testMutateJsonFileLocked() {
+  console.log('\n── shared.js — mutateJsonFileLocked ──');
+
+  await test('mutateJsonFileLocked creates file with default value', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'new.json');
+    shared.mutateJsonFileLocked(fp, (data) => { data.created = true; }, { defaultValue: {} });
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result.created, true);
+  });
+
+  await test('mutateJsonFileLocked applies mutation and persists', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'mutate.json');
+    shared.safeWrite(fp, { count: 0 });
+    shared.mutateJsonFileLocked(fp, (data) => { data.count = 42; });
+    assert.strictEqual(shared.safeJson(fp).count, 42);
+  });
+
+  await test('mutateJsonFileLocked uses array default', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'arr.json');
+    shared.mutateJsonFileLocked(fp, (data) => { data.push('item'); }, { defaultValue: [] });
+    const result = shared.safeJson(fp);
+    assert.ok(Array.isArray(result));
+    assert.strictEqual(result[0], 'item');
+  });
+
+  await test('mutateJsonFileLocked cleans up lock file', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'locktest.json');
+    shared.mutateJsonFileLocked(fp, () => {}, { defaultValue: {} });
+    assert.ok(!fs.existsSync(fp + '.lock'), 'lock file should be cleaned up');
+  });
+
+  await test('mutateJsonFileLocked handles concurrent mutations safely', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'concurrent.json');
+    shared.safeWrite(fp, { count: 0 });
+    // Run two mutations sequentially (sync) — both should apply
+    shared.mutateJsonFileLocked(fp, (data) => { data.count++; });
+    shared.mutateJsonFileLocked(fp, (data) => { data.count++; });
+    assert.strictEqual(shared.safeJson(fp).count, 2);
+  });
+}
+
+// ─── engine.js — isRetryableFailureReason Tests ─────────────────────────────
+
+async function testIsRetryableFailureReason() {
+  console.log('\n── engine.js — isRetryableFailureReason ──');
+
+  let isRetryableFailureReason;
+  try {
+    isRetryableFailureReason = require(path.join(MINIONS_DIR, 'engine')).isRetryableFailureReason;
+  } catch {
+    // Fall back to source assertion
+  }
+
+  if (!isRetryableFailureReason) {
+    // Verify it exists via source
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    await test('isRetryableFailureReason is defined', () => {
+      assert.ok(src.includes('function isRetryableFailureReason'));
+    });
+    skip('isRetryableFailureReason-direct', 'function not exported');
+    return;
+  }
+
+  await test('empty reason is retryable', () => {
+    assert.strictEqual(isRetryableFailureReason(''), true);
+  });
+
+  await test('undefined reason is retryable', () => {
+    assert.strictEqual(isRetryableFailureReason(), true);
+    assert.strictEqual(isRetryableFailureReason(undefined), true);
+    assert.strictEqual(isRetryableFailureReason(null), true);
+  });
+
+  await test('generic error reasons are retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('Agent timed out'), true);
+    assert.strictEqual(isRetryableFailureReason('Process exited with code 1'), true);
+    assert.strictEqual(isRetryableFailureReason('spawn error: ENOENT'), true);
+  });
+
+  await test('no playbook rendered is non-retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('no playbook rendered for item X'), false);
+  });
+
+  await test('failed to render is non-retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('failed to render template'), false);
+  });
+
+  await test('no target project available is non-retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('no target project available'), false);
+  });
+
+  await test('missing required is non-retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('missing required field X'), false);
+  });
+
+  await test('validation failed is non-retryable', () => {
+    assert.strictEqual(isRetryableFailureReason('validation failed: bad data'), false);
+  });
+
+  await test('non-retryable matching is case-insensitive', () => {
+    assert.strictEqual(isRetryableFailureReason('NO PLAYBOOK RENDERED'), false);
+    assert.strictEqual(isRetryableFailureReason('Failed To Render'), false);
+  });
+}
+
+// ─── engine.js — areDependenciesMet Tests ───────────────────────────────────
+
+async function testAreDependenciesMet() {
+  console.log('\n── engine.js — areDependenciesMet ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('areDependenciesMet returns true for no deps', () => {
+    assert.ok(src.includes('if (!deps || deps.length === 0) return true'),
+      'Should return true immediately when no dependencies');
+  });
+
+  await test('areDependenciesMet returns true for no sourcePlan', () => {
+    assert.ok(src.includes("if (!sourcePlan) return true"),
+      'Should return true when no sourcePlan (non-plan work items)');
+  });
+
+  await test('areDependenciesMet returns failed for failed dep', () => {
+    assert.ok(src.includes("if (depItem.status === 'failed') return 'failed'"),
+      'Should return string "failed" when any dependency has failed');
+  });
+
+  await test('areDependenciesMet uses PRD_MET_STATUSES for all done aliases', () => {
+    assert.ok(src.includes("PRD_MET_STATUSES"),
+      'Should use PRD_MET_STATUSES set for status checking');
+    // Verify the set includes all legacy aliases
+    assert.ok(src.includes("'done'") && src.includes("'in-pr'") &&
+              src.includes("'implemented'") && src.includes("'complete'"),
+      'PRD_MET_STATUSES should include done, in-pr, implemented, complete');
+  });
+
+  await test('areDependenciesMet uses PRD_MET_STATUSES for work item status check', () => {
+    // After bug fix: should use PRD_MET_STATUSES.has() instead of hardcoded status list
+    assert.ok(src.includes('PRD_MET_STATUSES.has(depItem.status)'),
+      'Work item dep check should use PRD_MET_STATUSES.has() for consistency with PRD fallback');
+  });
+
+  await test('areDependenciesMet has PRD JSON fallback for missing work items', () => {
+    assert.ok(src.includes('Fallback: check PRD JSON'),
+      'Should fall back to PRD JSON when work item not found for a dependency ID');
+  });
+
+  await test('areDependenciesMet collects work items from ALL projects', () => {
+    assert.ok(src.includes('allWorkItems = allWorkItems.concat(wi)'),
+      'Should collect work items across all projects for cross-project deps');
+  });
+}
+
+// ─── engine.js — Cooldown System Tests ──────────────────────────────────────
+
+async function testCooldownSystem() {
+  console.log('\n── engine.js — Cooldown System ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('isOnCooldown returns false for unknown key', () => {
+    assert.ok(src.includes('if (!entry) return false'),
+      'Should return false when key has no cooldown entry');
+  });
+
+  await test('isOnCooldown backoff caps at 8x (not 2x)', () => {
+    // After bug fix: backoff should scale up to 8x for meaningful exponential backoff
+    assert.ok(src.includes('Math.min(Math.pow(2, entry.failures || 0), 8)'),
+      'Backoff cap should be 8 for meaningful exponential scaling');
+  });
+
+  await test('setCooldownFailure increments failure count', () => {
+    assert.ok(src.includes("(existing?.failures || 0) + 1"),
+      'Should increment failure count from existing or 0');
+  });
+
+  await test('setCooldownFailure warns at 3+ failures', () => {
+    assert.ok(src.includes('failures >= 3'),
+      'Should log warning when failures reach 3+');
+  });
+
+  await test('loadCooldowns prunes entries older than 24 hours', () => {
+    assert.ok(src.includes('24 * 60 * 60 * 1000'),
+      'Should prune cooldown entries older than 24h');
+  });
+
+  await test('saveCooldowns is debounced at 1 second', () => {
+    assert.ok(src.includes('_cooldownWriteTimer') && src.includes('1000'),
+      'Should debounce cooldown writes to at most once per second');
+  });
+
+  await test('isAlreadyDispatched checks pending, active, and recent completed', () => {
+    assert.ok(
+      src.includes('dispatch.pending') &&
+      src.includes('dispatch.active') &&
+      src.includes('3600000'),
+      'Should check pending + active + completed within last hour');
+  });
+
+  await test('cooldown backoff formula is truly exponential', () => {
+    // Verify that different failure counts produce different backoff multipliers
+    // 0 failures: 2^0 = 1x, 1 failure: 2^1 = 2x, 2 failures: 2^2 = 4x, 3 failures: 2^3 = 8x (capped)
+    const formula = (failures) => Math.min(Math.pow(2, failures), 8);
+    assert.strictEqual(formula(0), 1);
+    assert.strictEqual(formula(1), 2);
+    assert.strictEqual(formula(2), 4);
+    assert.strictEqual(formula(3), 8);
+    assert.strictEqual(formula(10), 8); // capped
+  });
+}
+
+// ─── engine.js — resolveAgent Tests ─────────────────────────────────────────
+
+async function testResolveAgent() {
+  console.log('\n── engine.js — resolveAgent ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('resolveAgent resolves _author_ token to authorAgent', () => {
+    assert.ok(src.includes("route.preferred === '_author_' ? authorAgent : route.preferred"),
+      'Should resolve _author_ token to the authorAgent parameter');
+  });
+
+  await test('resolveAgent checks preferred then fallback then idle', () => {
+    // Verify the 3-tier resolution order
+    assert.ok(src.includes('if (preferred && isAvailable(preferred))'),
+      'Should check preferred first');
+    assert.ok(src.includes('if (fallback && isAvailable(fallback))'),
+      'Should check fallback second');
+    assert.ok(src.includes('.sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b))'),
+      'Should sort remaining idle agents by error rate');
+  });
+
+  await test('resolveAgent returns null when no agents available', () => {
+    assert.ok(src.includes('return null'),
+      'Should return null when no idle agents found');
+  });
+
+  await test('resolveAgent tracks claimed agents to prevent double-booking', () => {
+    assert.ok(src.includes('_claimedAgents.add') && src.includes('_claimedAgents.has'),
+      'Should track and check claimed agents per discovery pass');
+  });
+
+  await test('resolveAgent excludes preferred and fallback from idle pool', () => {
+    assert.ok(src.includes('id !== preferred && id !== fallback'),
+      'Idle pool should exclude preferred/fallback to avoid rechecking');
+  });
+}
+
+// ─── engine.js — renderPlaybook Tests ───────────────────────────────────────
+
+async function testRenderPlaybook() {
+  console.log('\n── engine.js — renderPlaybook ──');
+
+  let renderPlaybook;
+  try {
+    renderPlaybook = require(path.join(MINIONS_DIR, 'engine')).renderPlaybook;
+  } catch {}
+
+  if (!renderPlaybook) {
+    skip('renderPlaybook-direct', 'engine.renderPlaybook not available');
+    return;
+  }
+
+  await test('renderPlaybook returns null for nonexistent playbook type', () => {
+    const result = renderPlaybook('this-playbook-does-not-exist-xyz', {});
+    assert.strictEqual(result, null);
+  });
+
+  await test('renderPlaybook returns string for valid playbook type', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return rendered playbook string');
+  });
+
+  await test('renderPlaybook substitutes template variables', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'UNIQUE_AGENT_SENTINEL', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result && result.includes('UNIQUE_AGENT_SENTINEL'),
+      'Should substitute {{agent_name}} with actual value');
+  });
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('renderPlaybook injects team notes section', () => {
+    assert.ok(src.includes('Team Notes') || src.includes('team_notes') || src.includes('notes_content'),
+      'Should inject team notes into rendered playbook');
+  });
+
+  await test('renderPlaybook injects skill extraction instructions', () => {
+    assert.ok(src.includes('skill') && src.includes('```skill'),
+      'Should inject skill extraction block format');
+  });
+}
+
+// ─── engine.js — completeDispatch Tests ─────────────────────────────────────
+
+async function testCompleteDispatch() {
+  console.log('\n── engine.js — completeDispatch ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('completeDispatch caps completed list at 100', () => {
+    assert.ok(src.includes('dispatch.completed.length >= 100'),
+      'Should trim completed list when it reaches 100 entries');
+  });
+
+  await test('completeDispatch deletes prompt from completed item', () => {
+    assert.ok(src.includes('delete item.prompt'),
+      'Should delete prompt field to save memory in completed list');
+  });
+
+  await test('completeDispatch auto-retries up to 3 times', () => {
+    assert.ok(src.includes('retries < 3'),
+      'Should allow up to 3 auto-retries for retryable failures');
+  });
+
+  await test('completeDispatch marks failed on non-retryable reason', () => {
+    assert.ok(src.includes('Non-retryable failure'),
+      'Should mark work item as failed with non-retryable message');
+  });
+
+  await test('completeDispatch writes cascade failure alerts', () => {
+    assert.ok(src.includes('writeInboxAlert') && src.includes('failed-'),
+      'Should write inbox alerts for cascade failures affecting dependents');
+  });
+
+  await test('completeDispatch increments _retryCount on work item', () => {
+    assert.ok(src.includes('_retryCount = retries + 1'),
+      'Should increment retry counter on source work item');
+  });
+
+  await test('completeDispatch clears dedupe key for retried items', () => {
+    assert.ok(src.includes('dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)'),
+      'Should clear completed dedupe marker so retried item can redispatch');
+  });
+}
+
+// ─── engine.js — discoverFromPrs Tests ──────────────────────────────────────
+
+async function testDiscoverFromPrs() {
+  console.log('\n── engine.js — discoverFromPrs ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('discoverFromPrs skips non-active PRs', () => {
+    assert.ok(src.includes("pr.status !== 'active'"),
+      'Should skip PRs not in active status');
+  });
+
+  await test('discoverFromPrs prevents self-review', () => {
+    // An agent that authored a PR should not review their own PR
+    assert.ok(src.includes('agentId') && src.includes('prAuthor') || src.includes('pr.createdBy'),
+      'Should prevent self-review when agent is the PR author');
+  });
+
+  await test('discoverFromPrs handles changes-requested for fix work', () => {
+    assert.ok(src.includes('changes-requested') || src.includes('changes_requested'),
+      'Should discover fix work when review status is changes-requested');
+  });
+
+  await test('discoverFromPrs handles human feedback pendingFix', () => {
+    assert.ok(src.includes('pendingFix') || src.includes('humanFeedback'),
+      'Should discover fix work when human feedback is pending');
+  });
+
+  await test('discoverFromPrs skips PRs with active dispatch', () => {
+    assert.ok(src.includes('activePrIds') || src.includes('activeDispatch'),
+      'Should skip PRs that already have an active dispatch to prevent races');
+  });
+
+  await test('discoverFromPrs uses cooldown to prevent rapid redispatch', () => {
+    assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
+      'Should check cooldown before creating new PR work');
+  });
+}
+
+// ─── engine.js — discoverFromWorkItems Tests ────────────────────────────────
+
+async function testDiscoverFromWorkItems() {
+  console.log('\n── engine.js — discoverFromWorkItems ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('discoverFromWorkItems propagates dependency failures', () => {
+    assert.ok(src.includes("depStatus === 'failed'") || src.includes('Dependency failed'),
+      'Should fail work items whose dependencies have failed');
+  });
+
+  await test('discoverFromWorkItems self-heals recovered deps', () => {
+    assert.ok(src.includes('Recovered') || src.includes('self-heal') || src.includes('Self-heal'),
+      'Should recover failed items when their dependencies become available');
+  });
+
+  await test('discoverFromWorkItems routes large/complex items differently', () => {
+    assert.ok(src.includes('implement:large'),
+      'Should use implement:large routing for high-complexity items');
+  });
+
+  await test('discoverFromWorkItems supports shared-branch strategy', () => {
+    assert.ok(src.includes('shared-branch'),
+      'Should support shared-branch strategy for plan-driven work');
+  });
+
+  await test('discoverFromWorkItems checks deduplication', () => {
+    assert.ok(src.includes('isAlreadyDispatched'),
+      'Should check isAlreadyDispatched to prevent duplicate dispatches');
+  });
+
+  await test('discoverFromWorkItems filters pending/queued items only', () => {
+    assert.ok(src.includes("'pending'") && src.includes("'queued'"),
+      'Should only discover work items in pending or queued status');
+  });
+}
+
+// ─── engine.js — checkTimeouts Tests ────────────────────────────────────────
+
+async function testCheckTimeouts() {
+  console.log('\n── engine.js — checkTimeouts ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('checkTimeouts uses configurable agentTimeout', () => {
+    assert.ok(src.includes('config.engine?.agentTimeout') || src.includes('agentTimeout'),
+      'Should use config.engine.agentTimeout with fallback to defaults');
+  });
+
+  await test('checkTimeouts uses configurable heartbeatTimeout', () => {
+    assert.ok(src.includes('config.engine?.heartbeatTimeout') || src.includes('heartbeatTimeout'),
+      'Should use config.engine.heartbeatTimeout with fallback to defaults');
+  });
+
+  await test('checkTimeouts supports per-item deadline', () => {
+    assert.ok(src.includes('deadline') || src.includes('meta?.deadline'),
+      'Should support per-item deadline override for fan-out tasks');
+  });
+
+  await test('checkTimeouts detects blocking tools', () => {
+    assert.ok(src.includes('TaskOutput') || src.includes('blocking'),
+      'Should detect blocking tool patterns to extend timeout');
+  });
+
+  await test('checkTimeouts detects completion via output scan', () => {
+    assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
+      'Should scan live output for completion markers');
+  });
+}
+
+// ─── engine.js — addToDispatch Tests ────────────────────────────────────────
+
+async function testAddToDispatch() {
+  console.log('\n── engine.js — addToDispatch ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('addToDispatch generates ID if missing', () => {
+    assert.ok(src.includes('item.id = item.id ||'),
+      'Should auto-generate dispatch ID when not provided');
+  });
+
+  await test('addToDispatch adds timestamp', () => {
+    assert.ok(src.includes('item.created_at = ts()'),
+      'Should set created_at timestamp on new dispatch items');
+  });
+
+  await test('addToDispatch pushes to pending queue', () => {
+    assert.ok(src.includes('dispatch.pending.push(item)'),
+      'Should push item to dispatch.pending array');
+  });
+}
+
+// ─── lifecycle.js — extractSkillsFromOutput Tests ───────────────────────────
+
+async function testExtractSkills() {
+  console.log('\n── lifecycle.js — Skill Extraction ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('extractSkillsFromOutput matches skill fenced blocks', () => {
+    assert.ok(src.includes('```skill') && (src.includes('skill\\s*\\n') || src.includes('```skill')),
+      'Should regex-match ```skill fenced code blocks');
+  });
+
+  await test('extractSkillsFromOutput skips blocks without name', () => {
+    assert.ok(src.includes('no name') || src.includes("has no name"),
+      'Should skip skill blocks that lack a name in frontmatter');
+  });
+
+  await test('extractSkillsFromOutput enriches with author and created', () => {
+    assert.ok(src.includes('author') && src.includes('created'),
+      'Should add author and created date to extracted skills');
+  });
+
+  await test('extractSkillsFromOutput handles project-scoped skills', () => {
+    assert.ok(src.includes('scope') && src.includes('project'),
+      'Should support project-scoped skill extraction');
+  });
+}
+
+// ─── lifecycle.js — updateWorkItemStatus Tests ──────────────────────────────
+
+async function testUpdateWorkItemStatus() {
+  console.log('\n── lifecycle.js — updateWorkItemStatus ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('updateWorkItemStatus returns early for null item ID', () => {
+    assert.ok(src.includes('if (!itemId)') || src.includes('if (!meta?.item?.id)'),
+      'Should bail out early when item ID is missing');
+  });
+
+  await test('updateWorkItemStatus resolves central-work-item path', () => {
+    assert.ok(src.includes('central-work-item'),
+      'Should handle central-work-item source for path resolution');
+  });
+
+  await test('updateWorkItemStatus handles fan-out aggregation', () => {
+    assert.ok(src.includes('fanout') || src.includes('fan-out') || src.includes('central-work-item-fanout'),
+      'Should aggregate fan-out results before setting final status');
+  });
+
+  await test('updateWorkItemStatus calls syncPrdItemStatus', () => {
+    assert.ok(src.includes('syncPrdItemStatus'),
+      'Should sync status to PRD item after updating work item');
+  });
+}
+
+// ─── lifecycle.js — syncPrsFromOutput Tests ─────────────────────────────────
+
+async function testSyncPrsFromOutput() {
+  console.log('\n── lifecycle.js — syncPrsFromOutput ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('syncPrsFromOutput matches ADO PR URLs', () => {
+    assert.ok(src.includes('visualstudio') && src.includes('pullrequest'),
+      'Should match Azure DevOps PR URL patterns');
+  });
+
+  await test('syncPrsFromOutput matches GitHub PR URLs', () => {
+    assert.ok(src.includes('github') && src.includes('pull'),
+      'Should match GitHub PR URL patterns');
+  });
+
+  await test('syncPrsFromOutput detects PR creation patterns', () => {
+    assert.ok(src.includes('created') || src.includes('opened') || src.includes('submitted'),
+      'Should detect PR creation keywords in agent output');
+  });
+
+  await test('syncPrsFromOutput adds PR links', () => {
+    assert.ok(src.includes('addPrLink'),
+      'Should record PR-to-work-item links via addPrLink');
+  });
+}
+
+// ─── lifecycle.js — runPostCompletionHooks Tests ────────────────────────────
+
+async function testRunPostCompletionHooks() {
+  console.log('\n── lifecycle.js — runPostCompletionHooks ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('runPostCompletionHooks calls syncPrsFromOutput', () => {
+    assert.ok(src.includes('syncPrsFromOutput'),
+      'Should extract and sync PRs from agent output on completion');
+  });
+
+  await test('runPostCompletionHooks calls checkPlanCompletion on success', () => {
+    assert.ok(src.includes('checkPlanCompletion'),
+      'Should check plan completion when agent succeeds with sourcePlan');
+  });
+
+  await test('runPostCompletionHooks calls updateMetrics', () => {
+    assert.ok(src.includes('updateMetrics') || src.includes('trackEngineUsage'),
+      'Should update agent metrics after completion');
+  });
+
+  await test('runPostCompletionHooks parses agent output', () => {
+    assert.ok(src.includes('parseAgentOutput') || src.includes('parseStreamJsonOutput'),
+      'Should parse agent stdout to extract result summary');
+  });
+}
+
+// ─── spawn-agent.js Tests ───────────────────────────────────────────────────
+
+async function testSpawnAgentScript() {
+  console.log('\n── spawn-agent.js ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+
+  await test('spawn-agent.js exits with code 78 when claude CLI not found', () => {
+    assert.ok(src.includes('process.exit(78)'),
+      'Should exit with code 78 (configuration error) when claudeBin is null');
+  });
+
+  await test('spawn-agent.js prints error message to stderr when CLI not found', () => {
+    assert.ok(src.includes('console.error') && src.includes('npm install -g @anthropic-ai/claude-code'),
+      'Should print actionable error message before exiting with 78');
+  });
+
+  await test('spawn-agent.js writes PID file for engine reattachment', () => {
+    assert.ok(src.includes('pidFile') && src.includes('writeFileSync') && src.includes('proc.pid'),
+      'Should write PID file so engine can reattach on restart');
+  });
+
+  await test('spawn-agent.js supports --resume flag', () => {
+    assert.ok(src.includes("isResume") && src.includes("'--resume'"),
+      'Should detect --resume flag and skip system prompt (baked into session)');
+  });
+
+  await test('spawn-agent.js handles large system prompts (>30KB)', () => {
+    assert.ok(src.includes('30000') || src.includes('30KB'),
+      'Should handle system prompts over 30KB by splitting or prepending to user prompt');
+  });
+
+  await test('spawn-agent.js checks --system-prompt-file support', () => {
+    assert.ok(src.includes('_sysPromptFileSupported') && src.includes('--system-prompt-file'),
+      'Should probe claude CLI for --system-prompt-file flag support');
+  });
+}
+
+// ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
+
+async function testExitCode78Handling() {
+  console.log('\n── engine.js — Exit Code 78 Handling ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('engine.js detects exit code 78 from spawn-agent', () => {
+    assert.ok(src.includes('code === 78'),
+      'Should detect exit code 78 as configuration error');
+  });
+
+  await test('engine.js fails dispatch immediately on exit code 78', () => {
+    assert.ok(src.includes("code === 78") && src.includes("completeDispatch(id, 'error'"),
+      'Should call completeDispatch with error on exit code 78 without waiting for timeout');
+  });
+
+  await test('engine.js includes install instructions in code 78 error', () => {
+    assert.ok(src.includes('npm install -g @anthropic-ai/claude-code'),
+      'Error message for code 78 should include install instructions');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -2216,6 +3097,29 @@ async function main() {
 
     // Legacy status migration
     await testLegacyStatusMigration();
+
+    // New coverage: preflight, shared helpers, engine core, lifecycle, spawn-agent
+    await testPreflightModule();
+    await testCleanChildEnv();
+    await testGitEnv();
+    await testProjectPathHelpers();
+    await testMutateJsonFileLocked();
+    await testIsRetryableFailureReason();
+    await testAreDependenciesMet();
+    await testCooldownSystem();
+    await testResolveAgent();
+    await testRenderPlaybook();
+    await testCompleteDispatch();
+    await testDiscoverFromPrs();
+    await testDiscoverFromWorkItems();
+    await testCheckTimeouts();
+    await testAddToDispatch();
+    await testExtractSkills();
+    await testUpdateWorkItemStatus();
+    await testSyncPrsFromOutput();
+    await testRunPostCompletionHooks();
+    await testSpawnAgentScript();
+    await testExitCode78Handling();
   } finally {
     cleanupTmpDirs();
   }

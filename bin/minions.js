@@ -297,6 +297,13 @@ function init() {
     showChangelog(installedVersion);
   }
 
+  // Run preflight checks (warn only — don't block init)
+  try {
+    const { runPreflight, printPreflight } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
+    const { results } = runPreflight();
+    printPreflight(results, { label: 'Preflight checks' });
+  } catch {}
+
   // Auto-start on fresh install; force-upgrade restarts automatically.
   if (isUpgrade) {
     try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
@@ -315,7 +322,17 @@ function init() {
   });
   dashProc.unref();
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
-  console.log('  Dashboard: http://localhost:7331\n');
+  console.log('  Dashboard: http://localhost:7331');
+
+  // Next steps guidance
+  console.log(`
+  Next steps:
+    minions work "Explore the codebase"   Give your first task
+    minions status                         Check engine state
+    http://localhost:7331                  Open the dashboard
+    minions doctor                         Verify everything is working
+    minions --help                         See all commands
+`);
 }
 
 function copyDir(src, dest, excludeTop, alwaysUpdate, neverOverwrite, isUpgrade, actions, relPath = '') {
@@ -391,6 +408,16 @@ function showVersion() {
   } else {
     console.log('  Not installed yet. Run: minions init');
   }
+
+  // Check npm registry for latest version (best-effort, non-blocking)
+  try {
+    const latest = execSync('npm view @yemi33/minions version', { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
+    if (latest && latest !== pkg) {
+      console.log(`\n  Latest on npm:     ${latest}`);
+      console.log('  To update: npm update -g @yemi33/minions && minions init --force');
+    }
+  } catch {} // offline or npm not available — skip silently
+
   console.log('');
 }
 
@@ -428,12 +455,14 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions init [--skip-scan]       Bootstrap ~/.minions/ (first time)
     minions init --force             Upgrade engine code + add new files (auto-skip scan)
     minions version                  Show installed vs package version
+    minions doctor                   Check prerequisites and runtime health
     minions add <project-dir>        Link a project (interactive)
     minions remove <project-dir>     Unlink a project
     minions list                     List linked projects
 
   Engine:
-    minions start                    Start engine daemon
+    minions up                       Start engine + dashboard (use after reboot)
+    minions start                    Start engine daemon only
     minions stop                     Stop the engine
     minions status                   Show agents, projects, queue
     minions pause / resume           Pause/resume dispatching
@@ -455,6 +484,26 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   showVersion();
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list') {
   delegate('minions.js', [cmd, ...rest]);
+} else if (cmd === 'up' || cmd === 'restart') {
+  // Start both engine and dashboard — the go-to command after a reboot
+  ensureInstalled();
+  // Stop engine if running (ignore errors)
+  try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
+  const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start'], {
+    cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
+  });
+  engineProc.unref();
+  console.log(`\n  Engine started (PID: ${engineProc.pid})`);
+  const dashProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'dashboard.js')], {
+    cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
+  });
+  dashProc.unref();
+  console.log(`  Dashboard started (PID: ${dashProc.pid})`);
+  console.log('  Dashboard: http://localhost:7331\n');
+} else if (cmd === 'doctor') {
+  ensureInstalled();
+  const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
+  doctor(MINIONS_HOME).then(ok => process.exit(ok ? 0 : 1));
 } else if (cmd === 'dash' || cmd === 'dashboard') {
   delegate('dashboard.js', rest);
 } else if (engineCmds.has(cmd)) {
