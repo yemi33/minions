@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.8 (2026-03-25)
+
+### Engine
+- engine.js
+- engine/cli.js
+- engine/preflight.js
+- engine/shared.js
+- engine/spawn-agent.js
+
+### Documentation
+- README.md
+- auto-discovery.md
+
+### Other
+- CLAUDE.md
+- bin/minions.js
+- config.template.json
+- test/unit.test.js
+
 ## 0.1.7 (2026-03-24)
 
 ### Documentation
