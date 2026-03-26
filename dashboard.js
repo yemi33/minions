@@ -54,7 +54,7 @@ function buildDashboardHtml() {
   const dashDir = path.join(MINIONS_DIR, 'dashboard');
   const layoutPath = path.join(dashDir, 'layout.html');
 
-  // Fall back to monolith if dashboard/ directory doesn't exist yet
+  // Fall back to monolith if fragments don't exist
   if (!fs.existsSync(layoutPath)) {
     return safeRead(path.join(MINIONS_DIR, 'dashboard.html')) || '';
   }
@@ -87,9 +87,9 @@ function buildDashboardHtml() {
   }
 
   return layout
-    .replace('/* __CSS__ */', css)
-    .replace('<!-- __PAGES__ -->', pageHtml)
-    .replace('/* __JS__ */', jsHtml);
+    .replace('/* __CSS__ */', () => css)
+    .replace('<!-- __PAGES__ -->', () => pageHtml)
+    .replace('/* __JS__ */', () => jsHtml);
 }
 
 const HTML_RAW = buildDashboardHtml();

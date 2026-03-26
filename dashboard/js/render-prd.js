@@ -467,3 +467,222 @@ function showArchivedPrdDetail(idx) {
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal').classList.add('open');
 }
+
+async function prdItemEdit(source, itemId) {
+  const item = _prdItems.find(i => i.source === source && i.id === itemId);
+  if (!item) return;
+
+  // Look up work item and dispatch completion info
+  const wi = (window._lastWorkItems || []).find(w => w.id === itemId && w.sourcePlan === source);
+  const dispatch = window._lastStatus?.dispatch || {};
+  const completedEntry = (dispatch.completed || []).find(d =>
+    d.meta?.item?.id === itemId && d.meta?.item?.sourcePlan === source
+  );
+
+  // Build completion summary section
+  let completionHtml = '';
+  const isDone = item.status === 'done' || item.status === 'implemented' || item.status === 'complete' || item.status === 'in-pr'; // in-pr treated as done for backward compat
+  const isFailed = item.status === 'failed';
+  const isActive = item.status === 'in-progress' || item.status === 'dispatched';
+
+  if (isDone || isFailed || isActive) {
+    const agent = wi?.dispatched_to || completedEntry?.agent || '';
+    const completedAt = wi?.completedAt || completedEntry?.completed_at || '';
+    const summary = completedEntry?.resultSummary || '';
+    const prLinks = (item.prs || []).map(function(pr) {
+      return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" style="color:var(--green);text-decoration:underline">' + escHtml(pr.id) + '</a>';
+    }).join(', ');
+
+    const statusColor = isDone ? 'var(--green)' : isFailed ? 'var(--red)' : 'var(--blue)';
+    const statusLabel = isDone ? 'Completed' : isFailed ? 'Failed' : 'In Progress';
+
+    completionHtml = '<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ' + statusColor + ';border-radius:4px;padding:10px 12px;margin-bottom:12px">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+        '<span style="font-size:11px;font-weight:700;color:' + statusColor + '">' + statusLabel + '</span>' +
+        (agent ? '<span style="font-size:11px;color:var(--muted)">by ' + escHtml(agent) + '</span>' : '') +
+        (completedAt ? '<span style="font-size:10px;color:var(--muted)">' + escHtml(completedAt.slice(0, 16).replace('T', ' ')) + '</span>' : '') +
+      '</div>' +
+      (prLinks ? '<div style="font-size:11px;margin-bottom:6px">PR: ' + prLinks + '</div>' : '') +
+      (summary ? '<div style="font-size:12px;color:var(--text);line-height:1.5;white-space:pre-wrap;max-height:300px;overflow-y:auto">' + escHtml(summary) + '</div>' : '') +
+      (isFailed && completedEntry?.reason ? '<div style="font-size:11px;color:var(--red);margin-top:4px">' + escHtml(completedEntry.reason) + '</div>' : '') +
+    '</div>';
+  }
+
+  const html = '<div style="padding:8px 0">' +
+    completionHtml +
+    '<label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Name</label>' +
+    '<input id="prd-edit-name" value="' + escHtml(item.name || '') + '" style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;margin-bottom:10px">' +
+    '<label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Description</label>' +
+    '<textarea id="prd-edit-desc" rows="4" style="width:100%;padding:6px 10px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;resize:vertical;margin-bottom:10px">' + escHtml(item.description || '') + '</textarea>' +
+    '<div style="display:flex;gap:12px;margin-bottom:12px">' +
+      '<div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Priority</label>' +
+        '<select id="prd-edit-priority" style="padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text)">' +
+          '<option value="high"' + (item.priority === 'high' ? ' selected' : '') + '>High</option>' +
+          '<option value="medium"' + (item.priority === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="low"' + (item.priority === 'low' ? ' selected' : '') + '>Low</option>' +
+        '</select></div>' +
+      '<div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Complexity</label>' +
+        '<select id="prd-edit-complexity" style="padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text)">' +
+          '<option value="small"' + (item.complexity === 'small' ? ' selected' : '') + '>Small</option>' +
+          '<option value="medium"' + (item.complexity === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="large"' + (item.complexity === 'large' ? ' selected' : '') + '>Large</option>' +
+        '</select></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:8px">' +
+      '<button class="plan-btn approve" onclick="prdItemSave(\'' + escHtml(source) + '\',\'' + escHtml(itemId) + '\')">Save</button>' +
+      '<button class="plan-btn" onclick="closeModal()">Cancel</button>' +
+      '<button class="plan-btn reject" style="margin-left:auto" onclick="prdItemRemove(\'' + escHtml(source) + '\',\'' + escHtml(itemId) + '\')">Remove Item</button>' +
+    '</div>' +
+  '</div>';
+
+  document.getElementById('modal-title').textContent = item.id + ' — ' + (item.name || '').slice(0, 60);
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = '';
+  document.getElementById('modal-body').style.whiteSpace = '';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function prdItemSave(source, itemId) {
+  try {
+    const res = await fetch('/api/prd-items/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source, itemId,
+        name: document.getElementById('prd-edit-name').value,
+        description: document.getElementById('prd-edit-desc').value,
+        priority: document.getElementById('prd-edit-priority').value,
+        estimated_complexity: document.getElementById('prd-edit-complexity').value,
+      })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item updated', true); }
+    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdItemRemove(source, itemId) {
+  if (!confirm('Remove item ' + itemId + '? This also cancels any pending work item.')) return;
+  try {
+    const res = await fetch('/api/prd-items/remove', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, itemId })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item removed', true); }
+    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdItemRequeue(workItemId, source) {
+  setPrdRequeueState(workItemId, { status: 'pending', message: '' });
+  rerenderPrdFromCache();
+  try {
+    const res = await fetch('/api/work-items/retry', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: workItemId, source })
+    });
+    if (res.ok) {
+      setPrdRequeueState(workItemId, { status: 'queued', until: Date.now() + 10000 });
+      rerenderPrdFromCache();
+      refresh();
+      showToast('cmd-toast', workItemId + ' requeued', true);
+    } else {
+      const d = await res.json();
+      const msg = d.error || 'unknown';
+      setPrdRequeueState(workItemId, { status: 'error', message: msg, until: Date.now() + 10000 });
+      rerenderPrdFromCache();
+      alert('Failed: ' + msg);
+    }
+  } catch (e) {
+    setPrdRequeueState(workItemId, { status: 'error', message: e.message, until: Date.now() + 10000 });
+    rerenderPrdFromCache();
+    alert('Error: ' + e.message);
+  }
+}
+
+async function prdRegenerate(prdFile) {
+  if (!confirm('This PRD is stale because the source plan changed.\n\nRegenerate now from the latest plan?\n\nThis resets PRD status to awaiting-approval and queues a fresh plan-to-prd conversion.')) return;
+  try {
+    const res = await fetch('/api/prd/regenerate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: prdFile })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      showToast('cmd-toast', 'PRD regeneration queued', true);
+      refresh();
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+function openArchive(i) {
+  const a = archivedPrds[i];
+  if (!a) return;
+
+  document.getElementById('modal-title').textContent = 'Archived PRD — ' + a.version + ' (' + a.total + ' items)';
+
+  let html = '<div style="font-family:\'Segoe UI\',system-ui,sans-serif;white-space:normal">';
+
+  // Summary
+  if (a.summary) {
+    html += '<div class="archive-detail-section"><h4>Summary</h4><p style="font-size:12px;color:var(--muted);line-height:1.6">' + escHtml(a.summary) + '</p></div>';
+  }
+
+  // Existing features
+  if (a.existing_features.length) {
+    html += '<div class="archive-detail-section"><h4>Existing Features (' + a.existing_features.length + ')</h4>';
+    a.existing_features.forEach(f => {
+      html += '<div class="archive-feature">' +
+        '<span class="feat-id">' + escHtml(f.id) + '</span>' +
+        '<div class="feat-name">' + escHtml(f.name) + '</div>' +
+        '<div class="feat-desc">' + escHtml(f.description || '') + '</div>' +
+        '<div class="feat-meta">' +
+          (f.agent ? '<span>Agent: ' + escHtml(f.agent) + '</span>' : '') +
+          (f.status ? '<span>Status: ' + escHtml(f.status) + '</span>' : '') +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Missing features
+  if (a.missing_features.length) {
+    html += '<div class="archive-detail-section"><h4>Gap Items (' + a.missing_features.length + ')</h4>';
+    a.missing_features.forEach(f => {
+      const pClass = f.priority === 'high' ? 'high' : f.priority === 'medium' ? 'medium' : 'low';
+      html += '<div class="archive-feature">' +
+        '<span class="feat-id">' + escHtml(f.id) + '</span> ' +
+        '<span class="prd-item-priority ' + pClass + '">' + escHtml(f.priority || '') + '</span>' +
+        (f.status ? ' <span class="pr-badge ' + (f.status === 'complete' || f.status === 'done' || f.status === 'in-pr' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status === 'in-pr' ? 'done' : f.status) + '</span>' : '') +
+        '<div class="feat-name">' + escHtml(f.name) + '</div>' +
+        '<div class="feat-desc">' + escHtml(f.description || '') + '</div>' +
+        (f.rationale ? '<div class="feat-desc" style="margin-top:4px;color:var(--yellow)">Rationale: ' + escHtml(f.rationale) + '</div>' : '') +
+        '<div class="feat-meta">' +
+          (f.estimated_complexity ? '<span>Complexity: ' + escHtml(f.estimated_complexity) + '</span>' : '') +
+          (f.affected_areas ? '<span>Areas: ' + escHtml(f.affected_areas.join(', ')) + '</span>' : '') +
+        '</div>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Open questions
+  if (a.open_questions.length) {
+    html += '<div class="archive-detail-section"><h4>Open Questions (' + a.open_questions.length + ')</h4>';
+    a.open_questions.forEach(q => {
+      html += '<div class="archive-question">' +
+        '<span class="q-id">' + escHtml(q.id) + '</span>' +
+        '<div class="q-text">' + escHtml(q.question) + '</div>' +
+        (q.context ? '<div class="q-context">' + escHtml(q.context) + '</div>' : '') +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  html += '</div>';
+
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
+}

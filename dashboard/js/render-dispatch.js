@@ -146,3 +146,26 @@ function shortTime(t) {
   if (!t) return '';
   try { return new Date(t).toLocaleTimeString(); } catch { return t; }
 }
+
+async function showErrorDetails(agentId, reason, task) {
+  document.getElementById('modal-title').textContent = 'Error: ' + task;
+  document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\nLoading agent output...';
+  document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal').classList.add('open');
+
+  try {
+    const output = await fetch('/api/agent/' + agentId + '/output').then(r => r.text());
+    const lines = output.split('\n');
+    const stderrIdx = lines.findIndex(l => l.startsWith('## stderr'));
+    let summary = '';
+    if (stderrIdx >= 0) {
+      const stderr = lines.slice(stderrIdx + 1).join('\n').trim();
+      if (stderr) summary = 'STDERR:\n' + stderr.slice(-2000);
+    }
+    if (!summary) summary = output.slice(-3000);
+    document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\n---\n\n' + summary;
+  } catch {
+    document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\n(Could not load agent output)';
+  }
+}

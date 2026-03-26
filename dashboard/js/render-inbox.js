@@ -124,3 +124,40 @@ function modalCancelEdit() {
   document.getElementById('modal-save-btn').style.display = 'none';
   document.getElementById('modal-cancel-edit-btn').style.display = 'none';
 }
+
+async function deleteInboxItem(name) {
+  if (!confirm('Delete "' + name + '" from inbox?')) return;
+  try {
+    const res = await fetch('/api/inbox/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+    if (res.ok) { refresh(); } else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function openInboxInExplorer(name) {
+  try {
+    await fetch('/api/inbox/open', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
+  } catch {}
+}
+
+async function doPromoteToKB(name, category) {
+  try {
+    const res = await fetch('/api/inbox/promote-kb', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, category })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      closeModal();
+      refresh();
+      refreshKnowledgeBase();
+    } else {
+      alert('Failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}

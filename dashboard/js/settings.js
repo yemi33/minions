@@ -133,3 +133,23 @@ async function saveSettings() {
     status.style.color = 'var(--red)';
   }
 }
+
+async function addProject() {
+  try {
+    // Open folder picker
+    const browseRes = await fetch('/api/projects/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const browseData = await browseRes.json();
+    if (browseData.cancelled || !browseData.path) return;
+
+    // Add the project
+    const addRes = await fetch('/api/projects/add', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: browseData.path })
+    });
+    const addData = await addRes.json();
+    if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
+
+    showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true);
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+}

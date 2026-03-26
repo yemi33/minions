@@ -42,10 +42,11 @@ function buildDashboardHtml() {
     jsHtml += `\n// ─── ${f}.js ────────────────────────────────────────\n${content}\n`;
   }
 
+  // Use function replacer to avoid $ special patterns in String.replace
   return layout
-    .replace('/* __CSS__ */', css)
-    .replace('<!-- __PAGES__ -->', pageHtml)
-    .replace('/* __JS__ */', jsHtml);
+    .replace('/* __CSS__ */', () => css)
+    .replace('<!-- __PAGES__ -->', () => pageHtml)
+    .replace('/* __JS__ */', () => jsHtml);
 }
 
 module.exports = { buildDashboardHtml };

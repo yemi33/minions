@@ -105,3 +105,21 @@ async function kbSweep() {
   }
   setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, 3000);
 }
+
+async function kbOpenItem(category, file) {
+  try {
+    const content = await fetch('/api/knowledge/' + category + '/' + encodeURIComponent(file)).then(r => r.text());
+    const display = content.replace(/^---[\s\S]*?---\n*/m, '');
+    document.getElementById('modal-title').textContent = file;
+    document.getElementById('modal-body').textContent = display;
+    _modalDocContext = { title: file, content: display, selection: '' };
+    _modalFilePath = 'knowledge/' + category + '/' + file; showModalQa();
+    // Clear notification badge when opening this document
+    const card = findCardForFile(_modalFilePath);
+    if (card) clearNotifBadge(card);
+    // steer btn removed — unified send
+    document.getElementById('modal').classList.add('open');
+  } catch (e) {
+    console.error('Failed to load KB item:', e);
+  }
+}

@@ -266,3 +266,44 @@ async function _processQaMessage(message, selection) {
     document.getElementById('modal-qa-input')?.focus();
   }
 }
+
+async function qaNewPrd(planFile) {
+  qaDisablePrdButtons();
+  const allPlans = window._lastStatus?.plans || [];
+  const mdPlan = allPlans.find(p => p.file === planFile);
+  const project = mdPlan?.project || '';
+
+  planExecute(planFile, project, null);
+
+  const btn = document.getElementById('qa-generate-prd-btn');
+  if (btn) btn.innerHTML = '<span style="color:var(--green);font-size:12px">New PRD dispatched — existing work continues, agent creating fresh PRD from revised plan.</span>';
+}
+
+async function qaReplacePrd(planFile) {
+  qaDisablePrdButtons();
+  const allPlans = window._lastStatus?.plans || [];
+  const mdPlan = allPlans.find(p => p.file === planFile);
+  const project = mdPlan?.project || '';
+  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
+
+  if (existingPrd) {
+    // Pause first to stop materialization, then clean pending items
+    try {
+      await fetch('/api/plans/pause', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: existingPrd.file })
+      });
+    } catch {}
+    try {
+      await fetch('/api/plans/regenerate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: existingPrd.file })
+      });
+    } catch {}
+  }
+
+  planExecute(planFile, project, null);
+
+  const btn = document.getElementById('qa-generate-prd-btn');
+  if (btn) btn.innerHTML = '<span style="color:var(--orange);font-size:12px">Replacing PRD — old items paused, agent regenerating from revised plan.</span>';
+}

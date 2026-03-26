@@ -42,7 +42,8 @@ const POST = (p, b) => api('POST', p, b);
 async function load(page) {
   await page.goto('/', { timeout: 15000 });
   await page.waitForSelector('#agents-grid:not(:has-text("Loading"))', { timeout: 12000 });
-  await page.waitForSelector('#inbox-list:not(:has-text("Loading"))', { timeout: 5000 }).catch(() => {});
+  // With sidebar navigation, inbox is on a hidden page — just wait for sidebar to render
+  await page.waitForSelector('#sidebar', { timeout: 5000 }).catch(() => {});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ async function load(page) {
 test.describe('Page Load', () => {
   test('dashboard loads with correct title', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle(/Minions Mission Control/);
+    await expect(page).toHaveTitle(/Mission Control/);
   });
 
   test('header shows engine badge and timestamp', async ({ page }) => {
@@ -72,8 +73,9 @@ test.describe('Page Load', () => {
     await expect(page.locator('#projects-list')).toBeVisible();
   });
 
-  test('all main sections are rendered', async ({ page }) => {
+  test('all main sections are rendered in DOM', async ({ page }) => {
     await load(page);
+    // With sidebar navigation, sections are in DOM but only active page is visible
     const sections = [
       '#work-items-section',
       '#prd-section',
@@ -88,13 +90,13 @@ test.describe('Page Load', () => {
     }
   });
 
-  test('all section headings render', async ({ page }) => {
+  test('all section headings exist in DOM', async ({ page }) => {
     await load(page);
+    // Headings exist in DOM across all pages (sidebar navigation hides non-active pages)
     const headings = [
       'Work Items', 'PRD', 'Pull Requests', 'Plans',
       'Notes Inbox', 'Team Notes', 'Knowledge Base',
-      'Minions Skills', 'MCP Servers', 'Engine Log',
-      'Recent Completions',
+      'MCP Servers', 'Engine Log', 'Recent Completions',
     ];
     for (const h of headings) {
       await expect(page.locator(`h2:has-text("${h}")`).first()).toBeAttached({ timeout: 3000 });
@@ -106,6 +108,31 @@ test.describe('Page Load', () => {
     for (const id of ['#wi-count', '#pr-count', '#plans-count', '#inbox-count', '#kb-count']) {
       await expect(page.locator(id)).toBeAttached();
     }
+  });
+
+  test('sidebar navigation exists with all pages', async ({ page }) => {
+    await load(page);
+    const sidebar = page.locator('#sidebar');
+    await expect(sidebar).toBeVisible();
+    for (const p of ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'schedule', 'engine']) {
+      await expect(page.locator(`.sidebar-link[data-page="${p}"]`)).toBeAttached();
+    }
+  });
+
+  test('sidebar click switches active page', async ({ page }) => {
+    await load(page);
+    // Default page is home
+    await expect(page.locator('#page-home')).toHaveClass(/active/);
+    // Click work items
+    await page.locator('.sidebar-link[data-page="work"]').click();
+    await expect(page.locator('#page-work')).toHaveClass(/active/);
+    await expect(page.locator('#page-home')).not.toHaveClass(/active/);
+  });
+
+  test('URL routing works for direct page access', async ({ page }) => {
+    await page.goto('/work', { timeout: 15000 });
+    await page.waitForSelector('#sidebar', { timeout: 5000 });
+    await expect(page.locator('#page-work')).toHaveClass(/active/);
   });
 });
 
