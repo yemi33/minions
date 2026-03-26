@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.12 (2026-03-26)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cli.js
+- engine/github.js
+- engine/lifecycle.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Other
+- TODO.md
+- routing.md
+- test/unit.test.js
+
 ## 0.1.11 (2026-03-26)
 
 ### Engine
