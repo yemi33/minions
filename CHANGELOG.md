@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.9 (2026-03-26)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cli.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/scheduler.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Playbooks
+- decompose.md
+
+### Documentation
+- README.md
+
+### Other
+- CLAUDE.md
+- TODO.md
+- routing.md
+- test/playwright/dashboard.spec.js
+
 ## 0.1.8 (2026-03-25)
 
 ### Engine
