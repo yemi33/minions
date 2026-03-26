@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.11 (2026-03-26)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/scheduler.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.9 (2026-03-26)
 
 ### Engine
