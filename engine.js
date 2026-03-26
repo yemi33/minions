@@ -2626,8 +2626,8 @@ function discoverFromWorkItems(config, project) {
     newWork.push({
       type: workType,
       agent: agentId,
-      agentName: config.agents[agentId]?.name,
-      agentRole: config.agents[agentId]?.role,
+      agentName: config.agents[agentId]?.name || tempAgents.get(agentId)?.name || agentId,
+      agentRole: config.agents[agentId]?.role || tempAgents.get(agentId)?.role || 'Agent',
       task: `[${project?.name || 'project'}] ${item.title || item.description?.slice(0, 80) || item.id}`,
       prompt,
       meta: { dispatchKey: key, source: 'work-item', branch: branchName, branchStrategy: item.branchStrategy || 'parallel', useExistingBranch: !!(item.branchStrategy === 'shared-branch' && item.featureBranch), item, project: { name: project?.name, localPath: project?.localPath } }
@@ -3064,16 +3064,18 @@ function discoverWork(config) {
   try {
     const { discoverScheduledWork } = require('./engine/scheduler');
     const scheduledWork = discoverScheduledWork(config);
-    for (const item of scheduledWork) {
-      // Write scheduled items to central work-items.json so they persist across ticks
+    if (scheduledWork.length > 0) {
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
       const items = safeJson(centralPath) || [];
-      // Dedupe: don't re-create if same schedule already has a pending/dispatched item
-      if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
-        items.push(item);
-        safeWrite(centralPath, items);
-        log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+      let added = 0;
+      for (const item of scheduledWork) {
+        if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
+          items.push(item);
+          added++;
+          log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+        }
       }
+      if (added > 0) safeWrite(centralPath, items);
     }
   } catch {}
 

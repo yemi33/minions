@@ -118,6 +118,11 @@ function getStatus() {
     workItems: getWorkItems(),
     skills: getSkills(),
     mcpServers: getMcpServers(),
+    schedules: (() => {
+      const scheds = CONFIG.schedules || [];
+      const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
+      return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
+    })(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
@@ -270,6 +275,11 @@ function buildCCStatePreamble() {
 
   const planFiles = [...safeReadDir(PLANS_DIR), ...safeReadDir(PRD_DIR)].filter(f => f.endsWith('.md') || f.endsWith('.json'));
 
+  const schedules = CONFIG.schedules || [];
+  const schedSummary = schedules.length > 0
+    ? schedules.map(s => `- ${s.id}: "${s.title}" (cron: ${s.cron}, type: ${s.type || 'implement'}, ${s.enabled === false ? 'disabled' : 'enabled'})`).join('\n')
+    : '(none configured)';
+
   return `### Agents
 ${agents}
 
@@ -278,10 +288,19 @@ ${active}
 Pending: ${pending}
 
 ### Quick Counts
-PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs on disk: ${planFiles.length}
+PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs on disk: ${planFiles.length} | Schedules: ${schedules.length}
 
 ### Projects
 ${projects}
+
+### Scheduled Tasks
+${schedSummary}
+
+To manage schedules, use the dashboard API:
+- Create: POST /api/schedules { id, cron, title, type, project?, agent?, enabled? }
+- Update: POST /api/schedules/update { id, ...fields }
+- Delete: POST /api/schedules/delete { id }
+- Cron format: "minute hour dayOfWeek" (e.g., "0 2 *" = 2am daily, "0 9 1" = Monday 9am)
 
 For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
 }
@@ -1118,7 +1137,17 @@ const server = http.createServer(async (req, res) => {
   const liveStreamMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/);
   if (liveStreamMatch && req.method === 'GET') {
     const agentId = liveStreamMatch[1];
-    const liveLogPath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
+    const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+    const liveLogPath = path.join(agentDir, 'live-output.log');
+
+    // Check if agent directory exists — avoid dangling watchers on nonexistent paths
+    if (!fs.existsSync(agentDir)) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+      res.write(`data: ${JSON.stringify('Agent not found: ' + agentId)}\n\n`);
+      res.write(`event: done\ndata: not-found\n\n`);
+      res.end();
+      return;
+    }
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -2527,6 +2556,79 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         ccInFlightSince = 0;
       }
     } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
+  }
+
+  // GET /api/schedules — return schedules from config + last-run times
+  if (req.method === 'GET' && req.url === '/api/schedules') {
+    reloadConfig();
+    const schedules = CONFIG.schedules || [];
+    const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
+    const result = schedules.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
+    return jsonReply(res, 200, { schedules: result });
+  }
+
+  // POST /api/schedules — create a new schedule
+  if (req.method === 'POST' && req.url === '/api/schedules') {
+    const body = await readBody(req);
+    const { id, cron, title, type, project, agent, description, priority, enabled } = body;
+    if (!id || !cron || !title) return jsonReply(res, 400, { error: 'id, cron, and title are required' });
+
+    reloadConfig();
+    if (!CONFIG.schedules) CONFIG.schedules = [];
+    if (CONFIG.schedules.some(s => s.id === id)) return jsonReply(res, 400, { error: 'Schedule ID already exists' });
+
+    const sched = { id, cron, title, type: type || 'implement', enabled: enabled !== false };
+    if (project) sched.project = project;
+    if (agent) sched.agent = agent;
+    if (description) sched.description = description;
+    if (priority) sched.priority = priority;
+
+    CONFIG.schedules.push(sched);
+    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
+    invalidateStatusCache();
+    return jsonReply(res, 200, { ok: true, schedule: sched });
+  }
+
+  // POST /api/schedules/update — update an existing schedule
+  if (req.method === 'POST' && req.url === '/api/schedules/update') {
+    const body = await readBody(req);
+    const { id, cron, title, type, project, agent, description, priority, enabled } = body;
+    if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+    reloadConfig();
+    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
+    const sched = CONFIG.schedules.find(s => s.id === id);
+    if (!sched) return jsonReply(res, 404, { error: 'Schedule not found' });
+
+    if (cron !== undefined) sched.cron = cron;
+    if (title !== undefined) sched.title = title;
+    if (type !== undefined) sched.type = type;
+    if (project !== undefined) sched.project = project || null;
+    if (agent !== undefined) sched.agent = agent || null;
+    if (description !== undefined) sched.description = description;
+    if (priority !== undefined) sched.priority = priority;
+    if (enabled !== undefined) sched.enabled = enabled;
+
+    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
+    invalidateStatusCache();
+    return jsonReply(res, 200, { ok: true, schedule: sched });
+  }
+
+  // POST /api/schedules/delete — delete a schedule
+  if (req.method === 'POST' && req.url === '/api/schedules/delete') {
+    const body = await readBody(req);
+    const { id } = body;
+    if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+    reloadConfig();
+    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
+    const idx = CONFIG.schedules.findIndex(s => s.id === id);
+    if (idx < 0) return jsonReply(res, 404, { error: 'Schedule not found' });
+
+    CONFIG.schedules.splice(idx, 1);
+    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
+    invalidateStatusCache();
+    return jsonReply(res, 200, { ok: true });
   }
 
   // POST /api/engine/restart — force-kill engine and restart immediately

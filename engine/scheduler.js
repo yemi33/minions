@@ -96,16 +96,11 @@ function shouldRunNow(schedule, lastRunAt) {
   const now = new Date();
   if (!cron.matches(now)) return false;
 
-  // Don't fire again if already ran in this minute window
+  // Don't fire again if already ran within the last 55 seconds
+  // (uses elapsed time instead of field comparison to handle DST/clock adjustments)
   if (lastRunAt) {
     const last = new Date(lastRunAt);
-    if (last.getFullYear() === now.getFullYear() &&
-        last.getMonth() === now.getMonth() &&
-        last.getDate() === now.getDate() &&
-        last.getHours() === now.getHours() &&
-        last.getMinutes() === now.getMinutes()) {
-      return false; // already fired this minute
-    }
+    if (Date.now() - last.getTime() < 55000) return false;
   }
 
   return true;
@@ -120,38 +115,34 @@ function discoverScheduledWork(config) {
   const schedules = config.schedules;
   if (!Array.isArray(schedules) || schedules.length === 0) return [];
 
-  const runs = safeJson(SCHEDULE_RUNS_PATH) || {};
+  // Use file-locked mutation to prevent race conditions on rapid calls
   const work = [];
+  mutateJsonFileLocked(SCHEDULE_RUNS_PATH, (runs) => {
+    for (const sched of schedules) {
+      if (!sched.id || !sched.cron || !sched.title) continue;
+      if (sched.enabled === false) continue;
 
-  for (const sched of schedules) {
-    if (!sched.id || !sched.cron || !sched.title) continue;
-    if (sched.enabled === false) continue;
+      const lastRun = runs[sched.id] || null;
+      if (!shouldRunNow(sched, lastRun)) continue;
 
-    const lastRun = runs[sched.id] || null;
-    if (!shouldRunNow(sched, lastRun)) continue;
+      work.push({
+        id: `sched-${sched.id}-${Date.now()}`,
+        title: sched.title,
+        type: sched.type || 'implement',
+        priority: sched.priority || 'medium',
+        description: sched.description || sched.title,
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'scheduler',
+        agent: sched.agent || null,
+        project: sched.project || null,
+        _scheduleId: sched.id,
+      });
 
-    work.push({
-      id: `sched-${sched.id}-${Date.now()}`,
-      title: sched.title,
-      type: sched.type || 'implement',
-      priority: sched.priority || 'medium',
-      description: sched.description || sched.title,
-      status: 'pending',
-      created: new Date().toISOString(),
-      createdBy: 'scheduler',
-      agent: sched.agent || null,
-      project: sched.project || null,
-      _scheduleId: sched.id,
-    });
-
-    // Record run time
-    runs[sched.id] = new Date().toISOString();
-  }
-
-  // Persist run times if any schedules fired
-  if (work.length > 0) {
-    safeWrite(SCHEDULE_RUNS_PATH, runs);
-  }
+      // Record run time inside the lock
+      runs[sched.id] = new Date().toISOString();
+    }
+  }, { defaultValue: {} });
 
   return work;
 }

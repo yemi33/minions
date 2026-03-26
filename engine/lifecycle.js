@@ -1021,16 +1021,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const { resultSummary, taskUsage } = parseAgentOutput(stdout);
 
   // Handle decomposition results — create sub-items from decompose agent output
+  let skipDoneStatus = false;
   if (type === 'decompose' && isSuccess && meta?.item?.id) {
     const subCount = handleDecompositionResult(stdout, meta, config);
-    if (subCount > 0) {
-      // Parent is marked 'decomposed' by handler — don't overwrite with 'done'
-      return { resultSummary: `Decomposed into ${subCount} sub-items`, taskUsage };
-    }
-    // Fallback: if decomposition produced nothing, mark parent as done to avoid stuck state
+    if (subCount > 0) skipDoneStatus = true; // parent already marked 'decomposed' by handler
+    // If decomposition produced nothing, fall through to mark parent as done
   }
 
-  if (isSuccess && meta?.item?.id) updateWorkItemStatus(meta, 'done', '');
+  if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
   if (!isSuccess && meta?.item?.id) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
@@ -1055,11 +1053,28 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
-          if (wi) { wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to; shared.safeWrite(wiPath, items); }
+          if (wi) {
+            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
+            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
+            shared.safeWrite(wiPath, items);
+          }
         }
       } catch {}
     } else {
       updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+    }
+    // Clear _decomposing flag on failure so item doesn't get permanently stuck
+    if (type === 'decompose') {
+      try {
+        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+          ? path.join(MINIONS_DIR, 'work-items.json')
+          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) { delete wi._decomposing; shared.safeWrite(wiPath, items); }
+        }
+      } catch {}
     }
   }
   // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
