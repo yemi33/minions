@@ -2767,6 +2767,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
 
     // Engine
+    { method: 'POST', path: '/api/engine/wakeup', desc: 'Trigger immediate engine tick via control.json signal', handler: async (req, res) => {
+      const controlPath = path.join(MINIONS_DIR, 'engine', 'control.json');
+      const control = shared.safeJson(controlPath) || {};
+      control._wakeupAt = Date.now();
+      shared.safeWrite(controlPath, control);
+      return jsonReply(res, 200, { ok: true, message: 'Wakeup signal sent' });
+    }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
 
     // Settings

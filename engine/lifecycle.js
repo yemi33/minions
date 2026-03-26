@@ -617,28 +617,25 @@ function updatePrAfterReview(agentId, pr, project) {
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
+  // Set reviewStatus to 'waiting' (single source of truth — synced from ADO/GitHub votes on next poll)
+  target.reviewStatus = 'waiting';
   target.minionsReview = {
-    status: 'waiting',
     reviewer: reviewerName,
     reviewedAt: e.ts(),
     note: completedEntry?.task || ''
   };
-  const minionsVerdict = target.minionsReview.status;
+  // Metrics update: don't track 'waiting' as a verdict — metrics are updated
+  // when pollPrStatus syncs the actual vote to minionsReview.status.
+  // The reviewer's reviewsDone counter is incremented in the main updateMetrics call.
 
+  // Track reviewer for metrics purposes
   const authorAgentId = (pr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
     const metrics = safeJson(metricsPath) || {};
     if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    if (!metrics[authorAgentId]._reviewedPrs) metrics[authorAgentId]._reviewedPrs = {};
-    const prevVerdict = metrics[authorAgentId]._reviewedPrs[pr.id];
-    if (prevVerdict !== minionsVerdict) {
-      if (prevVerdict === 'approved') metrics[authorAgentId].prsApproved = Math.max(0, (metrics[authorAgentId].prsApproved || 0) - 1);
-      else if (prevVerdict === 'changes-requested') metrics[authorAgentId].prsRejected = Math.max(0, (metrics[authorAgentId].prsRejected || 0) - 1);
-      if (minionsVerdict === 'approved') metrics[authorAgentId].prsApproved++;
-      else if (minionsVerdict === 'changes-requested') metrics[authorAgentId].prsRejected++;
-      metrics[authorAgentId]._reviewedPrs[pr.id] = minionsVerdict;
-    }
+    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+    metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
     shared.safeWrite(metricsPath, metrics);
   }
 
@@ -654,25 +651,15 @@ function updatePrAfterFix(pr, project, source) {
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
+  // Reset reviewStatus to 'waiting' for re-review (single source of truth)
+  target.reviewStatus = 'waiting';
   if (source === 'pr-human-feedback') {
-    // Human feedback fix: clear pendingFix AND reset to waiting for re-review
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
-    target.minionsReview = {
-      ...target.minionsReview,
-      status: 'waiting',
-      note: 'Fixed human feedback, awaiting re-review',
-      fixedAt: e.ts()
-    };
+    target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: e.ts() };
     e.log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
   } else {
-    // Review fix: reset to waiting for re-review
-    target.minionsReview = {
-      ...target.minionsReview,
-      status: 'waiting',
-      note: 'Fixed, awaiting re-review',
-      fixedAt: e.ts()
-    };
-    e.log('info', `Updated ${pr.id} → minions review: waiting (fix pushed)`);
+    target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: e.ts() };
+    e.log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
   shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
@@ -932,8 +919,8 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
 // ─── Agent Output Parsing ────────────────────────────────────────────────────
 
 function parseAgentOutput(stdout) {
-  const parsed = shared.parseStreamJsonOutput(stdout, { maxTextLength: 500 });
-  return { resultSummary: parsed.text, taskUsage: parsed.usage };
+  const { text, usage, sessionId } = shared.parseStreamJsonOutput(stdout, { maxTextLength: 2000 });
+  return { resultSummary: text, taskUsage: usage, sessionId };
 }
 
 /**
@@ -1018,7 +1005,16 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const meta = dispatchItem.meta;
   const isSuccess = code === 0;
   const result = isSuccess ? 'success' : 'error';
-  const { resultSummary, taskUsage } = parseAgentOutput(stdout);
+  const { resultSummary, taskUsage, sessionId } = parseAgentOutput(stdout);
+
+  // Save session for potential resume on next dispatch
+  if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
+    try {
+      shared.safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
+        sessionId, dispatchId: dispatchItem.id, savedAt: new Date().toISOString()
+      });
+    } catch {}
+  }
 
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;

@@ -60,5 +60,6 @@ Ordered by difficulty: quick wins first, larger efforts later.
 
 ## Ambitious (multi-day)
 
+- [ ] **Agent adapter abstraction** — Decouple agent execution from Claude Code. Define an adapter interface (`{ execute, sessionCodec }`) so agents can be Claude Code, Codex, Cursor, HTTP endpoints, or custom runtimes. Inspired by Paperclip's BYOA (Bring Your Own Agent) pattern.
 - [ ] **Dedicated ops agent** — permanent 6th agent scoped to housekeeping: cleanup, status checks, metric collection. Never assigned feature work.
 

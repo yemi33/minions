@@ -306,6 +306,17 @@ const commands = {
 
     // Start tick loop
     const tickTimer = setInterval(() => e.tick(), interval);
+
+    // Fast poll for immediate wakeup signals (checks control.json every 2s)
+    setInterval(() => {
+      const ctrl = getControl();
+      if (ctrl._wakeupAt && Date.now() - ctrl._wakeupAt < 5000) {
+        delete ctrl._wakeupAt;
+        safeWrite(CONTROL_PATH, ctrl);
+        e.tick();
+      }
+    }, 2000);
+
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
 

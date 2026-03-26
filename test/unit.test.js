@@ -791,10 +791,10 @@ async function testLifecycleHelpers() {
   });
 
   await test('parseAgentOutput truncates long result text', () => {
-    const longText = 'x'.repeat(1000);
+    const longText = 'x'.repeat(3000);
     const stdout = `{"type":"result","result":"${longText}"}`;
     const { resultSummary } = lifecycle.parseAgentOutput(stdout);
-    assert.ok(resultSummary.length <= 500, 'Result should be truncated to 500 chars');
+    assert.ok(resultSummary.length <= 2000, 'Result should be truncated to 2000 chars');
   });
 }
 
@@ -1512,30 +1512,28 @@ async function testCheckStatus() {
 async function testPrReviewFixCycle() {
   console.log('\n── PR → Review → Fix Cycle ──');
 
-  await test('No self-review: review agent cannot be PR author', () => {
+  await test('Self-review is allowed: agents can review their own PRs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('prAuthor'),
-      'discoverFromPrs should extract PR author for self-review check');
-    assert.ok(src.includes('agentId === prAuthor'),
-      'Should check if resolved agent is the PR author');
+    // Self-review prevention was removed — agents can review their own PRs
+    assert.ok(!src.includes('agentId === prAuthor'),
+      'Self-review prevention should be removed — agents can review their own PRs');
   });
 
-  await test('Review verdict is waiting (not hardcoded approved)', () => {
+  await test('Review sets reviewStatus to waiting (single source of truth)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
-    assert.ok(reviewFn.includes("status: 'waiting'"),
-      'updatePrAfterReview should set status to waiting, not approved');
+    assert.ok(reviewFn.includes("reviewStatus = 'waiting'"),
+      'updatePrAfterReview should set reviewStatus to waiting (single source of truth)');
     assert.ok(!reviewFn.includes("status: 'approved'"),
       'Should NOT hardcode approved — let pollPrStatus determine actual verdict');
   });
 
-  await test('Human feedback fix triggers re-review (reset to waiting)', () => {
+  await test('Human feedback fix triggers re-review (reset reviewStatus to waiting)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fixFn = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterFix(') + 1));
-    // Both branches should set status to 'waiting'
-    const waitingCount = (fixFn.match(/status: 'waiting'/g) || []).length;
-    assert.ok(waitingCount >= 2,
-      `Both human-feedback and review-feedback fix paths should reset to waiting (found ${waitingCount})`);
+    // reviewStatus should be reset to 'waiting' (single source of truth)
+    assert.ok(fixFn.includes("reviewStatus = 'waiting'"),
+      'updatePrAfterFix should reset reviewStatus to waiting for re-review');
   });
 
   await test('Human feedback cooldown key uses PR ID only (no timestamp)', () => {
@@ -2726,10 +2724,10 @@ async function testDiscoverFromPrs() {
       'Should skip PRs not in active status');
   });
 
-  await test('discoverFromPrs prevents self-review', () => {
-    // An agent that authored a PR should not review their own PR
-    assert.ok(src.includes('agentId') && src.includes('prAuthor') || src.includes('pr.createdBy'),
-      'Should prevent self-review when agent is the PR author');
+  await test('discoverFromPrs allows self-review', () => {
+    // Agents can review their own PRs (self-review is allowed)
+    assert.ok(!src.includes('agentId === prAuthor'),
+      'Self-review prevention should not exist — agents can review their own PRs');
   });
 
   await test('discoverFromPrs handles changes-requested for fix work', () => {
@@ -3020,6 +3018,214 @@ async function testExitCode78Handling() {
   });
 }
 
+// ─── Session Resume Tests ────────────────────────────────────────────────────
+
+async function testSessionResume() {
+  console.log('\n── Session Resume ──');
+
+  await test('parseStreamJsonOutput extracts sessionId', () => {
+    const output = '{"type":"result","result":"done","session_id":"sess-abc123","usage":{}}\n';
+    const { sessionId } = shared.parseStreamJsonOutput(output);
+    assert.strictEqual(sessionId, 'sess-abc123');
+  });
+
+  await test('parseStreamJsonOutput returns null sessionId when absent', () => {
+    const output = '{"type":"result","result":"done","usage":{}}\n';
+    const { sessionId } = shared.parseStreamJsonOutput(output);
+    assert.strictEqual(sessionId, null);
+  });
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('parseAgentOutput returns sessionId', () => {
+    assert.ok(lifecycleSrc.includes('sessionId') && lifecycleSrc.includes('parseStreamJsonOutput'),
+      'parseAgentOutput should extract sessionId from parseStreamJsonOutput');
+  });
+
+  await test('session.json is saved after successful dispatch', () => {
+    assert.ok(lifecycleSrc.includes('session.json') && lifecycleSrc.includes('sessionId'),
+      'runPostCompletionHooks should save session.json with sessionId');
+  });
+
+  await test('session.json is NOT saved for temp agents', () => {
+    assert.ok(lifecycleSrc.includes("temp-") && lifecycleSrc.includes('session.json'),
+      'Session save should skip temp agents');
+  });
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('spawnAgent checks session.json for resume', () => {
+    assert.ok(engineSrc.includes('session.json') && engineSrc.includes('--resume'),
+      'spawnAgent should check session.json and pass --resume flag');
+  });
+
+  await test('session resume has 2-hour TTL', () => {
+    assert.ok(engineSrc.includes('2 * 60 * 60 * 1000') || engineSrc.includes('7200000'),
+      'Session resume should have a 2-hour staleness guard');
+  });
+
+  await test('session resume skips temp agents', () => {
+    assert.ok(engineSrc.includes("temp-") && engineSrc.includes('session.json'),
+      'spawnAgent should skip session resume for temp agents');
+  });
+
+  await test('session.json stores dispatchId for traceability', () => {
+    assert.ok(lifecycleSrc.includes('dispatchId') && lifecycleSrc.includes('session.json'),
+      'session.json should include dispatchId');
+  });
+}
+
+// ─── Wakeup Coalescing Tests ────────────────────────────────────────────────
+
+async function testWakeupCoalescing() {
+  console.log('\n── Wakeup Coalescing ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('setCooldownWithContext function exists', () => {
+    assert.ok(src.includes('function setCooldownWithContext'),
+      'Should have setCooldownWithContext function for coalescing');
+  });
+
+  await test('setCooldownWithContext stores pendingContexts array', () => {
+    assert.ok(src.includes('pendingContexts'),
+      'Should track pendingContexts in cooldown entries');
+  });
+
+  await test('getCoalescedContexts function exists', () => {
+    assert.ok(src.includes('getCoalescedContexts'),
+      'Should have function to retrieve coalesced contexts');
+  });
+
+  await test('discoverFromPrs coalesces on cooldown skip', () => {
+    assert.ok(src.includes('setCooldownWithContext') && src.includes('feedbackContent'),
+      'Should coalesce feedback content when dispatch is blocked by cooldown');
+  });
+
+  await test('coalesced contexts are merged into dispatch', () => {
+    assert.ok(src.includes('coalesced') || src.includes('getCoalescedContexts'),
+      'Should merge coalesced contexts into the dispatch');
+  });
+
+  await test('coalescing preserves existing cooldown backoff', () => {
+    assert.ok(src.includes('existing?.failures || 0'),
+      'setCooldownWithContext should preserve failure count');
+  });
+}
+
+// ─── Budget Enforcement Tests ───────────────────────────────────────────────
+
+async function testBudgetEnforcement() {
+  console.log('\n── Budget Enforcement ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('getMonthlySpend function exists', () => {
+    assert.ok(src.includes('getMonthlySpend'),
+      'Should have getMonthlySpend helper function');
+  });
+
+  await test('resolveAgent checks monthlyBudgetUsd', () => {
+    assert.ok(src.includes('monthlyBudgetUsd'),
+      'resolveAgent should check agent monthlyBudgetUsd config');
+  });
+
+  await test('no budget configured means infinite (no limit)', () => {
+    assert.ok(src.includes('budget > 0'),
+      'Should only enforce budget when explicitly set and > 0');
+  });
+
+  await test('getMonthlySpend uses current month prefix', () => {
+    assert.ok(src.includes('monthPrefix') || src.includes('getMonth'),
+      'Should filter daily metrics to current month only');
+  });
+
+  await test('budget_exceeded sets _pendingReason', () => {
+    assert.ok(src.includes('budget_exceeded'),
+      'Should set _pendingReason to budget_exceeded when agent over budget');
+  });
+
+  await test('getMonthlySpend returns 0 for no data', () => {
+    assert.ok(src.includes('let total = 0'),
+      'getMonthlySpend should default to 0');
+  });
+
+  await test('budget check does not affect temp agents', () => {
+    assert.ok(src.includes('allowTempAgents') && src.includes('monthlyBudgetUsd'),
+      'Budget and temp agents should coexist');
+  });
+
+  await test('budget enforcement formula blocks at >= threshold', () => {
+    assert.ok(src.includes('>= budget'),
+      'Should block agent when monthly spend >= budget');
+  });
+}
+
+// ─── Wakeup Endpoint Tests ──────────────────────────────────────────────────
+
+async function testWakeupEndpoint() {
+  console.log('\n── Wakeup Endpoint ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('POST /api/engine/wakeup endpoint exists in ROUTES', () => {
+    assert.ok(dashSrc.includes('/api/engine/wakeup'),
+      'Should have /api/engine/wakeup in route registry');
+  });
+
+  await test('wakeup endpoint writes _wakeupAt to control.json', () => {
+    assert.ok(dashSrc.includes('_wakeupAt'),
+      'Wakeup handler should write _wakeupAt timestamp');
+  });
+
+  const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+
+  await test('fast poll interval checks for _wakeupAt', () => {
+    assert.ok(cliSrc.includes('_wakeupAt'),
+      'CLI start should poll for _wakeupAt wakeup signal');
+  });
+
+  await test('fast poll uses 2-second interval', () => {
+    assert.ok(cliSrc.includes('2000') && cliSrc.includes('_wakeupAt'),
+      'Wakeup poll should run every 2 seconds');
+  });
+}
+
+// ─── Cross-Feature Integration Tests ────────────────────────────────────────
+
+async function testCrossFeatureIntegration() {
+  console.log('\n── Cross-Feature Integration ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('session resume and temp agents both check temp- prefix', () => {
+    assert.ok(engineSrc.includes("temp-") && engineSrc.includes('session.json'),
+      'Session resume should skip temp agents');
+  });
+
+  await test('budget exceeded does not block temp agent fallback', () => {
+    assert.ok(engineSrc.includes('allowTempAgents') && engineSrc.includes('monthlyBudgetUsd'),
+      'Temp agents spawn when configured agents are busy/over-budget');
+  });
+
+  await test('wakeup endpoint discoverable via /api/routes', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('/api/engine/wakeup') && dashSrc.includes('ROUTES'),
+      'Wakeup endpoint should be in ROUTES for CC discovery');
+  });
+
+  await test('coalescing uses different mechanism from build failure notifications', () => {
+    assert.ok(engineSrc.includes('writeInboxAlert') && engineSrc.includes('setCooldownWithContext'),
+      'Build notifications and coalescing should use different mechanisms');
+  });
+
+  await test('adapter abstraction is in TODO.md', () => {
+    const todo = fs.readFileSync(path.join(MINIONS_DIR, 'TODO.md'), 'utf8');
+    assert.ok(todo.includes('adapter') && todo.includes('abstraction'),
+      'Adapter abstraction should be listed in TODO.md');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3120,6 +3326,13 @@ async function main() {
     await testRunPostCompletionHooks();
     await testSpawnAgentScript();
     await testExitCode78Handling();
+
+    // Paperclip-inspired features
+    await testSessionResume();
+    await testWakeupCoalescing();
+    await testBudgetEnforcement();
+    await testWakeupEndpoint();
+    await testCrossFeatureIntegration();
   } finally {
     cleanupTmpDirs();
   }

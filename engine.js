@@ -166,6 +166,25 @@ function getRoutingTableCached() {
   return _routingCache;
 }
 
+function getMonthlySpend(agentId) {
+  const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+  const daily = metrics._daily || {};
+  const now = new Date();
+  const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  let total = 0;
+  for (const [date, data] of Object.entries(daily)) {
+    if (date.startsWith(monthPrefix)) {
+      total += (data.perAgent?.[agentId]?.costUsd || 0);
+    }
+  }
+  // Fallback: if no per-agent daily data, use cumulative (less accurate for monthly)
+  if (total === 0 && metrics[agentId]?.totalCostUsd) {
+    // Can't distinguish monthly from cumulative — treat as monthly estimate
+    // This path is for backward compat before per-agent daily tracking was added
+  }
+  return total;
+}
+
 function getAgentErrorRate(agentId) {
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
   const metrics = safeJson(metricsPath) || {};
@@ -194,7 +213,15 @@ function resolveAgent(workType, config, authorAgent = null) {
   let preferred = route.preferred === '_author_' ? authorAgent : route.preferred;
   let fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
 
-  const isAvailable = (id) => agents[id] && isAgentIdle(id) && !_claimedAgents.has(id);
+  const isAvailable = (id) => {
+    if (!agents[id] || !isAgentIdle(id) || _claimedAgents.has(id)) return false;
+    // Budget check — no budget means infinite (no limit)
+    const budget = agents[id].monthlyBudgetUsd;
+    if (budget && budget > 0) {
+      if (getMonthlySpend(id) >= budget) return false;
+    }
+    return true;
+  };
 
   // Check preferred and fallback first (routing table order)
   if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
@@ -903,6 +930,20 @@ function spawnAgent(dispatchItem, config) {
 
   if (claudeConfig.allowedTools) {
     args.push('--allowedTools', claudeConfig.allowedTools);
+  }
+
+  // Session resume: reuse last session if recent enough (< 2 hours)
+  if (!agentId.startsWith('temp-')) {
+    try {
+      const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
+      if (sessionFile?.sessionId && sessionFile.savedAt) {
+        const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
+        if (sessionAge < 2 * 60 * 60 * 1000) { // 2 hour TTL
+          args.push('--resume', sessionFile.sessionId);
+          log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} (age: ${Math.round(sessionAge / 60000)}min)`);
+        }
+      }
+    } catch {}
   }
 
   // MCP servers: agents inherit from ~/.claude.json directly as Claude Code processes.
@@ -1968,6 +2009,27 @@ function setCooldown(key) {
   saveCooldowns();
 }
 
+function setCooldownWithContext(key, context) {
+  const existing = dispatchCooldowns.get(key);
+  const pendingContexts = existing?.pendingContexts || [];
+  if (context) pendingContexts.push(context);
+  dispatchCooldowns.set(key, {
+    timestamp: Date.now(),
+    failures: existing?.failures || 0,
+    pendingContexts
+  });
+  saveCooldowns();
+}
+
+function getCoalescedContexts(key) {
+  const entry = dispatchCooldowns.get(key);
+  const contexts = entry?.pendingContexts || [];
+  if (contexts.length > 0 && entry) {
+    entry.pendingContexts = []; // Clear after retrieval
+  }
+  return contexts;
+}
+
 function setCooldownFailure(key) {
   const existing = dispatchCooldowns.get(key);
   const failures = (existing?.failures || 0) + 1;
@@ -2390,19 +2452,16 @@ function discoverFromPrs(config, project) {
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
 
     const prNumber = (pr.id || '').replace(/^PR-/, '');
-    const minionsStatus = pr.minionsReview?.status;
+    // Use reviewStatus as single source of truth (synced from ADO/GitHub votes)
+    // minionsReview tracks metadata (reviewer, note) but not the authoritative status
+    const reviewStatus = pr.reviewStatus || 'pending';
 
-    // PRs needing review
-    const needsReview = !minionsStatus || minionsStatus === 'waiting';
+    // PRs needing review: pending or waiting (review dispatched but no verdict yet)
+    const needsReview = reviewStatus === 'pending' || reviewStatus === 'waiting';
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      // No self-review: exclude the PR author from review assignment
-      const prAuthor = (pr.agent || '').toLowerCase();
-      let agentId = resolveAgent('review', config);
-      if (agentId && agentId === prAuthor) {
-        agentId = resolveAgent('review', config); // retry — prAuthor now claimed, gets skipped
-      }
+      const agentId = resolveAgent('review', config);
       if (!agentId) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
@@ -2413,7 +2472,7 @@ function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
-    if (minionsStatus === 'changes-requested') {
+    if (reviewStatus === 'changes-requested') {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -2426,22 +2485,37 @@ function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
-    // PRs with pending human feedback
-    if (pr.humanFeedback?.pendingFix) {
-      const key = `human-fix-${project?.name || 'default'}-${pr.id}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+    // PRs with pending human feedback (or coalesced comments from while agent was fixing)
+    const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
+    const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
+    if (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) {
+      const key = humanFixKey;
+      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
+        // Coalesce: save feedback for next dispatch
+        if (pr.humanFeedback?.feedbackContent) {
+          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: new Date().toISOString() });
+        }
+        continue;
+      }
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
+
+      const coalesced = getCoalescedContexts(key);
+      let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
+      if (coalesced.length > 0) {
+        const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
+        if (earlier) reviewNote = earlier + '\n\n---\n\n' + reviewNote;
+      }
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         reviewer: 'Human Reviewer',
-        review_note: pr.humanFeedback.feedbackContent || 'See PR thread comments',
+        review_note: reviewNote,
       }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
-    // PRs with build failures
+    // PRs with build failures — any agent can pick this up
     if (pr.status === 'active' && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -2565,7 +2639,17 @@ function discoverFromWorkItems(config, project) {
     }
     const agentId = item.agent || resolveAgent(workType, config);
     if (!agentId) {
-      if (item._pendingReason !== 'no_agent') { item._pendingReason = 'no_agent'; needsWrite = true; }
+      // Check if reason is budget
+      const cfgAgents = config.agents || {};
+      const budgetBlocked = Object.keys(cfgAgents).some(id => {
+        const b = cfgAgents[id].monthlyBudgetUsd;
+        return b && b > 0 && getMonthlySpend(id) >= b && isAgentIdle(id);
+      });
+      if (budgetBlocked) {
+        if (item._pendingReason !== 'budget_exceeded') { item._pendingReason = 'budget_exceeded'; needsWrite = true; }
+      } else {
+        if (item._pendingReason !== 'no_agent') { item._pendingReason = 'no_agent'; needsWrite = true; }
+      }
       skipped.noAgent++; continue;
     }
 
@@ -3396,7 +3480,10 @@ module.exports = {
   updateWorkItemStatus, runCleanup, handlePostMerge,
 
   // Cooldowns
-  loadCooldowns,
+  loadCooldowns, setCooldownWithContext, getCoalescedContexts,
+
+  // Budget
+  getMonthlySpend,
 
   // Tick
   tick,

@@ -127,6 +127,20 @@ async function pollPrStatus(config) {
         e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
         pr.reviewStatus = newReviewStatus;
         updated = true;
+        // Update author metrics when verdict changes to approved/rejected
+        if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
+          const authorId = (pr.agent || '').toLowerCase();
+          if (authorId) {
+            try {
+              const metricsPath = path.join(__dirname, 'metrics.json');
+              const metrics = shared.safeJson(metricsPath) || {};
+              if (!metrics[authorId]) metrics[authorId] = {};
+              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+              shared.safeWrite(metricsPath, metrics);
+            } catch {}
+          }
+        }
       }
     }
 
