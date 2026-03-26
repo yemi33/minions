@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.13 (2026-03-26)
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/js/command-center.js
+- dashboard/js/command-history.js
+- dashboard/js/command-input.js
+- dashboard/js/command-parser.js
+- dashboard/js/detail-panel.js
+- dashboard/js/live-stream.js
+- dashboard/js/modal-qa.js
+- dashboard/js/modal.js
+- dashboard/js/refresh.js
+- dashboard/js/render-agents.js
+- dashboard/js/render-dispatch.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-other.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+- dashboard/js/render-prs.js
+- dashboard/js/render-schedules.js
+- dashboard/js/render-skills.js
+- dashboard/js/render-work-items.js
+- dashboard/js/settings.js
+- dashboard/js/state.js
+- dashboard/js/utils.js
+- dashboard/layout.html
+- dashboard/pages/engine.html
+- dashboard/pages/home.html
+- dashboard/pages/inbox.html
+- dashboard/pages/plans.html
+- dashboard/pages/prd.html
+- dashboard/pages/prs.html
+- dashboard/pages/schedule.html
+- dashboard/pages/work.html
+- dashboard/styles.css
+
+### Other
+- test/unit.test.js
+
 ## 0.1.12 (2026-03-26)
 
 ### Engine
