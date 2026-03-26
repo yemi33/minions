@@ -1,0 +1,31 @@
+      <section class="cmd-center">
+        <h2>Command Center</h2>
+        <div class="cmd-input-wrap" id="cmd-input-wrap">
+          <div class="cmd-highlight-layer" id="cmd-highlight" aria-hidden="true"></div>
+          <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "explain the dispatch flow", or "/note always use feature flags"'
+            oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)" onscroll="syncHighlightScroll()"></textarea>
+          <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
+        </div>
+        <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
+        <div class="cmd-meta" id="cmd-meta" style="display:none"></div>
+        <div class="cmd-hints">
+          <span style="color:var(--blue);font-weight:600">Command Center</span>
+          <span>Ask anything, dispatch work, manage plans — powered by Sonnet</span>
+          <button class="cmd-history-btn" onclick="cmdShowHistory()">Past Commands</button>
+        </div>
+        <div class="cmd-toast" id="cmd-toast"></div>
+      </section>
+      <section>
+        <h2>Minions Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
+        <div class="agents" id="agents-grid">Loading...</div>
+      </section>
+      <section>
+        <h2>Dispatch Queue</h2>
+        <div class="dispatch-stats" id="dispatch-stats"></div>
+        <div id="dispatch-active"></div>
+        <div id="dispatch-pending"></div>
+      </section>
+      <section class="pr-panel" id="completed-section">
+        <h2>Recent Completions <span class="count" id="completed-count">0</span></h2>
+        <div id="completed-content"><p class="empty">No completed dispatches yet.</p></div>
+      </section>

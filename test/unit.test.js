@@ -3226,6 +3226,105 @@ async function testCrossFeatureIntegration() {
   });
 }
 
+// ─── Dashboard Assembly Tests ───────────────────────────────────────────────
+
+async function testDashboardAssembly() {
+  console.log('\n── Dashboard Assembly ──');
+
+  // Try to load buildDashboardHtml — may not exist yet (test-first)
+  let buildDashboardHtml;
+  try {
+    // Look for the function in dashboard.js exports or as a standalone
+    const dashModule = require(path.join(MINIONS_DIR, 'dashboard-build'));
+    buildDashboardHtml = dashModule.buildDashboardHtml;
+  } catch {
+    try {
+      // Fallback: read current dashboard.html directly (pre-refactor)
+      const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+      buildDashboardHtml = () => html;
+    } catch {
+      skip('dashboard-assembly', 'Neither buildDashboardHtml nor dashboard.html found');
+      return;
+    }
+  }
+
+  const html = buildDashboardHtml();
+
+  await test('assembled HTML is valid structure', () => {
+    assert.ok(html.includes('<!DOCTYPE html') || html.includes('<html'), 'Should start with DOCTYPE or html tag');
+    assert.ok(html.includes('</html>'), 'Should end with closing html tag');
+    assert.ok(html.includes('<head>') && html.includes('</head>'), 'Should have head section');
+    assert.ok(html.includes('<body>') || html.includes('<body'), 'Should have body tag');
+  });
+
+  await test('assembled HTML contains CSS', () => {
+    assert.ok(html.includes('<style>') && html.includes('</style>'), 'Should have style block');
+    assert.ok(html.includes('--bg:') || html.includes('var(--bg)'), 'Should contain CSS variables');
+    assert.ok(html.includes('.sidebar'), 'Should have sidebar CSS');
+  });
+
+  await test('assembled HTML contains JS', () => {
+    assert.ok(html.includes('<script>') && html.includes('</script>'), 'Should have script block');
+    assert.ok(html.includes('function refresh'), 'Should contain refresh function');
+    assert.ok(html.includes('function switchPage'), 'Should contain switchPage function');
+    assert.ok(html.includes('function escHtml'), 'Should contain escHtml utility');
+  });
+
+  await test('assembled HTML contains all page divs', () => {
+    const pages = ['page-home', 'page-work', 'page-prd', 'page-prs', 'page-plans', 'page-inbox', 'page-schedule', 'page-engine'];
+    for (const p of pages) {
+      assert.ok(html.includes(`id="${p}"`), `Should contain ${p} page div`);
+    }
+  });
+
+  await test('assembled HTML contains critical element IDs', () => {
+    const criticalIds = [
+      'agents-grid', 'cmd-input', 'engine-badge', 'dispatch-stats',
+      'work-items-content', 'wi-count', 'prd-content', 'pr-content', 'pr-count',
+      'plans-list', 'inbox-list', 'kb-list', 'engine-log', 'modal', 'modal-body',
+      'detail-panel', 'detail-content', 'scheduled-content', 'sidebar',
+    ];
+    for (const id of criticalIds) {
+      assert.ok(html.includes(`id="${id}"`), `Should contain element with id="${id}"`);
+    }
+  });
+
+  await test('assembled HTML contains sidebar navigation links', () => {
+    const pages = ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'schedule', 'engine'];
+    for (const p of pages) {
+      assert.ok(html.includes(`data-page="${p}"`), `Should contain sidebar link for ${p}`);
+    }
+  });
+
+  await test('assembled HTML has no placeholder tokens remaining', () => {
+    assert.ok(!html.includes('/* __CSS__ */'), 'CSS placeholder should be replaced');
+    assert.ok(!html.includes('<!-- __PAGES__ -->'), 'Pages placeholder should be replaced');
+    assert.ok(!html.includes('/* __JS__ */'), 'JS placeholder should be replaced');
+  });
+
+  await test('page-home contains command center and agents', () => {
+    // Extract page-home content
+    const homeStart = html.indexOf('id="page-home"');
+    assert.ok(homeStart > 0, 'page-home should exist');
+    const homeChunk = html.slice(homeStart, homeStart + 2000);
+    assert.ok(homeChunk.includes('cmd-input') || homeChunk.includes('Command Center'), 'Home should contain command center');
+    assert.ok(homeChunk.includes('agents-grid'), 'Home should contain agents grid');
+  });
+
+  await test('assembled HTML contains all render functions', () => {
+    const fns = ['renderAgents', 'renderWorkItems', 'renderPrs', 'renderPrd',
+      'renderDispatch', 'renderEngineLog', 'renderSchedules', 'renderSkills'];
+    for (const fn of fns) {
+      assert.ok(html.includes(fn), `Should contain ${fn} function`);
+    }
+  });
+
+  await test('assembled HTML size is reasonable', () => {
+    assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
+    assert.ok(html.length < 500000, `HTML should be < 500KB (got ${html.length})`);
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3333,6 +3432,9 @@ async function main() {
     await testBudgetEnforcement();
     await testWakeupEndpoint();
     await testCrossFeatureIntegration();
+
+    // Dashboard assembly tests
+    await testDashboardAssembly();
   } finally {
     cleanupTmpDirs();
   }

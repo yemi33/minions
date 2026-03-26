@@ -1,0 +1,469 @@
+// render-prd.js — PRD-related rendering functions extracted from dashboard.html
+
+function renderPrd(prd, prog) {
+  const section = document.getElementById('prd-content');
+  const badge = document.getElementById('prd-badge');
+  if (!prd) {
+    section.innerHTML = '<p class="prd-pending" style="margin-bottom:0">No PRD found.</p>';
+    badge.innerHTML = '';
+    return;
+  }
+  if (prd.error) {
+    section.innerHTML = '<p style="color:var(--orange);margin-bottom:0">PRD file found but has parse errors.</p>';
+    return;
+  }
+  badge.innerHTML = '<span style="color:var(--green);font-size:11px">' + prd.age + '</span>';
+  // Stats are now rendered per-group inside renderPrdProgress
+  section.innerHTML = '';
+}
+
+function renderPrdProgress(prog) {
+  const el = document.getElementById('prd-progress-content');
+  const countEl = document.getElementById('prd-progress-count');
+  if (!prog) { el.innerHTML = ''; countEl.textContent = '—'; return; }
+
+  // Compute progress from active (non-archived) items only
+  const activeItems = (prog.items || []).filter(i => !i._archived);
+  if (activeItems.length > 0) {
+    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
+  } else {
+    countEl.textContent = '—';
+  }
+
+  function renderGroupStats(items) {
+    const total = items.length;
+    if (total === 0) return '';
+    const done = items.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    const inProgress = items.filter(i => i.status === 'in-progress').length;
+    const failed = items.filter(i => i.status === 'failed').length;
+    const paused = items.filter(i => i.status === 'paused').length;
+    const missing = items.filter(i => i.status === 'missing' || !i.status).length;
+    const pct = (n) => total > 0 ? ((n / total) * 100).toFixed(1) : 0;
+
+    const stats = '<div class="prd-stats" style="margin:0">' +
+      '<div class="prd-stat"><div class="prd-stat-num green">' + done + '</div><div class="prd-stat-label">Done</div></div>' +
+      '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--yellow)">' + inProgress + '</div><div class="prd-stat-label">Active</div></div>' +
+      (failed ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--red)">' + failed + '</div><div class="prd-stat-label">Failed</div></div>' : '') +
+      (paused ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--muted)">' + paused + '</div><div class="prd-stat-label">Paused</div></div>' : '') +
+      '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--muted)">' + missing + '</div><div class="prd-stat-label">To Do</div></div>' +
+      '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--text)">' + total + '</div><div class="prd-stat-label">Total</div></div>' +
+    '</div>';
+
+    const bar = '<div class="prd-progress-bar">' +
+      '<div class="seg complete" style="width:' + pct(done) + '%"></div>' +
+      '<div class="seg in-progress" style="width:' + pct(inProgress) + '%"></div>' +
+      '<div class="seg paused" style="width:' + pct(paused) + '%"></div>' +
+      '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
+    '</div>';
+
+    return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + '<div style="margin-top:8px">' + bar + '</div></div>';
+  }
+
+  // PRD item statuses: missing → in-progress → done
+  const statusBadge = (s) => {
+    const styles = {
+      'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
+      'implemented': 'background:rgba(63,185,80,0.15);color:var(--green)', /* legacy alias */
+      'in-pr':  'background:rgba(63,185,80,0.15);color:var(--green)', /* backward compat: displayed as done */
+      'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
+      'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
+      'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
+    };
+    const labels = { 'done': 'DONE', 'implemented': 'DONE', 'in-pr': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
+    const style = styles[s] || 'background:var(--surface);color:var(--muted)';
+    const label = labels[s] || '—';
+    return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
+  };
+
+  // Build work item lookup: PRD item ID → work item info
+  const wiById = {};
+  for (const w of (window._lastWorkItems || [])) {
+    if (w.id) wiById[w.id] = w;
+  }
+
+  // Group items by source plan
+  const grouped = {};
+  for (const i of (prog.items || [])) {
+    const key = i.source || '_ungrouped';
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null };
+    grouped[key].items.push(i);
+  }
+
+  const renderItem = (i) => {
+    const prLinks = (i.prs || []).map(pr =>
+      '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>'
+    ).join(' ');
+    const projBadges = (i.projects || []).map(p =>
+      '<span class="prd-project-badge">' + escHtml(p) + '</span>'
+    ).join(' ');
+    const src = escHtml(i.source || '');
+    const iid = escHtml(i.id || '');
+
+    // Linked work item info
+    const wi = wiById[i.id];
+    const wiLabel = wi ? '<span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)" title="Work item: ' + escHtml(wi.id) + '">' +
+      escHtml(wi.id) + (wi.dispatched_to ? ' → ' + escHtml(wi.dispatched_to) : '') + '</span>' : '';
+
+    // Requeue button for failed items
+    const canRequeue = wi && (wi.status === 'failed' || i.status === 'failed');
+    const requeueState = wi ? getPrdRequeueState(wi.id) : null;
+    let requeueBtn = '';
+    if (requeueState && requeueState.status === 'pending') {
+      requeueBtn = '<span style="color:var(--yellow);cursor:wait;font-size:9px;padding:1px 5px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px" title="Retry request in progress">requeuing…</span>';
+    } else if (requeueState && requeueState.status === 'queued') {
+      requeueBtn = '<span style="color:var(--green);cursor:default;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.35);border-radius:3px" title="Successfully requeued">requeued</span>';
+    } else if (requeueState && requeueState.status === 'error') {
+      requeueBtn = '<span style="color:var(--red);cursor:default;font-size:9px;padding:1px 5px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(requeueState.message || 'Retry failed') + '">retry failed</span>';
+    } else if (canRequeue) {
+      requeueBtn = '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>';
+    }
+
+    return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
+      statusBadge(i.status) +
+      '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
+      '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
+      wiLabel +
+      requeueBtn +
+      (projBadges ? '<span>' + projBadges + '</span>' : '') +
+      (prLinks ? '<span>' + prLinks + '</span>' : '') +
+      '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
+      '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="color:var(--red);cursor:pointer;font-size:10px;padding:0 4px" title="Remove item">x</span>' +
+      (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 42px;line-height:1.4">' + escHtml(i.description) + '</div>' : '') +
+    '</div>';
+  };
+
+  const keys = Object.keys(grouped);
+  const formatDuration = (ms) => {
+    if (!ms || ms < 0) return '';
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + (m % 60) + 'm';
+    const d = Math.floor(h / 24);
+    return d + 'd ' + (h % 24) + 'h';
+  };
+
+  const timings = prog.planTimings || {};
+
+  const renderGroupHeader = (g) => {
+    const done = g.items.filter(i => i.status === 'done' || i.status === 'complete' || i.status === 'implemented').length;
+    const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
+    const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
+    const isAwaitingApproval = g.planStatus === 'awaiting-approval';
+    const isPaused = g.planStatus === 'paused';
+    const isBlocked = isAwaitingApproval || isPaused;
+
+    // Runtime: from first dispatch to last completion (or now if still running, frozen if paused)
+    const t = timings[g.file];
+    let runtimeLabel = '';
+    if (t && t.firstDispatched) {
+      const end = t.allDone && t.lastCompleted ? t.lastCompleted : isBlocked ? (t.lastCompleted || t.firstDispatched) : Date.now();
+      const elapsed = end - t.firstDispatched;
+      const icon = t.allDone ? '&#x2713;' : isBlocked ? '&#x23F8;' : '&#x23F1;';
+      runtimeLabel = '<span style="color:' + (t.allDone ? 'var(--green)' : isBlocked ? 'var(--muted)' : 'var(--yellow)') + ';font-weight:400;font-size:10px">' +
+        icon + ' ' + formatDuration(elapsed) + (t.allDone ? '' : isAwaitingApproval ? ' (awaiting approval)' : isPaused ? ' (paused)' : ' elapsed') + '</span>';
+    }
+
+    const pausedLabel = isAwaitingApproval
+      ? '<span style="color:var(--yellow);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--yellow);border-radius:3px">AWAITING APPROVAL</span>'
+      : isPaused
+        ? '<span style="color:var(--muted);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--muted);border-radius:3px">PAUSED</span>'
+        : '';
+    const staleLabel = (!isBlocked && g.planStale)
+      ? '<span style="color:var(--orange);font-weight:700;font-size:10px;padding:1px 6px;border:1px solid var(--orange);border-radius:3px;background:rgba(210,153,34,0.12)" title="Source plan changed after this PRD was generated">STALE</span>'
+      : '';
+    const staleRecovery = (!isBlocked && g.planStale)
+      ? '<div style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid rgba(210,153,34,0.35);border-radius:4px;background:rgba(210,153,34,0.08);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span style="color:var(--orange);font-size:10px;font-weight:600">&#x26A0;&#xFE0F; Source plan was revised. This PRD may be outdated.</span>' +
+          '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Regenerate PRD from latest plan">Regenerate now</span>' +
+          '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan || g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;padding:2px 8px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:4px" title="Review latest plan changes">Review plan</span>' +
+        '</div>'
+      : '';
+    const pauseResumeBtn = isPaused
+      ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
+      : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\')" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
+    const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
+    const sourcePlanLink = g.sourcePlan
+      ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
+      : '';
+
+    return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      (g.project ? '<span class="prd-project-badge">' + escHtml(g.project) + '</span>' : '') +
+      '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
+      pausedLabel +
+      staleLabel +
+      '<span style="color:var(--muted);font-weight:400;font-size:10px">' + g.items.length + ' items' +
+        (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
+      '</span>' +
+      (g.prdUpdatedAt ? '<span style="color:var(--muted);font-weight:400;font-size:10px" title="PRD last updated: ' + g.prdUpdatedAt + '">PRD updated ' + timeAgo(g.prdUpdatedAt) + '</span>' : '') +
+      runtimeLabel +
+      (g.archived
+        ? '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto;display:flex;align-items:center;gap:6px">' +
+            (g.sourcePlan
+              ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;text-decoration:underline" title="View source plan">&#x1F4C4; ' + escHtml(g.sourcePlan) + '</span>'
+              : '<span>' + escHtml(g.file) + '</span>') +
+          '</span>'
+        : '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto;display:flex;align-items:center;gap:6px">' +
+            sourcePlanLink +
+            pauseResumeBtn +
+            deleteBtn +
+          '</span>') +
+      staleRecovery +
+    '</div>';
+  };
+
+  // Graph view: render items as a dependency DAG
+  const renderGraph = (items) => {
+    // Build adjacency: compute depth (longest path from root)
+    const byId = {};
+    items.forEach(i => { byId[i.id] = i; });
+    const depths = {};
+    function getDepth(id, visited) {
+      if (depths[id] !== undefined) return depths[id];
+      if (!visited) visited = new Set();
+      if (visited.has(id)) return 0;
+      visited.add(id);
+      const item = byId[id];
+      if (!item || !item.depends_on || item.depends_on.length === 0) { depths[id] = 0; return 0; }
+      let maxDep = 0;
+      for (const depId of item.depends_on) {
+        if (byId[depId]) maxDep = Math.max(maxDep, getDepth(depId, visited) + 1);
+      }
+      depths[id] = maxDep;
+      return maxDep;
+    }
+    items.forEach(i => getDepth(i.id));
+
+    // Group by depth
+    const columns = {};
+    let maxDepth = 0;
+    items.forEach(i => {
+      const d = depths[i.id] || 0;
+      if (!columns[d]) columns[d] = [];
+      columns[d].push(i);
+      if (d > maxDepth) maxDepth = d;
+    });
+
+    const statusColor = (s) => {
+      if (s === 'done' || s === 'implemented' || s === 'in-pr') return 'var(--green)'; // in-pr treated as done
+      if (s === 'in-progress') return 'var(--yellow)';
+      if (s === 'failed') return 'var(--red)';
+      if (s === 'paused') return 'var(--muted)';
+      return 'var(--border)';
+    };
+
+    const wi = wiById;
+    let html = '<div style="display:flex;gap:8px;padding:8px;min-height:120px">';
+    for (let d = 0; d <= maxDepth; d++) {
+      const col = columns[d] || [];
+      const colLabel = d === 0 ? 'Root' : 'Wave ' + d;
+      html += '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;text-align:center">' + colLabel + '</div>';
+      for (const i of col) {
+        const borderColor = statusColor(i.status);
+        const src = escHtml(i.source || '');
+        const iid = escHtml(i.id || '');
+        const agent = wi[i.id]?.dispatched_to || '';
+        const deps = (i.depends_on || []).join(', ');
+        const wipAnim = i.status === 'in-progress' ? 'animation:prdWipPulse 2s infinite;' : '';
+        html += '<div onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')" ' +
+          'style="background:var(--surface2);border:1px solid var(--border);border-left:3px solid ' + borderColor + ';' + wipAnim +
+          'border-radius:4px;padding:6px 8px;margin-bottom:6px;cursor:pointer;font-size:11px">' +
+          '<div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">' +
+            statusBadge(i.status) +
+            '<span style="font-weight:600;color:var(--text)">' + escHtml(i.id) + '</span>' +
+          '</div>' +
+          '<div style="color:var(--text);font-size:11px;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">' + escHtml(i.name) + '</div>' +
+          '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
+            '<span class="prd-item-priority ' + (i.priority || '') + '" style="font-size:8px;padding:1px 4px">' + escHtml(i.priority || '') + '</span>' +
+            (agent ? '<span style="font-size:8px;color:var(--muted)">' + escHtml(agent) + '</span>' : '') +
+            (function() {
+              const w = wi[i.id];
+              if (!w) return '';
+              const rq = getPrdRequeueState(w.id);
+              if (rq && rq.status === 'pending') {
+                return '<span style="font-size:8px;color:var(--yellow);cursor:wait;padding:1px 4px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px">requeuing…</span>';
+              }
+              if (rq && rq.status === 'queued') {
+                return '<span style="font-size:8px;color:var(--green);cursor:default;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.35);border-radius:3px">requeued</span>';
+              }
+              if (rq && rq.status === 'error') {
+                return '<span style="font-size:8px;color:var(--red);cursor:default;padding:1px 4px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(rq.message || 'Retry failed') + '">failed</span>';
+              }
+              if (i.status !== 'failed') return '';
+              return '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(w.id) + '\',\'' + escHtml(w._source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>';
+            })() +
+            (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
+          '</div>' +
+          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
+            return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:underline;cursor:pointer" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>';
+          }).join(' ') + '</div>' : '') +
+        '</div>';
+      }
+      html += '</div>';
+      if (d < maxDepth) html += '<div style="display:flex;align-items:center;color:var(--border);font-size:14px;padding:0 2px">&#x2192;</div>';
+    }
+    html += '</div>';
+    return html;
+  };
+
+  // View toggle state
+  if (!window._prdViewMode) window._prdViewMode = 'graph';
+
+  const renderViewToggle = () => {
+    const isGraph = window._prdViewMode === 'graph';
+    return '<div style="display:flex;gap:4px;margin-bottom:8px;padding:0 8px">' +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'graph\';refresh()">Graph</button>' +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'list\';refresh()">List</button>' +
+    '</div>';
+  };
+
+  // E2E / verification PRs — group by sourcePlan
+  const allPrs = window._lastStatus?.pullRequests || [];
+  const e2eByPlan = {};
+  for (const pr of allPrs) {
+    // Match by explicit sourcePlan (robust), or fall back to title/branch heuristic (legacy)
+    const isE2e = pr.itemType === 'verify' || pr.itemType === 'pr' || pr.e2e || pr.title?.startsWith('[E2E]');
+    if (!isE2e) continue;
+    const planKey = pr.sourcePlan || keys.find(k => pr.branch?.includes(k.replace('.json', ''))) || '_unlinked';
+    if (!e2eByPlan[planKey]) e2eByPlan[planKey] = [];
+    e2eByPlan[planKey].push(pr);
+  }
+
+  // Find testing guides in prd/ (verify-*.md files)
+  const verifyGuides = (window._lastStatus?.verifyGuides || []);
+  const guideByPlan = {};
+  for (const g of verifyGuides) {
+    guideByPlan[g.planFile] = g;
+  }
+
+  function renderE2eSection(planFile) {
+    const prs = e2eByPlan[planFile] || e2eByPlan['_unlinked'] || [];
+    const guide = guideByPlan[planFile];
+    if (prs.length === 0 && !guide) return '';
+    let html = '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">';
+    if (prs.length > 0) {
+      html += '<div style="font-size:10px;font-weight:600;color:var(--blue);margin-bottom:4px">E2E Aggregate PRs</div>';
+      html += prs.map(pr => {
+        const statusColor = pr.status === 'active' ? 'var(--green)' : pr.status === 'merged' ? 'var(--purple)' : 'var(--muted)';
+        return '<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:11px">' +
+          '<span style="color:' + statusColor + ';font-size:8px;font-weight:600;padding:1px 4px;border:1px solid;border-radius:3px">' + escHtml(pr.status || 'active') + '</span>' +
+          '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" style="color:var(--blue);text-decoration:underline;font-weight:500">' + escHtml(pr.id) + '</a>' +
+          '<span style="color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(pr.title || '') + '</span>' +
+          '<span style="color:var(--muted);font-size:9px">' + escHtml(pr._project || '') + '</span>' +
+        '</div>';
+      }).join('');
+    }
+    if (guide) {
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:' + (prs.length ? '4px' : '0') + ' 0 0;font-size:11px">' +
+        '<span style="font-size:8px;color:var(--green);font-weight:600;padding:1px 4px;border:1px solid var(--green);border-radius:3px">GUIDE</span>' +
+        '<span onclick="openVerifyGuide(\'' + escHtml(guide.file) + '\')" style="color:var(--blue);cursor:pointer;text-decoration:underline;font-weight:500">Manual Testing Guide</span>' +
+        '<span style="color:var(--muted);font-size:9px">Build instructions, test steps, known issues</span>' +
+      '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  const activeKeys = keys.filter(k => !grouped[k].archived);
+  const archivedKeys = keys.filter(k => grouped[k].archived);
+
+  function renderGroup(k) {
+    const g = grouped[k];
+    const viewContent = window._prdViewMode === 'graph'
+      ? renderGraph(g.items)
+      : '<div class="prd-items-list">' + g.items.map(renderItem).join('') + '</div>';
+    return '<div style="margin-bottom:16px">' +
+      renderGroupHeader(g) +
+      renderE2eSection(g.file) +
+      renderGroupStats(g.items) +
+      viewContent +
+    '</div>';
+  }
+
+  let html = renderViewToggle() + activeKeys.map(renderGroup).join('');
+
+  if (archivedKeys.length > 0) {
+    // Store archived data for the modal
+    window._archivedPrdGroups = archivedKeys.map(k => grouped[k]);
+    window._archivedPrdRenderGroup = renderGroup;
+    html += '<div style="margin-top:8px;text-align:right;position:relative" data-file="prd-archives">' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPrdModal()">' +
+        'View Archives (' + archivedKeys.length + ')' +
+      '</button>' +
+    '</div>';
+  }
+
+  el.innerHTML = html;
+  restoreNotifBadges();
+}
+
+let _prdItems = []; // cache for edit lookups
+function _cachePrdItems(prog) { _prdItems = prog?.items || []; }
+
+function openArchivedPrdModal() {
+  const groups = window._archivedPrdGroups || [];
+  const renderGroup = window._archivedPrdRenderGroup;
+  if (!groups.length || !renderGroup) return;
+
+  // If only one archived plan, show detail directly
+  // If multiple, show a picker first
+  let html = '';
+  if (groups.length === 1) {
+    showArchivedPrdDetail(0);
+    return;
+  } else {
+    // Picker: list archived plans, click to expand
+    html = '<div style="margin-bottom:12px;font-size:12px;color:var(--muted)">Select an archived PRD to view:</div>';
+    html += groups.map((g, i) => {
+      const done = g.items.filter(it => it.status === 'done' || it.status === 'implemented' || it.status === 'complete').length;
+      const failed = g.items.filter(it => it.status === 'failed').length;
+      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
+        '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
+        '<div class="plan-card-meta">' +
+          (g.project ? '<span>' + escHtml(g.project) + '</span>' : '') +
+          '<span>' + g.items.length + ' items</span>' +
+          '<span style="color:var(--green)">' + done + ' done</span>' +
+          (failed ? '<span style="color:var(--red)">' + failed + ' failed</span>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  document.getElementById('modal-title').textContent = 'Archived PRDs';
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
+}
+
+function showArchivedPrdDetail(idx) {
+  const groups = window._archivedPrdGroups || [];
+  const g = groups[idx];
+  if (!g) return;
+
+  // View mode toggle for archived
+  const isGraph = window._archivedPrdViewMode !== 'list';
+  const toggleHtml = '<div style="display:flex;gap:4px;margin-bottom:8px">' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'graph\';showArchivedPrdDetail(' + idx + ')">Graph</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'list\';showArchivedPrdDetail(' + idx + ')">List</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);margin-left:auto" onclick="triggerVerify(\'' + escHtml(g.file) + '\')">Trigger Verify</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="openArchivedPrdModal()">Back</button>' +
+  '</div>';
+
+  // Reuse the renderGroup logic — temporarily swap view mode
+  const prevMode = window._prdViewMode;
+  window._prdViewMode = isGraph ? 'graph' : 'list';
+  const renderGroup = window._archivedPrdRenderGroup;
+  const content = renderGroup ? renderGroup(g.file) : '<p>Error rendering</p>';
+  window._prdViewMode = prevMode;
+
+  document.getElementById('modal-title').textContent = g.summary || g.file;
+  document.getElementById('modal-body').innerHTML = toggleHtml + content;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
+}

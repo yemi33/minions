@@ -49,7 +49,50 @@ function resolvePlanPath(file) {
   return active;
 }
 
-const HTML_RAW = safeRead(path.join(MINIONS_DIR, 'dashboard.html')) || '';
+// Assemble dashboard HTML from fragments (or fall back to monolith)
+function buildDashboardHtml() {
+  const dashDir = path.join(MINIONS_DIR, 'dashboard');
+  const layoutPath = path.join(dashDir, 'layout.html');
+
+  // Fall back to monolith if dashboard/ directory doesn't exist yet
+  if (!fs.existsSync(layoutPath)) {
+    return safeRead(path.join(MINIONS_DIR, 'dashboard.html')) || '';
+  }
+
+  const layout = safeRead(layoutPath);
+  const css = safeRead(path.join(dashDir, 'styles.css'));
+
+  // Assemble page fragments
+  const pages = ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'schedule', 'engine'];
+  let pageHtml = '';
+  for (const p of pages) {
+    const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
+    const activeClass = p === 'home' ? ' active' : '';
+    pageHtml += `    <div class="page${activeClass}" id="page-${p}">\n${content}\n    </div>\n\n`;
+  }
+
+  // Assemble JS modules (order matters: utils → state → renderers → commands → refresh)
+  const jsFiles = [
+    'utils', 'state', 'detail-panel', 'live-stream',
+    'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
+    'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
+    'render-other', 'render-schedules',
+    'command-parser', 'command-input', 'command-center', 'command-history',
+    'modal', 'modal-qa', 'settings', 'refresh'
+  ];
+  let jsHtml = '';
+  for (const f of jsFiles) {
+    const content = safeRead(path.join(dashDir, 'js', f + '.js'));
+    jsHtml += `\n// ─── ${f}.js ────────────────────────────────────────\n${content}\n`;
+  }
+
+  return layout
+    .replace('/* __CSS__ */', css)
+    .replace('<!-- __PAGES__ -->', pageHtml)
+    .replace('/* __JS__ */', jsHtml);
+}
+
+const HTML_RAW = buildDashboardHtml();
 const HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
 const HTML_GZ = zlib.gzipSync(HTML);
 const HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';

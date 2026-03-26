@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minions Mission Control</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👽</text></svg>">
+<style>/* __CSS__ */</style>
+</head>
+<body>
+
+<header>
+  <h1>Minions Mission Control <span id="header-projects">—</span></h1>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <span class="engine-badge stopped" id="engine-badge">STOPPED</span>
+    <div class="timestamp" id="ts">—</div>
+    <button onclick="toggleCommandCenter()" style="background:none;border:none;cursor:pointer;font-size:15px;color:var(--blue);padding:4px 8px;line-height:1;font-weight:700;border:1px solid var(--blue);border-radius:4px" title="Command Center" id="cc-toggle-btn">CC</button>
+    <button onclick="openSettings()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--muted);padding:4px;line-height:1" title="Settings">&#9881;</button>
+  </div>
+</header>
+<div class="engine-alert" id="engine-alert"></div>
+
+<!-- Command Center Drawer -->
+<div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:300;flex-direction:column">
+  <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-weight:700;color:var(--blue);font-size:14px">Command Center</span>
+      <span id="cc-session-info" style="font-size:10px;color:var(--muted)">New session</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <button onclick="ccNewSession()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:10px;padding:2px 8px;border-radius:3px;cursor:pointer">New Session</button>
+      <button onclick="toggleCommandCenter()" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px">&#10005;</button>
+    </div>
+  </div>
+  <div id="cc-messages" style="flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:10px"></div>
+  <div style="padding:12px 16px;border-top:1px solid var(--border)">
+    <div style="display:flex;gap:8px">
+      <textarea id="cc-input" rows="2" placeholder="Ask anything or give a command..." style="flex:1;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;resize:none;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();ccSend()}"></textarea>
+      <button onclick="ccSend()" style="background:var(--blue);color:#fff;border:none;border-radius:6px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;align-self:flex-end">Send</button>
+    </div>
+    <div style="font-size:9px;color:var(--muted);margin-top:4px">Sonnet-powered. Full minions context. Enter to send, Shift+Enter for newline.</div>
+  </div>
+</div>
+
+<div id="projects-bar" style="background:var(--surface);border-bottom:1px solid var(--border);padding:8px 24px;display:flex;align-items:center;gap:12px;font-size:12px;">
+  <span style="color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">Projects</span>
+  <div id="projects-list" style="display:flex;gap:8px;flex-wrap:wrap;">—</div>
+</div>
+
+<div id="setup-banner" style="display:none;margin:16px 24px;padding:16px 20px;background:var(--surface2);border:1px dashed var(--blue);border-radius:8px;text-align:center;color:var(--text)">
+  <div style="font-size:18px;margin-bottom:6px">Welcome to Minions</div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:10px">Your minions hasn't been initialized yet. Run the following command to get started:</div>
+  <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">minions init</code>
+</div>
+
+<!-- Layout replaced by page-layout sidebar navigation -->
+
+<div class="page-layout">
+  <nav class="sidebar" id="sidebar">
+    <a class="sidebar-link" data-page="home" href="/">Home</a>
+    <a class="sidebar-link" data-page="work" href="/work">Work Items <span class="sidebar-count" id="sidebar-wi"></span></a>
+    <a class="sidebar-link" data-page="prd" href="/prd">PRD</a>
+    <a class="sidebar-link" data-page="prs" href="/prs">Pull Requests <span class="sidebar-count" id="sidebar-pr"></span></a>
+    <a class="sidebar-link" data-page="plans" href="/plans">Plans</a>
+    <a class="sidebar-link" data-page="inbox" href="/inbox">Notes & KB</a>
+    <a class="sidebar-link" data-page="schedule" href="/schedule">Schedules</a>
+    <a class="sidebar-link" data-page="engine" href="/engine">Engine</a>
+  </nav>
+  <div class="page-content" id="page-content"><!-- __PAGES__ --></div>
+</div>
+
+<!-- Agent Detail Panel -->
+<div class="detail-overlay" id="detail-overlay" onclick="closeDetail()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="detail-header">
+    <h3 id="detail-agent-name">—</h3>
+    <button class="detail-close" onclick="closeDetail()">ESC / Close</button>
+  </div>
+  <div class="status-line" id="detail-status-line">—</div>
+  <div class="detail-tabs" id="detail-tabs"></div>
+  <div class="detail-body">
+    <div class="detail-content" id="detail-content"></div>
+  </div>
+</div>
+
+<!-- Modal for inbox detail -->
+<div class="modal-bg" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">—</h3>
+      <div class="modal-header-actions">
+        <button class="modal-copy" id="modal-edit-btn" onclick="modalToggleEdit()" title="Edit" style="display:none"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zM12.9 2.97L4.288 11.58l-.537 1.878 1.878-.537L14.242 4.31 12.9 2.97z"/></svg> Edit</button>
+        <button class="modal-copy" id="modal-save-btn" onclick="modalSaveEdit()" title="Save" style="display:none;color:var(--green);border-color:var(--green)"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save</button>
+        <button class="modal-copy" id="modal-cancel-edit-btn" onclick="modalCancelEdit()" title="Cancel edit" style="display:none">Cancel</button>
+        <button class="modal-copy" id="modal-copy-btn" onclick="copyModalContent()" title="Copy to clipboard"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25z"/></svg> Copy</button>
+        <button class="modal-close" onclick="closeModal()">X</button>
+      </div>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-qa" id="modal-qa" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;min-height:0">
+        <div class="modal-qa-thread" id="modal-qa-thread" style="flex:1"></div>
+        <button id="qa-clear-btn" style="display:none;background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px;white-space:nowrap;align-self:flex-start" onclick="clearQaConversation()" title="Clear conversation">Clear chat</button>
+      </div>
+      <div class="modal-qa-selection-pill" id="modal-qa-pill" style="display:none">
+        <span class="pill-label">Selection:</span>
+        <span class="pill-text" id="modal-qa-pill-text"></span>
+        <button class="pill-clear" onclick="clearQaSelection()" title="Clear selection">&times;</button>
+      </div>
+      <div class="modal-qa-input-wrap">
+        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document..." onkeydown="if(event.key==='Enter')modalSend()">
+        <button class="modal-qa-btn" id="modal-send-btn" onclick="modalSend()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Floating "Ask about selection" button -->
+<div class="ask-selection-btn" id="ask-selection-btn" onclick="modalAskAboutSelection()">Ask about this</div>
+
+<script>/* __JS__ */</script>
+</body>
+</html>
