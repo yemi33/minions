@@ -192,6 +192,7 @@ async function pollPrStatus(config) {
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
+      if (buildStatus !== 'failing') delete pr._buildFailNotified;
       updated = true;
     }
 

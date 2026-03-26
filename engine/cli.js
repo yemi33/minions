@@ -305,9 +305,51 @@ const commands = {
     e.tick();
 
     // Start tick loop
-    setInterval(() => e.tick(), interval);
+    const tickTimer = setInterval(() => e.tick(), interval);
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
+
+    // Graceful shutdown — wait for active agents before exiting
+    let shuttingDown = false;
+    function gracefulShutdown(signal) {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`\n${signal} received — initiating graceful shutdown...`);
+      clearInterval(tickTimer);
+      safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
+      e.log('info', `Graceful shutdown initiated (${signal})`);
+
+      if (e.activeProcesses.size === 0) {
+        safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+        e.log('info', 'Graceful shutdown complete (no active agents)');
+        console.log('No active agents — stopped.');
+        process.exit(0);
+      }
+
+      console.log(`Waiting for ${e.activeProcesses.size} active agent(s) to finish...`);
+      const timeout = config.engine?.shutdownTimeout || shared.ENGINE_DEFAULTS.shutdownTimeout;
+      const deadline = Date.now() + timeout;
+
+      const poll = setInterval(() => {
+        if (e.activeProcesses.size === 0) {
+          clearInterval(poll);
+          safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+          e.log('info', 'Graceful shutdown complete (all agents finished)');
+          console.log('All agents finished — stopped.');
+          process.exit(0);
+        }
+        if (Date.now() >= deadline) {
+          clearInterval(poll);
+          safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
+          e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
+          console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
+          process.exit(1);
+        }
+      }, 2000);
+    }
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   },
 
   stop() {

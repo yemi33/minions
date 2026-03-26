@@ -917,7 +917,7 @@ function closeDetail() {
   document.getElementById('detail-overlay').classList.remove('open');
   document.getElementById('detail-panel').classList.remove('open');
   currentAgentId = null;
-  stopLivePolling();
+  stopLiveStream();
 }
 
 function renderDetailTabs(detail) {
@@ -978,10 +978,10 @@ function renderDetailContent(detail, tab) {
   } else if (tab === 'live') {
     el.innerHTML = '<div class="section" id="live-output" style="max-height:60vh;overflow-y:auto;font-size:11px;line-height:1.6">Loading live output...</div>' +
       '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
-        '<span class="pulse"></span><span style="font-size:11px;color:var(--green)">Auto-refreshing every 3s</span>' +
+        '<span class="pulse"></span><span id="live-status-label" style="font-size:11px;color:var(--green)">Streaming live</span>' +
         '<button class="pr-pager-btn" onclick="refreshLiveOutput()" style="font-size:10px">Refresh now</button>' +
       '</div>';
-    startLivePolling();
+    startLiveStream(currentAgentId);
   } else if (tab === 'charter') {
     el.innerHTML = '<div class="section">' + escHtml(detail.charter || 'No charter found.') + '</div>';
   } else if (tab === 'history') {
@@ -1011,6 +1011,49 @@ function renderDetailContent(detail, tab) {
 }
 
 let livePollingInterval = null;
+let liveEventSource = null;
+
+function startLiveStream(agentId) {
+  stopLiveStream();
+  if (!agentId) return;
+
+  const outputEl = document.getElementById('live-output');
+  if (outputEl) outputEl.textContent = '';
+
+  liveEventSource = new EventSource('/api/agent/' + agentId + '/live-stream');
+
+  liveEventSource.onmessage = function(e) {
+    try {
+      const chunk = JSON.parse(e.data);
+      const el = document.getElementById('live-output');
+      if (el) {
+        const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+        el.textContent += chunk;
+        if (wasAtBottom) el.scrollTop = el.scrollHeight;
+      }
+    } catch {}
+  };
+
+  liveEventSource.addEventListener('done', function() {
+    stopLiveStream();
+  });
+
+  liveEventSource.onerror = function() {
+    // Fall back to polling on SSE error
+    stopLiveStream();
+    startLivePolling();
+    const label = document.getElementById('live-status-label');
+    if (label) label.textContent = 'Auto-refreshing every 3s';
+  };
+}
+
+function stopLiveStream() {
+  if (liveEventSource) {
+    liveEventSource.close();
+    liveEventSource = null;
+  }
+  stopLivePolling();
+}
 
 function startLivePolling() {
   stopLivePolling();
@@ -2209,6 +2252,7 @@ function renderDispatch(dispatch) {
           '<span class="dispatch-type ' + (d.type || '') + '">' + escHtml(d.type || '') + '</span>' +
           '<span class="dispatch-agent">' + escHtml(d.agentName || d.agent || '') + '</span>' +
           '<span class="dispatch-task" title="' + escHtml(d.task || '') + '">' + escHtml(d.task || '') + '</span>' +
+          (d.skipReason ? '<span style="font-size:9px;color:var(--muted);margin-left:6px" title="' + escHtml(d.skipReason) + '">' + escHtml(d.skipReason.replace(/_/g, ' ')) + '</span>' : '') +
         '</div>'
       ).join('') + '</div>';
   } else {
@@ -2516,6 +2560,7 @@ function wiRow(item) {
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
+      (item._pendingReason ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
       (item.status === 'failed' ? ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry</button>' : '') +
     '</td>' +
     '<td>' +
@@ -2527,6 +2572,7 @@ function wiRow(item) {
     '<td>' + prLink + '</td>' +
     '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
     '<td style="white-space:nowrap">' +
+      ((item.status === 'pending' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
       ((item.status === 'done' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
       '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
     '</td>' +
@@ -2586,6 +2632,63 @@ async function retryWorkItem(id, source) {
       alert('Retry failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Retry error: ' + e.message); }
+}
+
+function editWorkItem(id, source) {
+  const item = allWorkItems.find(i => i.id === id);
+  if (!item) return;
+  const types = ['implement', 'fix', 'review', 'plan', 'verify', 'investigate', 'refactor', 'test', 'docs'];
+  const priorities = ['critical', 'high', 'medium', 'low'];
+  const agentOpts = cmdAgents.map(a => '<option value="' + escHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>').join('');
+  const typeOpts = types.map(t => '<option value="' + t + '"' + ((item.type || 'implement') === t ? ' selected' : '') + '>' + t + '</option>').join('');
+  const priOpts = priorities.map(p => '<option value="' + p + '"' + ((item.priority || 'medium') === p ? ' selected' : '') + '>' + p + '</option>').join('');
+
+  document.getElementById('modal-title').textContent = 'Edit Work Item ' + id;
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px;font-family:inherit">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title' +
+        '<input id="wi-edit-title" value="' + escHtml(item.title || '') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit">' +
+      '</label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Description' +
+        '<textarea id="wi-edit-desc" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml(item.description || '') + '</textarea>' +
+      '</label>' +
+      '<div style="display:flex;gap:12px">' +
+        '<label style="color:var(--text);font-size:var(--text-md);flex:1">Type' +
+          '<select id="wi-edit-type" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' + typeOpts + '</select>' +
+        '</label>' +
+        '<label style="color:var(--text);font-size:var(--text-md);flex:1">Priority' +
+          '<select id="wi-edit-priority" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' + priOpts + '</select>' +
+        '</label>' +
+        '<label style="color:var(--text);font-size:var(--text-md);flex:1">Agent' +
+          '<select id="wi-edit-agent" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)"><option value="">Auto</option>' + agentOpts + '</select>' +
+        '</label>' +
+      '</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn" style="padding:6px 16px;font-size:var(--text-md)">Cancel</button>' +
+        '<button onclick="submitWorkItemEdit(\'' + escHtml(id) + '\',\'' + escHtml(source || '') + '\')" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function submitWorkItemEdit(id, source) {
+  const title = document.getElementById('wi-edit-title').value.trim();
+  const description = document.getElementById('wi-edit-desc').value;
+  const type = document.getElementById('wi-edit-type').value;
+  const priority = document.getElementById('wi-edit-priority').value;
+  const agent = document.getElementById('wi-edit-agent').value;
+  if (!title) { alert('Title is required'); return; }
+  try {
+    const res = await fetch('/api/work-items/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, source: source || undefined, title, description, type, priority, agent })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Work item updated', true); } else {
+      const d = await res.json();
+      alert('Update failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Update error: ' + e.message); }
 }
 
 async function deleteWorkItem(id, source) {

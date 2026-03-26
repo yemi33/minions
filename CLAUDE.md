@@ -55,6 +55,9 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/consolidation.js` | Haiku-powered inbox → notes.md merging, KB classification |
 | `engine/ado.js` | Azure DevOps: token cache, PR polling, comment polling, reconciliation |
 | `engine/cli.js` | CLI handlers: start, stop, status, spawn, add project |
+| `engine/github.js` | GitHub: PR polling, comment polling, reconciliation (parallel to ado.js) |
+| `engine/preflight.js` | Prerequisite checks: Node, Git, Claude CLI, API key. Powers `minions doctor` |
+| `engine/scheduler.js` | Cron-style scheduled task discovery from `config.schedules` |
 
 ### State Files (all runtime, gitignored)
 
@@ -114,18 +117,25 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
     "tickInterval": 60000,
     "maxConcurrent": 5,
     "agentTimeout": 18000000,
-    "heartbeatTimeout": 300000
-  }
+    "heartbeatTimeout": 300000,
+    "shutdownTimeout": 300000,
+    "allowTempAgents": false,
+    "autoDecompose": true
+  },
+  "schedules": [{
+    "id": "nightly-tests", "cron": "0 2 *", "type": "test",
+    "title": "Nightly test suite", "project": "MyProject", "enabled": true
+  }]
 }
 ```
 
 ## Routing
 
-`routing.md` maps work types to agents: `implement → dallas`, `review → ripley`, `fix → _author_`, etc. The engine reads this on each tick.
+`routing.md` maps work types to agents: `implement → dallas`, `review → ripley`, `fix → _author_`, `decompose → ripley`, etc. The engine reads this on each tick.
 
 ## Playbooks
 
-Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, etc.) with `{{template_variables}}` filled at dispatch time. These define what agents actually do.
+Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, `decompose.md`, etc.) with `{{template_variables}}` filled at dispatch time. These define what agents actually do.
 
 ## Skills
 
@@ -137,11 +147,35 @@ Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min 
 
 ## Dashboard API
 
-Key endpoints: `GET /api/status`, `GET /api/plans`, `POST /api/command`, `POST /api/doc-chat`, `POST /api/plans/approve`, `POST /api/plans/execute`. The dashboard serves `dashboard.html` as a single-file SPA with all JS/CSS inline.
+Key endpoints: `GET /api/status`, `GET /api/plans`, `POST /api/command`, `POST /api/doc-chat`, `POST /api/plans/approve`, `POST /api/plans/execute`, `POST /api/work-items/update`, `GET /api/agent/:id/live-stream` (SSE). The dashboard serves `dashboard.html` as a single-file SPA with all JS/CSS inline.
+
+## Graceful Shutdown
+
+SIGTERM/SIGINT → engine enters `stopping` state, waits up to `shutdownTimeout` for active agents, then exits. Agents continue independently and re-attach on next start.
+
+## Task Decomposition
+
+`implement:large` items are auto-routed to a `decompose` agent (controlled by `engine.autoDecompose`). The agent breaks the item into 2-5 sub-tasks output as JSON. The engine creates child work items with `parent_id` and `depends_on` chains. Parent status becomes `decomposed`.
+
+## Temporary Agents
+
+When `engine.allowTempAgents: true` and all permanent agents are busy, the engine spawns ephemeral `temp-{uid}` agents. They use a minimal system prompt, count toward `maxConcurrent`, and are auto-cleaned up after completion.
+
+## Scheduled Tasks
+
+`config.schedules[]` defines cron-style recurring work. Format: `{ id, cron, type, title, project?, agent?, enabled }`. Cron is 3-field: `minute hour dayOfWeek`. Last-run times tracked in `engine/schedule-runs.json`.
+
+## Pending Dispatch Explanation
+
+Work items show `_pendingReason` (dependency_unmet, cooldown, no_agent, already_dispatched). Dispatch pending items show `skipReason` (max_concurrency, agent_busy). Both visible in dashboard.
+
+## Build Failure Notifications
+
+When a PR's build fails, the engine writes an inbox alert to the author agent with the failure reason. Deduplicated via `_buildFailNotified` flag, cleared when build status recovers.
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 190+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 320+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 

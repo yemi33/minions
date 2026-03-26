@@ -10,6 +10,7 @@ engine/kb-sweep-pid-*.pid
 engine/cc-session.json
 engine/metrics.json
 engine/cooldowns.json
+engine/schedule-runs.json
 engine/test-results.json
 engine/kb-checkpoint.json
 # All transient temp files (prompts, pids, logs) go in engine/tmp/

@@ -17,6 +17,7 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 | test | dallas | ralph |
 | ask | ripley | rebecca |
 | verify | dallas | ralph |
+| decompose | ripley | rebecca |
 
 Notes:
 - `_author_` means route to the PR author

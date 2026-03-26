@@ -207,6 +207,15 @@ function resolveAgent(workType, config, authorAgent = null) {
 
   if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
 
+  // No idle configured agent — try temp agent if enabled
+  if (config.engine?.allowTempAgents) {
+    const tempId = `temp-${shared.uid()}`;
+    _claimedAgents.add(tempId);
+    tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 9)}`, role: 'Temporary Agent', createdAt: ts() });
+    log('info', `Spawning temp agent ${tempId} — all permanent agents busy`);
+    return tempId;
+  }
+
   // No idle agent available — return null, item stays pending until next tick
   return null;
 }
@@ -389,7 +398,15 @@ function getPrCreateInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    return `Use \`gh pr create\` or the GitHub MCP tools to create a pull request.`;
+    const org = project?.adoOrg || '';
+    const repo = project?.repoName || '';
+    const mainBranch = project?.mainBranch || 'main';
+    return `Use \`gh pr create\` to create a pull request:\n` +
+      `- \`gh pr create --base ${mainBranch} --head <your-branch> --title "PR title" --body "PR description" --repo ${org}/${repo}\`\n` +
+      `- Always set --base to \`${mainBranch}\` (the main branch)\n` +
+      `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
+      `- Use --head to specify your feature branch name\n` +
+      `- Include a meaningful --title and --body describing the changes`;
   }
   // Default: Azure DevOps
   return `Use \`mcp__azure-ado__repo_create_pull_request\`:\n- repositoryId: \`${repoId}\``;
@@ -399,7 +416,13 @@ function getPrCommentInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    return `Use \`gh pr comment\` or the GitHub MCP tools to post a comment on the PR.`;
+    const org = project?.adoOrg || '';
+    const repo = project?.repoName || '';
+    return `Use \`gh pr comment\` to post a comment on the PR:\n` +
+      `- \`gh pr comment <number> --body "Your comment text" --repo ${org}/${repo}\`\n` +
+      `- Replace <number> with the PR number\n` +
+      `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
+      `- Use --body to provide the comment text (supports Markdown)`;
   }
   return `Use \`mcp__azure-ado__repo_create_pull_request_thread\`:\n- repositoryId: \`${repoId}\``;
 }
@@ -407,7 +430,17 @@ function getPrCommentInstructions(project) {
 function getPrFetchInstructions(project) {
   const host = getRepoHost(project);
   if (host === 'github') {
-    return `Use \`gh pr view\` or the GitHub MCP tools to fetch PR status.`;
+    const org = project?.adoOrg || '';
+    const repo = project?.repoName || '';
+    const mainBranch = project?.mainBranch || 'main';
+    return `Use \`gh pr view\` to fetch PR status:\n` +
+      `- \`gh pr view <number> --json number,title,state,mergeable,reviewDecision,headRefName,baseRefName,statusCheckRollup --repo ${org}/${repo}\`\n` +
+      `- This returns JSON with PR state, mergeability, review decision, and check statuses\n` +
+      `- To fetch the PR branch locally:\n` +
+      `  1. \`git fetch origin <branch-name>\`\n` +
+      `  2. \`git checkout <branch-name>\`\n` +
+      `- Or use \`gh pr checkout <number> --repo ${org}/${repo}\` to fetch and checkout in one step\n` +
+      `- The base branch is \`${mainBranch}\``;
   }
   return `Use \`mcp__azure-ado__repo_get_pull_request_by_id\` to fetch PR status.`;
 }
@@ -416,7 +449,15 @@ function getPrVoteInstructions(project) {
   const host = getRepoHost(project);
   const repoId = project?.repositoryId || '';
   if (host === 'github') {
-    return `Use \`gh pr review\` to approve or request changes:\n- \`gh pr review <number> --approve\`\n- \`gh pr review <number> --request-changes\``;
+    const org = project?.adoOrg || '';
+    const repo = project?.repoName || '';
+    return `Use \`gh pr review\` to submit a review on the PR:\n` +
+      `- Approve: \`gh pr review <number> --approve --body "Approval comment" --repo ${org}/${repo}\`\n` +
+      `- Request changes: \`gh pr review <number> --request-changes --body "What needs to change" --repo ${org}/${repo}\`\n` +
+      `- Comment only: \`gh pr review <number> --comment --body "Review comment" --repo ${org}/${repo}\`\n` +
+      `- Replace <number> with the PR number\n` +
+      `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
+      `- Use --body to provide a review summary (supports Markdown)`;
   }
   return `Use \`mcp__azure-ado__repo_update_pull_request_reviewers\`:\n- repositoryId: \`${repoId}\`\n- Set your reviewer vote on the PR (10=approve, 5=approve-with-suggestions, -10=reject)`;
 }
@@ -437,8 +478,8 @@ function getRepoHostToolRule(project) {
 
 // Lean system prompt: agent identity + rules only (~2-4KB, never grows)
 function buildSystemPrompt(agentId, config, project) {
-  const agent = config.agents[agentId];
-  const charter = getAgentCharter(agentId);
+  const agent = config.agents[agentId] || tempAgents.get(agentId) || { name: agentId, role: 'Temporary Agent', skills: [] };
+  const charter = getAgentCharter(agentId); // returns '' for temp agents (no charter file)
   project = project || getProjects(config)[0] || {};
 
   let prompt = '';
@@ -567,6 +608,7 @@ const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handleP
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
+const tempAgents = new Map(); // tempAgentId → { name, role, createdAt }
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 
 // Resolve dependency plan item IDs to their PR branches
@@ -965,6 +1007,17 @@ function spawnAgent(dispatchItem, config) {
     try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
 
     log('info', `Agent ${agentId} completed. Output saved to ${archivePath}`);
+
+    // Clean up temp agent directory
+    if (tempAgents.has(agentId)) {
+      tempAgents.delete(agentId);
+      try {
+        const agentDir = path.join(AGENTS_DIR, agentId);
+        // Keep output archive but remove temp agent directory (live-output.log etc.)
+        fs.rmSync(agentDir, { recursive: true, force: true });
+        log('info', `Temp agent ${agentId} cleaned up`);
+      } catch {}
+    }
   });
 
   proc.on('error', (err) => {
@@ -1014,6 +1067,7 @@ function spawnAgent(dispatchItem, config) {
     if (idx < 0) return;
     const item = dispatch.pending.splice(idx, 1)[0];
     item.started_at = startedAt;
+    delete item.skipReason;
     if (!dispatch.active.some(d => d.id === id)) {
       dispatch.active.push(item);
     }
@@ -2280,7 +2334,7 @@ function selectPlaybook(workType, item) {
   if (workType === 'review' && !item?._pr && !item?.pr_id) {
     return 'work-item';
   }
-  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify'];
+  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose'];
   return typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
 }
 
@@ -2399,6 +2453,26 @@ function discoverFromPrs(config, project) {
         review_note: `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`,
       }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
+
+      // Notify the author agent about the build failure
+      if (pr.agent && !pr._buildFailNotified) {
+        writeInboxAlert(`build-fail-${pr.agent}-${pr.id}`,
+          `# Build Failure Notification\n\n` +
+          `**Your PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
+          `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
+          `A fix agent has been dispatched to address this. Review the fix when complete.\n`
+        );
+        // Mark notified to prevent duplicate alerts
+        try {
+          const prPath = projectPrPath(project);
+          const prs = safeJson(prPath) || [];
+          const target = prs.find(p => p.id === pr.id);
+          if (target) {
+            target._buildFailNotified = true;
+            safeWrite(prPath, prs);
+          }
+        } catch {}
+      }
     }
 
   }
@@ -2442,10 +2516,15 @@ function discoverFromWorkItems(config, project) {
       if (depStatus === 'failed') {
         item.status = 'failed';
         item.failReason = 'Dependency failed — cannot proceed';
+        delete item._pendingReason;
         log('warn', `Marking ${item.id} as failed: dependency failed (plan: ${item.sourcePlan})`);
+        needsWrite = true;
         continue;
       }
-      if (!depStatus) continue;
+      if (!depStatus) {
+        if (item._pendingReason !== 'dependency_unmet') { item._pendingReason = 'dependency_unmet'; needsWrite = true; }
+        continue;
+      }
     }
 
     const key = `work-${project?.name || 'default'}-${item.id}`;
@@ -2465,14 +2544,30 @@ function discoverFromWorkItems(config, project) {
       delete item._resumedAt;
       safeWrite(projectWorkItemsPath(project), items);
     }
-    if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) { skipped.gated++; continue; }
+    if (isAlreadyDispatched(key)) {
+      if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
+      skipped.gated++; continue;
+    }
+    if (isOnCooldown(key, cooldownMs)) {
+      if (item._pendingReason !== 'cooldown') { item._pendingReason = 'cooldown'; needsWrite = true; }
+      skipped.gated++; continue;
+    }
 
     let workType = item.type || 'implement';
     if (workType === 'implement' && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
       workType = 'implement:large';
     }
+    // Auto-decompose large items before implementation
+    if (workType === 'implement:large' && !item._decomposed && !item._decomposing && config.engine?.autoDecompose !== false) {
+      workType = 'decompose';
+      item._decomposing = true;
+      needsWrite = true;
+    }
     const agentId = item.agent || resolveAgent(workType, config);
-    if (!agentId) { skipped.noAgent++; continue; }
+    if (!agentId) {
+      if (item._pendingReason !== 'no_agent') { item._pendingReason = 'no_agent'; needsWrite = true; }
+      skipped.noAgent++; continue;
+    }
 
     const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
     const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
@@ -2525,6 +2620,7 @@ function discoverFromWorkItems(config, project) {
     item.status = 'dispatched';
     item.dispatched_at = ts();
     item.dispatched_to = agentId;
+    delete item._pendingReason;
     prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });
 
     newWork.push({
@@ -2964,6 +3060,23 @@ function discoverWork(config) {
   // Central work items (project-agnostic — agent decides where to work)
   const centralWork = discoverCentralWorkItems(config);
 
+  // Scheduled tasks (cron-style recurring work)
+  try {
+    const { discoverScheduledWork } = require('./engine/scheduler');
+    const scheduledWork = discoverScheduledWork(config);
+    for (const item of scheduledWork) {
+      // Write scheduled items to central work-items.json so they persist across ticks
+      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+      const items = safeJson(centralPath) || [];
+      // Dedupe: don't re-create if same schedule already has a pending/dispatched item
+      if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
+        items.push(item);
+        safeWrite(centralPath, items);
+        log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+      }
+    }
+  } catch {}
+
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
     const items = safeJson(projectWorkItemsPath(project)) || [];
@@ -3016,7 +3129,7 @@ async function tick() {
 
 async function tickInner() {
   const control = getControl();
-  if (control.state !== 'running') {
+  if (control.state !== 'running' && control.state !== 'stopping') {
     log('info', `Engine state is "${control.state}" — exiting process`);
     process.exit(0);
   }
@@ -3030,6 +3143,12 @@ async function tickInner() {
   // 1. Check for timed-out agents and idle threshold
   checkTimeouts(config);
   checkIdleThreshold(config);
+
+  // In stopping state, only track agent completions — skip discovery and dispatch
+  if (control.state === 'stopping') {
+    log('info', `Engine stopping — ${activeProcesses.size} agent(s) still active, skipping discovery/dispatch`);
+    return;
+  }
 
   // 2. Consolidate inbox
   consolidateInbox(config);
@@ -3211,6 +3330,28 @@ async function tickInner() {
       spawnAgent(item, config);
       dispatched.add(item.id);
     }
+  }
+
+  // Annotate remaining pending items with skipReason so dashboard can show why they're waiting.
+  // Re-read dispatch after spawns (spawnAgent moves items from pending→active).
+  const postDispatch = getDispatch();
+  const postBusyAgents = new Set((postDispatch.active || []).map(d => d.agent));
+  const postActiveCount = (postDispatch.active || []).length;
+  let skipReasonChanged = false;
+  for (const item of (postDispatch.pending || [])) {
+    let reason = null;
+    if (postActiveCount >= maxConcurrent) {
+      reason = 'max_concurrency';
+    } else if (postBusyAgents.has(item.agent)) {
+      reason = 'agent_busy';
+    }
+    if (item.skipReason !== reason) {
+      item.skipReason = reason;
+      skipReasonChanged = true;
+    }
+  }
+  if (skipReasonChanged) {
+    mutateDispatch((dp) => { dp.pending = postDispatch.pending; });
   }
 }
 

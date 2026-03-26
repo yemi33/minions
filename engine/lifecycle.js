@@ -936,6 +936,82 @@ function parseAgentOutput(stdout) {
   return { resultSummary: parsed.text, taskUsage: parsed.usage };
 }
 
+/**
+ * Handle decomposition result — parse sub-items from agent output and create child work items.
+ * Called from runPostCompletionHooks when type === 'decompose'.
+ */
+function handleDecompositionResult(stdout, meta, config) {
+  const e = engine();
+  const parentId = meta?.item?.id;
+  if (!parentId) return 0;
+
+  // Parse sub-items JSON from agent output
+  const { text } = shared.parseStreamJsonOutput(stdout);
+  const jsonMatch = text.match(/```json\s*\n([\s\S]*?)```/);
+  if (!jsonMatch) {
+    e.log('warn', `Decomposition for ${parentId}: no JSON block found in output`);
+    return 0;
+  }
+
+  let decomposition;
+  try {
+    decomposition = JSON.parse(jsonMatch[1]);
+  } catch (err) {
+    e.log('warn', `Decomposition for ${parentId}: invalid JSON — ${err.message}`);
+    return 0;
+  }
+
+  const subItems = decomposition.sub_items || decomposition.subItems || [];
+  if (subItems.length === 0) {
+    e.log('warn', `Decomposition for ${parentId}: no sub-items produced`);
+    return 0;
+  }
+
+  // Find and update the parent work item
+  const projects = shared.getProjects(config);
+  const allPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+  for (const p of projects) allPaths.push(shared.projectWorkItemsPath(p));
+
+  for (const wiPath of allPaths) {
+    const items = safeJson(wiPath) || [];
+    const parent = items.find(i => i.id === parentId);
+    if (!parent) continue;
+
+    // Mark parent as decomposed
+    parent.status = 'decomposed';
+    parent._decomposed = true;
+    delete parent._decomposing;
+    parent._subItemIds = subItems.map(s => s.id);
+
+    // Create child work items
+    for (const sub of subItems) {
+      if (items.some(i => i.id === sub.id)) continue; // dedupe
+      items.push({
+        id: sub.id,
+        title: sub.name || sub.title || `Sub-task of ${parentId}`,
+        type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
+        priority: sub.priority || parent.priority || 'medium',
+        description: sub.description || '',
+        status: 'pending',
+        complexity: sub.estimated_complexity || 'medium',
+        depends_on: sub.depends_on || [],
+        parent_id: parentId,
+        sourcePlan: parent.sourcePlan,
+        branchStrategy: parent.branchStrategy,
+        featureBranch: parent.featureBranch,
+        created: new Date().toISOString(),
+        createdBy: 'decomposition',
+      });
+    }
+
+    safeWrite(wiPath, items);
+    e.log('info', `Decomposition: ${parentId} → ${subItems.length} sub-items: ${subItems.map(s => s.id).join(', ')}`);
+    return subItems.length;
+  }
+
+  return 0;
+}
+
 function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const e = engine();
   const type = dispatchItem.type;
@@ -943,6 +1019,16 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const isSuccess = code === 0;
   const result = isSuccess ? 'success' : 'error';
   const { resultSummary, taskUsage } = parseAgentOutput(stdout);
+
+  // Handle decomposition results — create sub-items from decompose agent output
+  if (type === 'decompose' && isSuccess && meta?.item?.id) {
+    const subCount = handleDecompositionResult(stdout, meta, config);
+    if (subCount > 0) {
+      // Parent is marked 'decomposed' by handler — don't overwrite with 'done'
+      return { resultSummary: `Decomposed into ${subCount} sub-items`, taskUsage };
+    }
+    // Fallback: if decomposition produced nothing, mark parent as done to avoid stuck state
+  }
 
   if (isSuccess && meta?.item?.id) updateWorkItemStatus(meta, 'done', '');
   if (!isSuccess && meta?.item?.id) {

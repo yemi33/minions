@@ -1,0 +1,60 @@
+# Playbook: Task Decomposition
+
+You are {{agent_name}}, the {{agent_role}} on the {{project_name}} project.
+TEAM ROOT: {{team_root}}
+
+## Your Task
+
+A work item has been flagged as too large for a single agent dispatch. Analyze the item and break it into 2-5 smaller, independently implementable sub-tasks.
+
+## Work Item
+
+- **ID:** {{item_id}}
+- **Title:** {{item_title}}
+- **Description:** {{item_description}}
+- **Complexity:** {{item_complexity}}
+- **Project:** {{project_name}} (`{{project_path}}`)
+
+{{#acceptance_criteria}}
+## Acceptance Criteria
+
+{{acceptance_criteria}}
+{{/acceptance_criteria}}
+
+## Instructions
+
+1. **Explore the codebase** at `{{project_path}}` — understand the existing structure, patterns, and dependencies
+2. **Analyze the work item** — identify distinct units of work that can be implemented as separate PRs
+3. **Break into 2-5 sub-tasks** — each should be:
+   - Small or medium complexity (not large)
+   - A single PR's worth of work
+   - Independently testable
+   - Clear enough for another agent to implement without ambiguity
+4. **Order by dependency** — if sub-task B needs sub-task A's code, declare `depends_on`
+5. **Generate unique IDs** — use format `{{item_id}}-a`, `{{item_id}}-b`, etc.
+
+## Output
+
+Write the decomposition result as a JSON code block in your response:
+
+```json
+{
+  "parent_id": "{{item_id}}",
+  "sub_items": [
+    {
+      "id": "{{item_id}}-a",
+      "name": "Short descriptive name",
+      "description": "What to build, where, and how. Be specific enough that an engineer can implement without further exploration.",
+      "estimated_complexity": "small|medium",
+      "depends_on": [],
+      "acceptance_criteria": ["Criterion 1", "Criterion 2"]
+    }
+  ]
+}
+```
+
+Keep the total number of sub-items between 2 and 5. If the task genuinely cannot be broken down further, output a single sub-item that matches the original.
+
+{{pr_create_instructions}}
+
+{{pr_comment_instructions}}

@@ -852,6 +852,44 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/work-items/update — edit a pending/failed work item
+  if (req.method === 'POST' && req.url === '/api/work-items/update') {
+    try {
+      const body = await readBody(req);
+      const { id, source, title, description, type, priority, agent } = body;
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+      let wiPath;
+      if (!source || source === 'central') {
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      } else {
+        const proj = PROJECTS.find(p => p.name === source);
+        if (proj) {
+          wiPath = shared.projectWorkItemsPath(proj);
+        }
+      }
+      if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
+
+      const items = JSON.parse(safeRead(wiPath) || '[]');
+      const item = items.find(i => i.id === id);
+      if (!item) return jsonReply(res, 404, { error: 'item not found' });
+
+      if (item.status === 'dispatched') {
+        return jsonReply(res, 400, { error: 'Cannot edit dispatched items' });
+      }
+
+      if (title !== undefined) item.title = title;
+      if (description !== undefined) item.description = description;
+      if (type !== undefined) item.type = type;
+      if (priority !== undefined) item.priority = priority;
+      if (agent !== undefined) item.agent = agent || null;
+      item.updatedAt = new Date().toISOString();
+
+      safeWrite(wiPath, items);
+      return jsonReply(res, 200, { ok: true, item });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   // POST /api/notes — write to inbox so it flows through normal consolidation
   if (req.method === 'POST' && req.url === '/api/notes') {
     try {
@@ -1074,6 +1112,69 @@ const server = http.createServer(async (req, res) => {
 
       return jsonReply(res, 200, { ok: true, cancelled });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  // GET /api/agent/:id/live-stream — SSE real-time live output streaming
+  const liveStreamMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/);
+  if (liveStreamMatch && req.method === 'GET') {
+    const agentId = liveStreamMatch[1];
+    const liveLogPath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    // Send initial content
+    let offset = 0;
+    try {
+      const content = fs.readFileSync(liveLogPath, 'utf8');
+      if (content.length > 0) {
+        res.write(`data: ${JSON.stringify(content)}\n\n`);
+        offset = Buffer.byteLength(content, 'utf8');
+      }
+    } catch {}
+
+    // Watch for changes using fs.watchFile (cross-platform, works on Windows)
+    const watcher = () => {
+      try {
+        const stat = fs.statSync(liveLogPath);
+        if (stat.size > offset) {
+          const fd = fs.openSync(liveLogPath, 'r');
+          const buf = Buffer.alloc(stat.size - offset);
+          fs.readSync(fd, buf, 0, buf.length, offset);
+          fs.closeSync(fd);
+          offset = stat.size;
+          const chunk = buf.toString('utf8');
+          if (chunk) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        }
+      } catch {}
+    };
+
+    fs.watchFile(liveLogPath, { interval: 500 }, watcher);
+
+    // Check if agent is still active (poll every 5s)
+    const doneCheck = setInterval(() => {
+      const dispatch = getDispatchQueue();
+      const isActive = (dispatch.active || []).some(d => d.agent === agentId);
+      if (!isActive) {
+        watcher(); // flush final content
+        res.write(`event: done\ndata: complete\n\n`);
+        clearInterval(doneCheck);
+        fs.unwatchFile(liveLogPath, watcher);
+        res.end();
+      }
+    }, 5000);
+
+    // Cleanup on client disconnect
+    req.on('close', () => {
+      clearInterval(doneCheck);
+      fs.unwatchFile(liveLogPath, watcher);
+    });
+
+    return;
   }
 
   // GET /api/agent/:id/live — tail live output for a working agent

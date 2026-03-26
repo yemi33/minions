@@ -242,6 +242,9 @@ const ENGINE_DEFAULTS = {
   idleAlertMinutes: 15,
   fanOutTimeout: null, // falls back to agentTimeout
   restartGracePeriod: 1200000, // 20min
+  shutdownTimeout: 300000, // 5min — max wait for active agents during graceful shutdown
+  allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
+  autoDecompose: true, // auto-decompose implement:large items into sub-tasks
 };
 
 const DEFAULT_AGENTS = {
