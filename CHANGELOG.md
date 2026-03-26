@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.14 (2026-03-26)
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/js/modal-qa.js
+- dashboard/js/render-agents.js
+- dashboard/js/render-dispatch.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+- dashboard/js/settings.js
+
+### Other
+- test/playwright/dashboard.spec.js
+
 ## 0.1.13 (2026-03-26)
 
 ### Dashboard
