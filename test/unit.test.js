@@ -1375,7 +1375,7 @@ async function testArchivePathResolution() {
   await test('doc-chat saves plan edits in-place without forking', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Doc-chat should always save in-place; forking is reserved for /api/plans/revise
-    const docChatSection = src.slice(src.indexOf("POST /api/doc-chat"), src.indexOf("POST /api/inbox/persist"));
+    const docChatSection = src.slice(src.indexOf("async function handleDocChat"), src.indexOf("async function handleInboxPersist"));
     assert.ok(!docChatSection.includes('isNewVersion'),
       'doc-chat handler should not produce isNewVersion (no forking)');
     assert.ok(!docChatSection.includes('versionedFile'),

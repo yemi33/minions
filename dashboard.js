@@ -296,11 +296,7 @@ ${projects}
 ### Scheduled Tasks
 ${schedSummary}
 
-To manage schedules, use the dashboard API:
-- Create: POST /api/schedules { id, cron, title, type, project?, agent?, enabled? }
-- Update: POST /api/schedules/update { id, ...fields }
-- Delete: POST /api/schedules/delete { id }
-- Cron format: "minute hour dayOfWeek" (e.g., "0 2 *" = 2am daily, "0 9 1" = Monday 9am)
+To discover all available dashboard APIs, fetch GET http://localhost:7331/api/routes — it returns every endpoint with method, path, description, and accepted parameters.
 
 For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
 }
@@ -628,8 +624,9 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/plans/trigger-verify — manually trigger verification for a completed plan
-  if (req.method === 'POST' && req.url === '/api/plans/trigger-verify') {
+  // ── Route Handler Functions ───────────────────────────────────────────────
+
+  async function handlePlansTriggerVerify(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -675,8 +672,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/work-items/retry — reset a failed/dispatched item to pending
-  if (req.method === 'POST' && req.url === '/api/work-items/retry') {
+  async function handleWorkItemsRetry(req, res) {
     try {
       const body = await readBody(req);
       const { id, source } = body;
@@ -734,8 +730,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/work-items/delete — remove a work item, kill agent, clear dispatch
-  if (req.method === 'POST' && req.url === '/api/work-items/delete') {
+  async function handleWorkItemsDelete(req, res) {
     try {
       const body = await readBody(req);
       const { id, source } = body;
@@ -776,8 +771,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/work-items/archive — move a completed/failed work item to archive
-  if (req.method === 'POST' && req.url === '/api/work-items/archive') {
+  async function handleWorkItemsArchive(req, res) {
     try {
       const body = await readBody(req);
       const { id, source } = body;
@@ -821,8 +815,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/work-items/archive — list archived work items
-  if (req.method === 'GET' && req.url === '/api/work-items/archive') {
+  async function handleWorkItemsArchiveList(req, res) {
     try {
       let allArchived = [];
       // Central archive
@@ -839,8 +832,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/work-items
-  if (req.method === 'POST' && req.url === '/api/work-items') {
+  async function handleWorkItemsCreate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
@@ -871,8 +863,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/work-items/update — edit a pending/failed work item
-  if (req.method === 'POST' && req.url === '/api/work-items/update') {
+  async function handleWorkItemsUpdate(req, res) {
     try {
       const body = await readBody(req);
       const { id, source, title, description, type, priority, agent } = body;
@@ -909,8 +900,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/notes — write to inbox so it flows through normal consolidation
-  if (req.method === 'POST' && req.url === '/api/notes') {
+  async function handleNotesCreate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
@@ -926,8 +916,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plan — create a plan work item that chains to PRD on completion
-  if (req.method === 'POST' && req.url === '/api/plan') {
+  async function handlePlanCreate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
@@ -951,8 +940,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/prd-items — create a PRD item as a plan file in prd/ (auto-approved)
-  if (req.method === 'POST' && req.url === '/api/prd-items') {
+  async function handlePrdItemsCreate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.name || !body.name.trim()) return jsonReply(res, 400, { error: 'name is required' });
@@ -982,8 +970,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/prd-items/update — edit a PRD item in its source plan JSON
-  if (req.method === 'POST' && req.url === '/api/prd-items/update') {
+  async function handlePrdItemsUpdate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
@@ -1039,8 +1026,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/prd-items/remove — remove a PRD item from plan + cancel materialized work item
-  if (req.method === 'POST' && req.url === '/api/prd-items/remove') {
+  async function handlePrdItemsRemove(req, res) {
     try {
       const body = await readBody(req);
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
@@ -1085,8 +1071,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/agents/cancel — cancel an active agent by ID or task substring
-  if (req.method === 'POST' && req.url === '/api/agents/cancel') {
+  async function handleAgentsCancel(req, res) {
     try {
       const body = await readBody(req);
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
@@ -1133,10 +1118,8 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/agent/:id/live-stream — SSE real-time live output streaming
-  const liveStreamMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/);
-  if (liveStreamMatch && req.method === 'GET') {
-    const agentId = liveStreamMatch[1];
+  async function handleAgentLiveStream(req, res, match) {
+    const agentId = match[1];
     const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     const liveLogPath = path.join(agentDir, 'live-output.log');
 
@@ -1206,10 +1189,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/agent/:id/live — tail live output for a working agent
-  const liveMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/);
-  if (liveMatch && req.method === 'GET') {
-    const agentId = liveMatch[1];
+  async function handleAgentLive(req, res, match) {
+    const agentId = match[1];
     const livePath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
     const content = safeRead(livePath);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -1225,10 +1206,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/agent/:id/output — fetch final output.log for an agent
-  const outputMatch = req.url.match(/^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/);
-  if (outputMatch && req.method === 'GET') {
-    const agentId = outputMatch[1];
+  async function handleAgentOutput(req, res, match) {
+    const agentId = match[1];
     const outputPath = path.join(MINIONS_DIR, 'agents', agentId, 'output.log');
     const content = safeRead(outputPath);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -1237,8 +1216,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /api/notes-full — return full notes.md content
-  if (req.method === 'GET' && req.url === '/api/notes-full') {
+  async function handleNotesFull(req, res) {
     const content = safeRead(path.join(MINIONS_DIR, 'notes.md'));
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1246,8 +1224,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/notes-save — save edited notes.md content
-  if (req.method === 'POST' && req.url === '/api/notes-save') {
+  async function handleNotesSave(req, res) {
     try {
       const body = await readBody(req);
       if (!body.content && body.content !== '') return jsonReply(res, 400, { error: 'content required' });
@@ -1259,8 +1236,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/knowledge — list all knowledge base entries grouped by category
-  if (req.method === 'GET' && req.url === '/api/knowledge') {
+  async function handleKnowledgeList(req, res) {
     const entries = getKnowledgeBaseEntries();
     const result = {};
     for (const cat of shared.KB_CATEGORIES) result[cat] = [];
@@ -1273,11 +1249,9 @@ const server = http.createServer(async (req, res) => {
     return jsonReply(res, 200, result);
   }
 
-  // GET /api/knowledge/:category/:file — read a specific knowledge base entry
-  const kbMatch = req.url.match(/^\/api\/knowledge\/([^/]+)\/([^?]+)/);
-  if (kbMatch && req.method === 'GET') {
-    const cat = kbMatch[1];
-    const file = decodeURIComponent(kbMatch[2]);
+  async function handleKnowledgeRead(req, res, match) {
+    const cat = match[1];
+    const file = decodeURIComponent(match[2]);
     // Prevent path traversal
     if (file.includes('..') || file.includes('/') || file.includes('\\')) {
       return jsonReply(res, 400, { error: 'invalid file name' });
@@ -1290,8 +1264,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/knowledge/sweep — deduplicate, consolidate, and reorganize knowledge base
-  if (req.method === 'POST' && req.url === '/api/knowledge/sweep') {
+  async function handleKnowledgeSweep(req, res) {
     if (global._kbSweepInFlight) return jsonReply(res, 409, { error: 'sweep already in progress' });
     global._kbSweepInFlight = true;
     try {
@@ -1438,8 +1411,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { global._kbSweepInFlight = false; }
   }
 
-  // GET /api/plans — list plan files (.md drafts from plans/ + .json PRDs from prd/)
-  if (req.method === 'GET' && req.url === '/api/plans') {
+  async function handlePlansList(req, res) {
     const dirs = [
       { dir: PLANS_DIR, archived: false },
       { dir: path.join(PLANS_DIR, 'archive'), archived: true },
@@ -1510,10 +1482,8 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     return jsonReply(res, 200, plans);
   }
 
-  // GET /api/plans/archive/:file — read archived plan (checks prd/archive/ and plans/archive/)
-  const archiveFileMatch = req.url.match(/^\/api\/plans\/archive\/([^?]+)$/);
-  if (archiveFileMatch && req.method === 'GET') {
-    const file = decodeURIComponent(archiveFileMatch[1]);
+  async function handlePlansArchiveRead(req, res, match) {
+    const file = decodeURIComponent(match[1]);
     if (file.includes('..')) return jsonReply(res, 400, { error: 'invalid' });
     // Check prd/archive/ first for .json, then plans/archive/ for .md
     const archiveDir = file.endsWith('.json') ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
@@ -1528,10 +1498,8 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     return;
   }
 
-  // GET /api/plans/:file — read full plan (JSON from prd/ or markdown from plans/)
-  const planFileMatch = req.url.match(/^\/api\/plans\/([^?]+)$/);
-  if (planFileMatch && req.method === 'GET') {
-    const file = decodeURIComponent(planFileMatch[1]);
+  async function handlePlansRead(req, res, match) {
+    const file = decodeURIComponent(match[1]);
     if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
     let content = safeRead(resolvePlanPath(file));
     // Fallback: check all directories (prd/, plans/, guides/, archives)
@@ -1552,8 +1520,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     return;
   }
 
-  // POST /api/plans/approve — approve a plan for execution
-  if (req.method === 'POST' && req.url === '/api/plans/approve') {
+  async function handlePlansApprove(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1607,8 +1574,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/pause — pause a plan (stops new item materialization + resets active items to pending)
-  if (req.method === 'POST' && req.url === '/api/plans/pause') {
+  async function handlePlansPause(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1697,8 +1663,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/prd/regenerate — regenerate PRD from revised source plan
-  if (req.method === 'POST' && req.url === '/api/prd/regenerate') {
+  async function handlePrdRegenerate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file is required' });
@@ -1765,8 +1730,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/plans/execute — queue plan-to-prd conversion for a .md plan
-  if (req.method === 'POST' && req.url === '/api/plans/execute') {
+  async function handlePlansExecute(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1795,8 +1759,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/reject — reject a plan
-  if (req.method === 'POST' && req.url === '/api/plans/reject') {
+  async function handlePlansReject(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1811,8 +1774,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/regenerate — reset pending/failed work items for a plan so they re-materialize
-  if (req.method === 'POST' && req.url === '/api/plans/regenerate') {
+  async function handlePlansRegenerate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.source) return jsonReply(res, 400, { error: 'source required' });
@@ -1875,8 +1837,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/delete — delete a plan file
-  if (req.method === 'POST' && req.url === '/api/plans/delete') {
+  async function handlePlansDelete(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1938,8 +1899,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/revise — request revision with feedback, dispatches agent to revise
-  if (req.method === 'POST' && req.url === '/api/plans/revise') {
+  async function handlePlansRevise(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
@@ -1972,7 +1932,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
   // POST /api/plans/revise-and-regenerate — REMOVED: plan versioning now handled by /api/doc-chat
   // The "Replace old PRD" flow uses qaReplacePrd (frontend) which calls /api/plans/pause + /api/plans/regenerate + planExecute
-  if (false && req.method === 'POST' && req.url === '/api/plans/revise-and-regenerate') {
+  async function handlePlansReviseAndRegenerate(req, res) {
     try {
       const body = await readBody(req);
       if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
@@ -2112,8 +2072,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/plans/discuss — generate a plan discussion session script
-  if (req.method === 'POST' && req.url === '/api/plans/discuss') {
+  async function handlePlansDiscuss(req, res) {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -2208,8 +2167,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/doc-chat — routes through CC session for minions-aware doc Q&A + editing
-  if (req.method === 'POST' && req.url === '/api/doc-chat') {
+  async function handleDocChat(req, res) {
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
@@ -2248,8 +2206,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/inbox/persist — promote an inbox item to team notes
-  if (req.method === 'POST' && req.url === '/api/inbox/persist') {
+  async function handleInboxPersist(req, res) {
     try {
       const body = await readBody(req);
       const { name } = body;
@@ -2288,8 +2245,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/inbox/promote-kb — promote an inbox item to the knowledge base
-  if (req.method === 'POST' && req.url === '/api/inbox/promote-kb') {
+  async function handleInboxPromoteKb(req, res) {
     try {
       const body = await readBody(req);
       const { name, category } = body;
@@ -2326,8 +2282,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/inbox/open — open inbox file in Windows explorer
-  if (req.method === 'POST' && req.url === '/api/inbox/open') {
+  async function handleInboxOpen(req, res) {
     try {
       const body = await readBody(req);
       const { name } = body;
@@ -2353,8 +2308,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/inbox/delete — delete an inbox note
-  if (req.method === 'POST' && req.url === '/api/inbox/delete') {
+  async function handleInboxDelete(req, res) {
     try {
       const body = await readBody(req);
       const { name } = body;
@@ -2368,8 +2322,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // GET /api/skill?file=<name>&source=claude-code|project:<name>&dir=<path>
-  if (req.method === 'GET' && req.url.startsWith('/api/skill?')) {
+  async function handleSkillRead(req, res) {
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
     const dir = params.get('dir');
@@ -2400,8 +2353,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return;
   }
 
-  // POST /api/projects/browse — open folder picker dialog, return selected path
-  if (req.method === 'POST' && req.url === '/api/projects/browse') {
+  async function handleProjectsBrowse(req, res) {
     try {
       const { execSync } = require('child_process');
       let selectedPath = '';
@@ -2419,8 +2371,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/projects/add — auto-discover and add a project to config
-  if (req.method === 'POST' && req.url === '/api/projects/add') {
+  async function handleProjectsAdd(req, res) {
     try {
       const body = await readBody(req);
       if (!body.path) return jsonReply(res, 400, { error: 'path required' });
@@ -2504,18 +2455,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // ── Command Center: persistent multi-turn session ──────────────────────────
-
-  // POST /api/command-center/new-session — clear active CC session
-  if (req.method === 'POST' && req.url === '/api/command-center/new-session') {
+  async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     return jsonReply(res, 200, { ok: true });
   }
 
-  // POST /api/command-center — conversational command center with full minions context
-  if (req.method === 'POST' && req.url === '/api/command-center') {
+  async function handleCommandCenter(req, res) {
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
@@ -2558,8 +2505,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // GET /api/schedules — return schedules from config + last-run times
-  if (req.method === 'GET' && req.url === '/api/schedules') {
+  async function handleSchedulesList(req, res) {
     reloadConfig();
     const schedules = CONFIG.schedules || [];
     const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
@@ -2567,8 +2513,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { schedules: result });
   }
 
-  // POST /api/schedules — create a new schedule
-  if (req.method === 'POST' && req.url === '/api/schedules') {
+  async function handleSchedulesCreate(req, res) {
     const body = await readBody(req);
     const { id, cron, title, type, project, agent, description, priority, enabled } = body;
     if (!id || !cron || !title) return jsonReply(res, 400, { error: 'id, cron, and title are required' });
@@ -2589,8 +2534,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true, schedule: sched });
   }
 
-  // POST /api/schedules/update — update an existing schedule
-  if (req.method === 'POST' && req.url === '/api/schedules/update') {
+  async function handleSchedulesUpdate(req, res) {
     const body = await readBody(req);
     const { id, cron, title, type, project, agent, description, priority, enabled } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
@@ -2614,8 +2558,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true, schedule: sched });
   }
 
-  // POST /api/schedules/delete — delete a schedule
-  if (req.method === 'POST' && req.url === '/api/schedules/delete') {
+  async function handleSchedulesDelete(req, res) {
     const body = await readBody(req);
     const { id } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
@@ -2631,16 +2574,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true });
   }
 
-  // POST /api/engine/restart — force-kill engine and restart immediately
-  if (req.method === 'POST' && req.url === '/api/engine/restart') {
+  async function handleEngineRestart(req, res) {
     try {
       const newPid = restartEngine();
       return jsonReply(res, 200, { ok: true, pid: newPid });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // GET /api/settings — return current engine + claude + routing config
-  if (req.method === 'GET' && req.url === '/api/settings') {
+  async function handleSettingsRead(req, res) {
     try {
       const config = queries.getConfig();
       const routing = safeRead(path.join(MINIONS_DIR, 'routing.md')) || '';
@@ -2653,8 +2594,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/settings — update engine + claude + agent config
-  if (req.method === 'POST' && req.url === '/api/settings') {
+  async function handleSettingsUpdate(req, res) {
     try {
       const body = await readBody(req);
       const configPath = path.join(MINIONS_DIR, 'config.json');
@@ -2692,8 +2632,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // POST /api/settings/routing — update routing.md
-  if (req.method === 'POST' && req.url === '/api/settings/routing') {
+  async function handleSettingsRouting(req, res) {
     try {
       const body = await readBody(req);
       if (!body.content) return jsonReply(res, 400, { error: 'content required' });
@@ -2702,8 +2641,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
-  // GET /api/health — lightweight health check for monitoring
-  if (req.method === 'GET' && req.url === '/api/health') {
+  async function handleHealth(req, res) {
     const engine = getEngineState();
     const agents = getAgents();
     const health = {
@@ -2717,12 +2655,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, health);
   }
 
-  const agentMatch = req.url.match(/^\/api\/agent\/([\w-]+)$/);
-  if (agentMatch) {
+  async function handleAgentDetail(req, res, match) {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Access-Control-Allow-Origin', '*');
     try {
-      res.end(JSON.stringify(getAgentDetail(agentMatch[1])));
+      res.end(JSON.stringify(getAgentDetail(match[1])));
     } catch (e) {
       res.statusCode = 500;
       res.end(JSON.stringify({ error: e.message }));
@@ -2730,7 +2667,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return;
   }
 
-  if (req.url === '/api/status') {
+  async function handleStatus(req, res) {
     try {
       return jsonReply(res, 200, getStatus(), req);
     } catch (e) {
@@ -2738,7 +2675,123 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }
   }
 
-  // (duplicate /api/health removed — first handler above is the canonical one)
+  // ── Route Registry ──────────────────────────────────────────────────────────
+  // Order matters: specific routes before general ones (e.g., /api/plans/approve before /api/plans/:file)
+
+  const ROUTES = [
+    // Routes endpoint (self-describing API)
+    { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
+      const list = ROUTES.map(r => ({
+        method: r.method,
+        path: typeof r.path === 'string' ? r.path : r.path.toString(),
+        description: r.desc,
+        params: r.params || null
+      }));
+      return jsonReply(res, 200, { routes: list });
+    }},
+
+    // Status & health
+    { method: 'GET', path: '/api/status', desc: 'Full dashboard status snapshot (agents, PRDs, work items, dispatch, etc.)', handler: handleStatus },
+    { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
+
+    // Work items
+    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?', handler: handleWorkItemsCreate },
+    { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?', handler: handleWorkItemsUpdate },
+    { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
+    { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
+    { method: 'POST', path: '/api/work-items/archive', desc: 'Move a completed/failed work item to archive', params: 'id, source?', handler: handleWorkItemsArchive },
+    { method: 'GET', path: '/api/work-items/archive', desc: 'List archived work items', handler: handleWorkItemsArchiveList },
+
+    // Notes
+    { method: 'POST', path: '/api/notes', desc: 'Write a note to inbox for consolidation', params: 'title, what, why?, author?', handler: handleNotesCreate },
+    { method: 'GET', path: '/api/notes-full', desc: 'Return full notes.md content', handler: handleNotesFull },
+    { method: 'POST', path: '/api/notes-save', desc: 'Save edited notes.md content', params: 'content, file?', handler: handleNotesSave },
+
+    // Plans
+    { method: 'POST', path: '/api/plan', desc: 'Create a plan work item that chains to PRD on completion', params: 'title, description?, priority?, project?, agent?, branch_strategy?', handler: handlePlanCreate },
+    { method: 'GET', path: '/api/plans', desc: 'List plan files (.md drafts + .json PRDs)', handler: handlePlansList },
+    { method: 'POST', path: '/api/plans/trigger-verify', desc: 'Manually trigger verification for a completed plan', params: 'file', handler: handlePlansTriggerVerify },
+    { method: 'POST', path: '/api/plans/approve', desc: 'Approve a plan for execution', params: 'file, approvedBy?', handler: handlePlansApprove },
+    { method: 'POST', path: '/api/plans/pause', desc: 'Pause a plan (stops materialization + resets active items)', params: 'file', handler: handlePlansPause },
+    { method: 'POST', path: '/api/plans/execute', desc: 'Queue plan-to-prd conversion for a .md plan', params: 'file, project?', handler: handlePlansExecute },
+    { method: 'POST', path: '/api/plans/reject', desc: 'Reject a plan', params: 'file, rejectedBy?, reason?', handler: handlePlansReject },
+    { method: 'POST', path: '/api/plans/regenerate', desc: 'Reset pending/failed work items for a plan so they re-materialize', params: 'source', handler: handlePlansRegenerate },
+    { method: 'POST', path: '/api/plans/delete', desc: 'Delete a plan file and clean up work items', params: 'file', handler: handlePlansDelete },
+    { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
+    { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
+    { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
+    { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
+
+    // PRD items
+    { method: 'POST', path: '/api/prd-items', desc: 'Create a PRD item as a plan file in prd/ (auto-approved)', params: 'name, description?, priority?, estimated_complexity?, project?, id?', handler: handlePrdItemsCreate },
+    { method: 'POST', path: '/api/prd-items/update', desc: 'Edit a PRD item in its source plan JSON', params: 'source, itemId, name?, description?, priority?, estimated_complexity?, status?', handler: handlePrdItemsUpdate },
+    { method: 'POST', path: '/api/prd-items/remove', desc: 'Remove a PRD item from plan + cancel materialized work item', params: 'source, itemId', handler: handlePrdItemsRemove },
+    { method: 'POST', path: '/api/prd/regenerate', desc: 'Regenerate PRD from revised source plan', params: 'file', handler: handlePrdRegenerate },
+
+    // Agents
+    { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
+    { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, desc: 'Get detailed agent info', handler: handleAgentDetail },
+
+    // Knowledge base
+    { method: 'GET', path: '/api/knowledge', desc: 'List all knowledge base entries grouped by category', handler: handleKnowledgeList },
+    { method: 'POST', path: '/api/knowledge/sweep', desc: 'Deduplicate, consolidate, and reorganize knowledge base', handler: handleKnowledgeSweep },
+    { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
+
+    // Doc chat
+    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?', handler: handleDocChat },
+
+    // Inbox
+    { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },
+    { method: 'POST', path: '/api/inbox/promote-kb', desc: 'Promote an inbox item to the knowledge base', params: 'name, category', handler: handleInboxPromoteKb },
+    { method: 'POST', path: '/api/inbox/open', desc: 'Open inbox file in file manager', params: 'name', handler: handleInboxOpen },
+    { method: 'POST', path: '/api/inbox/delete', desc: 'Delete an inbox note', params: 'name', handler: handleInboxDelete },
+
+    // Skills
+    { method: 'GET', path: '/api/skill', desc: 'Read a skill file', params: 'file, source?, dir?', handler: handleSkillRead },
+
+    // Projects
+    { method: 'POST', path: '/api/projects/browse', desc: 'Open folder picker dialog, return selected path', handler: handleProjectsBrowse },
+    { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config', params: 'path, name?', handler: handleProjectsAdd },
+
+    // Command Center
+    { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
+    { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
+
+    // Schedules
+    { method: 'GET', path: '/api/schedules', desc: 'Return schedules from config + last-run times', handler: handleSchedulesList },
+    { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'id, cron, title, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
+    { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
+    { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
+
+    // Engine
+    { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
+
+    // Settings
+    { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
+    { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
+    { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
+  ];
+
+  // ── Route Dispatcher ────────────────────────────────────────────────────────
+
+  const pathname = req.url.split('?')[0];
+  for (const route of ROUTES) {
+    if (route.method !== req.method) continue;
+    if (typeof route.path === 'string') {
+      // For /api/skill, match with query string prefix since it has no fixed path variant
+      if (route.path === '/api/skill') {
+        if (!req.url.startsWith('/api/skill?') && req.url !== '/api/skill') continue;
+        return await route.handler(req, res, {});
+      }
+      if (pathname !== route.path) continue;
+      return await route.handler(req, res, {});
+    }
+    const m = pathname.match(route.path);
+    if (m) return await route.handler(req, res, m);
+  }
 
   // Serve dashboard HTML with gzip + caching
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
