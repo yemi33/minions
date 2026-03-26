@@ -45,9 +45,19 @@
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .timestamp { color: var(--muted); font-size: var(--text-md); font-variant-numeric: tabular-nums; }
 
-  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 0; max-width: 100vw; overflow-x: hidden; }
+  .layout { display: none; } /* Replaced by page-layout */
   section { padding: var(--space-8) var(--space-9); border-bottom: 1px solid var(--border); overflow: hidden; min-width: 0; }
-  section:nth-child(odd) { border-right: 1px solid var(--border); }
+
+  /* Sidebar navigation */
+  .page-layout { display: flex; height: calc(100vh - 44px); overflow: hidden; }
+  .sidebar { width: 150px; min-width: 150px; background: var(--surface); border-right: 1px solid var(--border); padding: var(--space-4) 0; overflow-y: auto; position: sticky; top: 0; }
+  .sidebar-link { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; color: var(--muted); text-decoration: none; font-size: var(--text-sm); border-left: 3px solid transparent; transition: all var(--transition-fast); cursor: pointer; }
+  .sidebar-link:hover { color: var(--text); background: var(--surface2); }
+  .sidebar-link.active { color: var(--blue); border-left-color: var(--blue); background: var(--surface2); font-weight: 600; }
+  .sidebar-count { font-size: 9px; color: var(--muted); background: var(--surface2); padding: 1px 5px; border-radius: 8px; min-width: 16px; text-align: center; }
+  .page-content { flex: 1; overflow-y: auto; min-width: 0; }
+  .page { display: none; }
+  .page.active { display: block; }
   section h2 { font-size: var(--text-base); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: var(--space-4); }
   section h2 .count { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: var(--space-1) 7px; font-size: var(--text-base); color: var(--text); }
 
@@ -189,7 +199,7 @@
   .inbox-name { font-weight: 500; font-size: var(--text-md); color: var(--purple); margin-bottom: var(--space-2); display: flex; justify-content: space-between; }
   .inbox-preview { font-size: var(--text-base); color: var(--muted); line-height: 1.5; max-height: 60px; overflow: hidden; }
 
-  .prd-panel, .pr-panel { grid-column: 1 / -1; border-bottom: 1px solid var(--border); overflow: visible; min-width: 0; }
+  .prd-panel, .pr-panel { border-bottom: 1px solid var(--border); overflow: visible; min-width: 0; }
   .prd-inner { display: flex; gap: 16px; align-items: flex-start; }
   .prd-stats { display: flex; gap: 16px; }
   .prd-stat { text-align: center; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-6) var(--space-8); }
@@ -331,7 +341,7 @@
   .empty { color: var(--muted); font-style: italic; font-size: var(--text-md); padding: var(--space-4) 0; }
 
   /* Command Center — Unified Input */
-  .cmd-center { grid-column: 1 / -1; overflow: visible !important; }
+  .cmd-center { overflow: visible !important; }
   .cmd-input-wrap {
     position: relative; display: flex; align-items: flex-start; gap: 0;
     background: var(--bg); border: 2px solid var(--border); border-radius: var(--radius-xl);
@@ -642,111 +652,134 @@
   <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">minions init</code>
 </div>
 
-<div class="layout">
-  <section class="cmd-center">
-    <h2>Command Center</h2>
-    <div class="cmd-input-wrap" id="cmd-input-wrap">
-      <div class="cmd-highlight-layer" id="cmd-highlight" aria-hidden="true"></div>
-      <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "explain the dispatch flow", or "/note always use feature flags"'
-        oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)" onscroll="syncHighlightScroll()"></textarea>
-      <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
+<!-- Layout replaced by page-layout sidebar navigation -->
+
+<div class="page-layout">
+  <nav class="sidebar" id="sidebar">
+    <a class="sidebar-link" data-page="home" href="/">Home</a>
+    <a class="sidebar-link" data-page="work" href="/work">Work Items <span class="sidebar-count" id="sidebar-wi"></span></a>
+    <a class="sidebar-link" data-page="prd" href="/prd">PRD</a>
+    <a class="sidebar-link" data-page="prs" href="/prs">Pull Requests <span class="sidebar-count" id="sidebar-pr"></span></a>
+    <a class="sidebar-link" data-page="plans" href="/plans">Plans</a>
+    <a class="sidebar-link" data-page="inbox" href="/inbox">Notes & KB</a>
+    <a class="sidebar-link" data-page="schedule" href="/schedule">Schedules</a>
+    <a class="sidebar-link" data-page="engine" href="/engine">Engine</a>
+  </nav>
+  <div class="page-content" id="page-content">
+
+    <div class="page active" id="page-home">
+      <section class="cmd-center">
+        <h2>Command Center</h2>
+        <div class="cmd-input-wrap" id="cmd-input-wrap">
+          <div class="cmd-highlight-layer" id="cmd-highlight" aria-hidden="true"></div>
+          <textarea id="cmd-input" rows="1" placeholder='What do you need? e.g. "Fix the auth bug @dallas", "explain the dispatch flow", or "/note always use feature flags"'
+            oninput="cmdInputChanged()" onkeydown="cmdKeyDown(event)" onscroll="syncHighlightScroll()"></textarea>
+          <button class="cmd-send-btn" id="cmd-send-btn" onclick="cmdSubmit()">Send <kbd>Ctrl+Enter</kbd></button>
+        </div>
+        <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
+        <div class="cmd-meta" id="cmd-meta" style="display:none"></div>
+        <div class="cmd-hints">
+          <span style="color:var(--blue);font-weight:600">Command Center</span>
+          <span>Ask anything, dispatch work, manage plans — powered by Sonnet</span>
+          <button class="cmd-history-btn" onclick="cmdShowHistory()">Past Commands</button>
+        </div>
+        <div class="cmd-toast" id="cmd-toast"></div>
+      </section>
+      <section>
+        <h2>Minions Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
+        <div class="agents" id="agents-grid">Loading...</div>
+      </section>
+      <section>
+        <h2>Dispatch Queue</h2>
+        <div class="dispatch-stats" id="dispatch-stats"></div>
+        <div id="dispatch-active"></div>
+        <div id="dispatch-pending"></div>
+      </section>
+      <section class="pr-panel" id="completed-section">
+        <h2>Recent Completions <span class="count" id="completed-count">0</span></h2>
+        <div id="completed-content"><p class="empty">No completed dispatches yet.</p></div>
+      </section>
     </div>
-    <div class="cmd-mention-popup" id="cmd-mention-popup"></div>
-    <div class="cmd-meta" id="cmd-meta" style="display:none"></div>
-    <div class="cmd-hints">
-      <span style="color:var(--blue);font-weight:600">Command Center</span>
-      <span>Ask anything, dispatch work, manage plans — powered by Sonnet</span>
-      <button class="cmd-history-btn" onclick="cmdShowHistory()">Past Commands</button>
+
+    <div class="page" id="page-work">
+      <section id="work-items-section" style="overflow:visible">
+        <h2>Work Items <span class="count" id="wi-count">0</span> <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px" onclick="toggleWorkItemArchive()">See Archive</button></h2>
+        <div id="work-items-content"><p class="empty">No work items. Add tasks via Command Center above.</p></div>
+        <div id="work-items-archive" style="display:none;margin-top:12px"></div>
+      </section>
     </div>
-    <div class="cmd-toast" id="cmd-toast"></div>
-  </section>
 
-  <section>
-    <h2>Minions Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
-    <div class="agents" id="agents-grid">Loading...</div>
-  </section>
+    <div class="page" id="page-prd">
+      <section class="prd-panel" id="prd-section">
+        <h2>PRD <span class="count" id="prd-progress-count">0%</span> <span id="prd-badge"></span> <span id="archive-btns"></span></h2>
+        <div id="prd-content"><p class="prd-pending">No PRD found.</p></div>
+        <div id="prd-progress-content" style="margin-top:12px"></div>
+      </section>
+    </div>
 
-  <section id="work-items-section" style="overflow:visible">
-    <h2>Work Items <span class="count" id="wi-count">0</span> <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px" onclick="toggleWorkItemArchive()">See Archive</button></h2>
-    <div id="work-items-content"><p class="empty">No work items. Add tasks via Command Center above.</p></div>
-    <div id="work-items-archive" style="display:none;margin-top:12px"></div>
-  </section>
+    <div class="page" id="page-prs">
+      <section class="pr-panel" id="pr-section">
+        <h2>Pull Requests <span class="count" id="pr-count">0</span></h2>
+        <div id="pr-content"><p class="pr-empty">No pull requests yet.</p></div>
+      </section>
+    </div>
 
-  <section class="prd-panel" id="prd-section">
-    <h2>PRD <span class="count" id="prd-progress-count">0%</span> <span id="prd-badge"></span> <span id="archive-btns"></span></h2>
-    <div id="prd-content"><p class="prd-pending">No PRD found.</p></div>
-    <div id="prd-progress-content" style="margin-top:12px"></div>
-  </section>
+    <div class="page" id="page-plans">
+      <section>
+        <h2>Plans <span class="count" id="plans-count">0</span></h2>
+        <div id="plans-list"><p class="empty">No plans yet. Use /plan in the command center to create one.</p></div>
+      </section>
+    </div>
 
-  <section class="pr-panel" id="pr-section">
-    <h2>Pull Requests <span class="count" id="pr-count">0</span></h2>
-    <div id="pr-content"><p class="pr-empty">No pull requests yet.</p></div>
-  </section>
+    <div class="page" id="page-inbox">
+      <section>
+        <h2>Notes Inbox <span class="count" id="inbox-count">0</span> <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">auto-consolidates at 3 notes</span></h2>
+        <div class="inbox-list" id="inbox-list">Loading...</div>
+      </section>
+      <section>
+        <h2 data-file="notes.md" style="position:relative">Team Notes <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0" id="notes-updated"></span></h2>
+        <div id="notes-list">Loading...</div>
+      </section>
+      <section>
+        <h2>Knowledge Base <span class="count" id="kb-count">0</span> <button id="kb-sweep-btn" onclick="kbSweep()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;margin-left:8px;vertical-align:middle">sweep</button><span id="kb-swept-time" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px"></span></h2>
+        <div class="kb-tabs" id="kb-tabs"></div>
+        <div class="kb-list" id="kb-list"><p class="empty">No knowledge entries yet. Notes are classified here after consolidation.</p></div>
+      </section>
+      <section>
+        <h2>Minions Skills <span class="count" id="skills-count">0</span></h2>
+        <div id="skills-list"><p class="empty">No skills yet. Agents create these when they discover repeatable workflows.</p></div>
+      </section>
+    </div>
 
-  <section>
-    <h2>Plans <span class="count" id="plans-count">0</span></h2>
-    <div id="plans-list"><p class="empty">No plans yet. Use /plan in the command center to create one.</p></div>
-  </section>
+    <div class="page" id="page-schedule">
+      <section id="scheduled-section">
+        <h2>Scheduled Tasks <span class="count" id="scheduled-count">0</span>
+          <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:8px" onclick="openCreateScheduleModal()">+ New</button>
+        </h2>
+        <div id="scheduled-content"><p class="empty">No scheduled tasks. Add one to automate recurring work.</p></div>
+      </section>
+      <section>
+        <h2>MCP Servers <span class="count" id="mcp-count">0</span></h2>
+        <div id="mcp-list"><p class="empty">No MCP servers synced.</p></div>
+      </section>
+    </div>
 
-  <section>
-    <h2>Notes Inbox <span class="count" id="inbox-count">0</span> <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">auto-consolidates at 3 notes</span></h2>
-    <div class="inbox-list" id="inbox-list">Loading...</div>
-  </section>
+    <div class="page" id="page-engine">
+      <section>
+        <h2>Engine Log</h2>
+        <div class="log-list" id="engine-log">No log entries yet.</div>
+      </section>
+      <section>
+        <h2>Agent Metrics</h2>
+        <div id="metrics-content"><p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p></div>
+      </section>
+      <section>
+        <h2>Token Usage</h2>
+        <div id="token-usage-content"><p class="empty">No usage data yet.</p></div>
+      </section>
+    </div>
 
-  <section>
-    <h2 data-file="notes.md" style="position:relative">Team Notes <span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0" id="notes-updated"></span></h2>
-    <div id="notes-list">Loading...</div>
-  </section>
-
-  <section>
-    <h2>Knowledge Base <span class="count" id="kb-count">0</span> <button id="kb-sweep-btn" onclick="kbSweep()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;margin-left:8px;vertical-align:middle">sweep</button><span id="kb-swept-time" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px"></span></h2>
-    <div class="kb-tabs" id="kb-tabs"></div>
-    <div class="kb-list" id="kb-list"><p class="empty">No knowledge entries yet. Notes are classified here after consolidation.</p></div>
-  </section>
-
-  <section>
-    <h2>Minions Skills <span class="count" id="skills-count">0</span></h2>
-    <div id="skills-list"><p class="empty">No skills yet. Agents create these when they discover repeatable workflows.</p></div>
-  </section>
-
-  <section>
-    <h2>MCP Servers <span class="count" id="mcp-count">0</span></h2>
-    <div id="mcp-list"><p class="empty">No MCP servers synced.</p></div>
-  </section>
-
-  <section id="scheduled-section">
-    <h2>Scheduled Tasks <span class="count" id="scheduled-count">0</span>
-      <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:8px" onclick="openCreateScheduleModal()">+ New</button>
-    </h2>
-    <div id="scheduled-content"><p class="empty">No scheduled tasks. Add one to automate recurring work.</p></div>
-  </section>
-
-  <section>
-    <h2>Dispatch Queue</h2>
-    <div class="dispatch-stats" id="dispatch-stats"></div>
-    <div id="dispatch-active"></div>
-    <div id="dispatch-pending"></div>
-  </section>
-
-  <section>
-    <h2>Engine Log</h2>
-    <div class="log-list" id="engine-log">No log entries yet.</div>
-  </section>
-
-  <section>
-    <h2>Agent Metrics</h2>
-    <div id="metrics-content"><p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p></div>
-  </section>
-
-  <section>
-    <h2>Token Usage</h2>
-    <div id="token-usage-content"><p class="empty">No usage data yet.</p></div>
-  </section>
-
-  <section class="pr-panel" id="completed-section">
-    <h2>Recent Completions <span class="count" id="completed-count">0</span></h2>
-    <div id="completed-content"><p class="empty">No completed dispatches yet.</p></div>
-  </section>
+  </div>
 </div>
 
 <!-- Agent Detail Panel -->
@@ -803,6 +836,34 @@ let inboxData = [];
 let agentData = [];
 let currentAgentId = null;
 let currentTab = 'thought-process';
+
+// Sidebar page navigation — URL-routed
+function getPageFromUrl() {
+  const path = window.location.pathname.replace(/^\//, '') || 'home';
+  if (document.querySelector('.sidebar-link[data-page="' + path + '"]')) return path;
+  return 'home';
+}
+
+let currentPage = getPageFromUrl();
+
+function switchPage(page, pushState) {
+  currentPage = page;
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const target = document.getElementById('page-' + page);
+  if (target) target.classList.add('active');
+  document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+  const link = document.querySelector('.sidebar-link[data-page="' + page + '"]');
+  if (link) link.classList.add('active');
+  if (pushState !== false) {
+    const url = page === 'home' ? '/' : '/' + page;
+    history.pushState({ page }, '', url);
+  }
+}
+
+// Browser back/forward navigation
+window.addEventListener('popstate', (e) => {
+  switchPage(e.state?.page || getPageFromUrl(), false);
+});
 window._prdRequeueUi = window._prdRequeueUi || {};
 
 function getPrdRequeueState(workItemId) {
@@ -2388,6 +2449,11 @@ async function refresh() {
     renderSkills(data.skills || []);
     renderMcpServers(data.mcpServers || []);
     renderSchedules(data.schedules || []);
+    // Update sidebar counts
+    const swi = document.getElementById('sidebar-wi');
+    if (swi) swi.textContent = (data.workItems || []).length || '';
+    const spr = document.getElementById('sidebar-pr');
+    if (spr) spr.textContent = (data.pullRequests || []).length || '';
     // Refresh KB and plans less frequently (every 3rd cycle = ~12s)
     if (!window._kbRefreshCount) window._kbRefreshCount = 0;
     if (window._kbRefreshCount++ % 3 === 0) { refreshKnowledgeBase(); refreshPlans(); }
@@ -2396,6 +2462,12 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, 4000);
+
+// Wire sidebar navigation
+document.querySelectorAll('.sidebar-link').forEach(link => {
+  link.addEventListener('click', e => { e.preventDefault(); switchPage(link.dataset.page); });
+});
+switchPage(currentPage);
 
 // -- Projects --
 function renderProjects(projects) {
