@@ -5,7 +5,8 @@ function renderProjects(projects) {
   const list = document.getElementById('projects-list');
   if (!projects.length) {
     header.textContent = 'No projects';
-    list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked. Run: node minions.js add &lt;dir&gt;</span>';
+    list.innerHTML = '<span style="color:var(--muted);font-style:italic">No projects linked.</span>' +
+      '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--green);font-weight:500;cursor:pointer;border-style:dashed;margin-left:8px">+ Add Project</span>';
     return;
   }
   header.textContent = projects.map(p => p.name).join(' + ');
