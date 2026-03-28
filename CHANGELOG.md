@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.32 (2026-03-28)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/settings.js
+
 ## 0.1.31 (2026-03-28)
 
 ### Dashboard
