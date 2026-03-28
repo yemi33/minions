@@ -2850,6 +2850,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/prd/regenerate', desc: 'Regenerate PRD from revised source plan', params: 'file', handler: handlePrdRegenerate },
 
     // Agents
+    { method: 'POST', path: '/api/agents/steer', desc: 'Inject steering message into a running agent', params: 'agent, message', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { agent: agentId, message } = body;
+      if (!agentId || !message) return jsonReply(res, 400, { error: 'agent and message required' });
+
+      const steerPath = path.join(MINIONS_DIR, 'agents', agentId, 'steer.md');
+      const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+      if (!fs.existsSync(agentDir)) return jsonReply(res, 404, { error: 'Agent not found' });
+
+      // Write steering file — engine picks it up on next tick
+      safeWrite(steerPath, message);
+
+      // Also append to live-output.log so it shows in the chat view
+      const liveLogPath = path.join(agentDir, 'live-output.log');
+      try { fs.appendFileSync(liveLogPath, '\n[human-steering] ' + message + '\n'); } catch {}
+
+      return jsonReply(res, 200, { ok: true, message: 'Steering message sent' });
+    }},
     { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },

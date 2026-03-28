@@ -63,10 +63,19 @@ function renderDetailContent(detail, tab) {
 
     el.innerHTML = html;
   } else if (tab === 'live') {
-    el.innerHTML = '<div class="section" id="live-output" style="max-height:60vh;overflow-y:auto;font-size:11px;line-height:1.6">Loading live output...</div>' +
-      '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
-        '<span class="pulse"></span><span id="live-status-label" style="font-size:11px;color:var(--green)">Streaming live</span>' +
-        '<button class="pr-pager-btn" onclick="refreshLiveOutput()" style="font-size:10px">Refresh now</button>' +
+    el.innerHTML =
+      '<div id="live-chat" style="display:flex;flex-direction:column;height:60vh">' +
+        '<div id="live-messages" style="flex:1;overflow-y:auto;padding:8px;font-size:11px;line-height:1.6"></div>' +
+        '<div id="live-status-bar" style="padding:4px 8px;display:flex;align-items:center;gap:8px;border-top:1px solid var(--border)">' +
+          '<span class="pulse"></span><span id="live-status-label" style="font-size:11px;color:var(--green)">Streaming live</span>' +
+          '<button class="pr-pager-btn" onclick="refreshLiveOutput()" style="font-size:10px">Refresh</button>' +
+        '</div>' +
+        '<div id="live-steer-bar" style="display:flex;gap:8px;padding:8px;border-top:1px solid var(--border)">' +
+          '<input id="live-steer-input" type="text" placeholder="Steer this agent... (give additional context or redirect)" ' +
+            'style="flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:inherit" ' +
+            'onkeydown="if(event.key===\'Enter\')sendSteering()" />' +
+          '<button onclick="sendSteering()" style="padding:6px 12px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:11px">Send</button>' +
+        '</div>' +
       '</div>';
     startLiveStream(currentAgentId);
   } else if (tab === 'charter') {

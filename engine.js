@@ -1002,6 +1002,24 @@ function spawnAgent(dispatchItem, config) {
     lastOutputAt = Date.now();
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch {}
+
+    // Capture sessionId early for mid-session steering
+    const procInfo = activeProcesses.get(id);
+    if (procInfo && !procInfo.sessionId && chunk.includes('session_id')) {
+      try {
+        for (const line of chunk.split('\n')) {
+          if (!line.trim() || !line.startsWith('{')) continue;
+          const obj = JSON.parse(line);
+          if (obj.session_id) {
+            procInfo.sessionId = obj.session_id;
+            safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
+              sessionId: obj.session_id, dispatchId: id, savedAt: new Date().toISOString(), branch: branchName
+            });
+            break;
+          }
+        }
+      } catch {}
+    }
   });
 
   proc.stderr.on('data', (data) => {
@@ -1011,9 +1029,72 @@ function spawnAgent(dispatchItem, config) {
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch {}
   });
 
-  proc.on('close', (code) => {
+  function onAgentClose(code) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
+
+    // Check if this was a steering kill — re-spawn with resume
+    const procInfo = activeProcesses.get(id);
+    if (procInfo?._steeringMessage) {
+      const steerMsg = procInfo._steeringMessage;
+      const steerSessionId = procInfo._steeringSessionId;
+      delete procInfo._steeringMessage;
+      delete procInfo._steeringSessionId;
+
+      log('info', `Steering: re-spawning ${agentId} with --resume ${steerSessionId}`);
+
+      // Write new prompt with steering message
+      const steerPrompt = `HUMAN STEERING MESSAGE:\n\n${steerMsg}\n\nPlease acknowledge this update and adjust your approach accordingly. Continue working on your current task with this new context.`;
+      const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${id}.md`);
+      safeWrite(steerPromptPath, steerPrompt);
+
+      // Build resume args
+      const resumeArgs = [
+        '--output-format', claudeConfig?.outputFormat || 'stream-json',
+        '--max-turns', String(engineConfig?.maxTurns || DEFAULTS.maxTurns),
+        '--verbose',
+        '--permission-mode', claudeConfig?.permissionMode || 'bypassPermissions',
+        '--resume', steerSessionId,
+      ];
+      if (claudeConfig?.allowedTools) resumeArgs.push('--allowedTools', claudeConfig.allowedTools);
+
+      const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+      const childEnv = shared.cleanChildEnv();
+      const resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs], {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: childEnv,
+      });
+
+      // Re-attach to existing tracking
+      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId });
+
+      // Re-wire stdout/stderr handlers (same as original)
+      resumeProc.stdout.on('data', (data) => {
+        const chunk = data.toString();
+        lastOutputAt = Date.now();
+        if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
+        try { fs.appendFileSync(liveOutputPath, chunk); } catch {}
+      });
+      resumeProc.stderr.on('data', (data) => {
+        const chunk = data.toString();
+        lastOutputAt = Date.now();
+        if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
+        try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch {}
+      });
+
+      // Re-wire close handler for the resumed process
+      resumeProc.on('close', onAgentClose);
+      resumeProc.on('error', (err) => {
+        log('error', `Steering re-spawn failed for ${agentId}: ${err.message}`);
+        activeProcesses.delete(id);
+        completeDispatch(id, 'error', `Steering re-spawn error: ${err.message}`);
+      });
+
+      // Don't run completion hooks — agent is still working
+      return;
+    }
+
     activeProcesses.delete(id);
 
     // If timeout checker already finalized this dispatch, don't overwrite work-item status again.
@@ -1069,7 +1150,9 @@ function spawnAgent(dispatchItem, config) {
         log('info', `Temp agent ${agentId} cleaned up`);
       } catch {}
     }
-  });
+  }
+
+  proc.on('close', onAgentClose);
 
   proc.on('error', (err) => {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
@@ -1429,6 +1512,34 @@ function checkIdleThreshold(config) {
     const mins = Math.round(idleMs / 60000);
     log('warn', `All agents idle for ${mins} minutes — no work sources producing items`);
     _idleAlertSent = true;
+  }
+}
+
+// ─── Steering Checker ────────────────────────────────────────────────────────
+
+function checkSteering(config) {
+  for (const [id, info] of activeProcesses) {
+    const steerPath = path.join(AGENTS_DIR, info.agentId, 'steer.md');
+    if (!fs.existsSync(steerPath)) continue;
+
+    const message = safeRead(steerPath);
+    try { fs.unlinkSync(steerPath); } catch {}
+    if (!message) continue;
+
+    const sessionId = info.sessionId;
+    if (!sessionId) {
+      log('warn', `Steering: no sessionId for ${info.agentId} — cannot resume. Message dropped.`);
+      continue;
+    }
+
+    log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
+
+    // Kill current process
+    try { info.proc.kill('SIGTERM'); } catch {}
+
+    // Store steering context for re-spawn on close
+    info._steeringMessage = message;
+    info._steeringSessionId = sessionId;
   }
 }
 
@@ -3260,8 +3371,9 @@ async function tickInner() {
   const config = getConfig();
   tickCount++;
 
-  // 1. Check for timed-out agents and idle threshold
+  // 1. Check for timed-out agents, steering messages, and idle threshold
   checkTimeouts(config);
+  checkSteering(config);
   checkIdleThreshold(config);
 
   // In stopping state, only track agent completions — skip discovery and dispatch
