@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.26 (2026-03-28)
+
+### Engine
+- engine.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/detail-panel.js
+- dashboard/js/live-stream.js
+
 ## 0.1.25 (2026-03-28)
 
 ### Engine
