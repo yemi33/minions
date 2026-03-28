@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.25 (2026-03-28)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.24 (2026-03-28)
 
 ### Engine
