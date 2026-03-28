@@ -2417,9 +2417,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { execSync } = require('child_process');
       let selectedPath = '';
       if (process.platform === 'win32') {
-        // PowerShell folder browser dialog
-        const ps = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select project folder'; $f.ShowNewFolderButton = $false; if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath } else { '' }`;
-        selectedPath = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000, windowsHide: true }).trim();
+        // PowerShell folder browser dialog — use TopMost form as owner to bring dialog to front
+        const ps = `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select project folder'; $f.ShowNewFolderButton = $false; if ($f.ShowDialog($owner) -eq 'OK') { $f.SelectedPath } else { '' }; $owner.Dispose()`;
+        selectedPath = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else if (process.platform === 'darwin') {
         selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else {
