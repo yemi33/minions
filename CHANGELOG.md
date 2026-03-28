@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.22 (2026-03-28)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-inbox.js
+
 ## 0.1.21 (2026-03-28)
 
 ### Dashboard
