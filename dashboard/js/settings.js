@@ -135,16 +135,14 @@ async function saveSettings() {
 }
 
 async function addProject() {
-  try {
-    // Open folder picker
-    const browseRes = await fetch('/api/projects/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const browseData = await browseRes.json();
-    if (browseData.cancelled || !browseData.path) return;
+  // Prompt for path directly — folder picker dialogs often open behind the browser
+  const projectPath = prompt('Enter the full path to your project directory:\n\ne.g. C:\\Users\\you\\repos\\my-project');
+  if (!projectPath) return;
 
-    // Add the project
+  try {
     const addRes = await fetch('/api/projects/add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: browseData.path })
+      body: JSON.stringify({ path: projectPath.trim() })
     });
     const addData = await addRes.json();
     if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
