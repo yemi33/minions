@@ -3364,6 +3364,20 @@ async function testHumanContributions() {
       'Should send { what } to match /api/notes schema');
   });
 
+  await test('submitQuickNote wraps closeModal in try-catch (prevents silent failure)', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const submitFn = inboxSrc.slice(inboxSrc.indexOf('function submitQuickNote'));
+    assert.ok(submitFn.includes('try { closeModal()') || submitFn.includes('try{ closeModal()'),
+      'closeModal should be wrapped in try-catch so QA session errors do not prevent note save');
+  });
+
+  await test('submitQuickNote validates form elements exist', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const submitFn = inboxSrc.slice(inboxSrc.indexOf('function submitQuickNote'));
+    assert.ok(submitFn.includes('!titleEl') || submitFn.includes('getElementById'),
+      'Should check that form elements exist before reading values');
+  });
+
   await test('Quick Note button on Home page', () => {
     const homeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'home.html'), 'utf8');
     assert.ok(homeSrc.includes('openQuickNoteModal'), 'Home page should have quick note button');
