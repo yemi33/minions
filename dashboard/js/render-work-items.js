@@ -273,6 +273,84 @@ async function submitFeedback(id, source) {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
+function openCreateWorkItemModal() {
+  const typeOpts = ['implement', 'fix', 'explore', 'test', 'review', 'ask', 'plan'].map(t =>
+    '<option value="' + t + '"' + (t === 'implement' ? ' selected' : '') + '>' + t + '</option>'
+  ).join('');
+  const priOpts = ['high', 'medium', 'low'].map(p =>
+    '<option value="' + p + '"' + (p === 'medium' ? ' selected' : '') + '>' + p + '</option>'
+  ).join('');
+  const agentOpts = (typeof cmdAgents !== 'undefined' ? cmdAgents : []).map(a =>
+    '<option value="' + escHtml(a.id) + '">' + escHtml(a.name) + '</option>'
+  ).join('');
+  const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
+    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
+  ).join('');
+  const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
+
+  document.getElementById('modal-title').textContent = 'Create Work Item';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title <input id="wi-new-title" style="' + inputStyle + '" placeholder="What needs to be done?"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Description <textarea id="wi-new-desc" rows="3" style="' + inputStyle + ';resize:vertical" placeholder="Detailed description..."></textarea></label>' +
+      '<div style="display:flex;gap:8px">' +
+        '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Type <select id="wi-new-type" style="' + inputStyle + '">' + typeOpts + '</select></label>' +
+        '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Priority <select id="wi-new-priority" style="' + inputStyle + '">' + priOpts + '</select></label>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Agent <select id="wi-new-agent" style="' + inputStyle + '"><option value="">Auto</option>' + agentOpts + '</select></label>' +
+        '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Project <select id="wi-new-project" style="' + inputStyle + '"><option value="">Central</option>' + projOpts + '</select></label>' +
+      '</div>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Acceptance Criteria <textarea id="wi-new-ac" rows="2" style="' + inputStyle + ';resize:vertical" placeholder="One criterion per line (optional)"></textarea></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">References <textarea id="wi-new-refs" rows="2" style="' + inputStyle + ';resize:vertical" placeholder="url | title | type — one per line (optional)"></textarea></label>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="_submitCreateWorkItem()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('wi-new-title')?.focus(), 100);
+}
+
+async function _submitCreateWorkItem() {
+  const title = document.getElementById('wi-new-title')?.value?.trim();
+  if (!title) { alert('Title is required'); return; }
+  const desc = document.getElementById('wi-new-desc')?.value || '';
+  const type = document.getElementById('wi-new-type')?.value || 'implement';
+  const priority = document.getElementById('wi-new-priority')?.value || 'medium';
+  const agent = document.getElementById('wi-new-agent')?.value || '';
+  const project = document.getElementById('wi-new-project')?.value || '';
+  const acRaw = document.getElementById('wi-new-ac')?.value || '';
+  const acceptanceCriteria = acRaw.split('\n').map(l => l.trim()).filter(Boolean);
+  const refsRaw = document.getElementById('wi-new-refs')?.value || '';
+  const references = refsRaw.split('\n').filter(l => l.trim()).map(l => {
+    const parts = l.split('|').map(s => s.trim());
+    return { url: parts[0], title: parts[1] || parts[0], type: parts[2] || 'link' };
+  });
+
+  try {
+    const body = { title, description: desc, type, priority };
+    if (agent) body.agents = [agent];
+    if (project) body.project = project;
+    if (acceptanceCriteria.length) body.acceptanceCriteria = acceptanceCriteria;
+    if (references.length && references[0].url) body.references = references;
+
+    const res = await fetch('/api/work-items', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (res.ok) {
+      try { closeModal(); } catch {}
+      wakeEngine();
+      refresh();
+      try { showToast('cmd-toast', 'Work item ' + (data.id || '') + ' created', true); } catch {}
+    } else {
+      alert('Failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 function openAllWorkItems() {
   document.getElementById('modal-title').textContent = 'All Work Items (' + allWorkItems.length + ')';
   const html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th><th></th></tr></thead><tbody>' +
