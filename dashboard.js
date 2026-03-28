@@ -2429,14 +2429,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { execSync } = require('child_process');
       let selectedPath = '';
       if (process.platform === 'win32') {
-        // Use COM Shell.Application — reliably shows folder picker in foreground
-        const vbs = 'Set shell = CreateObject("Shell.Application")\r\nSet folder = shell.BrowseForFolder(0, "Select project folder", &H0051, "")\r\nIf Not folder Is Nothing Then\r\n  WScript.Echo folder.Self.Path\r\nEnd If';
-        const vbsPath = path.join(MINIONS_DIR, 'engine', 'tmp', '_browse.vbs');
-        fs.mkdirSync(path.dirname(vbsPath), { recursive: true });
-        fs.writeFileSync(vbsPath, vbs);
-        try {
-          selectedPath = execSync(`cscript //NoLogo "${vbsPath}"`, { encoding: 'utf8', timeout: 120000 }).trim();
-        } finally { try { fs.unlinkSync(vbsPath); } catch {} }
+        // PowerShell STA with topmost window as owner — forces folder dialog to foreground
+        const ps = [
+          'Add-Type -AssemblyName System.Windows.Forms',
+          '$f = New-Object System.Windows.Forms.FolderBrowserDialog',
+          '$f.Description = "Select project folder"',
+          '$f.ShowNewFolderButton = $false',
+          '$owner = New-Object System.Windows.Forms.Form',
+          '$owner.TopMost = $true',
+          '$owner.StartPosition = "CenterScreen"',
+          '$owner.WindowState = "Minimized"',
+          '$owner.Show()',
+          '$owner.Hide()',
+          'if ($f.ShowDialog($owner) -eq "OK") { Write-Output $f.SelectedPath }',
+          '$owner.Dispose()',
+        ].join('; ');
+        selectedPath = execSync(`powershell -STA -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else if (process.platform === 'darwin') {
         selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else {
