@@ -162,17 +162,24 @@ function openQuickNoteModal() {
 }
 
 async function submitQuickNote() {
-  const title = document.getElementById('note-title').value;
-  const content = document.getElementById('note-content').value;
+  const titleEl = document.getElementById('note-title');
+  const contentEl = document.getElementById('note-content');
+  if (!titleEl || !contentEl) { alert('Form elements not found'); return; }
+  const title = titleEl.value;
+  const content = contentEl.value;
   if (!title && !content) { alert('Title or content required'); return; }
   try {
     const res = await fetch('/api/notes', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title || 'Quick note', what: content || title })
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Note saved to inbox', true); }
-    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) {
+      try { closeModal(); } catch {}
+      refresh();
+      try { showToast('cmd-toast', 'Note saved to inbox', true); } catch {}
+    }
+    else { const d = await res.json().catch(() => ({})); alert('Error: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error saving note: ' + e.message); }
 }
 
 async function doPromoteToKB(name, category) {

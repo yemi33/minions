@@ -2417,9 +2417,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { execSync } = require('child_process');
       let selectedPath = '';
       if (process.platform === 'win32') {
-        // PowerShell folder browser dialog — use TopMost form as owner to bring dialog to front
-        const ps = `Add-Type -AssemblyName System.Windows.Forms; $owner = New-Object System.Windows.Forms.Form; $owner.TopMost = $true; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select project folder'; $f.ShowNewFolderButton = $false; if ($f.ShowDialog($owner) -eq 'OK') { $f.SelectedPath } else { '' }; $owner.Dispose()`;
-        selectedPath = execSync(`powershell -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000 }).trim();
+        // Use COM Shell.Application — reliably shows folder picker in foreground
+        const vbs = 'Set shell = CreateObject("Shell.Application")\r\nSet folder = shell.BrowseForFolder(0, "Select project folder", &H0051, "")\r\nIf Not folder Is Nothing Then\r\n  WScript.Echo folder.Self.Path\r\nEnd If';
+        const vbsPath = path.join(MINIONS_DIR, 'engine', 'tmp', '_browse.vbs');
+        fs.mkdirSync(path.dirname(vbsPath), { recursive: true });
+        fs.writeFileSync(vbsPath, vbs);
+        try {
+          selectedPath = execSync(`cscript //NoLogo "${vbsPath}"`, { encoding: 'utf8', timeout: 120000 }).trim();
+        } finally { try { fs.unlinkSync(vbsPath); } catch {} }
       } else if (process.platform === 'darwin') {
         selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else {
