@@ -14,7 +14,7 @@ function wiRow(item) {
   const prLink = item._pr
     ? '<a class="pr-title" href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="font-size:10px">' + escHtml(item._pr) + '</a>'
     : '<span style="color:var(--muted)">—</span>';
-  return '<tr>' +
+  return '<tr style="cursor:pointer" onclick="openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
@@ -349,6 +349,42 @@ async function _submitCreateWorkItem() {
       alert('Failed: ' + (data.error || 'unknown'));
     }
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+function openWorkItemDetail(id) {
+  const item = allWorkItems.find(i => i.id === id);
+  if (!item) return;
+
+  const field = (label, value) => value ? '<div style="margin-bottom:8px"><span style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.5px">' + label + '</span><div style="margin-top:2px">' + value + '</div></div>' : '';
+  const badge = (cls, text) => '<span class="pr-badge ' + cls + '">' + escHtml(text) + '</span>';
+  const statusCls = item.status === 'failed' ? 'rejected' : item.status === 'dispatched' ? 'building' : item.status === 'done' ? 'approved' : 'active';
+
+  let html = '<div style="display:flex;flex-direction:column;gap:4px;font-size:13px">';
+  html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
+    badge(statusCls, item.status || 'pending') + ' ' +
+    '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
+    '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
+    '</div>';
+  html += field('Description', '<div style="white-space:pre-wrap;font-size:12px">' + escHtml(item.description || item.title || '—') + '</div>');
+  html += field('Agent', escHtml(item.dispatched_to || item.agent || 'Auto'));
+  html += field('Source', escHtml(item._source || 'central'));
+  if (item.created) html += field('Created', escHtml(new Date(item.created).toLocaleString()));
+  if (item.dispatched_at) html += field('Dispatched', escHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escHtml(item.dispatched_to || '?'));
+  if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
+  if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
+  if (item._pendingReason) html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
+  if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
+  if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
+  if (item._humanFeedback) html += field('Human Feedback', (item._humanFeedback.rating === 'up' ? '👍' : '👎') + (item._humanFeedback.comment ? ' — ' + escHtml(item._humanFeedback.comment) : ''));
+  if (item._pr) html += field('Pull Request', '<a href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="color:var(--blue)">' + escHtml(item._pr) + '</a>');
+  html += '</div>';
+
+  document.getElementById('modal-title').textContent = item.title || item.id;
+  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
 }
 
 function openAllWorkItems() {
