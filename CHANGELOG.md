@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.15 (2026-03-28)
+
+### Dashboard
+- dashboard/js/command-center.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+- dashboard/js/render-work-items.js
+- dashboard/js/utils.js
+
 ## 0.1.14 (2026-03-26)
 
 ### Dashboard
