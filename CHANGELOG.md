@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.16 (2026-03-28)
+
+### Dashboard
+- dashboard/js/render-other.js
+
 ## 0.1.15 (2026-03-28)
 
 ### Dashboard
