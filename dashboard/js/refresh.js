@@ -58,3 +58,9 @@ document.querySelectorAll('.sidebar-link').forEach(link => {
   link.addEventListener('click', e => { e.preventDefault(); switchPage(link.dataset.page); });
 });
 switchPage(currentPage);
+
+// Hot-reload: auto-refresh browser when dashboard files change
+try {
+  const _hotReload = new EventSource('/api/hot-reload');
+  _hotReload.onmessage = (e) => { if (e.data === 'reload') location.reload(); };
+} catch {}

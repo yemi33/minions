@@ -97,7 +97,9 @@ let HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control 
 let HTML_GZ = zlib.gzipSync(HTML);
 let HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
 
-// Hot-reload: watch dashboard/ directory for changes and rebuild
+// Hot-reload: watch dashboard/ directory for changes, rebuild, and push reload to browsers
+const _hotReloadClients = new Set();
+
 function rebuildDashboardHtml() {
   try {
     const newRaw = buildDashboardHtml();
@@ -107,6 +109,10 @@ function rebuildDashboardHtml() {
     HTML_GZ = zlib.gzipSync(HTML);
     HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
     console.log('  Dashboard hot-reloaded');
+    // Push reload to all connected browsers
+    for (const res of _hotReloadClients) {
+      try { res.write('data: reload\n\n'); } catch { _hotReloadClients.delete(res); }
+    }
   } catch (e) { console.error('  Hot-reload error:', e.message); }
 }
 
@@ -2811,6 +2817,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Status & health
     { method: 'GET', path: '/api/status', desc: 'Full dashboard status snapshot (agents, PRDs, work items, dispatch, etc.)', handler: handleStatus },
     { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
+    { method: 'GET', path: '/api/hot-reload', desc: 'SSE stream for dashboard hot-reload notifications', handler: (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      res.write('data: connected\n\n');
+      _hotReloadClients.add(res);
+      req.on('close', () => _hotReloadClients.delete(res));
+    }},
 
     // Work items
     { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?', handler: handleWorkItemsCreate },
