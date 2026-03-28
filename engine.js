@@ -2522,11 +2522,11 @@ function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
-    // PRs with build failures — any agent can pick this up
+    // PRs with build failures — route to author (has session context from implementing)
     if (pr.status === 'active' && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
-      const agentId = resolveAgent('fix', config);
+      const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
