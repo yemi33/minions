@@ -198,7 +198,7 @@ async function retryWorkItem(id, source) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (res.ok) { refresh(); } else {
+    if (res.ok) { wakeEngine(); refresh(); } else {
       const d = await res.json();
       alert('Retry failed: ' + (d.error || 'unknown'));
     }

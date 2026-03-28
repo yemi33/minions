@@ -269,6 +269,7 @@ async function planExecute(file, project, btn) {
       }
       closeModal();
       showToast('cmd-toast', data.alreadyQueued ? 'Already queued (' + data.id + ')' : 'Queued ' + data.id + ' — agent will convert plan to PRD', true);
+      wakeEngine();
       refreshPlans();
     } else {
       if (btn) { btn.textContent = 'Execute'; btn.disabled = false; btn.style.color = 'var(--green)'; }

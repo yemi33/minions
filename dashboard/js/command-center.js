@@ -222,6 +222,7 @@ async function ccExecuteAction(action) {
         const d = await res.json();
         status.innerHTML = '&#10003; Dispatched: <strong>' + escHtml(d.id || action.title) + '</strong>';
         status.style.color = 'var(--green)';
+        wakeEngine();
         break;
       }
       case 'note': {
@@ -261,6 +262,7 @@ async function ccExecuteAction(action) {
         }
         status.innerHTML = '&#10003; Retried: <strong>' + escHtml((action.ids || []).join(', ')) + '</strong>';
         status.style.color = 'var(--green)';
+        wakeEngine();
         break;
       }
       case 'pause-plan': {
@@ -338,6 +340,7 @@ async function ccExecuteAction(action) {
         });
         status.innerHTML = '&#10003; Plan execution queued: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
+        wakeEngine();
         refreshPlans();
         break;
       }

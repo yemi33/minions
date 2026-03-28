@@ -582,6 +582,7 @@ async function prdItemRequeue(workItemId, source) {
     if (res.ok) {
       setPrdRequeueState(workItemId, { status: 'queued', until: Date.now() + 10000 });
       rerenderPrdFromCache();
+      wakeEngine();
       refresh();
       showToast('cmd-toast', workItemId + ' requeued', true);
     } else {

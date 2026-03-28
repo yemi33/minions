@@ -1,5 +1,8 @@
 // dashboard/js/utils.js — Utility functions extracted from dashboard.html
 
+// Signal the engine to tick immediately (pick up new work without waiting 60s)
+function wakeEngine() { fetch('/api/engine/wakeup', { method: 'POST' }).catch(() => {}); }
+
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
