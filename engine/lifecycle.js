@@ -1011,7 +1011,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
       shared.safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
-        sessionId, dispatchId: dispatchItem.id, savedAt: new Date().toISOString()
+        sessionId, dispatchId: dispatchItem.id, savedAt: new Date().toISOString(),
+        branch: dispatchItem.meta?.branch || null,
       });
     } catch {}
   }

@@ -3059,14 +3059,21 @@ async function testSessionResume() {
       'spawnAgent should check session.json and pass --resume flag');
   });
 
-  await test('session resume has 2-hour TTL', () => {
+  await test('session resume has 2-hour TTL and requires same branch', () => {
     assert.ok(engineSrc.includes('2 * 60 * 60 * 1000') || engineSrc.includes('7200000'),
       'Session resume should have a 2-hour staleness guard');
+    assert.ok(engineSrc.includes('sameBranch'),
+      'Session resume should only trigger when working on the same branch');
   });
 
   await test('session resume skips temp agents', () => {
     assert.ok(engineSrc.includes("temp-") && engineSrc.includes('session.json'),
       'spawnAgent should skip session resume for temp agents');
+  });
+
+  await test('session.json stores branch for context matching', () => {
+    assert.ok(lifecycleSrc.includes('branch:') && lifecycleSrc.includes('session.json'),
+      'session.json should include branch so resume only triggers on same branch');
   });
 
   await test('session.json stores dispatchId for traceability', () => {

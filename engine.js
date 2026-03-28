@@ -939,15 +939,18 @@ function spawnAgent(dispatchItem, config) {
     args.push('--allowedTools', claudeConfig.allowedTools);
   }
 
-  // Session resume: reuse last session if recent enough (< 2 hours)
+  // Session resume: reuse last session if same branch and recent enough (< 2 hours)
+  // Only resume when the context is relevant — same branch means the agent is
+  // continuing work on the same PR/feature (e.g., author fixing their own build failure)
   if (!agentId.startsWith('temp-')) {
     try {
       const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
       if (sessionFile?.sessionId && sessionFile.savedAt) {
         const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
-        if (sessionAge < 2 * 60 * 60 * 1000) { // 2 hour TTL
+        const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
+        if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
           args.push('--resume', sessionFile.sessionId);
-          log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} (age: ${Math.round(sessionAge / 60000)}min)`);
+          log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
         }
       }
     } catch {}
