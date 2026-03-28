@@ -71,7 +71,7 @@ function renderDetailContent(detail, tab) {
           '<button class="pr-pager-btn" onclick="refreshLiveOutput()" style="font-size:10px">Refresh</button>' +
         '</div>' +
         '<div id="live-steer-bar" style="display:flex;gap:8px;padding:8px;border-top:1px solid var(--border)">' +
-          '<input id="live-steer-input" type="text" placeholder="Steer this agent... (give additional context or redirect)" ' +
+          '<input id="live-steer-input" type="text" placeholder="Message this agent — ask for status, give context, or redirect..." ' +
             'style="flex:1;padding:6px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px;font-family:inherit" ' +
             'onkeydown="if(event.key===\'Enter\')sendSteering()" />' +
           '<button onclick="sendSteering()" style="padding:6px 12px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:11px">Send</button>' +

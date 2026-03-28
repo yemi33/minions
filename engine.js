@@ -1043,7 +1043,7 @@ function spawnAgent(dispatchItem, config) {
       log('info', `Steering: re-spawning ${agentId} with --resume ${steerSessionId}`);
 
       // Write new prompt with steering message
-      const steerPrompt = `HUMAN STEERING MESSAGE:\n\n${steerMsg}\n\nPlease acknowledge this update and adjust your approach accordingly. Continue working on your current task with this new context.`;
+      const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
       const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${id}.md`);
       safeWrite(steerPromptPath, steerPrompt);
 
