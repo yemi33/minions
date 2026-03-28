@@ -33,9 +33,14 @@ function wiRow(item) {
     '</td>' +
     '<td>' + prLink + '</td>' +
     '<td><span class="pr-date">' + shortTime(item.created) + '</span></td>' +
+    '<td style="white-space:nowrap;font-size:9px;color:var(--muted)">' +
+      (item.references && item.references.length ? '<span title="' + item.references.length + ' reference(s)" style="margin-right:4px">&#x1F517;' + item.references.length + '</span>' : '') +
+      (item.acceptanceCriteria && item.acceptanceCriteria.length ? '<span title="' + item.acceptanceCriteria.length + ' acceptance criteria">&#x2611;' + item.acceptanceCriteria.length + '</span>' : '') +
+    '</td>' +
     '<td style="white-space:nowrap">' +
       ((item.status === 'pending' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();editWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Edit work item">&#x270E;</button>' : '') +
       ((item.status === 'done' || item.status === 'failed') ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-right:4px" onclick="event.stopPropagation();archiveWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Archive work item">&#x1F4E6;</button>' : '') +
+      ((item.status === 'done' || item.status === 'failed') && !item._humanFeedback ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-right:4px" onclick="event.stopPropagation();feedbackWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Give feedback">&#x1F44D;&#x1F44E;</button>' : (item._humanFeedback ? '<span style="font-size:9px" title="Feedback given">' + (item._humanFeedback.rating === 'up' ? '&#x1F44D;' : '&#x1F44E;') + '</span> ' : '')) +
       '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')" title="Delete work item and kill agent">&#x2715;</button>' +
     '</td>' +
   '</tr>';
@@ -65,7 +70,7 @@ function renderWorkItems(items) {
   const start = wiPage * WI_PER_PAGE;
   const pageItems = items.slice(start, start + WI_PER_PAGE);
 
-  let html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th></tr></thead><tbody>';
+  let html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th><th></th></tr></thead><tbody>';
   html += pageItems.map(wiRow).join('');
   html += '</tbody></table></div>';
 
@@ -113,6 +118,12 @@ function editWorkItem(id, source) {
           '<select id="wi-edit-agent" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)"><option value="">Auto</option>' + agentOpts + '</select>' +
         '</label>' +
       '</div>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">References (one per line: url | title | type)' +
+        '<textarea id="wi-edit-refs" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml((item.references || []).map(function(r) { return r.url + ' | ' + (r.title || '') + ' | ' + (r.type || 'link'); }).join('\n')) + '</textarea>' +
+      '</label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Acceptance Criteria (one per line)' +
+        '<textarea id="wi-edit-ac" rows="3" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit;resize:vertical">' + escHtml((item.acceptanceCriteria || []).join('\n')) + '</textarea>' +
+      '</label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn" style="padding:6px 16px;font-size:var(--text-md)">Cancel</button>' +
         '<button onclick="submitWorkItemEdit(\'' + escHtml(id) + '\',\'' + escHtml(source || '') + '\')" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
@@ -127,11 +138,18 @@ async function submitWorkItemEdit(id, source) {
   const type = document.getElementById('wi-edit-type').value;
   const priority = document.getElementById('wi-edit-priority').value;
   const agent = document.getElementById('wi-edit-agent').value;
+  const refsRaw = document.getElementById('wi-edit-refs')?.value || '';
+  const references = refsRaw.split('\n').filter(function(l) { return l.trim(); }).map(function(l) {
+    var parts = l.split('|').map(function(s) { return s.trim(); });
+    return { url: parts[0], title: parts[1] || parts[0], type: parts[2] || 'link' };
+  });
+  const acRaw = document.getElementById('wi-edit-ac')?.value || '';
+  const acceptanceCriteria = acRaw.split('\n').filter(function(l) { return l.trim(); });
   if (!title) { alert('Title is required'); return; }
   try {
     const res = await fetch('/api/work-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, source: source || undefined, title, description, type, priority, agent })
+      body: JSON.stringify({ id, source: source || undefined, title, description, type, priority, agent, references, acceptanceCriteria })
     });
     if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Work item updated', true); } else {
       const d = await res.json();
@@ -208,9 +226,34 @@ async function retryWorkItem(id, source) {
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
 function wiNext() { const tp = Math.ceil(allWorkItems.length / WI_PER_PAGE); if (wiPage < tp-1) { wiPage++; renderWorkItems(allWorkItems); } }
 
+function feedbackWorkItem(id, source) {
+  document.getElementById('modal-title').textContent = 'Feedback on ' + id;
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:16px;align-items:center">' +
+      '<div style="display:flex;gap:24px">' +
+        '<button onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\',\'up\')" style="font-size:40px;background:none;border:2px solid var(--border);border-radius:12px;padding:16px 24px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor=\'var(--green)\'" onmouseout="this.style.borderColor=\'var(--border)\'">&#x1F44D;</button>' +
+        '<button onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\',\'down\')" style="font-size:40px;background:none;border:2px solid var(--border);border-radius:12px;padding:16px 24px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor=\'var(--red)\'" onmouseout="this.style.borderColor=\'var(--border)\'">&#x1F44E;</button>' +
+      '</div>' +
+      '<textarea id="feedback-comment" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:inherit;resize:vertical" placeholder="Optional: what was good or needs improvement?"></textarea>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function submitFeedback(id, source, rating) {
+  const comment = document.getElementById('feedback-comment')?.value || '';
+  try {
+    const res = await fetch('/api/work-items/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, source, rating, comment })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Feedback saved — agents will learn from it', true); }
+    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 function openAllWorkItems() {
   document.getElementById('modal-title').textContent = 'All Work Items (' + allWorkItems.length + ')';
-  const html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th></tr></thead><tbody>' +
+  const html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Source</th><th>Type</th><th>Priority</th><th>Status</th><th>Agent</th><th>PR</th><th>Created</th><th></th><th></th></tr></thead><tbody>' +
     allWorkItems.map(wiRow).join('') + '</tbody></table></div>';
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";

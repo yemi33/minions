@@ -357,6 +357,13 @@ function renderPlaybook(type, vars) {
     return null;
   }
 
+  // Inject pinned context (always visible to agents)
+  let pinnedContent = '';
+  try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch {}
+  if (pinnedContent) {
+    content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
+  }
+
   // Inject team notes context
   const notes = getNotes();
   if (notes) {
@@ -2675,6 +2682,14 @@ function discoverFromWorkItems(config, project) {
     };
     try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
 
+    // Inject references and acceptance criteria
+    const refs = (item.references || []).map(r =>
+      '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
+    ).join('\n');
+    vars.references = refs ? '## References\n\n' + refs : '';
+    const ac = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+    vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
+
     // Inject ask-specific variables for the ask playbook
     if (workType === 'ask') {
       vars.question = item.title + (item.description ? '\n\n' + item.description : '');
@@ -2962,6 +2977,14 @@ function discoverCentralWorkItems(config) {
           project_path: ap?.localPath || '',
         };
 
+        // Inject references and acceptance criteria
+        const fanRefs = (item.references || []).map(r =>
+          '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
+        ).join('\n');
+        vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
+        const fanAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+        vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
+
         if (workType === 'ask') {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
           vars.task_id = item.id;
@@ -3028,6 +3051,14 @@ function discoverCentralWorkItems(config) {
         notes_content: '',
       };
       try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+
+      // Inject references and acceptance criteria
+      const normRefs = (item.references || []).map(r =>
+        '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
+      ).join('\n');
+      vars.references = normRefs ? '## References\n\n' + normRefs : '';
+      const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+      vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {

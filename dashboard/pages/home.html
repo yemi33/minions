@@ -12,12 +12,17 @@
           <span style="color:var(--blue);font-weight:600">Command Center</span>
           <span>Ask anything, dispatch work, manage plans — powered by Sonnet</span>
           <button class="cmd-history-btn" onclick="cmdShowHistory()">Past Commands</button>
+          <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="openQuickNoteModal()">+ Note</button>
         </div>
         <div class="cmd-toast" id="cmd-toast"></div>
       </section>
       <section>
         <h2>Minions Members <span style="font-size:10px;color:var(--border);font-weight:400;text-transform:none;letter-spacing:0">click for details</span></h2>
         <div class="agents" id="agents-grid">Loading...</div>
+      </section>
+      <section>
+        <h2>Pinned Context <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:8px" onclick="openPinNoteModal()">+ Pin</button></h2>
+        <div id="pinned-content"><p class="empty">No pinned notes.</p></div>
       </section>
       <section>
         <h2>Dispatch Queue</h2>

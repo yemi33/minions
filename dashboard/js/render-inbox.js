@@ -145,6 +145,36 @@ async function openInboxInExplorer(name) {
   } catch {}
 }
 
+function openQuickNoteModal() {
+  document.getElementById('modal-title').textContent = 'Quick Note';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title' +
+        '<input id="note-title" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)" placeholder="Decision, observation, or context..."></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Content' +
+        '<textarea id="note-content" rows="6" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit" placeholder="Write your note... Agents will see this after consolidation."></textarea></label>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="submitQuickNote()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save Note</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function submitQuickNote() {
+  const title = document.getElementById('note-title').value;
+  const content = document.getElementById('note-content').value;
+  if (!title && !content) { alert('Title or content required'); return; }
+  try {
+    const res = await fetch('/api/notes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title || 'Quick note', content: content || title })
+    });
+    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Note saved to inbox', true); }
+    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function doPromoteToKB(name, category) {
   try {
     const res = await fetch('/api/inbox/promote-kb', {

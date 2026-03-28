@@ -76,7 +76,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules',
+    'render-other', 'render-schedules', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
@@ -132,6 +132,17 @@ function getMcpServers() {
   } catch { return []; }
 }
 
+function parsePinnedEntries(content) {
+  if (!content) return [];
+  const entries = [];
+  const regex = /###\s*(🔴\s*|🟡\s*)?(.+)\n\n([\s\S]*?)(?=\n\n###|\n\n\*Pinned|$)/g;
+  let m;
+  while ((m = regex.exec(content)) !== null) {
+    entries.push({ level: m[1]?.includes('🔴') ? 'critical' : m[1]?.includes('🟡') ? 'warning' : 'info', title: m[2].trim(), content: m[3].trim() });
+  }
+  return entries;
+}
+
 let _statusCache = null;
 let _statusCacheTs = 0;
 const STATUS_CACHE_TTL = 10000; // 10s — reduces expensive aggregation frequency; mutations call invalidateStatusCache()
@@ -166,6 +177,7 @@ function getStatus() {
       const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
       return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
     })(),
+    pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
@@ -900,6 +912,8 @@ const server = http.createServer(async (req, res) => {
       if (body.scope) item.scope = body.scope;
       if (body.agent) item.agent = body.agent;
       if (body.agents) item.agents = body.agents;
+      if (body.references) item.references = body.references;
+      if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       items.push(item);
       safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, id });
@@ -936,6 +950,8 @@ const server = http.createServer(async (req, res) => {
       if (type !== undefined) item.type = type;
       if (priority !== undefined) item.priority = priority;
       if (agent !== undefined) item.agent = agent || null;
+      if (body.references !== undefined) item.references = body.references;
+      if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
       item.updatedAt = new Date().toISOString();
 
       safeWrite(wiPath, items);
@@ -2738,12 +2754,69 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
 
     // Work items
-    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?', handler: handleWorkItemsCreate },
-    { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?', handler: handleWorkItemsUpdate },
+    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?', handler: handleWorkItemsCreate },
+    { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?, references?, acceptanceCriteria?', handler: handleWorkItemsUpdate },
     { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
     { method: 'POST', path: '/api/work-items/archive', desc: 'Move a completed/failed work item to archive', params: 'id, source?', handler: handleWorkItemsArchive },
     { method: 'GET', path: '/api/work-items/archive', desc: 'List archived work items', handler: handleWorkItemsArchiveList },
+    { method: 'POST', path: '/api/work-items/feedback', desc: 'Add human feedback on completed work', params: 'id, rating, comment?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { id, source, rating, comment } = body;
+      if (!id || !rating) return jsonReply(res, 400, { error: 'id and rating required' });
+      const projects = shared.getProjects(CONFIG);
+      const paths = [path.join(MINIONS_DIR, 'work-items.json')];
+      for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
+      for (const wiPath of paths) {
+        const items = JSON.parse(safeRead(wiPath) || '[]');
+        const item = items.find(i => i.id === id);
+        if (!item) continue;
+        item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
+        safeWrite(wiPath, items);
+        const agent = item.dispatched_to || item.agent || 'unknown';
+        const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
+          '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
+          '**Item:** ' + (item.title || id) + '\n' +
+          '**Agent:** ' + agent + '\n' +
+          (comment ? '**Feedback:** ' + comment + '\n' : '');
+        const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
+        safeWrite(inboxPath, feedbackNote);
+        invalidateStatusCache();
+        return jsonReply(res, 200, { ok: true });
+      }
+      return jsonReply(res, 404, { error: 'Work item not found' });
+    }},
+
+    // Pinned notes
+    { method: 'GET', path: '/api/pinned', desc: 'Get pinned notes', handler: async (req, res) => {
+      const content = safeRead(path.join(MINIONS_DIR, 'pinned.md'));
+      return jsonReply(res, 200, { content, entries: parsePinnedEntries(content) });
+    }},
+    { method: 'POST', path: '/api/pinned', desc: 'Add a pinned note', params: 'title, content, level?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { title, content, level } = body;
+      if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
+      const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
+      const existing = safeRead(pinnedPath);
+      const levelTag = level === 'critical' ? '🔴 ' : level === 'warning' ? '🟡 ' : '';
+      const entry = '\n\n### ' + levelTag + title + '\n\n' + content + '\n\n*Pinned by human on ' + new Date().toISOString().slice(0, 10) + '*';
+      safeWrite(pinnedPath, (existing || '# Pinned Context\n\nCritical notes visible to all agents.') + entry);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/pinned/remove', desc: 'Remove a pinned note by title', params: 'title', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { title } = body;
+      if (!title) return jsonReply(res, 400, { error: 'title required' });
+      const pinnedPath = path.join(MINIONS_DIR, 'pinned.md');
+      let content = safeRead(pinnedPath);
+      if (!content) return jsonReply(res, 404, { error: 'No pinned notes' });
+      const regex = new RegExp('\\n\\n###\\s*(?:🔴\\s*|🟡\\s*)?' + title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\n[\\s\\S]*?(?=\\n\\n###|$)', 'i');
+      content = content.replace(regex, '');
+      safeWrite(pinnedPath, content);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
 
     // Notes
     { method: 'POST', path: '/api/notes', desc: 'Write a note to inbox for consolidation', params: 'title, what, why?, author?', handler: handleNotesCreate },
@@ -2780,6 +2853,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Knowledge base
     { method: 'GET', path: '/api/knowledge', desc: 'List all knowledge base entries grouped by category', handler: handleKnowledgeList },
+    { method: 'POST', path: '/api/knowledge', desc: 'Create a knowledge base entry', params: 'category, title, content', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { category, title, content } = body;
+      if (!category || !title || !content) return jsonReply(res, 400, { error: 'category, title, and content required' });
+      const validCategories = ['architecture', 'conventions', 'project-notes', 'build-reports', 'reviews'];
+      if (!validCategories.includes(category)) return jsonReply(res, 400, { error: 'Invalid category. Must be: ' + validCategories.join(', ') });
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+      const filePath = path.join(MINIONS_DIR, 'knowledge', category, slug + '.md');
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const header = '# ' + title + '\n\n*Created by human teammate on ' + new Date().toISOString().slice(0, 10) + '*\n\n';
+      safeWrite(filePath, header + content);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, path: filePath });
+    }},
     { method: 'POST', path: '/api/knowledge/sweep', desc: 'Deduplicate, consolidate, and reorganize knowledge base', handler: handleKnowledgeSweep },
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 

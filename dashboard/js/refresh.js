@@ -38,6 +38,7 @@ async function refresh() {
     renderSkills(data.skills || []);
     renderMcpServers(data.mcpServers || []);
     renderSchedules(data.schedules || []);
+    renderPinned(data.pinned || []);
     // Update sidebar counts
     const swi = document.getElementById('sidebar-wi');
     if (swi) swi.textContent = (data.workItems || []).length || '';

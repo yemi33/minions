@@ -106,6 +106,45 @@ async function kbSweep() {
   setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, 3000);
 }
 
+function openCreateKbModal() {
+  document.getElementById('modal-title').textContent = 'New Knowledge Base Entry';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Category' +
+        '<select id="kb-new-category" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)">' +
+          '<option value="architecture">Architecture</option>' +
+          '<option value="conventions">Conventions</option>' +
+          '<option value="project-notes">Project Notes</option>' +
+          '<option value="build-reports">Build Reports</option>' +
+          '<option value="reviews">Reviews</option>' +
+        '</select></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title' +
+        '<input id="kb-new-title" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)" placeholder="Entry title"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Content' +
+        '<textarea id="kb-new-content" rows="8" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit" placeholder="Write your knowledge entry..."></textarea></label>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="submitKbEntry()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function submitKbEntry() {
+  const category = document.getElementById('kb-new-category').value;
+  const title = document.getElementById('kb-new-title').value;
+  const content = document.getElementById('kb-new-content').value;
+  if (!title || !content) { alert('Title and content are required'); return; }
+  try {
+    const res = await fetch('/api/knowledge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category, title, content })
+    });
+    if (res.ok) { closeModal(); refreshKnowledgeBase(); showToast('cmd-toast', 'KB entry created', true); }
+    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function kbOpenItem(category, file) {
   try {
     const content = await fetch('/api/knowledge/' + category + '/' + encodeURIComponent(file)).then(r => r.text());
