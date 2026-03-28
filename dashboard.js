@@ -596,6 +596,7 @@ function jsonReply(res, code, data, req) {
  */
 function cleanDispatchEntries(matchFn) {
   const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+  const engineDir = path.join(MINIONS_DIR, 'engine');
   try {
     let removed = 0;
     mutateJsonFileLocked(dispatchPath, (dispatch) => {
@@ -606,16 +607,18 @@ function cleanDispatchEntries(matchFn) {
         const before = dispatch[queue].length;
         if (queue === 'active') {
           for (const d of dispatch[queue]) {
-            if (matchFn(d) && d.agent) {
-              const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
-              try {
-                const status = JSON.parse(safeRead(statusPath) || '{}');
-                if (status.pid) try { process.kill(status.pid, 'SIGTERM'); } catch {}
-                status.status = 'idle';
-                delete status.currentTask;
-                safeWrite(statusPath, status);
-              } catch {}
-            }
+            if (!matchFn(d)) continue;
+            // Kill the running agent process via PID file
+            const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
+            try {
+              const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
+              if (pid) process.kill(pid, 'SIGTERM');
+            } catch {}
+            try { fs.unlinkSync(pidFile); } catch {}
+            // Clean up temp prompt files
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `prompt-${d.id}.md`)); } catch {}
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`)); } catch {}
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`)); } catch {}
           }
         }
         dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
@@ -814,15 +817,24 @@ const server = http.createServer(async (req, res) => {
       safeWrite(wiPath, items);
 
       // Clean dispatch entries + kill running agent
-      const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
-      const dispatchKey = sourcePrefix + id;
-      cleanDispatchEntries(d =>
-        d.meta?.dispatchKey === dispatchKey ||
-        (d.meta?.parentKey && d.meta.parentKey === dispatchKey) ||
-        d.meta?.item?.id === id
+      const dispatchRemoved = cleanDispatchEntries(d =>
+        d.meta?.item?.id === id ||
+        d.meta?.dispatchKey?.endsWith(id)
       );
 
-      return jsonReply(res, 200, { ok: true, id });
+      // Clean cooldown entries so item can be re-created immediately
+      try {
+        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        let cleaned = false;
+        for (const key of Object.keys(cooldowns)) {
+          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
+        }
+        if (cleaned) safeWrite(cooldownPath, cooldowns);
+      } catch {}
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
