@@ -168,7 +168,7 @@ async function submitQuickNote() {
   try {
     const res = await fetch('/api/notes', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: title || 'Quick note', content: content || title })
+      body: JSON.stringify({ title: title || 'Quick note', what: content || title })
     });
     if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Note saved to inbox', true); }
     else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
