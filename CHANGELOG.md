@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.28 (2026-03-28)
+
+### Engine
+- engine.js
+
+### Dashboard
+- dashboard/js/detail-panel.js
+
 ## 0.1.27 (2026-03-28)
 
 ### Engine
