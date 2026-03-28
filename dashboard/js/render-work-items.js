@@ -226,20 +226,42 @@ async function retryWorkItem(id, source) {
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
 function wiNext() { const tp = Math.ceil(allWorkItems.length / WI_PER_PAGE); if (wiPage < tp-1) { wiPage++; renderWorkItems(allWorkItems); } }
 
+let _feedbackRating = null;
 function feedbackWorkItem(id, source) {
+  _feedbackRating = null;
   document.getElementById('modal-title').textContent = 'Feedback on ' + id;
   document.getElementById('modal-body').innerHTML =
-    '<div style="display:flex;flex-direction:column;gap:16px;align-items:center">' +
-      '<div style="display:flex;gap:24px">' +
-        '<button onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\',\'up\')" style="font-size:40px;background:none;border:2px solid var(--border);border-radius:12px;padding:16px 24px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor=\'var(--green)\'" onmouseout="this.style.borderColor=\'var(--border)\'">&#x1F44D;</button>' +
-        '<button onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\',\'down\')" style="font-size:40px;background:none;border:2px solid var(--border);border-radius:12px;padding:16px 24px;cursor:pointer;transition:all 0.2s" onmouseover="this.style.borderColor=\'var(--red)\'" onmouseout="this.style.borderColor=\'var(--border)\'">&#x1F44E;</button>' +
+    '<div style="display:flex;flex-direction:column;gap:16px">' +
+      '<div style="display:flex;gap:16px;justify-content:center">' +
+        '<button id="fb-up" onclick="_selectRating(\'up\')" style="font-size:36px;background:none;border:2px solid var(--border);border-radius:12px;padding:12px 20px;cursor:pointer;transition:all 0.2s">&#x1F44D;</button>' +
+        '<button id="fb-down" onclick="_selectRating(\'down\')" style="font-size:36px;background:none;border:2px solid var(--border);border-radius:12px;padding:12px 20px;cursor:pointer;transition:all 0.2s">&#x1F44E;</button>' +
       '</div>' +
-      '<textarea id="feedback-comment" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:inherit;resize:vertical" placeholder="Optional: what was good or needs improvement?"></textarea>' +
+      '<textarea id="feedback-comment" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:inherit;resize:vertical" placeholder="What was good or needs improvement?"></textarea>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button id="fb-send" onclick="submitFeedback(\'' + escHtml(id) + '\',\'' + escHtml(source) + '\')" style="padding:6px 16px;background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:not-allowed" disabled>Select rating first</button>' +
+      '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
 }
+function _selectRating(r) {
+  _feedbackRating = r;
+  document.getElementById('fb-up').style.borderColor = r === 'up' ? 'var(--green)' : 'var(--border)';
+  document.getElementById('fb-up').style.background = r === 'up' ? 'rgba(63,185,80,0.1)' : 'none';
+  document.getElementById('fb-down').style.borderColor = r === 'down' ? 'var(--red)' : 'var(--border)';
+  document.getElementById('fb-down').style.background = r === 'down' ? 'rgba(248,81,73,0.1)' : 'none';
+  const btn = document.getElementById('fb-send');
+  btn.disabled = false;
+  btn.style.background = 'var(--blue)';
+  btn.style.color = '#fff';
+  btn.style.cursor = 'pointer';
+  btn.style.borderColor = 'var(--blue)';
+  btn.textContent = 'Send Feedback';
+}
 
-async function submitFeedback(id, source, rating) {
+async function submitFeedback(id, source) {
+  const rating = _feedbackRating;
+  if (!rating) { alert('Please select a rating first'); return; }
   const comment = document.getElementById('feedback-comment')?.value || '';
   try {
     const res = await fetch('/api/work-items/feedback', {
