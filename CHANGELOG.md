@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.17 (2026-03-28)
+
+### Engine
+- engine.js
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-pinned.js
+- dashboard/js/render-work-items.js
+- dashboard/pages/home.html
+- dashboard/pages/inbox.html
+
 ## 0.1.16 (2026-03-28)
 
 ### Dashboard
