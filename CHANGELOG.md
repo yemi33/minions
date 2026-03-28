@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.23 (2026-03-28)
+
+### Other
+- test/unit.test.js
+
 ## 0.1.22 (2026-03-28)
 
 ### Dashboard
