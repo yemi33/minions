@@ -134,21 +134,35 @@ async function saveSettings() {
   }
 }
 
-async function addProject() {
+function addProject() {
+  document.getElementById('modal-title').textContent = 'Add Project';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Project Path' +
+        '<input id="add-project-path" style="display:block;width:100%;margin-top:4px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:monospace" placeholder="C:\\Users\\you\\repos\\my-project">' +
+      '</label>' +
+      '<div style="font-size:11px;color:var(--muted)">Enter the full path to a git repository. The engine will auto-detect the repo host, branch, and project name.</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="_submitAddProject()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Add Project</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('add-project-path')?.focus(), 100);
+}
+
+async function _submitAddProject() {
+  const pathInput = document.getElementById('add-project-path');
+  if (!pathInput?.value.trim()) { alert('Path is required'); return; }
   try {
-    showToast('cmd-toast', 'Opening folder picker...', true);
-    const browseRes = await fetch('/api/projects/browse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    const browseData = await browseRes.json();
-    if (browseData.cancelled || !browseData.path) return;
-
-    const addRes = await fetch('/api/projects/add', {
+    const res = await fetch('/api/projects/add', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: browseData.path })
+      body: JSON.stringify({ path: pathInput.value.trim() })
     });
-    const addData = await addRes.json();
-    if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
-
-    showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true);
+    const data = await res.json();
+    if (!res.ok) { alert('Failed: ' + (data.error || 'unknown')); return; }
+    closeModal();
+    try { showToast('cmd-toast', 'Project "' + data.name + '" added — restart engine to pick it up', true); } catch {}
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
 }
