@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.30 (2026-03-28)
+
+### Dashboard
+- dashboard/js/render-work-items.js
+
 ## 0.1.29 (2026-03-28)
 
 ### Dashboard
