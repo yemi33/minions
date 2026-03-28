@@ -2430,7 +2430,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       let selectedPath = '';
       if (process.platform === 'win32') {
         // PowerShell STA with topmost window as owner — forces folder dialog to foreground
-        const ps = [
+        // Write PS script to temp file to avoid shell quoting issues
+        const psScript = [
           'Add-Type -AssemblyName System.Windows.Forms',
           '$f = New-Object System.Windows.Forms.FolderBrowserDialog',
           '$f.Description = "Select project folder"',
@@ -2443,8 +2444,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           '$owner.Hide()',
           'if ($f.ShowDialog($owner) -eq "OK") { Write-Output $f.SelectedPath }',
           '$owner.Dispose()',
-        ].join('; ');
-        selectedPath = execSync(`powershell -STA -NoProfile -Command "${ps}"`, { encoding: 'utf8', timeout: 120000 }).trim();
+        ].join('\r\n');
+        const psPath = path.join(MINIONS_DIR, 'engine', 'tmp', '_browse.ps1');
+        fs.mkdirSync(path.dirname(psPath), { recursive: true });
+        fs.writeFileSync(psPath, psScript);
+        try {
+          selectedPath = execSync(`powershell -STA -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, { encoding: 'utf8', timeout: 120000 }).trim();
+        } finally { try { fs.unlinkSync(psPath); } catch {} }
       } else if (process.platform === 'darwin') {
         selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else {
