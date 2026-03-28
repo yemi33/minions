@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.19 (2026-03-28)
+
+### Other
+- CLAUDE.md
+- test/unit.test.js
+
 ## 0.1.18 (2026-03-28)
 
 ### Dashboard
