@@ -145,9 +145,23 @@ Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. Agents
 
 Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min backoff on failure. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking tracked in `pr-links.json`.
 
+## Dashboard
+
+The dashboard is assembled from fragments in `dashboard/` at startup: `styles.css`, `layout.html`, 8 page HTML fragments in `pages/`, and 23 JS modules in `js/`. Assembled into one HTML string and served as a single-page app. Sidebar navigation with URL routing (`/work`, `/prd`, `/prs`, `/plans`, `/inbox`, `/schedule`, `/engine`).
+
 ## Dashboard API
 
-Key endpoints: `GET /api/status`, `GET /api/plans`, `POST /api/command`, `POST /api/doc-chat`, `POST /api/plans/approve`, `POST /api/plans/execute`, `POST /api/work-items/update`, `GET /api/agent/:id/live-stream` (SSE). The dashboard serves `dashboard.html` as a single-file SPA with all JS/CSS inline.
+All endpoints self-documented via `GET /api/routes`. Key endpoints: `GET /api/status`, `POST /api/work-items`, `POST /api/work-items/update`, `POST /api/work-items/feedback`, `POST /api/knowledge`, `GET/POST /api/pinned`, `POST /api/engine/wakeup`, `GET /api/agent/:id/live-stream` (SSE).
+
+## Human Contributions
+
+Humans contribute as teammates through the dashboard:
+- **Quick Notes**: "+ Note" button writes to inbox, flows through consolidation to notes.md
+- **KB Authoring**: "+ New" on Knowledge Base creates entries in any category directly
+- **Work Item References**: Attach URLs/links/docs — injected into agent playbooks as `{{references}}`
+- **Acceptance Criteria**: Structured checklist per item — injected as `{{acceptance_criteria}}`
+- **Pinned Notes**: Critical context in `pinned.md` — prepended to ALL agent prompts with "READ FIRST"
+- **Feedback**: 👍/👎 on completed work — written to agent inbox for learning consolidation
 
 ## Graceful Shutdown
 
@@ -175,7 +189,7 @@ When a PR's build fails, the engine writes an inbox alert to the author agent wi
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 320+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 380+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 

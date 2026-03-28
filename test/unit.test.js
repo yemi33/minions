@@ -3325,6 +3325,148 @@ async function testDashboardAssembly() {
   });
 }
 
+// ─── Human as Teammate Tests ────────────────────────────────────────────────
+
+async function testHumanContributions() {
+  console.log('\n── Human as Teammate ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // KB Authoring
+  await test('POST /api/knowledge endpoint exists in ROUTES', () => {
+    assert.ok(dashSrc.includes("'/api/knowledge'") && dashSrc.includes('category'),
+      'Should have knowledge creation endpoint');
+  });
+
+  await test('KB endpoint validates category', () => {
+    assert.ok(dashSrc.includes('architecture') && dashSrc.includes('conventions') && dashSrc.includes('project-notes'),
+      'Should validate against known KB categories');
+  });
+
+  await test('openCreateKbModal function exists', () => {
+    const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(kbSrc.includes('function openCreateKbModal'), 'Should have KB creation modal');
+    assert.ok(kbSrc.includes('function submitKbEntry'), 'Should have KB submit function');
+  });
+
+  // Quick Notes
+  await test('openQuickNoteModal function exists', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    assert.ok(inboxSrc.includes('function openQuickNoteModal'), 'Should have quick note modal');
+    assert.ok(inboxSrc.includes('function submitQuickNote'), 'Should have quick note submit');
+  });
+
+  await test('submitQuickNote sends "what" field (not "content")', () => {
+    const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const submitFn = inboxSrc.slice(inboxSrc.indexOf('function submitQuickNote'));
+    assert.ok(submitFn.includes('what:') && !submitFn.includes('content:'),
+      'Should send { what } to match /api/notes schema');
+  });
+
+  await test('Quick Note button on Home page', () => {
+    const homeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'home.html'), 'utf8');
+    assert.ok(homeSrc.includes('openQuickNoteModal'), 'Home page should have quick note button');
+  });
+
+  // Work Item References
+  await test('work-items API accepts references', () => {
+    assert.ok(dashSrc.includes('references'),
+      'Work items API should accept references field');
+  });
+
+  await test('engine injects references into playbook vars', () => {
+    assert.ok(engineSrc.includes('vars.references') || engineSrc.includes("references"),
+      'Engine should inject references into playbook variables');
+  });
+
+  await test('edit form includes references textarea', () => {
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(wiSrc.includes('wi-edit-refs') || wiSrc.includes('references'),
+      'Edit form should have references input');
+  });
+
+  // Acceptance Criteria
+  await test('work-items API accepts acceptanceCriteria', () => {
+    assert.ok(dashSrc.includes('acceptanceCriteria'),
+      'Work items API should accept acceptanceCriteria field');
+  });
+
+  await test('engine injects acceptance_criteria into playbook vars', () => {
+    assert.ok(engineSrc.includes('acceptance_criteria') || engineSrc.includes('acceptanceCriteria'),
+      'Engine should inject acceptance criteria into playbook variables');
+  });
+
+  // Pinned Notes
+  await test('pinned notes API endpoints exist', () => {
+    assert.ok(dashSrc.includes("'/api/pinned'"),
+      'Should have GET/POST /api/pinned endpoints');
+    assert.ok(dashSrc.includes("'/api/pinned/remove'"),
+      'Should have POST /api/pinned/remove endpoint');
+  });
+
+  await test('pinned.md injected into renderPlaybook before team notes', () => {
+    assert.ok(engineSrc.includes('pinned.md') || engineSrc.includes('Pinned Context'),
+      'Engine should inject pinned.md content into playbooks');
+  });
+
+  await test('pinned notes included in status response', () => {
+    assert.ok(dashSrc.includes('pinned') && dashSrc.includes('parsePinnedEntries'),
+      'Status response should include parsed pinned entries');
+  });
+
+  await test('render-pinned.js has create and remove functions', () => {
+    const pinnedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    assert.ok(pinnedSrc.includes('function renderPinned'), 'Should have renderPinned');
+    assert.ok(pinnedSrc.includes('function openPinNoteModal'), 'Should have pin creation modal');
+    assert.ok(pinnedSrc.includes('function removePinnedNote'), 'Should have unpin function');
+  });
+
+  await test('pinned section on Home page', () => {
+    const homeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'home.html'), 'utf8');
+    assert.ok(homeSrc.includes('pinned-content') && homeSrc.includes('openPinNoteModal'),
+      'Home page should have pinned notes section with pin button');
+  });
+
+  // Feedback Loop
+  await test('POST /api/work-items/feedback endpoint exists', () => {
+    assert.ok(dashSrc.includes("'/api/work-items/feedback'") || dashSrc.includes('/api/work-items/feedback'),
+      'Should have feedback endpoint');
+  });
+
+  await test('feedback writes to agent inbox for learning', () => {
+    assert.ok(dashSrc.includes('inbox') && dashSrc.includes('feedback'),
+      'Feedback should write to agent inbox for consolidation');
+  });
+
+  await test('feedback stores _humanFeedback on work item', () => {
+    assert.ok(dashSrc.includes('_humanFeedback'),
+      'Should store feedback on the work item');
+  });
+
+  await test('feedbackWorkItem function exists', () => {
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(wiSrc.includes('function feedbackWorkItem'), 'Should have feedback modal');
+    assert.ok(wiSrc.includes('function submitFeedback'), 'Should have feedback submit');
+  });
+
+  // Integration: wakeEngine wired into work-creating actions
+  await test('wakeEngine called after CC dispatch', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes('wakeEngine()'), 'CC dispatch should call wakeEngine');
+  });
+
+  await test('wakeEngine called after plan execute', () => {
+    const planSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(planSrc.includes('wakeEngine()'), 'Plan execute should call wakeEngine');
+  });
+
+  await test('wakeEngine called after work item retry', () => {
+    const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(wiSrc.includes('wakeEngine()'), 'Work item retry should call wakeEngine');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3435,6 +3577,9 @@ async function main() {
 
     // Dashboard assembly tests
     await testDashboardAssembly();
+
+    // Human as teammate features
+    await testHumanContributions();
   } finally {
     cleanupTmpDirs();
   }
