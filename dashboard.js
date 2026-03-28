@@ -92,11 +92,39 @@ function buildDashboardHtml() {
     .replace('/* __JS__ */', () => jsHtml);
 }
 
-const HTML_RAW = buildDashboardHtml();
-const HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
-const HTML_GZ = zlib.gzipSync(HTML);
-const HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
+let HTML_RAW = buildDashboardHtml();
+let HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
+let HTML_GZ = zlib.gzipSync(HTML);
+let HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
 
+// Hot-reload: watch dashboard/ directory for changes and rebuild
+function rebuildDashboardHtml() {
+  try {
+    const newRaw = buildDashboardHtml();
+    if (newRaw === HTML_RAW) return; // no changes
+    HTML_RAW = newRaw;
+    HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
+    HTML_GZ = zlib.gzipSync(HTML);
+    HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
+    console.log('  Dashboard hot-reloaded');
+  } catch (e) { console.error('  Hot-reload error:', e.message); }
+}
+
+const dashDir = path.join(MINIONS_DIR, 'dashboard');
+if (fs.existsSync(dashDir)) {
+  let _reloadTimer = null;
+  const scheduleReload = () => {
+    if (_reloadTimer) clearTimeout(_reloadTimer);
+    _reloadTimer = setTimeout(rebuildDashboardHtml, 300); // debounce 300ms
+  };
+  // Watch top-level files (styles.css, layout.html)
+  try { fs.watch(dashDir, scheduleReload); } catch {}
+  // Watch subdirectories (pages/, js/)
+  for (const sub of ['pages', 'js']) {
+    const subDir = path.join(dashDir, sub);
+    if (fs.existsSync(subDir)) try { fs.watch(subDir, scheduleReload); } catch {}
+  }
+}
 
 // -- Data Collectors (most moved to engine/queries.js) --
 
