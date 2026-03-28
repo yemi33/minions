@@ -52,11 +52,10 @@ function validateConfig(config) {
     console.error('FATAL: No agents defined in config.json');
     errors++;
   }
-  // Projects
+  // Projects (optional — engine works with central work items even without projects)
   const projects = getProjects(config);
   if (projects.length === 0) {
-    console.error('FATAL: No projects configured');
-    errors++;
+    console.log('  No projects linked — add one with: minions add <dir>');
   }
   for (const p of projects) {
     if (!p.localPath || !fs.existsSync(path.resolve(p.localPath))) {
