@@ -266,6 +266,17 @@ function getPullRequests(config) {
       allPrs.push(pr);
     }
   }
+  // Also read central pull-requests.json (for manually linked PRs without a project)
+  const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
+  const centralPrs = safeJson(centralPath);
+  if (centralPrs) {
+    for (const pr of centralPrs) {
+      if (!allPrs.some(p => p.id === pr.id)) {
+        pr._project = 'central';
+        allPrs.push(pr);
+      }
+    }
+  }
   allPrs.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
   return allPrs;
 }
