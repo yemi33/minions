@@ -76,6 +76,39 @@ async function forEachActiveGhPr(config, callback) {
     }
   }
 
+  // Also poll manually-linked PRs from central pull-requests.json (extract slug from URL)
+  const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
+  const centralPrs = safeJson(centralPath) || [];
+  const activeCentral = centralPrs.filter(pr => pr.status === 'active' && pr.url);
+  let centralUpdated = 0;
+  for (const pr of activeCentral) {
+    const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+    if (!ghMatch) continue;
+    const slug = ghMatch[1];
+    const prNum = ghMatch[2];
+    try {
+      const updated = await callback(null, pr, prNum, slug);
+      if (updated) {
+        // Also update title/author/branch if still placeholder
+        if (pr.title.includes('polling...') || pr.agent === 'human') {
+          const prData = ghApi(`/pulls/${prNum}`, slug);
+          if (prData) {
+            if (pr.title.includes('polling...')) pr.title = (prData.title || pr.title).slice(0, 120);
+            if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
+            if (!pr.branch && prData.head?.ref) pr.branch = prData.head.ref;
+          }
+        }
+        centralUpdated++;
+      }
+    } catch (err) {
+      try { engine().log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`); } catch {}
+    }
+  }
+  if (centralUpdated > 0) {
+    safeWrite(centralPath, centralPrs);
+    totalUpdated += centralUpdated;
+  }
+
   return totalUpdated;
 }
 

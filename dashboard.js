@@ -2935,27 +2935,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       if (prs.some(p => p.id === prId || p.url === url)) return jsonReply(res, 400, { error: 'PR already tracked' });
 
-      // Auto-detect PR metadata from GitHub
-      let prTitle = title || '';
-      let prAuthor = '';
-      let prBranch = '';
-      const ghMatch = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-      if (ghMatch && !prTitle) {
-        try {
-          const { execSync } = require('child_process');
-          const json = execSync(`gh pr view ${ghMatch[3]} --repo ${ghMatch[1]}/${ghMatch[2]} --json title,author,headRefName`, { encoding: 'utf8', timeout: 10000, windowsHide: true });
-          const data = JSON.parse(json);
-          prTitle = data.title || prTitle;
-          prAuthor = data.author?.login || '';
-          prBranch = data.headRefName || '';
-        } catch {}
-      }
-
+      // Save minimal entry — the existing pollPrStatus (ado.js/github.js) will
+      // fetch title, author, branch, build status, and review status on next poll cycle (~6 min).
+      // For auto-observe PRs, status='active' makes pollPrStatus process them.
+      // For context-only PRs, status='linked' skips polling but shows in agent context.
       prs.push({
         id: prId,
-        title: (prTitle || 'Linked PR #' + prNum).slice(0, 120),
-        agent: prAuthor || 'human',
-        branch: prBranch,
+        title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+        agent: 'human',
+        branch: '',
         reviewStatus: autoObserve ? 'pending' : 'none',
         status: autoObserve ? 'active' : 'linked',
         created: new Date().toISOString().slice(0, 10),
