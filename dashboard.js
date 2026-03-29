@@ -63,7 +63,7 @@ function buildDashboardHtml() {
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
   // Assemble page fragments
-  const pages = ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'schedule', 'engine'];
+  const pages = ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
