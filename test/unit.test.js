@@ -3488,6 +3488,253 @@ async function testHumanContributions() {
   });
 }
 
+// ─── Agent Steering Tests ───────────────────────────────────────────────────
+
+async function testAgentSteering() {
+  console.log('\n── Agent Steering ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('POST /api/agents/steer endpoint exists', () => {
+    assert.ok(dashSrc.includes('/api/agents/steer'), 'Should have steering endpoint');
+  });
+
+  await test('steer endpoint writes steer.md file', () => {
+    assert.ok(dashSrc.includes('steer.md'), 'Should write steer.md for engine to pick up');
+  });
+
+  await test('steer endpoint appends to live-output.log', () => {
+    assert.ok(dashSrc.includes('[human-steering]'), 'Should append human-steering marker to live log');
+  });
+
+  await test('checkSteering function exists in engine', () => {
+    assert.ok(engineSrc.includes('function checkSteering'), 'Should have checkSteering function');
+  });
+
+  await test('checkSteering reads and deletes steer.md', () => {
+    assert.ok(engineSrc.includes('steer.md') && engineSrc.includes('unlinkSync'),
+      'Should read steer.md and delete it after consumption');
+  });
+
+  await test('steering stores message for close handler re-spawn', () => {
+    assert.ok(engineSrc.includes('_steeringMessage') && engineSrc.includes('_steeringSessionId'),
+      'Should store steering message and sessionId on process info');
+  });
+
+  await test('close handler re-spawns with --resume on steering', () => {
+    assert.ok(engineSrc.includes('_steeringMessage') && engineSrc.includes('--resume'),
+      'Close handler should detect steering and re-spawn with --resume');
+  });
+
+  await test('steering prompt is neutral (teammate message)', () => {
+    assert.ok(engineSrc.includes('human teammate'),
+      'Steering prompt should say "human teammate" not "STEERING"');
+  });
+
+  await test('checkSteering called in tickInner', () => {
+    assert.ok(engineSrc.includes('checkSteering(config)'),
+      'tickInner should call checkSteering each tick');
+  });
+
+  await test('session ID captured from stdout during agent run', () => {
+    assert.ok(engineSrc.includes('procInfo') && engineSrc.includes('sessionId') && engineSrc.includes('session_id'),
+      'stdout handler should capture sessionId for mid-session steering');
+  });
+}
+
+// ─── Recent Features Tests ─────────────────────────────────────────────────
+
+async function testRecentFeatures() {
+  console.log('\n── Recent Features ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const queriesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+
+  // Engine starts without projects
+  await test('engine does not fatal on zero projects', () => {
+    assert.ok(!engineSrc.includes("FATAL: No projects configured"),
+      'Should not have FATAL error for missing projects');
+    assert.ok(engineSrc.includes('No projects linked'),
+      'Should show info message instead of fatal');
+  });
+
+  // Central PR polling
+  await test('forEachActiveGhPr polls central pull-requests.json', () => {
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(ghSrc.includes('centralPrs') || ghSrc.includes('central') && ghSrc.includes('pull-requests.json'),
+      'GitHub poller should also scan central pull-requests.json');
+  });
+
+  await test('getPullRequests includes central pull-requests.json', () => {
+    assert.ok(queriesSrc.includes('centralPath') || queriesSrc.includes('central') && queriesSrc.includes('pull-requests.json'),
+      'getPullRequests should read central PRs for manually linked PRs');
+  });
+
+  // PR link endpoint
+  await test('POST /api/pull-requests/link endpoint exists', () => {
+    assert.ok(dashSrc.includes('/api/pull-requests/link'),
+      'Should have PR linking endpoint');
+  });
+
+  await test('PR link supports autoObserve flag', () => {
+    assert.ok(dashSrc.includes('_autoObserve') && dashSrc.includes('linked'),
+      'Should support autoObserve (active) vs context-only (linked) status');
+  });
+
+  // Plan creation from dashboard
+  await test('POST /api/plans/create endpoint exists', () => {
+    assert.ok(dashSrc.includes('/api/plans/create'),
+      'Should have plan creation endpoint');
+  });
+
+  await test('plans/create writes to plans/ directory', () => {
+    assert.ok(dashSrc.includes("plans'") || dashSrc.includes('plansDir'),
+      'Plan creation should write .md file to plans/ directory');
+  });
+
+  // Hot-reload
+  await test('hot-reload watches dashboard/ directory', () => {
+    assert.ok(dashSrc.includes('fs.watch') && dashSrc.includes('dashDir'),
+      'Should watch dashboard/ directory for changes');
+  });
+
+  await test('hot-reload debounces at 300ms', () => {
+    assert.ok(dashSrc.includes('300') && dashSrc.includes('scheduleReload'),
+      'Should debounce rebuild at 300ms');
+  });
+
+  await test('GET /api/hot-reload SSE endpoint exists', () => {
+    assert.ok(dashSrc.includes('/api/hot-reload') && dashSrc.includes('text/event-stream'),
+      'Should have SSE endpoint for browser auto-refresh');
+  });
+
+  await test('hot-reload pushes reload event to clients', () => {
+    assert.ok(dashSrc.includes('_hotReloadClients') && dashSrc.includes('reload'),
+      'Should push reload event to connected browsers on rebuild');
+  });
+}
+
+// ─── Dashboard UI Function Tests ───────────────────────────────────────────
+
+async function testDashboardUIFunctions() {
+  console.log('\n── Dashboard UI Functions ──');
+
+  const wiSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+  const prsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+  const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+  const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+
+  // Work item creation modal
+  await test('openCreateWorkItemModal exists', () => {
+    assert.ok(wiSrc.includes('function openCreateWorkItemModal'),
+      'Should have work item creation modal');
+  });
+
+  await test('work item creation calls wakeEngine', () => {
+    assert.ok(wiSrc.includes('wakeEngine()') && wiSrc.includes('/api/work-items'),
+      'Work item creation should call wakeEngine for immediate dispatch');
+  });
+
+  // Work item detail modal
+  await test('openWorkItemDetail exists', () => {
+    assert.ok(wiSrc.includes('function openWorkItemDetail'),
+      'Should have work item detail modal');
+  });
+
+  await test('work item detail shows acceptance criteria and references', () => {
+    assert.ok(wiSrc.includes('acceptanceCriteria') && wiSrc.includes('references'),
+      'Detail modal should display acceptance criteria and references');
+  });
+
+  // Feedback rating state
+  await test('feedback modal has rating selection state', () => {
+    assert.ok(wiSrc.includes('_feedbackRating') && wiSrc.includes('_selectRating'),
+      'Should track rating selection state before enabling Send');
+  });
+
+  await test('feedback Send button disabled until rating selected', () => {
+    assert.ok(wiSrc.includes('disabled') && wiSrc.includes('Select rating'),
+      'Send button should be disabled with "Select rating first" until picked');
+  });
+
+  // PR link modal
+  await test('openAddPrModal exists', () => {
+    assert.ok(prsSrc.includes('function openAddPrModal'),
+      'Should have PR linking modal');
+  });
+
+  await test('PR link modal has autoObserve checkbox', () => {
+    assert.ok(prsSrc.includes('pr-link-observe') && prsSrc.includes('Auto-observe'),
+      'Should have auto-observe toggle in PR link modal');
+  });
+
+  // Plan creation modal
+  await test('openCreatePlanModal exists', () => {
+    assert.ok(plansSrc.includes('function openCreatePlanModal'),
+      'Should have plan creation modal');
+  });
+
+  // Live chat rendering
+  await test('renderLiveChatMessage exists', () => {
+    assert.ok(liveSrc.includes('function renderLiveChatMessage'),
+      'Should have chat message rendering function');
+  });
+
+  await test('live chat renders human steering as blue bubbles', () => {
+    assert.ok(liveSrc.includes('[human-steering]') && liveSrc.includes('var(--blue)'),
+      'Should render human steering messages as right-aligned blue bubbles');
+  });
+
+  await test('live chat renders tool calls as collapsible blocks', () => {
+    assert.ok(liveSrc.includes('tool_use') && liveSrc.includes('display:none'),
+      'Should render tool calls as collapsible blocks');
+  });
+
+  await test('sendSteering function exists', () => {
+    assert.ok(liveSrc.includes('function sendSteering'),
+      'Should have sendSteering function for chat input');
+  });
+}
+
+// ─── Tools Page + Assembly Tests ───────────────────────────────────────────
+
+async function testToolsPageAssembly() {
+  console.log('\n── Tools Page Assembly ──');
+
+  await test('tools.html page fragment exists', () => {
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'tools.html')),
+      'dashboard/pages/tools.html should exist');
+  });
+
+  await test('tools page contains skills and MCP sections', () => {
+    const toolsHtml = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'tools.html'), 'utf8');
+    assert.ok(toolsHtml.includes('skills-list') && toolsHtml.includes('mcp-list'),
+      'Tools page should contain skills and MCP server sections');
+  });
+
+  await test('tools page is in assembly page list', () => {
+    const buildSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard-build.js'), 'utf8');
+    assert.ok(buildSrc.includes("'tools'"), 'tools should be in the pages array');
+  });
+
+  await test('sidebar has tools link', () => {
+    const layoutHtml = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    assert.ok(layoutHtml.includes('data-page="tools"'), 'Sidebar should have tools page link');
+  });
+
+  // Assembled output check
+  let buildDashboardHtml;
+  try { buildDashboardHtml = require(path.join(MINIONS_DIR, 'dashboard-build')).buildDashboardHtml; } catch {}
+  if (buildDashboardHtml) {
+    const html = buildDashboardHtml();
+    await test('assembled HTML contains page-tools div', () => {
+      assert.ok(html.includes('id="page-tools"'), 'Should have page-tools in assembled output');
+    });
+  }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3601,6 +3848,12 @@ async function main() {
 
     // Human as teammate features
     await testHumanContributions();
+
+    // Coverage gap tests
+    await testAgentSteering();
+    await testRecentFeatures();
+    await testDashboardUIFunctions();
+    await testToolsPageAssembly();
   } finally {
     cleanupTmpDirs();
   }
