@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.41 (2026-03-29)
+
+### Engine
+- engine/queries.js
+
 ## 0.1.40 (2026-03-29)
 
 ### Dashboard
