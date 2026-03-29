@@ -1,5 +1,51 @@
 // render-plans.js — Plan rendering functions extracted from dashboard.html
 
+function openCreatePlanModal() {
+  const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
+    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
+  ).join('');
+  const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
+
+  document.getElementById('modal-title').textContent = 'Create Plan';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title <input id="plan-new-title" style="' + inputStyle + '" placeholder="e.g. Add user authentication with JWT"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Project <select id="plan-new-project" style="' + inputStyle + '"><option value="">Auto</option>' + projOpts + '</select></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Plan Content <textarea id="plan-new-content" rows="12" style="' + inputStyle + ';resize:vertical;font-family:monospace;font-size:12px" placeholder="Write your plan in markdown...\n\nDescribe what needs to be built, the approach, requirements, and any constraints.\n\nThe squad will convert this into a PRD with structured work items."></textarea></label>' +
+      '<div style="font-size:11px;color:var(--muted)">After creating, click Execute on the plan card to have an agent convert it into a PRD with work items.</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="_submitCreatePlan()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create Plan</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('plan-new-title')?.focus(), 100);
+}
+
+async function _submitCreatePlan() {
+  const title = document.getElementById('plan-new-title')?.value?.trim();
+  const content = document.getElementById('plan-new-content')?.value?.trim();
+  if (!title) { alert('Title is required'); return; }
+  if (!content) { alert('Plan content is required'); return; }
+  const project = document.getElementById('plan-new-project')?.value || '';
+
+  try {
+    const res = await fetch('/api/plans/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, content, project })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      try { closeModal(); } catch {}
+      refreshPlans();
+      refresh();
+      try { showToast('cmd-toast', 'Plan "' + data.file + '" created — click Execute to convert to PRD', true); } catch {}
+    } else {
+      alert('Failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function refreshPlans() {
   try {
     const plans = await fetch('/api/plans').then(r => r.json());

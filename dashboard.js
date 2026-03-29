@@ -2954,6 +2954,27 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, id: prId });
     }},
 
+    { method: 'POST', path: '/api/plans/create', desc: 'Create a plan from user-provided content', params: 'title, content, project?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { title, content, project: projectName } = body;
+      if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
+
+      const plansDir = path.join(MINIONS_DIR, 'plans');
+      if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
+      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      const date = new Date().toISOString().slice(0, 10);
+      const filename = `${slug}-${date}.md`;
+      const filePath = shared.uniquePath(path.join(plansDir, filename));
+
+      const header = `# ${title}\n\n` +
+        (projectName ? `**Project:** ${projectName}\n` : '') +
+        `**Created:** ${date}\n**By:** human teammate\n\n---\n\n`;
+      safeWrite(filePath, header + content);
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, file: path.basename(filePath) });
+    }},
+
     { method: 'POST', path: '/api/agents/steer', desc: 'Inject steering message into a running agent', params: 'agent, message', handler: async (req, res) => {
       const body = await readBody(req);
       const { agent: agentId, message } = body;
