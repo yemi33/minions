@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.39 (2026-03-29)
+
+### Engine
+- engine.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-prs.js
+- dashboard/pages/prs.html
+
 ## 0.1.38 (2026-03-29)
 
 ### Dashboard
