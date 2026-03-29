@@ -138,18 +138,24 @@ function renderPlans(plans) {
     const isPrdAwaitingApproval = awaitingApprovalPlanFiles.has(p.file);
     const isPrdBlocked = isPrdPaused || isPrdAwaitingApproval;
     const isArchived = p.archived;
-    const label = isArchived
+    // Check work item completion — if all items for this plan are done, it's completed
+    // (matches the modal's logic, which also checks work items)
+    const prdFileForCompletion = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
+    const planWi = allWi.filter(w => w.sourcePlan === prdFileForCompletion || w.sourcePlan === p.file);
+    const allItemsDone = planWi.length > 0 && planWi.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+    const hasActiveWork = planWi.some(w => w.status === 'pending' || w.status === 'dispatched');
+    const label = isArchived || (allItemsDone && !hasActiveWork)
       ? 'Completed'
-      : isPrdAwaitingApproval
+      : isPrdAwaitingApproval && !allItemsDone
         ? 'Awaiting Approval'
         : isPrdPaused
           ? 'Paused'
           : isWorking
             ? 'In Progress'
             : (statusLabels[status] || status);
-    const needsAction = (status === 'awaiting-approval' || status === 'paused' || isPrdAwaitingApproval || isPrdPaused) && !isArchived;
+    const needsAction = (status === 'awaiting-approval' || status === 'paused' || isPrdAwaitingApproval || isPrdPaused) && !isArchived && !allItemsDone;
     const isRevision = status === 'revision-requested' && !isArchived;
-    const isCompleted = status === 'completed';
+    const isCompleted = status === 'completed' || (allItemsDone && !hasActiveWork);
     const isDraft = (p.format === 'draft' || status === 'draft') && !isCompleted;
     const isAwaitingApproval = status === 'awaiting-approval';
     const isPaused = status === 'paused';
