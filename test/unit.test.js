@@ -3278,7 +3278,7 @@ async function testDashboardAssembly() {
   });
 
   await test('assembled HTML contains all page divs', () => {
-    const pages = ['page-home', 'page-work', 'page-prd', 'page-prs', 'page-plans', 'page-inbox', 'page-schedule', 'page-engine'];
+    const pages = ['page-home', 'page-work', 'page-prs', 'page-plans', 'page-inbox', 'page-tools', 'page-schedule', 'page-engine'];
     for (const p of pages) {
       assert.ok(html.includes(`id="${p}"`), `Should contain ${p} page div`);
     }
@@ -3297,7 +3297,7 @@ async function testDashboardAssembly() {
   });
 
   await test('assembled HTML contains sidebar navigation links', () => {
-    const pages = ['home', 'work', 'prd', 'prs', 'plans', 'inbox', 'schedule', 'engine'];
+    const pages = ['home', 'work', 'plans', 'prs', 'inbox', 'tools', 'schedule', 'engine'];
     for (const p of pages) {
       assert.ok(html.includes(`data-page="${p}"`), `Should contain sidebar link for ${p}`);
     }
