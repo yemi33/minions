@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.38 (2026-03-29)
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/layout.html
+- dashboard/pages/inbox.html
+- dashboard/pages/schedule.html
+- dashboard/pages/tools.html
+
 ## 0.1.37 (2026-03-28)
 
 ### Dashboard
