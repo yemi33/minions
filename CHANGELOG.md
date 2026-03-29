@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.40 (2026-03-29)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-plans.js
+- dashboard/pages/plans.html
+
 ## 0.1.39 (2026-03-29)
 
 ### Engine
