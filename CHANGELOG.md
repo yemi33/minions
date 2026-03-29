@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.45 (2026-03-29)
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/layout.html
+- dashboard/pages/plans.html
+
+### Other
+- test/unit.test.js
+
 ## 0.1.44 (2026-03-29)
 
 ### Other
