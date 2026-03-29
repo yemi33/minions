@@ -2916,6 +2916,44 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/prd/regenerate', desc: 'Regenerate PRD from revised source plan', params: 'file', handler: handlePrdRegenerate },
 
     // Agents
+    { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { url, title, project: projectName, autoObserve, context } = body;
+      if (!url) return jsonReply(res, 400, { error: 'url required' });
+
+      // Determine project
+      reloadConfig();
+      const projects = shared.getProjects(CONFIG);
+      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
+      const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
+      const prs = JSON.parse(safeRead(prPath) || '[]');
+
+      // Extract PR number from URL
+      const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
+      const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
+      const prId = 'PR-' + prNum;
+
+      if (prs.some(p => p.id === prId || p.url === url)) return jsonReply(res, 400, { error: 'PR already tracked' });
+
+      prs.push({
+        id: prId,
+        title: (title || 'Linked PR #' + prNum).slice(0, 120),
+        agent: 'human',
+        branch: '',
+        reviewStatus: autoObserve ? 'pending' : 'none',
+        status: autoObserve ? 'active' : 'linked',
+        created: new Date().toISOString().slice(0, 10),
+        url,
+        prdItems: [],
+        _manual: true,
+        _autoObserve: !!autoObserve,
+        _context: context || '',
+      });
+      safeWrite(prPath, prs);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id: prId });
+    }},
+
     { method: 'POST', path: '/api/agents/steer', desc: 'Inject steering message into a running agent', params: 'agent, message', handler: async (req, res) => {
       const body = await readBody(req);
       const { agent: agentId, message } = body;

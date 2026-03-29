@@ -592,16 +592,23 @@ function buildAgentContext(agentId, config, project) {
     context += `## Recently Completed\n\n${recentCompleted.join('\n')}\n\n`;
   }
 
-  // Active PRs across projects — coordination awareness
+  // Active + linked PRs across projects — coordination awareness
   const projects = getProjects(config);
   const allPrs = [];
   for (const p of projects) {
-    const prs = getPrs(p).filter(pr => pr.status === 'active');
+    const prs = getPrs(p).filter(pr => pr.status === 'active' || pr.status === 'linked');
     for (const pr of prs) allPrs.push({ ...pr, _project: p.name });
   }
+  // Also check central pull-requests.json
+  try {
+    const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json')) || [];
+    for (const pr of centralPrs.filter(pr => pr.status === 'active' || pr.status === 'linked')) {
+      if (!allPrs.some(p => p.id === pr.id)) allPrs.push({ ...pr, _project: 'central' });
+    }
+  } catch {}
   if (allPrs.length > 0) {
     const prLines = allPrs.map(pr =>
-      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${pr.reviewStatus || 'pending'}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}`
+      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${pr.status === 'linked' ? 'context-only' : (pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${pr._context ? ' — ' + pr._context.slice(0, 100) : ''}`
     );
     context += `## Active Pull Requests\n\n${prLines.join('\n')}\n\n`;
   }

@@ -92,3 +92,54 @@ function openModal(i) {
   if (card) clearNotifBadge(card);
   document.getElementById('modal').classList.add('open');
 }
+
+function openAddPrModal() {
+  const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
+    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
+  ).join('');
+  const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
+
+  document.getElementById('modal-title').textContent = 'Link Pull Request';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:10px">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">PR URL <input id="pr-link-url" style="' + inputStyle + '" placeholder="https://github.com/org/repo/pull/123"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title <input id="pr-link-title" style="' + inputStyle + '" placeholder="Short description (optional — auto-detected from URL)"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Project <select id="pr-link-project" style="' + inputStyle + '"><option value="">Auto / Central</option>' + projOpts + '</select></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Context <textarea id="pr-link-context" rows="3" style="' + inputStyle + ';resize:vertical" placeholder="Why are you linking this? What should agents know about it?"></textarea></label>' +
+      '<label style="display:flex;align-items:center;gap:8px;color:var(--text);font-size:var(--text-md);margin-top:4px;cursor:pointer">' +
+        '<input type="checkbox" id="pr-link-observe" style="width:16px;height:16px;accent-color:var(--blue)">' +
+        '<span>Auto-observe <span style="color:var(--muted);font-weight:400">(monitor builds, resolve comments, fix failures)</span></span>' +
+      '</label>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:-4px;padding-left:24px">Off = context only (e.g. teammate\'s PR). On = agents actively monitor and fix issues.</div>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="_submitLinkPr()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Link PR</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(() => document.getElementById('pr-link-url')?.focus(), 100);
+}
+
+async function _submitLinkPr() {
+  const url = document.getElementById('pr-link-url')?.value?.trim();
+  if (!url) { alert('PR URL is required'); return; }
+  const title = document.getElementById('pr-link-title')?.value?.trim() || '';
+  const project = document.getElementById('pr-link-project')?.value || '';
+  const context = document.getElementById('pr-link-context')?.value || '';
+  const autoObserve = document.getElementById('pr-link-observe')?.checked || false;
+
+  try {
+    const res = await fetch('/api/pull-requests/link', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, title, project, context, autoObserve })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      try { closeModal(); } catch {}
+      refresh();
+      try { showToast('cmd-toast', 'PR ' + (data.id || '') + ' linked' + (autoObserve ? ' (auto-observe on)' : ''), true); } catch {}
+    } else {
+      alert('Failed: ' + (data.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
