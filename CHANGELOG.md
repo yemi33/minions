@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.55 (2026-03-30)
+
+### Engine
+- engine/cli.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+
 ## 0.1.54 (2026-03-30)
 
 ### Engine
