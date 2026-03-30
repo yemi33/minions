@@ -209,9 +209,11 @@ function renderPrdProgress(prog) {
           '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan || g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;padding:2px 8px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:4px" title="Review latest plan changes">Review plan</span>' +
         '</div>'
       : '';
-    const pauseResumeBtn = isPaused
-      ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
-      : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\')" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
+    const pauseResumeBtn = isAwaitingApproval
+      ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Approve</span>'
+      : isPaused
+        ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
+        : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\')" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
       ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
