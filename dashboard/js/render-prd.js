@@ -12,8 +12,35 @@ function renderPrd(prd, prog) {
     section.innerHTML = '<p style="color:var(--orange);margin-bottom:0">PRD file found but has parse errors.</p>';
     return;
   }
-  badge.innerHTML = '<span style="color:var(--green);font-size:11px">' + prd.age + '</span>';
-  // Stats are now rendered per-group inside renderPrdProgress
+
+  // Derive status from work items
+  const allWi = window._lastWorkItems || [];
+  const prdItems = (prog?.items || []).filter(i => !i._archived);
+  const implementItems = allWi.filter(w => prdItems.some(pi => pi.id === w.id));
+  const allDone = implementItems.length > 0 && implementItems.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+  const hasActive = implementItems.some(w => w.status === 'pending' || w.status === 'dispatched');
+
+  // Find the active PRD file for action buttons
+  const prdFile = prd.existing?.[0]?.file || '';
+  const prdStatus = prd.existing?.[0]?.status || '';
+  const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : prdStatus || 'active';
+
+  const statusColors = { 'completed': 'var(--green)', 'in-progress': 'var(--blue)', 'awaiting-approval': 'var(--yellow)', 'paused': 'var(--muted)', 'approved': 'var(--green)' };
+  const statusLabels = { 'completed': 'Completed', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'paused': 'Paused', 'approved': 'Approved' };
+
+  let actions = '';
+  if (prdFile) {
+    if (effectiveStatus === 'awaiting-approval') {
+      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\')">Approve</button>';
+    } else if (effectiveStatus === 'in-progress') {
+      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\')">Pause</button>';
+    } else if (effectiveStatus === 'paused') {
+      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\')">Resume</button>';
+    }
+  }
+
+  badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + (statusLabels[effectiveStatus] || effectiveStatus) + '</span>' +
+    ' <span style="color:var(--muted);font-size:10px">' + (prd.age || '') + '</span>' + actions;
   section.innerHTML = '';
 }
 
