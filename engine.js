@@ -2361,7 +2361,8 @@ function materializePlansAsWorkItems(config) {
     const defaultProjectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
     const allProjects = getProjects(config);
     const defaultProject = allProjects.find(p => p.name?.toLowerCase() === defaultProjectName.toLowerCase());
-    if (!defaultProject) continue;
+    // No project found — use central work-items.json (engine works without projects)
+    const useCentral = !defaultProject;
 
     const statusFilter = ['missing', 'planned'];
     // Also materialize in-pr/done items that never got a work item (race with PR status sync)
@@ -2371,20 +2372,31 @@ function materializePlansAsWorkItems(config) {
         if (w.id) allExistingWiIds.add(w.id);
       }
     }
+    // Also check central work-items.json
+    for (const w of (safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [])) {
+      if (w.id) allExistingWiIds.add(w.id);
+    }
     const items = plan.missing_features.filter(f =>
       statusFilter.includes(f.status) ||
       ((f.status === 'in-pr' || f.status === 'done') && f.id && !allExistingWiIds.has(f.id))
     );
 
     // Group items by target project (per-item project field overrides plan-level project)
+    // When no projects are configured, all items go to central work-items.json
     const itemsByProject = new Map(); // projectName -> { project, items: [] }
     for (const item of items) {
-      const itemProjectName = item.project || defaultProjectName;
-      const itemProject = allProjects.find(p => p.name?.toLowerCase() === itemProjectName.toLowerCase()) || defaultProject;
-      if (!itemsByProject.has(itemProject.name)) {
-        itemsByProject.set(itemProject.name, { project: itemProject, items: [] });
+      if (useCentral) {
+        if (!itemsByProject.has('_central')) itemsByProject.set('_central', { project: null, items: [] });
+        itemsByProject.get('_central').items.push(item);
+      } else {
+        const itemProjectName = item.project || defaultProjectName;
+        const itemProject = allProjects.find(p => p.name?.toLowerCase() === itemProjectName.toLowerCase()) || defaultProject;
+        if (!itemProject) continue;
+        if (!itemsByProject.has(itemProject.name)) {
+          itemsByProject.set(itemProject.name, { project: itemProject, items: [] });
+        }
+        itemsByProject.get(itemProject.name).items.push(item);
       }
-      itemsByProject.get(itemProject.name).items.push(item);
     }
 
     // Cycle detection BEFORE materialization — skip cyclic items
@@ -2406,7 +2418,7 @@ function materializePlansAsWorkItems(config) {
 
     let totalCreated = 0;
     for (const [projName, { project, items: projItems }] of itemsByProject) {
-      const wiPath = projectWorkItemsPath(project);
+      const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
       const existingItems = safeJson(wiPath) || [];
       let created = 0;
       const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
