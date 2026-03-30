@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.60 (2026-03-30)
+
+### Engine
+- engine.js
+- engine/cooldown.js
+- engine/playbook.js
+- engine/routing.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.59 (2026-03-30)
 
 ### Engine
