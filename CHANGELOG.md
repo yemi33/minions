@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.56 (2026-03-30)
+
+### Other
+- bin/minions.js
+
 ## 0.1.55 (2026-03-30)
 
 ### Engine
