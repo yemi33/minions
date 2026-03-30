@@ -164,11 +164,18 @@ function renderPlans(plans) {
 
   function renderPlanCard(p) {
     const prdFile = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
-    const rawStatus = p.status || 'active';
     const isArchived = p.archived;
 
+    // For .md plans with a linked PRD, use the PRD's status as the authoritative intent
+    // (p.status for .md is 'draft'/'converted'/'active', not the PRD lifecycle status)
+    let prdJsonStatus = p.status || 'active';
+    if (prdFile && p.format !== 'prd') {
+      const linkedPrd = plans.find(pp => pp.file === prdFile && pp.format === 'prd');
+      if (linkedPrd) prdJsonStatus = linkedPrd.status || prdJsonStatus;
+    }
+
     // Single source of truth: derive status from work items
-    const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, rawStatus, allWi);
+    const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, prdJsonStatus, allWi);
 
     const statusLabelsMap = {
       'completed': 'Completed', 'in-progress': 'In Progress', 'paused': 'Paused',
