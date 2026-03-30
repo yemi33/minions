@@ -53,6 +53,39 @@ async function refreshPlans() {
   } catch {}
 }
 
+/**
+ * Derive effective plan/PRD status from work items (single source of truth).
+ * PRD JSON status is treated as user intent (approved, paused, rejected),
+ * but completion/progress is always derived from actual work item state.
+ */
+function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
+  const wi = workItems.filter(w =>
+    w.sourcePlan === prdFile || w.sourcePlan === mdFile ||
+    (w.type === 'plan-to-prd' && (w.planFile === prdFile || w.planFile === mdFile))
+  );
+  const implementWi = wi.filter(w => w.type !== 'plan-to-prd' && w.type !== 'verify');
+  const hasPendingPrd = wi.some(w => w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched'));
+  const hasActiveWork = implementWi.some(w => w.status === 'pending' || w.status === 'dispatched');
+  const allDone = implementWi.length > 0 && implementWi.every(w =>
+    w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete'
+  );
+  const hasFailed = implementWi.some(w => w.status === 'failed');
+
+  // User-set statuses take priority when no work has started
+  if (prdJsonStatus === 'rejected') return 'rejected';
+  if (prdJsonStatus === 'paused' && !allDone) return 'paused';
+  if (prdJsonStatus === 'revision-requested') return 'revision-requested';
+
+  // Derive from work item progress
+  if (allDone && !hasActiveWork) return 'completed';
+  if (hasActiveWork || hasPendingPrd) return 'in-progress';
+  if (hasFailed && !hasActiveWork) return 'has-failures';
+  if (prdJsonStatus === 'awaiting-approval' && implementWi.length === 0) return 'awaiting-approval';
+  if (prdJsonStatus === 'approved' && implementWi.length === 0) return 'approved';
+
+  return prdJsonStatus || 'active';
+}
+
 function renderPlans(plans) {
   const el = document.getElementById('plans-list');
   const countEl = document.getElementById('plans-count');
@@ -112,8 +145,7 @@ function renderPlans(plans) {
   }
 
   // Track which .md plans have a paused PRD, and map .md → PRD .json
-  const pausedPlanFiles = new Set();
-  const awaitingApprovalPlanFiles = new Set();
+  // (status derived from work items via derivePlanStatus — no separate tracking needed)
   const planToPrdFile = {}; // .md filename → .json PRD filename
   for (const p of plans) {
     if (p.format === 'prd' && !p.archived && p.sourcePlan) {
@@ -121,8 +153,7 @@ function renderPlans(plans) {
       for (const sourceKey of sourceKeys) {
         if (!sourceKey) continue;
         planToPrdFile[sourceKey] = p.file;
-        if (p.status === 'paused') pausedPlanFiles.add(sourceKey);
-        if (p.status === 'awaiting-approval') awaitingApprovalPlanFiles.add(sourceKey);
+        // Status derived via derivePlanStatus — planToPrdFile mapping is all we need
       }
     }
   }
@@ -132,40 +163,27 @@ function renderPlans(plans) {
   countEl.textContent = activePlans.length + (archivedPlans.length ? ' + ' + archivedPlans.length + ' archived' : '');
 
   function renderPlanCard(p) {
-    const status = p.status || 'active';
-    const isWorking = workingPlanFiles.has(p.file);
-    const isPrdPaused = pausedPlanFiles.has(p.file);
-    const isPrdAwaitingApproval = awaitingApprovalPlanFiles.has(p.file);
-    const isPrdBlocked = isPrdPaused || isPrdAwaitingApproval;
-    const isArchived = p.archived;
-    // Check work item completion — if all items for this plan are done, it's completed
-    // (matches the modal's logic, which also checks work items)
-    const prdFileForCompletion = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
-    const planWi = allWi.filter(w => w.sourcePlan === prdFileForCompletion || w.sourcePlan === p.file);
-    const allItemsDone = planWi.length > 0 && planWi.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
-    const hasActiveWork = planWi.some(w => w.status === 'pending' || w.status === 'dispatched');
-    const label = isArchived || (allItemsDone && !hasActiveWork)
-      ? 'Completed'
-      : isPrdAwaitingApproval && !allItemsDone
-        ? 'Awaiting Approval'
-        : isPrdPaused
-          ? 'Paused'
-          : isWorking
-            ? 'In Progress'
-            : (statusLabels[status] || status);
-    const needsAction = (status === 'awaiting-approval' || status === 'paused' || isPrdAwaitingApproval || isPrdPaused) && !isArchived && !allItemsDone;
-    const isRevision = status === 'revision-requested' && !isArchived;
-    const isCompleted = status === 'completed' || (allItemsDone && !hasActiveWork);
-    const isDraft = (p.format === 'draft' || status === 'draft') && !isCompleted;
-    const isAwaitingApproval = status === 'awaiting-approval';
-    const isPaused = status === 'paused';
-    const isApproved = status === 'approved' || status === 'active';
-    // For .md drafts: show Execute only if no PRD exists yet (not already executed)
     const prdFile = planToPrdFile[p.file] || (p.file.endsWith('.json') ? p.file : '');
+    const rawStatus = p.status || 'active';
+    const isArchived = p.archived;
+
+    // Single source of truth: derive status from work items
+    const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, rawStatus, allWi);
+
+    const statusLabelsMap = {
+      'completed': 'Completed', 'in-progress': 'In Progress', 'paused': 'Paused',
+      'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected',
+      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active'
+    };
+    const label = statusLabelsMap[effectiveStatus] || effectiveStatus;
+    const needsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
+    const isRevision = effectiveStatus === 'revision-requested';
+    const isCompleted = effectiveStatus === 'completed';
+    const isDraft = (p.format === 'draft' || rawStatus === 'draft') && !isCompleted;
+    // For .md drafts: show Execute only if no PRD exists yet (not already executed)
 
     let actions = '';
-    const resumeVisible = ((isPrdBlocked || isAwaitingApproval || isPaused) && prdFile && !isArchived);
-    if (needsAction && !resumeVisible) {
+    if (needsAction) {
       actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
         '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(p.file) + '\')">Approve</button>' +
         '<button class="plan-btn" style="color:var(--blue);border-color:var(--blue)" onclick="planDiscuss(\'' + escHtml(p.file) + '\')">Discuss &amp; Revise</button>' +
@@ -182,27 +200,27 @@ function renderPlans(plans) {
       actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
     }
 
-    const executeBtn = isDraft && !isWorking && !isPrdBlocked && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
+    const executeBtn = isDraft && effectiveStatus === 'active' && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
-    // Pause/Resume: target the PRD .json file if it exists, otherwise the plan itself
-    const effectivelyPaused = isPrdBlocked || isAwaitingApproval || isPaused;
-    const showPause = !effectivelyPaused && prdFile && !isArchived && !isCompleted;
-    const showResume = effectivelyPaused && prdFile && !isArchived;
+    const showPause = effectiveStatus === 'in-progress' && prdFile && !isArchived;
+    const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\')">Pause</button>' : '';
     const resumeBtn = showResume
       ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
-        'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\')">' + (isPrdAwaitingApproval || isAwaitingApproval ? 'Approve' : 'Resume') + '</button>'
+        'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\')">' + (effectiveStatus === 'awaiting-approval' ? 'Approve' : 'Resume') + '</button>'
       : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
     const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
-    return '<div class="plan-card ' + statusClass(status) + (isWorking && !isPrdBlocked ? ' working' : '') + (isPrdBlocked ? ' awaiting' : '') + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
+    const statusColors = { 'completed': 'var(--green)', 'in-progress': 'var(--blue)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
+    const cardClass = effectiveStatus === 'in-progress' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
+    return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
           '<div class="plan-card-meta">' +
-            '<span style="font-weight:600;color:' + (isArchived || isCompleted ? 'var(--green)' : isPrdAwaitingApproval ? 'var(--yellow)' : isPrdPaused ? 'var(--muted)' : isWorking ? 'var(--blue)' : needsAction ? 'var(--yellow,#d29922)' : status === 'approved' ? 'var(--green)' : 'var(--muted)') + '">' + label + '</span>' +
+            '<span style="font-weight:600;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + label + '</span>' +
             '<span>' + escHtml(p.project) + '</span>' +
             '<span>' + p.itemCount + ' items</span>' +
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
