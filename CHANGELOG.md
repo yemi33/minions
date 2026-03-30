@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.48 (2026-03-30)
+
+### Dashboard
+- dashboard/js/render-plans.js
+
 ## 0.1.47 (2026-03-30)
 
 ### Dashboard
