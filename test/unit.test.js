@@ -3735,6 +3735,96 @@ async function testToolsPageAssembly() {
   }
 }
 
+// ─── Plan/PRD State Flow Tests ──────────────────────────────────────────────
+
+async function testPlanPrdStateFlow() {
+  console.log('\n── Plan/PRD State Flow ──');
+
+  const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+  const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+
+  // derivePlanStatus state machine
+  await test('derivePlanStatus function exists', () => {
+    assert.ok(plansSrc.includes('function derivePlanStatus'),
+      'Should have derivePlanStatus function');
+  });
+
+  await test('derivePlanStatus returns awaiting-approval when no work items', () => {
+    assert.ok(plansSrc.includes("prdJsonStatus === 'awaiting-approval' && implementWi.length === 0"),
+      'Should return awaiting-approval when PRD is awaiting and no items materialized');
+  });
+
+  await test('derivePlanStatus returns in-progress when active work exists', () => {
+    assert.ok(plansSrc.includes('hasActiveWork') && plansSrc.includes("return 'in-progress'"),
+      'Should return in-progress when pending/dispatched items exist');
+  });
+
+  await test('derivePlanStatus returns completed when all items done', () => {
+    assert.ok(plansSrc.includes('allDone') && plansSrc.includes("return 'completed'"),
+      'Should return completed when all work items are done');
+  });
+
+  await test('derivePlanStatus returns rejected unconditionally', () => {
+    assert.ok(plansSrc.includes("prdJsonStatus === 'rejected'") && plansSrc.includes("return 'rejected'"),
+      'Should return rejected as user intent regardless of work items');
+  });
+
+  await test('derivePlanStatus returns paused when PRD paused and not all done', () => {
+    assert.ok(plansSrc.includes("prdJsonStatus === 'paused' && !allDone"),
+      'Should return paused when PRD is paused with incomplete items');
+  });
+
+  await test('derivePlanStatus returns has-failures when items failed', () => {
+    assert.ok(plansSrc.includes('hasFailed') && plansSrc.includes("return 'has-failures'"),
+      'Should return has-failures when failed items exist with nothing active');
+  });
+
+  // Plan card reads linked PRD status
+  await test('plan card reads linked PRD status for .md plans', () => {
+    assert.ok(plansSrc.includes('linkedPrd') && plansSrc.includes("p.format !== 'prd'"),
+      'Card should look up linked PRD status for .md plans, not use plan file status');
+  });
+
+  // Plan card buttons
+  await test('plan card needsAction for awaiting-approval', () => {
+    assert.ok(plansSrc.includes("effectiveStatus === 'awaiting-approval'") && plansSrc.includes('needsAction'),
+      'needsAction should be true for awaiting-approval');
+  });
+
+  await test('plan card showPause only for in-progress', () => {
+    assert.ok(plansSrc.includes("effectiveStatus === 'in-progress'") && plansSrc.includes('showPause'),
+      'Pause button should only show when effectiveStatus is in-progress');
+  });
+
+  await test('plan card showResume for paused or awaiting-approval', () => {
+    assert.ok(plansSrc.includes("effectiveStatus === 'paused'") && plansSrc.includes("effectiveStatus === 'awaiting-approval'") && plansSrc.includes('showResume'),
+      'Resume/Approve button should show for paused or awaiting-approval');
+  });
+
+  await test('plan card executeBtn only for draft with no PRD', () => {
+    assert.ok(plansSrc.includes('isDraft') && plansSrc.includes('!prdFile') && plansSrc.includes('executeBtn'),
+      'Execute button should only show for drafts without a linked PRD');
+  });
+
+  // PRD per-group buttons
+  await test('PRD group shows Approve when isAwaitingApproval', () => {
+    assert.ok(prdSrc.includes('isAwaitingApproval') && prdSrc.includes('>Approve</span>'),
+      'Per-group button should show Approve when awaiting approval');
+  });
+
+  await test('PRD group shows Resume when isPaused', () => {
+    assert.ok(prdSrc.includes('isPaused') && prdSrc.includes('>Resume</span>'),
+      'Per-group button should show Resume when paused');
+  });
+
+  await test('PRD group does NOT show Pause when awaiting approval', () => {
+    // The pauseResumeBtn should check isAwaitingApproval BEFORE the Pause fallback
+    const pauseBlock = prdSrc.slice(prdSrc.indexOf('const pauseResumeBtn'));
+    assert.ok(pauseBlock.includes('isAwaitingApproval') && pauseBlock.indexOf('isAwaitingApproval') < pauseBlock.indexOf('>Pause</span>'),
+      'isAwaitingApproval check must come before Pause fallback to prevent showing Pause on awaiting-approval PRDs');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3854,6 +3944,7 @@ async function main() {
     await testRecentFeatures();
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
+    await testPlanPrdStateFlow();
   } finally {
     cleanupTmpDirs();
   }
