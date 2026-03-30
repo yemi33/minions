@@ -472,6 +472,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions spawn <agent> <prompt>   Manually spawn an agent
     minions plan <file|text> [proj]  Run a plan
     minions cleanup                  Clean temp files, worktrees, zombies
+    minions reset --confirm          Factory reset (delete all state, keep config)
 
   Dashboard:
     minions dash                     Start web dashboard (default :7331)
@@ -500,6 +501,68 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   dashProc.unref();
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
   console.log('  Dashboard: http://localhost:7331\n');
+} else if (cmd === 'reset') {
+  ensureInstalled();
+  if (!rest.includes('--confirm')) {
+    console.log(`
+  This will DELETE all runtime state:
+    - Work items, dispatch queue, PRDs, plans
+    - Agent history, sessions, output logs
+    - Notes, knowledge base, pinned notes
+    - Metrics, cooldowns, schedules
+
+  Config.json and agent charters are PRESERVED.
+
+  Run: minions reset --confirm
+`);
+    process.exit(0);
+  }
+  // Stop engine + dashboard
+  try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
+  const glob = (dir, pattern) => { try { return fs.readdirSync(dir).filter(f => pattern.test(f)).map(f => path.join(dir, f)); } catch { return []; } };
+  const rm = (f) => { try { fs.unlinkSync(f); } catch {} };
+  const rmDir = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} };
+  const engineDir = path.join(MINIONS_HOME, 'engine');
+  // Engine state
+  for (const f of ['dispatch.json', 'control.json', 'log.json', 'metrics.json', 'cooldowns.json', 'schedule-runs.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json']) rm(path.join(engineDir, f));
+  glob(engineDir, /^pid-.*\.pid$/).forEach(rm);
+  rmDir(path.join(engineDir, 'tmp'));
+  // Work items + PRs
+  rm(path.join(MINIONS_HOME, 'work-items.json'));
+  rm(path.join(MINIONS_HOME, 'work-items-archive.json'));
+  rm(path.join(MINIONS_HOME, 'pull-requests.json'));
+  // Plans + PRDs
+  glob(path.join(MINIONS_HOME, 'plans'), /\.md$/).forEach(rm);
+  glob(path.join(MINIONS_HOME, 'prd'), /\.json$/).forEach(rm);
+  rmDir(path.join(MINIONS_HOME, 'prd', 'archive'));
+  rmDir(path.join(MINIONS_HOME, 'prd', 'guides'));
+  // Notes + KB
+  rm(path.join(MINIONS_HOME, 'notes.md'));
+  rm(path.join(MINIONS_HOME, 'pinned.md'));
+  rmDir(path.join(MINIONS_HOME, 'notes', 'inbox'));
+  rmDir(path.join(MINIONS_HOME, 'notes', 'archive'));
+  fs.mkdirSync(path.join(MINIONS_HOME, 'notes', 'inbox'), { recursive: true });
+  fs.mkdirSync(path.join(MINIONS_HOME, 'notes', 'archive'), { recursive: true });
+  for (const cat of ['architecture', 'conventions', 'project-notes', 'build-reports', 'reviews']) {
+    const catDir = path.join(MINIONS_HOME, 'knowledge', cat);
+    glob(catDir, /\.md$/).forEach(rm);
+  }
+  // Agent state (preserve charters)
+  const agentsDir = path.join(MINIONS_HOME, 'agents');
+  try {
+    for (const agent of fs.readdirSync(agentsDir)) {
+      const agentDir = path.join(agentsDir, agent);
+      if (!fs.statSync(agentDir).isDirectory()) continue;
+      for (const f of ['live-output.log', 'session.json', 'history.md', 'steer.md', 'status.json']) rm(path.join(agentDir, f));
+      glob(agentDir, /^output.*\.log$/).forEach(rm);
+    }
+  } catch {}
+  // Projects state
+  rmDir(path.join(MINIONS_HOME, 'projects'));
+  fs.mkdirSync(path.join(MINIONS_HOME, 'projects'), { recursive: true });
+
+  console.log('\n  Reset complete. Config and charters preserved.');
+  console.log('  Run: minions up\n');
 } else if (cmd === 'doctor') {
   ensureInstalled();
   const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
