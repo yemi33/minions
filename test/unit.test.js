@@ -1546,9 +1546,9 @@ async function testPrReviewFixCycle() {
   });
 
   await test('routing parser uses mtime cache to avoid reparsing every resolve', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
     assert.ok(src.includes('function getRoutingTableCached()'),
-      'engine should use a cached routing table helper');
+      'routing module should use a cached routing table helper');
     assert.ok(src.includes('_routingCacheMtime'),
       'routing cache should track routing.md mtime');
     assert.ok(src.includes('const routes = getRoutingTableCached();'),
@@ -2523,7 +2523,7 @@ async function testAreDependenciesMet() {
 async function testCooldownSystem() {
   console.log('\n── engine.js — Cooldown System ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
 
   await test('isOnCooldown returns false for unknown key', () => {
     assert.ok(src.includes('if (!entry) return false'),
@@ -2581,7 +2581,7 @@ async function testCooldownSystem() {
 async function testResolveAgent() {
   console.log('\n── engine.js — resolveAgent ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
 
   await test('resolveAgent resolves _author_ token to authorAgent', () => {
     assert.ok(src.includes("route.preferred === '_author_' ? authorAgent : route.preferred"),
@@ -2656,7 +2656,7 @@ async function testRenderPlaybook() {
       'Should substitute {{agent_name}} with actual value');
   });
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
 
   await test('renderPlaybook injects team notes section', () => {
     assert.ok(src.includes('Team Notes') || src.includes('team_notes') || src.includes('notes_content'),
@@ -3087,10 +3087,12 @@ async function testSessionResume() {
 async function testWakeupCoalescing() {
   console.log('\n── Wakeup Coalescing ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const cooldownSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
+  const engineSrcLocal = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = cooldownSrc + engineSrcLocal;
 
   await test('setCooldownWithContext function exists', () => {
-    assert.ok(src.includes('function setCooldownWithContext'),
+    assert.ok(cooldownSrc.includes('function setCooldownWithContext'),
       'Should have setCooldownWithContext function for coalescing');
   });
 
@@ -3115,7 +3117,7 @@ async function testWakeupCoalescing() {
   });
 
   await test('coalescing preserves existing cooldown backoff', () => {
-    assert.ok(src.includes('existing?.failures || 0'),
+    assert.ok(cooldownSrc.includes('existing?.failures || 0'),
       'setCooldownWithContext should preserve failure count');
   });
 }
@@ -3125,7 +3127,9 @@ async function testWakeupCoalescing() {
 async function testBudgetEnforcement() {
   console.log('\n── Budget Enforcement ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+  const engineSrcLocal = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = routingSrc + engineSrcLocal;
 
   await test('getMonthlySpend function exists', () => {
     assert.ok(src.includes('getMonthlySpend'),
@@ -3203,7 +3207,9 @@ async function testWakeupEndpoint() {
 async function testCrossFeatureIntegration() {
   console.log('\n── Cross-Feature Integration ──');
 
-  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const engineSrcRaw = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+  const engineSrc = engineSrcRaw + routingSrc;
 
   await test('session resume and temp agents both check temp- prefix', () => {
     assert.ok(engineSrc.includes("temp-") && engineSrc.includes('session.json'),
@@ -3338,7 +3344,8 @@ async function testHumanContributions() {
   console.log('\n── Human as Teammate ──');
 
   const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const playbookSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') + playbookSrc;
 
   // KB Authoring
   await test('POST /api/knowledge endpoint exists in ROUTES', () => {
@@ -3830,7 +3837,11 @@ async function testPlanPrdStateFlow() {
 async function testDispatchCycleIntegration() {
   console.log('\n── Dispatch Cycle Integration ──');
 
-  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const engineSrcRaw = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+  const cooldownSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
+  const playbookSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+  const engineSrc = engineSrcRaw + routingSrc + cooldownSrc + playbookSrc;
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
   const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
   const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
