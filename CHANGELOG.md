@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.61 (2026-03-30)
+
+### Engine
+- engine.js
+- engine/cleanup.js
+- engine/dispatch.js
+- engine/timeout.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.60 (2026-03-30)
 
 ### Engine
