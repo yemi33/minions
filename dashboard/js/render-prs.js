@@ -135,9 +135,9 @@ async function _submitLinkPr() {
     });
     const data = await res.json();
     if (res.ok) {
-      try { closeModal(); } catch {}
+      try { closeModal(); } catch { /* expected */ }
       refresh();
-      try { showToast('cmd-toast', 'PR ' + (data.id || '') + ' linked' + (autoObserve ? ' (auto-observe on)' : ''), true); } catch {}
+      try { showToast('cmd-toast', 'PR ' + (data.id || '') + ' linked' + (autoObserve ? ' (auto-observe on)' : ''), true); } catch { /* expected */ }
     } else {
       alert('Failed: ' + (data.error || 'unknown'));
     }

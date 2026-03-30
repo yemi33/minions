@@ -341,10 +341,10 @@ async function _submitCreateWorkItem() {
     });
     const data = await res.json();
     if (res.ok) {
-      try { closeModal(); } catch {}
+      try { closeModal(); } catch { /* expected */ }
       wakeEngine();
       refresh();
-      try { showToast('cmd-toast', 'Work item ' + (data.id || '') + ' created', true); } catch {}
+      try { showToast('cmd-toast', 'Work item ' + (data.id || '') + ' created', true); } catch { /* expected */ }
     } else {
       alert('Failed: ' + (data.error || 'unknown'));
     }

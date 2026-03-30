@@ -61,7 +61,7 @@ let _statusStream = null;
 try {
   _statusStream = new EventSource('/api/status-stream');
   _statusStream.onmessage = (e) => {
-    try { _processStatusUpdate(JSON.parse(e.data)); } catch {}
+    try { _processStatusUpdate(JSON.parse(e.data)); } catch (e2) { console.error('status-stream:', e2.message); }
   };
   _statusStream.onerror = () => {
     // Fall back to polling
@@ -82,4 +82,4 @@ switchPage(currentPage);
 try {
   const _hotReload = new EventSource('/api/hot-reload');
   _hotReload.onmessage = (e) => { if (e.data === 'reload') location.reload(); };
-} catch {}
+} catch { /* expected */ }

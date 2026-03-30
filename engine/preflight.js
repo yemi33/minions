@@ -32,7 +32,7 @@ function findClaudeBinary() {
       const resolved = path.join(basedir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
       if (fs.existsSync(resolved)) return resolved;
     }
-  } catch {}
+  } catch { /* optional */ }
   return null;
 }
 
@@ -180,7 +180,7 @@ function doctor(minionsHome) {
           process.kill(control.pid, 0);
           alive = true;
         }
-      } catch {}
+      } catch { /* process may be dead */ }
       runtimeResults.push({ name: 'Engine', ok: alive, message: alive ? `running (PID ${control.pid})` : `stale PID ${control.pid} — run: minions start` });
     } else {
       runtimeResults.push({ name: 'Engine', ok: 'warn', message: `${control.state || 'stopped'} — run: minions start` });

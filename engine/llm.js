@@ -39,7 +39,7 @@ function trackEngineUsage(category, usage) {
     daily.cacheRead += usage.cacheRead || 0;
 
     safeWrite(metricsPath, metrics);
-  } catch {}
+  } catch (e) { console.error('metrics update:', e.message); }
 }
 
 // ── Core LLM Call ───────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
     proc.stdout.on('data', d => { stdout += d.toString(); });
     proc.stderr.on('data', d => { stderr += d.toString(); });
 
-    const timer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, timeout);
+    const timer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch { /* process may be dead */ } }, timeout);
 
     proc.on('close', (code) => {
       clearTimeout(timer);

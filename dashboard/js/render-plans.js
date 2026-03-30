@@ -36,10 +36,10 @@ async function _submitCreatePlan() {
     });
     const data = await res.json();
     if (res.ok) {
-      try { closeModal(); } catch {}
+      try { closeModal(); } catch { /* expected */ }
       refreshPlans();
       refresh();
-      try { showToast('cmd-toast', 'Plan "' + data.file + '" created — click Execute to convert to PRD', true); } catch {}
+      try { showToast('cmd-toast', 'Plan "' + data.file + '" created — click Execute to convert to PRD', true); } catch { /* expected */ }
     } else {
       alert('Failed: ' + (data.error || 'unknown'));
     }
@@ -50,7 +50,7 @@ async function refreshPlans() {
   try {
     const plans = await fetch('/api/plans').then(r => r.json());
     renderPlans(plans);
-  } catch {}
+  } catch (e) { console.error('plans refresh:', e.message); }
 }
 
 /**

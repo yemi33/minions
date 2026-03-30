@@ -58,7 +58,7 @@ function renderLiveChatMessage(raw) {
         }
 
         continue;
-      } catch {}
+      } catch { /* JSON parse fallback */ }
     }
 
     // Fallback: raw text (stderr, non-JSON lines)
@@ -88,7 +88,7 @@ function startLiveStream(agentId) {
     try {
       const chunk = JSON.parse(e.data);
       renderLiveChatMessage(chunk);
-    } catch {}
+    } catch (e) { console.error('live-stream:', e.message); }
   };
 
   liveEventSource.addEventListener('done', function() {
@@ -137,7 +137,7 @@ async function refreshLiveOutput() {
       renderLiveChatMessage(text);
       if (wasAtBottom) el.scrollTop = el.scrollHeight;
     }
-  } catch {}
+  } catch (e) { console.error('live-stream reload:', e.message); }
 }
 
 async function sendSteering() {

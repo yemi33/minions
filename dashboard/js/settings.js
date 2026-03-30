@@ -147,7 +147,7 @@ async function addProject() {
     });
     const addData = await addRes.json();
     if (!addRes.ok) { alert('Failed: ' + (addData.error || 'unknown')); return; }
-    try { showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true); } catch {}
+    try { showToast('cmd-toast', 'Project "' + addData.name + '" added — restart engine to pick it up', true); } catch { /* expected */ }
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
 }

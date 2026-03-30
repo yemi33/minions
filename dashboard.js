@@ -124,11 +124,11 @@ if (fs.existsSync(dashDir)) {
     _reloadTimer = setTimeout(rebuildDashboardHtml, 300); // debounce 300ms
   };
   // Watch top-level files (styles.css, layout.html)
-  try { fs.watch(dashDir, scheduleReload); } catch {}
+  try { fs.watch(dashDir, scheduleReload); } catch { /* optional */ }
   // Watch subdirectories (pages/, js/)
   for (const sub of ['pages', 'js']) {
     const subDir = path.join(dashDir, sub);
-    if (fs.existsSync(subDir)) try { fs.watch(subDir, scheduleReload); } catch {}
+    if (fs.existsSync(subDir)) try { fs.watch(subDir, scheduleReload); } catch { /* optional */ }
   }
 }
 
@@ -145,7 +145,7 @@ function getVerifyGuides() {
       const planFile = planSlug + '.json';
       guides.push({ file: f, planFile });
     }
-  } catch {}
+  } catch (e) { console.error('getVerifyGuides:', e.message); }
   return guides;
 }
 
@@ -273,7 +273,7 @@ try {
     const age = Date.now() - new Date(saved.lastActiveAt || 0).getTime();
     if (age < CC_SESSION_EXPIRY_MS) ccSession = saved;
   }
-} catch {}
+} catch { /* optional */ }
 
 // Static system prompt — baked into session on creation, never changes
 const CC_STATIC_SYSTEM_PROMPT = `You are the Command Center AI for a software engineering minions called "Minions."
@@ -459,7 +459,7 @@ try {
       }
     }
   }
-} catch {}
+} catch { /* optional */ }
 
 function persistDocSessions() {
   const obj = {};
@@ -687,12 +687,12 @@ function cleanDispatchEntries(matchFn) {
             try {
               const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
               if (pid) process.kill(pid, 'SIGTERM');
-            } catch {}
-            try { fs.unlinkSync(pidFile); } catch {}
+            } catch { /* process may be dead */ }
+            try { fs.unlinkSync(pidFile); } catch { /* cleanup */ }
             // Clean up temp prompt files
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `prompt-${d.id}.md`)); } catch {}
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`)); } catch {}
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`)); } catch {}
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `prompt-${d.id}.md`)); } catch { /* cleanup */ }
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`)); } catch { /* cleanup */ }
+            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`)); } catch { /* cleanup */ }
           }
         }
         dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
@@ -729,7 +729,7 @@ function killEnginePid(pid) {
     } else {
       process.kill(pid, 'SIGKILL');
     }
-  } catch {}
+  } catch { /* process may be dead */ }
 }
 
 function restartEngine() {
@@ -846,7 +846,7 @@ const server = http.createServer(async (req, res) => {
           dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
           return dispatch;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
-      } catch {}
+      } catch (e) { console.error('dispatch cleanup:', e.message); }
 
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
@@ -856,7 +856,7 @@ const server = http.createServer(async (req, res) => {
           delete cooldowns[dispatchKey];
           safeWrite(cooldownPath, cooldowns);
         }
-      } catch {}
+      } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -905,7 +905,7 @@ const server = http.createServer(async (req, res) => {
           if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
         }
         if (cleaned) safeWrite(cooldownPath, cooldowns);
-      } catch {}
+      } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
@@ -1164,7 +1164,7 @@ const server = http.createServer(async (req, res) => {
             safeWrite(wiPath, items);
             workItemSynced = true;
           }
-        } catch {}
+        } catch (e) { console.error('work item sync:', e.message); }
       }
 
       return jsonReply(res, 200, { ok: true, item, workItemSynced });
@@ -1196,7 +1196,7 @@ const server = http.createServer(async (req, res) => {
             safeWrite(wiPath, filtered);
             cancelled = true;
           }
-        } catch {}
+        } catch (e) { console.error('work item cleanup:', e.message); }
       }
       // Also check central work-items
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
@@ -1205,7 +1205,7 @@ const server = http.createServer(async (req, res) => {
         const before = items.length;
         const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
         if (filtered.length < before) { safeWrite(centralPath, filtered); cancelled = true; }
-      } catch {}
+      } catch (e) { console.error('central work item cleanup:', e.message); }
 
       // Clean dispatch entries for this item
       cleanDispatchEntries(d =>
@@ -1235,16 +1235,16 @@ const server = http.createServer(async (req, res) => {
           const status = JSON.parse(safeRead(statusPath) || '{}');
           if (status.pid) {
             if (process.platform === 'win32') {
-              try { require('child_process').execSync('taskkill /PID ' + status.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch {}
+              try { require('child_process').execSync('taskkill /PID ' + status.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
             } else {
-              try { process.kill(status.pid, 'SIGTERM'); } catch {}
+              try { process.kill(status.pid, 'SIGTERM'); } catch { /* process may be dead */ }
             }
           }
           status.status = 'idle';
           delete status.currentTask;
           delete status.dispatched;
           safeWrite(statusPath, status);
-        } catch {}
+        } catch (e) { console.error('agent cancel:', e.message); }
 
         cancelled.push({ agent: d.agent, task: d.task });
       }
@@ -1291,7 +1291,7 @@ const server = http.createServer(async (req, res) => {
         res.write(`data: ${JSON.stringify(content)}\n\n`);
         offset = Buffer.byteLength(content, 'utf8');
       }
-    } catch {}
+    } catch { /* optional */ }
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
@@ -1306,7 +1306,7 @@ const server = http.createServer(async (req, res) => {
           const chunk = buf.toString('utf8');
           if (chunk) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
-      } catch {}
+      } catch { /* optional */ }
     };
 
     fs.watchFile(liveLogPath, { interval: 500 }, watcher);
@@ -1497,7 +1497,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           const meta = `<!-- swept: ${new Date().toISOString()} | reason: ${reason} -->\n`;
           safeWrite(destPath, meta + content);
           safeUnlink(filePath);
-        } catch {}
+        } catch (e) { console.error('kb archive:', e.message); }
       }
 
       // Process removals (stale/empty) — archive, not delete
@@ -1534,7 +1534,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           safeWrite(path.join(destDir, entry.file), updated);
           safeUnlink(srcPath);
           reclassified++;
-        } catch {}
+        } catch (e) { console.error('kb reclassify:', e.message); }
       }
 
       // Prune swept files older than 30 days
@@ -1545,9 +1545,9 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           const fp = path.join(kbArchiveDir, f);
           try {
             if (Date.now() - fs.statSync(fp).mtimeMs > SWEPT_RETENTION_MS) { safeUnlink(fp); pruned++; }
-          } catch {}
+          } catch { /* cleanup */ }
         }
-      } catch {}
+      } catch { /* optional */ }
 
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
@@ -1575,7 +1575,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
         const filePath = path.join(dir, f);
         const content = safeRead(filePath) || '';
         let updatedAt = '';
-        try { updatedAt = new Date(fs.statSync(filePath).mtimeMs).toISOString(); } catch {}
+        try { updatedAt = new Date(fs.statSync(filePath).mtimeMs).toISOString(); } catch { /* optional */ }
         const isJson = f.endsWith('.json');
         if (isJson) {
           try {
@@ -1597,7 +1597,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
               revisionFeedback: plan.revision_feedback || null,
               sourcePlan: plan.source_plan || null,
             });
-          } catch {}
+          } catch { /* JSON parse fallback */ }
         } else {
           const titleMatch = content.match(/^#\s+(?:Plan:\s*)?(.+)/m);
           const projectMatch = content.match(/\*\*Project:\*\*\s*(.+)/m);
@@ -1655,7 +1655,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     if (!content) return jsonReply(res, 404, { error: 'not found' });
     // Find the actual file path for Last-Modified header + expose resolved relative path
     const planCandidates = [resolvePlanPath(file), path.join(PRD_DIR, file), path.join(PRD_DIR, 'guides', file), path.join(PLANS_DIR, file), path.join(PRD_DIR, 'archive', file), path.join(PLANS_DIR, 'archive', file)];
-    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); res.setHeader('X-Resolved-Path', path.relative(MINIONS_DIR, p).replace(/\\/g, '/')); break; } } catch {} }
+    for (const p of planCandidates) { try { const st = fs.statSync(p); if (st) { res.setHeader('Last-Modified', st.mtime.toISOString()); res.setHeader('X-Resolved-Path', path.relative(MINIONS_DIR, p).replace(/\\/g, '/')); break; } } catch { /* optional */ } }
     const contentType = file.endsWith('.json') ? 'application/json' : 'text/plain';
     res.setHeader('Content-Type', contentType + '; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
@@ -1699,7 +1699,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             }
           }
           if (changed) safeWrite(wiPath, items);
-        } catch {}
+        } catch (e) { console.error('resume work items:', e.message); }
       }
 
       // Clear dispatch completed entries for resumed items so they aren't dedup-blocked
@@ -1759,16 +1759,16 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
                   const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
                   if (agentStatus.pid) {
                     if (process.platform === 'win32') {
-                      try { require('child_process').execSync('taskkill /PID ' + agentStatus.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch {}
+                      try { require('child_process').execSync('taskkill /PID ' + agentStatus.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
                     } else {
-                      try { process.kill(agentStatus.pid, 'SIGTERM'); } catch {}
+                      try { process.kill(agentStatus.pid, 'SIGTERM'); } catch { /* process may be dead */ }
                     }
                   }
                   agentStatus.status = 'idle';
                   delete agentStatus.currentTask;
                   delete agentStatus.dispatched;
                   safeWrite(statusPath, agentStatus);
-                } catch {}
+                } catch (e) { console.error('agent reset:', e.message); }
                 killedAgents.add(activeEntry.agent);
               }
             }
@@ -1785,7 +1785,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             if (w.id) resetItemIds.add(w.id);
           }
           if (changed) safeWrite(wiPath, items);
-        } catch {}
+        } catch (e) { console.error('reset work items:', e.message); }
       }
 
       // Remove dispatch active entries for reset items or killed agents.
@@ -1842,7 +1842,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
 
       // Delete old PRD — agent will write replacement at same path
-      try { fs.unlinkSync(prdPath); } catch {}
+      try { fs.unlinkSync(prdPath); } catch { /* cleanup */ }
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
@@ -1963,7 +1963,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
           if (filtered.length < items.length) {
             safeWrite(wiInfo.path, filtered);
           }
-        } catch {}
+        } catch (e) { console.error('work item sync:', e.message); }
       }
 
       // Count plan items that have no work item yet (will auto-materialize)
@@ -2012,7 +2012,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             cleaned += items.length - filtered.length;
             safeWrite(wiPath, filtered);
           }
-        } catch {}
+        } catch (e) { console.error('plan cleanup:', e.message); }
       }
 
       // Clean up dispatch entries for this plan's items
@@ -2036,7 +2036,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             }
           }
           if (changed) safeWrite(centralPath, centralItems);
-        } catch {}
+        } catch (e) { console.error('plan-to-prd cleanup:', e.message); }
       }
 
       invalidateStatusCache();
@@ -2177,7 +2177,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
             }
           }
           if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
-        } catch {}
+        } catch (e) { console.error('work item deletion:', e.message); }
       }
       for (const itemId of deletedItemIds) {
         cleanDispatchEntries(d =>
@@ -2385,7 +2385,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Move to archive
       const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
-      try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `persisted-${name}`), _c); safeUnlink(inboxPath); } catch {}
+      try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `persisted-${name}`), _c); safeUnlink(inboxPath); } catch (e) { console.error('inbox archive:', e.message); }
 
       return jsonReply(res, 200, { ok: true, title });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2423,7 +2423,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Move inbox item to archive
       const archiveDir = path.join(MINIONS_DIR, 'notes', 'archive');
       if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
-      try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `kb-${category}-${name}`), _c); safeUnlink(inboxPath); } catch {}
+      try { const _c = safeRead(inboxPath); safeWrite(path.join(archiveDir, `kb-${category}-${name}`), _c); safeUnlink(inboxPath); } catch (e) { console.error('inbox archive:', e.message); }
 
       return jsonReply(res, 200, { ok: true, category, file: name });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2526,7 +2526,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         fs.writeFileSync(psPath, psScript);
         try {
           selectedPath = execSync(`powershell -STA -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, { encoding: 'utf8', timeout: 120000 }).trim();
-        } finally { try { fs.unlinkSync(psPath); } catch {} }
+        } finally { try { fs.unlinkSync(psPath); } catch { /* cleanup */ } }
       } else if (process.platform === 'darwin') {
         selectedPath = execSync(`osascript -e 'POSIX path of (choose folder with prompt "Select project folder")'`, { encoding: 'utf8', timeout: 120000 }).trim();
       } else {
@@ -2572,14 +2572,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                     remoteUrl.match(/https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/);
           if (m) { detected.org = m[1]; detected.project = m[2]; detected.repoName = m[3]; }
         }
-      } catch {}
+      } catch (e) { console.error('git remote detection:', e.message); }
       try {
         const pkgPath = path.join(target, 'package.json');
         if (fs.existsSync(pkgPath)) {
           const pkg = safeJson(pkgPath);
           if (pkg.name) detected.name = pkg.name.replace(/^@[^/]+\//, '');
         }
-      } catch {}
+      } catch { /* optional */ }
       let description = '';
       try {
         const claudeMd = path.join(target, 'CLAUDE.md');
@@ -2587,7 +2587,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const lines = (safeRead(claudeMd) || '').split('\n').filter(l => l.trim() && !l.startsWith('#'));
           if (lines[0] && lines[0].length < 200) description = lines[0].trim();
         }
-      } catch {}
+      } catch { /* optional */ }
 
       const name = body.name || detected.name;
       const prUrlBase = detected.repoHost === 'github'
@@ -3042,7 +3042,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       // Also append to live-output.log so it shows in the chat view
       const liveLogPath = path.join(agentDir, 'live-output.log');
-      try { fs.appendFileSync(liveLogPath, '\n[human-steering] ' + message + '\n'); } catch {}
+      try { fs.appendFileSync(liveLogPath, '\n[human-steering] ' + message + '\n'); } catch { /* optional */ }
 
       return jsonReply(res, 200, { ok: true, message: 'Steering message sent' });
     }},

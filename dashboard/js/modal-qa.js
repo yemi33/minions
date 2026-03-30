@@ -16,7 +16,7 @@ const _qaSessions = new Map(); // persist conversations across modal open/close 
 try {
   const saved = JSON.parse(localStorage.getItem('qa-sessions') || '{}');
   for (const [k, v] of Object.entries(saved)) _qaSessions.set(k, v);
-} catch {}
+} catch { /* optional */ }
 function _saveQaSessions() {
   try {
     const obj = {};
@@ -24,7 +24,7 @@ function _saveQaSessions() {
     const entries = [..._qaSessions.entries()].slice(-10);
     for (const [k, v] of entries) obj[k] = { ...v, threadHtml: (v.threadHtml || '').slice(0, 50000) };
     localStorage.setItem('qa-sessions', JSON.stringify(obj));
-  } catch {}
+  } catch { /* localStorage might be full */ }
 }
 
 function modalAskAboutSelection() {
@@ -293,13 +293,13 @@ async function qaReplacePrd(planFile) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: existingPrd.file })
       });
-    } catch {}
+    } catch (e) { console.error('plan pause:', e.message); }
     try {
       await fetch('/api/plans/regenerate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: existingPrd.file })
       });
-    } catch {}
+    } catch (e) { console.error('plan regenerate:', e.message); }
   }
 
   planExecute(planFile, project, null);

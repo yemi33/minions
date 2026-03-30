@@ -66,7 +66,7 @@ async function forEachActiveGhPr(config, callback) {
         const updated = await callback(project, pr, prNum, slug);
         if (updated) projectUpdated++;
       } catch (err) {
-        try { engine().log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`); } catch {}
+        try { engine().log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
       }
     }
 
@@ -101,7 +101,7 @@ async function forEachActiveGhPr(config, callback) {
         centralUpdated++;
       }
     } catch (err) {
-      try { engine().log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`); } catch {}
+      try { engine().log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
     }
   }
   if (centralUpdated > 0) {
@@ -171,7 +171,7 @@ async function pollPrStatus(config) {
               if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
               else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
               shared.safeWrite(metricsPath, metrics);
-            } catch {}
+            } catch (err) { try { engine().log('warn', `Metrics update: ${err.message}`); } catch { /* engine not available */ } }
           }
         }
       }

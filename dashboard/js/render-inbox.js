@@ -142,7 +142,7 @@ async function openInboxInExplorer(name) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-  } catch {}
+  } catch (e) { console.error('inbox open:', e.message); }
 }
 
 function openQuickNoteModal() {
@@ -174,9 +174,9 @@ async function submitQuickNote() {
       body: JSON.stringify({ title: title || 'Quick note', what: content || title })
     });
     if (res.ok) {
-      try { closeModal(); } catch {}
+      try { closeModal(); } catch { /* expected */ }
       refresh();
-      try { showToast('cmd-toast', 'Note saved to inbox', true); } catch {}
+      try { showToast('cmd-toast', 'Note saved to inbox', true); } catch { /* expected */ }
     }
     else { const d = await res.json().catch(() => ({})); alert('Error: ' + (d.error || 'unknown')); }
   } catch (e) { alert('Error saving note: ' + e.message); }

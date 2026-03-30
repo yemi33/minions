@@ -38,24 +38,24 @@ function safeWrite(p, data) {
       } catch (e) {
         if (e.code === 'EPERM' && attempt < 4) {
           const delay = 50 * (attempt + 1); // 50, 100, 150, 200ms
-          try { const ab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(ab), 0, 0, delay); } catch { const start = Date.now(); while (Date.now() - start < delay) {} }
+          try { const ab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(ab), 0, 0, delay); } catch { /* fallback busy-wait */ const start = Date.now(); while (Date.now() - start < delay) {} }
           continue;
         }
         // Final attempt failed — fall through to direct write
       }
     }
     // All rename attempts failed — direct write as fallback (not atomic but won't lose data)
-    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
     fs.writeFileSync(p, content);
   } catch (err) {
     // Even direct write failed — log and clean up tmp
     console.error(`[safeWrite] FAILED to write ${p}: ${err.message}`);
-    try { fs.unlinkSync(tmp); } catch {}
+    try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
   }
 }
 
 function safeUnlink(p) {
-  try { fs.unlinkSync(p); } catch {}
+  try { fs.unlinkSync(p); } catch { /* cleanup */ }
 }
 
 function sleepMs(ms) {
@@ -90,8 +90,8 @@ function withFileLock(lockPath, fn, {
   try {
     return fn();
   } finally {
-    try { fs.closeSync(fd); } catch {}
-    try { fs.unlinkSync(lockPath); } catch {}
+    try { fs.closeSync(fd); } catch { /* cleanup */ }
+    try { fs.unlinkSync(lockPath); } catch { /* cleanup */ }
   }
 }
 

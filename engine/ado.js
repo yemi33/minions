@@ -91,7 +91,7 @@ async function forEachActivePr(config, token, callback) {
         const updated = await callback(project, pr, prNum, orgBase);
         if (updated) projectUpdated++;
       } catch (err) {
-        try { engine().log('warn', `Failed to poll status for ${pr.id}: ${err.message}`); } catch {}
+        try { engine().log('warn', `Failed to poll status for ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
       }
     }
 
@@ -160,7 +160,7 @@ async function pollPrStatus(config) {
             if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
             else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
             shared.safeWrite(metricsPath, metrics);
-          } catch {}
+          } catch (err) { try { engine().log('warn', `Metrics update: ${err.message}`); } catch { /* engine not available */ } }
         }
       }
     }

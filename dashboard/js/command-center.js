@@ -44,7 +44,7 @@ function ccSaveState() {
     // Keep last 30 messages for display
     const toSave = _ccMessages.slice(-30);
     localStorage.setItem('cc-messages', JSON.stringify(toSave));
-  } catch {} // localStorage might be full
+  } catch { /* localStorage might be full */ }
 }
 
 function ccUpdateSessionIndicator() {

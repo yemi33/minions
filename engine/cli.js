@@ -56,7 +56,7 @@ const commands = {
         printPreflight(results, { label: 'Preflight checks' });
         console.log('  Some checks failed — agents may not work. Run `minions doctor` for details.\n');
       }
-    } catch {}
+    } catch (e) { console.error('preflight:', e.message); }
 
     const e = engine();
     const control = getControl();
@@ -74,7 +74,7 @@ const commands = {
             process.kill(control.pid, 0);
             alive = true;
           }
-        } catch {}
+        } catch { /* process may be dead */ }
       }
       if (alive) {
         console.log(`Engine is already running (PID ${control.pid}).`);
@@ -119,7 +119,7 @@ const commands = {
         try {
           const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
           if (pidStr) agentPid = parseInt(pidStr);
-        } catch {}
+        } catch { /* optional */ }
 
         if (!agentPid) {
           const status = getAgentStatus(agentId);
@@ -131,7 +131,7 @@ const commands = {
               if (ageMs < 300000) {
                 agentPid = -1;
               }
-            } catch {}
+            } catch { /* optional */ }
           }
         }
 
@@ -213,7 +213,7 @@ const commands = {
           let prsCreated = 0;
           try {
             prsCreated = lifecycle.syncPrsFromOutput(output, agentId, item.meta, config);
-          } catch {}
+          } catch (err) { e.log('warn', `Orphan PR sync: ${err.message}`); }
 
           // Update work item status
           if (item.meta?.item?.id) {
@@ -235,7 +235,7 @@ const commands = {
                     safeWrite(wiPath, items);
                   }
                 }
-              } catch {}
+              } catch (err) { e.log('warn', `Orphan WI fallback: ${err.message}`); }
             }
           }
 
@@ -248,16 +248,16 @@ const commands = {
               '',
               { processWorkItemFailure: false }
             );
-          } catch {}
+          } catch (err) { e.log('warn', `Orphan dispatch complete: ${err.message}`); }
 
           // Check plan completion
           if (isSuccess && item.meta?.item?.sourcePlan) {
-            try { lifecycle.checkPlanCompletion(item.meta, config); } catch {}
+            try { lifecycle.checkPlanCompletion(item.meta, config); } catch (err) { e.log('warn', `Orphan plan completion: ${err.message}`); }
           }
 
           recovered++;
           console.log(`    ✓ Recovered ${agentId}: ${(item.task || '').slice(0, 60)} → ${result}${prsCreated ? ' (' + prsCreated + ' PR)' : ''}`);
-        } catch {}
+        } catch (err) { e.log('warn', `Orphan recovery: ${err.message}`); }
       }
       if (recovered > 0) {
         e.log('info', `Orphan recovery: processed ${recovered} completion(s) from previous session`);
@@ -291,7 +291,7 @@ const commands = {
             }
           }
           if (changed) safeWrite(wiPath, items);
-        } catch {}
+        } catch (err) { e.log('warn', `Recovery WI reset: ${err.message}`); }
       }
 
       // Plan chain recovery removed — plans require explicit user execution via dashboard
@@ -338,7 +338,7 @@ const commands = {
         for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
           filesToWatch.push(path.join(prdDir, f));
         }
-      } catch {}
+      } catch { /* optional */ }
 
       for (const filePath of filesToWatch) {
         if (_watchedFiles.has(filePath)) continue;
@@ -354,7 +354,7 @@ const commands = {
               e.tick();
             }, 1000);
           });
-        } catch {}
+        } catch { /* optional */ }
       }
     }
     watchForWorkChanges();
@@ -366,7 +366,7 @@ const commands = {
       shuttingDown = true;
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
-      for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch {} }
+      for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);
 
@@ -418,7 +418,7 @@ const commands = {
     }
     const control = getControl();
     if (control.pid && control.pid !== process.pid) {
-      try { process.kill(control.pid); } catch {}
+      try { process.kill(control.pid); } catch { /* process may be dead */ }
     }
     safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
     e.log('info', 'Engine stopped');
@@ -459,7 +459,7 @@ const commands = {
     try {
       const vFile = path.join(MINIONS_DIR, '.minions-version');
       version = fs.readFileSync(vFile, 'utf8').trim();
-    } catch {}
+    } catch { /* optional */ }
 
     console.log('\n=== Minions Engine ===\n');
     console.log(`Version: ${version}`);
@@ -476,7 +476,7 @@ const commands = {
           process.kill(control.pid, 0);
           engineAlive = true;
         }
-      } catch {}
+      } catch { /* process may be dead */ }
     }
     if (control.state === 'running' && !engineAlive) {
       console.log(`Engine: stale (PID ${control.pid} is dead) — run: minions start`);

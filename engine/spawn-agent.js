@@ -45,7 +45,7 @@ if (!claudeBin) {
       const basedir = path.dirname(which.replace(/^\/c\//, 'C:/').replace(/\//g, path.sep));
       claudeBin = path.join(basedir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
     }
-  } catch {}
+  } catch { /* optional */ }
 }
 
 // Debug log
@@ -86,7 +86,7 @@ if (_sysPromptFileSupported === null) {
     const { spawnSync } = require('child_process');
     const testResult = spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
-    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: new Date().toISOString() })); } catch {}
+    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: new Date().toISOString() })); } catch { /* optional */ }
   } catch { _sysPromptFileSupported = true; /* assume supported */ }
 }
 if (!isResume) try {
@@ -131,7 +131,7 @@ if (!isResume && Buffer.byteLength(sysPrompt) >= 30000) {
 proc.stdin.end();
 
 // Clean up temp file (only created for non-resume sessions)
-if (!isResume) setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch {} }, 5000);
+if (!isResume) setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch { /* cleanup */ } }, 5000);
 
 // Capture stderr separately for debugging
 let stderrBuf = '';

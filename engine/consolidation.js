@@ -167,10 +167,10 @@ function consolidateWithLLM(items, existingNotes, files, config) {
 
   const timeout = setTimeout(() => {
     e.log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
-    try { proc.kill('SIGTERM'); } catch {}
+    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
     // Escalate to SIGKILL after 10s if process doesn't exit
     setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch {}
+      try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
       if (_consolidationInFlight) {
         _consolidationInFlight = false;
         _processingFiles.clear();
@@ -399,14 +399,14 @@ function classifyToKnowledgeBase(items) {
       if (fs.existsSync(dir)) count += fs.readdirSync(dir).length;
     }
     safeWrite(path.join(ENGINE_DIR, 'kb-checkpoint.json'), JSON.stringify({ count, updatedAt: new Date().toISOString() }));
-  } catch {}
+  } catch (err) { engine().log('warn', `KB checkpoint: ${err.message}`); }
 }
 
 function archiveInboxFiles(files) {
   const e = engine();
   if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
   for (const f of files) {
-    try { fs.renameSync(path.join(INBOX_DIR, f), shared.uniquePath(path.join(ARCHIVE_DIR, `${e.dateStamp()}-${f}`))); } catch {}
+    try { fs.renameSync(path.join(INBOX_DIR, f), shared.uniquePath(path.join(ARCHIVE_DIR, `${e.dateStamp()}-${f}`))); } catch (err) { e.log('warn', `Inbox archive: ${err.message}`); }
   }
 }
 

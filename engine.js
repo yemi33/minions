@@ -158,7 +158,7 @@ function parseRoutingTable() {
 
 function getRoutingTableCached() {
   let mtime = 0;
-  try { mtime = fs.statSync(ROUTING_PATH).mtimeMs; } catch {}
+  try { mtime = fs.statSync(ROUTING_PATH).mtimeMs; } catch { /* optional */ }
   if (_routingCache && _routingCacheMtime === mtime) return _routingCache;
   _routingCache = parseRoutingTable();
   _routingCacheMtime = mtime;
@@ -287,7 +287,7 @@ function resolveTaskContext(item, config) {
             resolved.additionalContext += `\n\n## Referenced Plan: ${planFile} (created by ${agent.name})\n\n${content}`;
             resolved.referencedFiles.push(planPath);
             log('info', `Context resolution: found plan "${planFile}" by ${agent.name} for work item ${item.id}`);
-          } catch {}
+          } catch (e) { log('warn', 'resolve plan context: ' + e.message); }
         } else if (plans.length > 0) {
           // Fallback: try to find a plan file with the agent's name or ID in it
           const match = plans.find(f => f.toLowerCase().includes(agent.id) || f.toLowerCase().includes(agent.name));
@@ -298,10 +298,10 @@ function resolveTaskContext(item, config) {
               resolved.additionalContext += `\n\n## Referenced Plan: ${match}\n\n${content}`;
               resolved.referencedFiles.push(planPath);
               log('info', `Context resolution: found plan "${match}" (name match) for work item ${item.id}`);
-            } catch {}
+            } catch (e) { log('warn', 'resolve plan fallback context: ' + e.message); }
           }
         }
-      } catch {}
+      } catch (e) { log('warn', 'resolve agent plan context: ' + e.message); }
     }
 
     // Match agent output/notes references
@@ -322,7 +322,7 @@ function resolveTaskContext(item, config) {
           resolved.referencedFiles.push(path.join(inboxDir, files[0]));
           log('info', `Context resolution: found notes "${files[0]}" by ${agent.name} for work item ${item.id}`);
         }
-      } catch {}
+      } catch (e) { log('warn', 'resolve plan context outer: ' + e.message); }
     }
   }
 
@@ -340,7 +340,7 @@ function resolveTaskContext(item, config) {
         resolved.referencedFiles.push(planPath);
         log('info', `Context resolution: using latest plan "${plans[0]}" for work item ${item.id}`);
       }
-    } catch {}
+    } catch (e) { log('warn', 'resolve latest plan context: ' + e.message); }
   }
 
   return resolved;
@@ -358,7 +358,7 @@ function renderPlaybook(type, vars) {
 
   // Inject pinned context (always visible to agents) — capped at 4KB
   let pinnedContent = '';
-  try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch {}
+  try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch { /* optional */ }
   if (pinnedContent) {
     if (pinnedContent.length > 4096) pinnedContent = pinnedContent.slice(0, 4096) + '\n\n_...pinned.md truncated (read full file if needed)_';
     content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
@@ -612,7 +612,7 @@ function buildAgentContext(agentId, config, project) {
     for (const pr of centralPrs.filter(pr => pr.status === 'active' || pr.status === 'linked')) {
       if (!allPrs.some(p => p.id === pr.id)) allPrs.push({ ...pr, _project: 'central' });
     }
-  } catch {}
+  } catch (e) { log('warn', 'read central pull-requests: ' + e.message); }
   if (allPrs.length > 0) {
     const prLines = allPrs.map(pr =>
       `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${pr.status === 'linked' ? 'context-only' : (pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${pr._context ? ' — ' + pr._context.slice(0, 100) : ''}`
@@ -703,7 +703,7 @@ function findExistingWorktree(repoDir, branchName) {
         }
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'git: ' + e.message); }
   return null;
 }
 
@@ -727,7 +727,7 @@ function removeStaleIndexLock(rootDir) {
         log('warn', `Removed stale index.lock (${Math.round(age / 1000)}s old) in ${rootDir}`);
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'git: ' + e.message); }
 }
 
 function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetries) {
@@ -736,7 +736,7 @@ function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetr
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       if (attempt > 0) {
-        try { exec('git worktree prune', { ...gitOpts, cwd: rootDir, timeout: 15000 }); } catch {}
+        try { exec('git worktree prune', { ...gitOpts, cwd: rootDir, timeout: 15000 }); } catch (e) { log('warn', 'git: ' + e.message); }
         removeStaleIndexLock(rootDir);
         log('warn', `Retrying git worktree add (attempt ${attempt + 1}/${retries + 1}) for ${path.basename(worktreePath)}`);
       }
@@ -795,8 +795,8 @@ function spawnAgent(dispatchItem, config) {
     if (existingWt) {
       worktreePath = existingWt;
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
-      try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
-      try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch {}
+      try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+      try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch (e) { log('warn', 'git: ' + e.message); }
     } else if (type !== 'implement') {
       // Only implement tasks may create new worktrees.
       // Other task types are reuse-only: if no existing worktree, run in rootDir.
@@ -808,13 +808,13 @@ function spawnAgent(dispatchItem, config) {
         if (!fs.existsSync(worktreePath)) {
           const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
           // Prune stale worktree entries before creating (handles leftover entries from crashed runs)
-          try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+          try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
           // Remove stale index.lock before creating worktree (Windows crashes can leave this behind)
           removeStaleIndexLock(rootDir);
 
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
-            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
+            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
             try {
               runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (eShared) {
@@ -832,7 +832,7 @@ function spawnAgent(dispatchItem, config) {
               runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (e1) {
               // Branch already exists or checked out elsewhere — try without -b
-              try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch {}
+              try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
               try {
                 runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                 log('info', `Reusing existing branch: ${branchName}`);
@@ -859,12 +859,12 @@ function spawnAgent(dispatchItem, config) {
                   } else if (existingWtPath && !fs.existsSync(existingWtPath)) {
                     // Directory gone but git still tracks it — prune and recreate
                     log('warn', `Branch ${branchName} tracked in missing dir ${existingWtPath} — pruning and recreating`);
-                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
                     runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                     log('info', `Recovered worktree for ${branchName} after stale entry prune`);
                   } else {
                     // Can't find the worktree at all — prune and retry
-                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch {}
+                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
                     runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                   }
                 } else {
@@ -875,7 +875,7 @@ function spawnAgent(dispatchItem, config) {
           }
         } else if (meta?.branchStrategy === 'shared-branch') {
           log('info', `Pulling latest on shared branch ${branchName}`);
-          try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch {}
+          try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch (e) { log('warn', 'git: ' + e.message); }
         }
       } catch (err) {
         if (recoverPartialWorktree(rootDir, worktreePath, branchName, _gitOpts)) {
@@ -956,7 +956,7 @@ function spawnAgent(dispatchItem, config) {
           log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
         }
       }
-    } catch {}
+    } catch (e) { log('warn', 'session resume lookup: ' + e.message); }
   }
 
   // MCP servers: agents inherit from ~/.claude.json directly as Claude Code processes.
@@ -997,14 +997,14 @@ function spawnAgent(dispatchItem, config) {
     const silentMs = Date.now() - lastOutputAt;
     if (silentMs < 30000) return;
     const silentSec = Math.round(silentMs / 1000);
-    try { fs.appendFileSync(liveOutputPath, `[heartbeat] running — no output for ${silentSec}s\n`); } catch {}
+    try { fs.appendFileSync(liveOutputPath, `[heartbeat] running — no output for ${silentSec}s\n`); } catch { /* optional */ }
   }, 30000);
 
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
     lastOutputAt = Date.now();
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
-    try { fs.appendFileSync(liveOutputPath, chunk); } catch {}
+    try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
 
     // Capture sessionId early for mid-session steering
     const procInfo = activeProcesses.get(id);
@@ -1021,7 +1021,7 @@ function spawnAgent(dispatchItem, config) {
             break;
           }
         }
-      } catch {}
+      } catch { /* JSON parse — output may not be valid JSON */ }
     }
   });
 
@@ -1029,7 +1029,7 @@ function spawnAgent(dispatchItem, config) {
     const chunk = data.toString();
     lastOutputAt = Date.now();
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
-    try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch {}
+    try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
   });
 
   function onAgentClose(code) {
@@ -1077,13 +1077,13 @@ function spawnAgent(dispatchItem, config) {
         const chunk = data.toString();
         lastOutputAt = Date.now();
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
-        try { fs.appendFileSync(liveOutputPath, chunk); } catch {}
+        try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();
         lastOutputAt = Date.now();
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
-        try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch {}
+        try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
       });
 
       // Re-wire close handler for the resumed process
@@ -1106,9 +1106,9 @@ function spawnAgent(dispatchItem, config) {
     const stillActive = (dispatchNow.active || []).some(d => d.id === id);
     if (!stillActive) {
       log('info', `Agent ${agentId} (${id}) close event ignored — dispatch already completed elsewhere`);
-      try { fs.unlinkSync(sysPromptPath); } catch {}
-      try { fs.unlinkSync(promptPath); } catch {}
-      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
+      try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
       return;
     }
 
@@ -1124,9 +1124,9 @@ function spawnAgent(dispatchItem, config) {
       const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
       log('error', `Agent ${agentId} (${id}) failed: ${errMsg}`);
       completeDispatch(id, 'error', errMsg, '');
-      try { fs.unlinkSync(sysPromptPath); } catch {}
-      try { fs.unlinkSync(promptPath); } catch {}
-      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
+      try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
       return;
     }
 
@@ -1137,9 +1137,9 @@ function spawnAgent(dispatchItem, config) {
     completeDispatch(id, code === 0 ? 'success' : 'error', '', resultSummary);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
-    try { fs.unlinkSync(sysPromptPath); } catch {}
-    try { fs.unlinkSync(promptPath); } catch {}
-    try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch {}
+    try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
+    try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
+    try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
 
     log('info', `Agent ${agentId} completed. Output saved to ${archivePath}`);
 
@@ -1151,7 +1151,7 @@ function spawnAgent(dispatchItem, config) {
         // Keep output archive but remove temp agent directory (live-output.log etc.)
         fs.rmSync(agentDir, { recursive: true, force: true });
         log('info', `Temp agent ${agentId} cleaned up`);
-      } catch {}
+      } catch { /* cleanup */ }
     }
   }
 
@@ -1287,7 +1287,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
           const wi = items.find(i => i.id === item.meta.item.id);
           if (wi) retries = wi._retryCount || 0;
         }
-      } catch {}
+      } catch (e) { log('warn', 'read retry count: ' + e.message); }
       if (retryableFailure && retries < 3) {
         log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/3`);
         updateWorkItemStatus(item.meta, 'pending', '');
@@ -1298,7 +1298,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
               dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];
               return dp;
             });
-          } catch {}
+          } catch (e) { log('warn', 'clear dispatch for retry: ' + e.message); }
         }
         // Increment retry counter on the source work item
         try {
@@ -1320,7 +1320,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
               safeWrite(wiPath, items);
             }
           }
-        } catch {}
+        } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
       } else {
         const finalReason = !retryableFailure
           ? `Non-retryable failure: ${reason || 'Unknown error'}`
@@ -1349,7 +1349,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
                 `These items cannot dispatch until \`${failedId}\` is fixed and reset to \`pending\`.\n`
               : `No downstream items are blocked.\n`)
           );
-        } catch {}
+        } catch (e) { log('warn', 'write failure alert: ' + e.message); }
       }
     }
   }
@@ -1370,7 +1370,7 @@ function areDependenciesMet(item, config) {
     try {
       const wi = safeJson(projectWorkItemsPath(p)) || [];
       allWorkItems = allWorkItems.concat(wi);
-    } catch {}
+    } catch (e) { log('warn', 'read project work items for deps: ' + e.message); }
   }
   // PRD item statuses that count as "done" for dep resolution
   const PRD_MET_STATUSES = new Set(['done', 'in-pr', 'implemented', 'complete']);
@@ -1383,7 +1383,7 @@ function areDependenciesMet(item, config) {
         const plan = safeJson(path.join(PRD_DIR, sourcePlan));
         const prdItem = (plan?.missing_features || []).find(f => f.id === depId);
         if (prdItem && PRD_MET_STATUSES.has(prdItem.status)) continue; // PRD says done — treat as met
-      } catch {}
+      } catch (e) { log('warn', 'check PRD dep status: ' + e.message); }
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
@@ -1419,7 +1419,7 @@ function writeInboxAlert(slug, content) {
     const existing = safeReadDir(INBOX_DIR).find(f => f.startsWith(`engine-alert-${slug}-${dateStamp()}`));
     if (existing) return;
     safeWrite(file, content);
-  } catch {}
+  } catch (e) { log('warn', 'write inbox alert: ' + e.message); }
 }
 
 // Reconciles work items against known PRs.
@@ -1526,7 +1526,7 @@ function checkSteering(config) {
     if (!fs.existsSync(steerPath)) continue;
 
     const message = safeRead(steerPath);
-    try { fs.unlinkSync(steerPath); } catch {}
+    try { fs.unlinkSync(steerPath); } catch { /* cleanup */ }
     if (!message) continue;
 
     const sessionId = info.sessionId;
@@ -1538,7 +1538,7 @@ function checkSteering(config) {
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
     // Kill current process
-    try { info.proc.kill('SIGTERM'); } catch {}
+    try { info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
 
     // Store steering context for re-spawn on close
     info._steeringMessage = message;
@@ -1558,9 +1558,9 @@ function checkTimeouts(config) {
     const elapsed = Date.now() - new Date(info.startedAt).getTime();
     if (elapsed > itemTimeout) {
       log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${Math.round(elapsed / 1000)}s — killing`);
-      try { info.proc.kill('SIGTERM'); } catch {}
+      try { info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
       setTimeout(() => {
-        try { info.proc.kill('SIGKILL'); } catch {}
+        try { info.proc.kill('SIGKILL'); } catch { /* process may be dead */ }
       }, 5000);
     }
   }
@@ -1581,7 +1581,7 @@ function checkTimeouts(config) {
     try {
       const stat = fs.statSync(liveLogPath);
       lastActivity = Math.max(lastActivity, stat.mtimeMs);
-    } catch {}
+    } catch { /* optional */ }
 
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
@@ -1605,7 +1605,7 @@ function checkTimeouts(config) {
             const result = JSON.parse(resultLine);
             safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${result.result || '(no text)'}\n`);
           }
-        } catch {}
+        } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
         completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');
 
@@ -1613,12 +1613,12 @@ function checkTimeouts(config) {
         runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
 
         if (hasProcess) {
-          try { activeProcesses.get(item.id)?.proc.kill('SIGTERM'); } catch {}
+          try { activeProcesses.get(item.id)?.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
           activeProcesses.delete(item.id);
         }
         continue; // Skip orphan/hung detection — we handled it
       }
-    } catch {}
+    } catch (e) { log('warn', 'output completion detection: ' + e.message); }
 
     // Check if agent is in a blocking tool call (TaskOutput block:true, Bash with long timeout, etc.)
     // These tools produce no stdout for extended periods — don't kill them prematurely
@@ -1652,13 +1652,13 @@ function checkTimeouts(config) {
                 isBlocking = true;
               }
               break; // only check the most recent tool_use
-            } catch {}
+            } catch { /* JSON parse — line may not be valid JSON */ }
           }
           if (isBlocking) {
             log('info', `Agent ${item.agent} (${item.id}) is in a blocking tool call — extended timeout to ${Math.round(blockingTimeout / 1000)}s (silent for ${silentSec}s)`);
           }
         }
-      } catch {}
+      } catch (e) { log('warn', 'blocking tool detection: ' + e.message); }
     }
 
     const effectiveTimeout = isBlocking ? blockingTimeout : heartbeatTimeout;
@@ -1672,8 +1672,8 @@ function checkTimeouts(config) {
       log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
-        try { procInfo.proc.kill('SIGTERM'); } catch {}
-        setTimeout(() => { try { procInfo.proc.kill('SIGKILL'); } catch {} }, 5000);
+        try { procInfo.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+        setTimeout(() => { try { procInfo.proc.kill('SIGKILL'); } catch { /* process may be dead */ } }, 5000);
         activeProcesses.delete(item.id);
       }
       deadItems.push({ item, reason: `Hung — no output for ${silentSec}s` });
@@ -1752,11 +1752,11 @@ function runCleanup(config, verbose = false) {
               fs.unlinkSync(fp);
               cleaned.tempFiles++;
             }
-          } catch {}
+          } catch { /* cleanup */ }
         }
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'cleanup temp files: ' + e.message); }
 
   // 2. Clean live-output.log for idle agents (not currently working)
   for (const [agentId] of Object.entries(config.agents || {})) {
@@ -1770,7 +1770,7 @@ function runCleanup(config, verbose = false) {
             fs.unlinkSync(livePath);
             cleaned.liveOutputs++;
           }
-        } catch {}
+        } catch { /* cleanup */ }
       }
     }
   }
@@ -1835,7 +1835,7 @@ function runCleanup(config, verbose = false) {
             if (ageMs > 7200000 && !isReferenced) { // 2 hours
               shouldClean = true;
             }
-          } catch {}
+          } catch { /* optional */ }
         }
 
         // Skip worktrees for active shared-branch plans (check both prd/ and plans/ for .json PRDs)
@@ -1859,7 +1859,7 @@ function runCleanup(config, verbose = false) {
               }
               if (isProtected) break;
             }
-          } catch {}
+          } catch (e) { log('warn', 'check shared-branch protection: ' + e.message); }
         }
 
         wtEntries.push({ dir, wtPath, mtime, shouldClean, isProtected });
@@ -1889,7 +1889,7 @@ function runCleanup(config, verbose = false) {
           }
         }
       }
-    } catch {}
+    } catch (e) { log('warn', 'cleanup worktrees: ' + e.message); }
   }
 
   // 4. Kill zombie claude processes not tracked by the engine
@@ -1905,15 +1905,15 @@ function runCleanup(config, verbose = false) {
     const activeIds = new Set((dispatch.active || []).map(d => d.id));
     for (const [id, info] of activeProcesses.entries()) {
       if (!activeIds.has(id)) {
-        try { if (info.proc) info.proc.kill('SIGTERM'); } catch {}
+        try { if (info.proc) info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
         activeProcesses.delete(id);
         cleaned.zombies++;
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'cleanup zombie processes: ' + e.message); }
 
   // 5. Clean spawn-debug.log
-  try { fs.unlinkSync(path.join(ENGINE_DIR, 'spawn-debug.log')); } catch {}
+  try { fs.unlinkSync(path.join(ENGINE_DIR, 'spawn-debug.log')); } catch { /* cleanup */ }
 
   // 6. Prune old output archive files (keep last 30 per agent)
   for (const agentId of Object.keys(config.agents || {})) {
@@ -1925,9 +1925,9 @@ function runCleanup(config, verbose = false) {
         .map(f => ({ name: f, mtime: fs.statSync(path.join(agentDir, f)).mtimeMs }))
         .sort((a, b) => b.mtime - a.mtime);
       for (const old of outputFiles.slice(30)) {
-        try { fs.unlinkSync(path.join(agentDir, old.name)); cleaned.files++; } catch {}
+        try { fs.unlinkSync(path.join(agentDir, old.name)); cleaned.files++; } catch { /* cleanup */ }
       }
-    } catch {}
+    } catch (e) { log('warn', 'prune output archives: ' + e.message); }
   }
 
   // 7. Prune orphaned dispatch entries — items whose source work item no longer exists
@@ -1939,12 +1939,12 @@ function runCleanup(config, verbose = false) {
     try {
       const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
       central.forEach(w => allWiIds.add(w.id));
-    } catch {}
+    } catch (e) { log('warn', 'read central work items for orphan check: ' + e.message); }
     for (const project of projects) {
       try {
         const projItems = safeJson(projectWorkItemsPath(project)) || [];
         projItems.forEach(w => allWiIds.add(w.id));
-      } catch {}
+      } catch (e) { log('warn', 'read project work items for orphan check: ' + e.message); }
     }
 
     let changed = false;
@@ -1974,7 +1974,7 @@ function runCleanup(config, verbose = false) {
         }
       });
     }
-  } catch {}
+  } catch (e) { log('warn', 'prune orphaned dispatches: ' + e.message); }
 
   if (cleaned.tempFiles + cleaned.liveOutputs + cleaned.worktrees + cleaned.zombies + (cleaned.files || 0) + cleaned.orphanedDispatches > 0) {
     log('info', `Cleanup: ${cleaned.tempFiles} temp, ${cleaned.liveOutputs} live outputs, ${cleaned.worktrees} worktrees, ${cleaned.zombies} zombies, ${cleaned.files || 0} archives, ${cleaned.orphanedDispatches} orphaned dispatches`);
@@ -1993,10 +1993,10 @@ function runCleanup(config, verbose = false) {
             if (!cleaned.sweptKb) cleaned.sweptKb = 0;
             cleaned.sweptKb++;
           }
-        } catch {}
+        } catch { /* cleanup */ }
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'cleanup swept KB files: ' + e.message); }
 
   // 9. KB watchdog — restore deleted KB files from git if count dropped vs checkpoint
   try {
@@ -2024,7 +2024,7 @@ function runCleanup(config, verbose = false) {
         }
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'KB watchdog check: ' + e.message); }
 
   // 6. Migrate legacy work-item statuses to canonical values
   // in-pr, implemented, complete → done (one-time correction per item)
@@ -2044,7 +2044,7 @@ function runCleanup(config, verbose = false) {
         safeWrite(wiPath, items);
         log('info', `Migrated ${migrated} legacy status(es) → done in ${project.name} work items`);
       }
-    } catch {}
+    } catch (e) { log('warn', 'migrate legacy statuses: ' + e.message); }
   }
   // Central work items
   try {
@@ -2061,7 +2061,7 @@ function runCleanup(config, verbose = false) {
       safeWrite(centralPath, centralItems);
       log('info', `Migrated ${migrated} legacy status(es) → done in central work items`);
     }
-  } catch {}
+  } catch (e) { log('warn', 'migrate central legacy statuses: ' + e.message); }
   // PRD items (missing_features[].status)
   try {
     const prdFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json'));
@@ -2081,7 +2081,7 @@ function runCleanup(config, verbose = false) {
         log('info', `Migrated ${migrated} legacy PRD item status(es) → done in ${pf}`);
       }
     }
-  } catch {}
+  } catch (e) { log('warn', 'migrate PRD legacy statuses: ' + e.message); }
 
   return cleaned;
 }
@@ -2204,7 +2204,7 @@ function autoCleanPrdWorkItems(prdFile, config) {
         return true;
       });
       if (filtered.length < items.length) safeWrite(wiPath, filtered);
-    } catch {}
+    } catch (e) { log('warn', 'auto-clean PRD work items: ' + e.message); }
   }
   if (deletedIds.length > 0) {
     const deletedSet = new Set(deletedIds);
@@ -2214,7 +2214,7 @@ function autoCleanPrdWorkItems(prdFile, config) {
 }
 
 function materializePlansAsWorkItems(config) {
-  if (!fs.existsSync(PRD_DIR)) { try { fs.mkdirSync(PRD_DIR, { recursive: true }); } catch {} }
+  if (!fs.existsSync(PRD_DIR)) { try { fs.mkdirSync(PRD_DIR, { recursive: true }); } catch (e) { log('warn', 'create PRD directory: ' + e.message); } }
 
   // Enforce: PRDs must be .json — auto-rename .md files that contain valid PRD JSON
   // Check both prd/ and plans/ (agents may still write JSON to plans/)
@@ -2231,12 +2231,12 @@ function materializePlansAsWorkItems(config) {
           if (parsed.missing_features) {
             const jsonName = mf.replace(/\.md$/, '.json');
             safeWrite(path.join(PRD_DIR, jsonName), parsed);
-            try { fs.unlinkSync(path.join(checkDir, mf)); } catch {}
+            try { fs.unlinkSync(path.join(checkDir, mf)); } catch { /* cleanup */ }
             log('info', `Plan enforcement: moved ${mf} → prd/${jsonName} (PRDs must be .json in prd/)`);
           }
         } catch {} // Not JSON — it's a proper plan .md, leave it
       }
-    } catch {}
+    } catch (e) { log('warn', 'scan .md files for PRD enforcement: ' + e.message); }
     // Also migrate any .json PRD files from plans/ to prd/
     if (checkDir === PLANS_DIR) {
       try {
@@ -2246,12 +2246,12 @@ function materializePlansAsWorkItems(config) {
             const parsed = safeJson(path.join(PLANS_DIR, jf));
             if (parsed?.missing_features) {
               safeWrite(path.join(PRD_DIR, jf), parsed);
-              try { fs.unlinkSync(path.join(PLANS_DIR, jf)); } catch {}
+              try { fs.unlinkSync(path.join(PLANS_DIR, jf)); } catch { /* cleanup */ }
               log('info', `Auto-migrated PRD ${jf} from plans/ to prd/`);
             }
-          } catch {}
+          } catch (e) { log('warn', 'migrate PRD from plans: ' + e.message); }
         }
-      } catch {}
+      } catch (e) { log('warn', 'scan JSON in plans dir: ' + e.message); }
     }
   }
 
@@ -2303,7 +2303,7 @@ function materializePlansAsWorkItems(config) {
               : '';
 
             // Delete old PRD — agent will write replacement at same path
-            try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch {}
+            try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch { /* cleanup */ }
 
             // Queue plan-to-prd regeneration
             const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
@@ -2341,7 +2341,7 @@ function materializePlansAsWorkItems(config) {
 
           safeWrite(path.join(PRD_DIR, file), plan);
         }
-      } catch {}
+      } catch (e) { log('warn', 'plan staleness check: ' + e.message); }
     }
 
     // Human approval gate: plans start as 'awaiting-approval' and must be approved before work begins
@@ -2561,7 +2561,7 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
     if (!target?.humanFeedback?.pendingFix) return;
     target.humanFeedback.pendingFix = false;
     safeWrite(prsPath, prs);
-  } catch {}
+  } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
 /**
@@ -2681,7 +2681,7 @@ function discoverFromPrs(config, project) {
             target._buildFailNotified = true;
             safeWrite(prPath, prs);
           }
-        } catch {}
+        } catch (e) { log('warn', 'mark build fail notified: ' + e.message); }
       }
     }
 
@@ -2747,7 +2747,7 @@ function discoverFromWorkItems(config, project) {
         return dp.completed.length !== before ? dp : undefined;
       });
       dispatchCooldowns.delete(key);
-    } catch {}
+    } catch (e) { log('warn', 'self-heal dispatch state: ' + e.message); }
     // Cooldown bypass for resumed items — clear in-memory cooldown so they dispatch immediately
     if (item._resumedAt) {
       dispatchCooldowns.delete(key);
@@ -2809,7 +2809,7 @@ function discoverFromWorkItems(config, project) {
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
       notes_content: '',
     };
-    try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+    try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
 
     // Inject references and acceptance criteria
     const refs = (item.references || []).filter(r => r && r.url).map(r =>
@@ -2824,7 +2824,7 @@ function discoverFromWorkItems(config, project) {
       vars.question = item.title + (item.description ? '\n\n' + item.description : '');
       vars.task_id = item.id;
       vars.notes_content = '';
-      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
     }
 
     // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
@@ -2954,7 +2954,7 @@ function materializeSpecsAsWorkItems(config, project) {
           recentSpecs.push({ file: line.trim(), ...currentCommit });
         }
       }
-    } catch {}
+    } catch (e) { log('warn', 'git: ' + e.message); }
   }
 
   if (recentSpecs.length === 0) return;
@@ -3118,7 +3118,7 @@ function discoverCentralWorkItems(config) {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
           vars.task_id = item.id;
           vars.notes_content = '';
-          try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+          try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
         }
 
         const resolvedCtx = resolveTaskContext(item, config);
@@ -3179,7 +3179,7 @@ function discoverCentralWorkItems(config) {
         project_path: firstProject?.localPath || '',
         notes_content: '',
       };
-      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
 
       // Inject references and acceptance criteria
       const normRefs = (item.references || []).filter(r => r && r.url).map(r =>
@@ -3199,7 +3199,7 @@ function discoverCentralWorkItems(config) {
         vars.plan_file = planFileName;
         vars.task_description = item.title;
         vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
         // Track expected plan filename in meta for chainPlanToPrd
         item._planFileName = planFileName;
       }
@@ -3228,7 +3228,7 @@ function discoverCentralWorkItems(config) {
         vars.question = item.title + (item.description ? '\n\n' + item.description : '');
         vars.task_id = item.id;
         vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
+        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
       }
 
       // Resolve implicit context references
@@ -3321,7 +3321,7 @@ function discoverWork(config) {
       }
       if (added > 0) safeWrite(centralPath, items);
     }
-  } catch {}
+  } catch (e) { log('warn', 'discover scheduled work: ' + e.message); }
 
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
@@ -3381,7 +3381,7 @@ async function tickInner() {
   }
 
   // Write heartbeat so dashboard can detect stale engine
-  try { safeWrite(CONTROL_PATH, { ...control, heartbeat: Date.now() }); } catch {}
+  try { safeWrite(CONTROL_PATH, { ...control, heartbeat: Date.now() }); } catch (e) { log('warn', 'write heartbeat: ' + e.message); }
 
   const config = getConfig();
   tickCount++;
@@ -3480,7 +3480,7 @@ async function tickInner() {
                       dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
                       if (dp.completed.length !== before) return dp;
                     });
-                  } catch {}
+                  } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
 
                 // Clear cooldown so item isn't blocked by exponential backoff
                 try {
@@ -3489,7 +3489,7 @@ async function tickInner() {
                     dispatchCooldowns.delete(key);
                     saveCooldowns();
                   }
-                } catch {}
+                } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
               }
             }
 
@@ -3513,14 +3513,14 @@ async function tickInner() {
                       mutateDispatch((dp) => {
                         dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
                       });
-                    } catch {}
+                    } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
                   }
                 }
               }
             }
 
             if (changed) safeWrite(wiPath, items);
-          } catch {}
+          } catch (e) { log('warn', 'stall recovery process project: ' + e.message); }
         }
       }
     } catch (err) { log('warn', `Stall detection error: ${err?.message || err}`); }

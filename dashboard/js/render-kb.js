@@ -6,7 +6,7 @@ async function refreshKnowledgeBase() {
   try {
     _kbData = await fetch('/api/knowledge').then(r => r.json());
     renderKnowledgeBase();
-  } catch {}
+  } catch (e) { console.error('kb refresh:', e.message); }
 }
 
 function renderKnowledgeBase() {

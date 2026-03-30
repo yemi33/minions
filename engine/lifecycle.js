@@ -37,7 +37,7 @@ function checkPlanCompletion(meta, config) {
     try {
       const wi = safeJson(shared.projectWorkItemsPath(p)) || [];
       allWorkItems = allWorkItems.concat(wi);
-    } catch {}
+    } catch { /* optional */ }
   }
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
@@ -107,7 +107,7 @@ function checkPlanCompletion(meta, config) {
           prsCreated.push(pr);
         }
       }
-    } catch {}
+    } catch { /* optional */ }
   }
   const uniquePrs = [...new Map(prsCreated.map(pr => [pr.id || pr.url, pr])).values()];
 
@@ -281,11 +281,11 @@ function checkPlanCompletion(meta, config) {
         try {
           fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
           e.log('info', `Archived source plan: plans/archive/${md}`);
-        } catch {}
+        } catch (err) { e.log('warn', `Failed to archive plan ${md}: ${err.message}`); }
         break;
       }
     }
-  } catch {}
+  } catch (err) { e.log('warn', `Plan archive scan: ${err.message}`); }
 
   // 6. Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
   try {
@@ -319,7 +319,7 @@ function checkPlanCompletion(meta, config) {
       }
     }
     if (cleanedWt > 0) e.log('info', `Plan completion: cleaned ${cleanedWt} worktree(s)`);
-  } catch {}
+  } catch (err) { e.log('warn', `Worktree cleanup: ${err.message}`); }
 
   e.log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }
@@ -366,7 +366,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
         if (fs.existsSync(jsonPath)) fs.renameSync(jsonPath, path.join(planDir, mdName));
         planFileName = mdName;
         e.log('info', `Plan chaining: renamed to .md (not valid JSON)`);
-      } catch {}
+      } catch (err) { e.log('warn', `Plan rename fallback: ${err.message}`); }
     }
   }
 
@@ -489,7 +489,7 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
         return;
       }
     }
-  } catch {}
+  } catch (err) { engine().log('warn', `PRD status sync: ${err.message}`); }
 }
 
 // ─── PR Sync from Output ─────────────────────────────────────────────────────
@@ -689,7 +689,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
           } catch (err) { e.log('warn', `Failed to remove worktree ${dir}: ${err.message}`); }
         }
       }
-    } catch {}
+    } catch (err) { e.log('warn', `Post-merge worktree cleanup: ${err.message}`); }
   }
 
   if (newStatus !== 'merged') return;
@@ -711,7 +711,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
         }
       }
       if (updated > 0) e.log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
-    } catch {}
+    } catch (err) { e.log('warn', `Post-merge PRD update: ${err.message}`); }
   }
 
   const agentId = (pr.agent || '').toLowerCase();
@@ -1014,7 +1014,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         sessionId, dispatchId: dispatchItem.id, savedAt: new Date().toISOString(),
         branch: dispatchItem.meta?.branch || null,
       });
-    } catch {}
+    } catch (err) { engine().log('warn', `Session save: ${err.message}`); }
   }
 
   // Handle decomposition results — create sub-items from decompose agent output
@@ -1038,7 +1038,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         const wi = items.find(i => i.id === meta.item.id);
         if (wi) retries = (wi._retryCount || 0); // Use fresh value from file
       }
-    } catch {}
+    } catch { /* optional */ }
 
     if (retries < 3) {
       e.log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
@@ -1056,7 +1056,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             shared.safeWrite(wiPath, items);
           }
         }
-      } catch {}
+      } catch (err) { e.log('warn', `Retry update: ${err.message}`); }
     } else {
       updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
     }
@@ -1071,7 +1071,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           const wi = items.find(i => i.id === meta.item.id);
           if (wi) { delete wi._decomposing; shared.safeWrite(wiPath, items); }
         }
-      } catch {}
+      } catch (err) { e.log('warn', `Decompose cleanup: ${err.message}`); }
     }
   }
   // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
@@ -1188,7 +1188,7 @@ function syncPrdFromPrs(config) {
     }
   } catch (err) {
     // Non-fatal — log and continue
-    try { engine().log('warn', `syncPrdFromPrs error: ${err?.message || err}`); } catch {}
+    try { engine().log('warn', `syncPrdFromPrs error: ${err?.message || err}`); } catch { /* engine not available */ }
   }
 }
 
