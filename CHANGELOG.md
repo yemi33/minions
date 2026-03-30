@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.59 (2026-03-30)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cli.js
+- engine/consolidation.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/llm.js
+- engine/preflight.js
+- engine/queries.js
+- engine/shared.js
+- engine/spawn-agent.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/command-center.js
+- dashboard/js/live-stream.js
+- dashboard/js/modal-qa.js
+- dashboard/js/refresh.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prs.js
+- dashboard/js/render-work-items.js
+- dashboard/js/settings.js
+
 ## 0.1.58 (2026-03-30)
 
 ### Engine
