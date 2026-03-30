@@ -191,10 +191,12 @@ function renderPlans(plans) {
 
     let actions = '';
     if (needsAction) {
+      // Approve/Reject target the PRD .json file (not the .md plan) since the API parses it as JSON
+      const actionTarget = prdFile || p.file;
       actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
-        '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(p.file) + '\')">Approve</button>' +
+        '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">Approve</button>' +
         '<button class="plan-btn" style="color:var(--blue);border-color:var(--blue)" onclick="planDiscuss(\'' + escHtml(p.file) + '\')">Discuss &amp; Revise</button>' +
-        '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(p.file) + '\')">Reject</button>' +
+        '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
       '</div>' +
       '<div id="revise-input-' + escHtml(p.file).replace(/\./g, '-') + '" style="display:none">' +
         '<textarea class="plan-feedback-input" placeholder="What should be changed? Be specific..." id="revise-feedback-' + escHtml(p.file).replace(/\./g, '-') + '"></textarea>' +
