@@ -1614,7 +1614,7 @@ async function testWorktreeManagement() {
   });
 
   await test('Worktree cleanup uses sanitized branch matching (not fuzzy substring)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     // Should use sanitizeBranch for consistent matching
     assert.ok(src.includes('sanitizeBranch(branch).toLowerCase()') || src.includes('sanitizeBranch(d.meta.branch).toLowerCase()'),
       'Cleanup should sanitize branches before comparison');
@@ -1640,13 +1640,13 @@ async function testWorktreeManagement() {
   });
 
   await test('Shared-branch plan protection checks both prd/ and plans/', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('PRD_DIR') && src.includes("'plans'"),
       'Worktree protection should check both prd/ and plans/ directories');
   });
 
   await test('MAX_WORKTREES cap enforced during cleanup', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('MAX_WORKTREES'),
       'Should reference MAX_WORKTREES constant');
     assert.ok(src.includes('excess'),
@@ -1696,7 +1696,7 @@ async function testWorktreeManagement() {
   });
 
   await test('KB watchdog skips git restore when knowledge is untracked', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes('git ls-tree --name-only HEAD -- knowledge'),
       'KB watchdog should check whether knowledge is tracked before restore');
     assert.ok(src.includes('knowledge/ is not tracked in git HEAD'),
@@ -1850,7 +1850,7 @@ async function testStateIntegrity() {
   });
 
   await test('Engine uses lock-backed dispatch mutations', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') + fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function mutateDispatch('),
       'engine should define dispatch lock helper');
     assert.ok(src.includes('mutateJsonFileLocked(DISPATCH_PATH'),
@@ -1866,7 +1866,7 @@ async function testStateIntegrity() {
   });
 
   await test('Hung timeout path uses normal auto-retry flow', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     assert.ok(src.includes("completeDispatch(item.id, 'error', reason);"),
       'Hung/orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
@@ -1874,7 +1874,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry is gated by retryable failure reason classification', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
     assert.ok(src.includes('retryableFailure && retries < 3'),
@@ -1884,7 +1884,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry writes retry metadata on work items', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('_lastRetryReason'),
       'Auto-retry should persist last retry reason');
     assert.ok(src.includes('_lastRetryAt'),
@@ -1892,7 +1892,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry clears completed dedupe marker for dispatch key', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)"),
       'Auto-retry should clear completed dedupe entry for the same dispatch key');
   });
@@ -1945,7 +1945,7 @@ async function testStateIntegrity() {
   });
 
   await test('Auto-retry reads live work-item retry count before decision', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('let retries = (item.meta.item._retryCount || 0);'),
       'auto-retry should initialize retries from dispatch metadata');
     assert.ok(src.includes('const wi = items.find(i => i.id === item.meta.item.id);'),
@@ -1963,9 +1963,9 @@ async function testStateIntegrity() {
   });
 
   await test('Dispatch completed dedupe cleanup always persists mutation', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     const completeDispatchStart = src.indexOf('function completeDispatch(');
-    const completeDispatchEnd = src.indexOf('\nfunction areDependenciesMet(', completeDispatchStart);
+    const completeDispatchEnd = src.indexOf('\n// ─── Inbox Alert', completeDispatchStart);
     const completeDispatchBody = src.slice(completeDispatchStart, completeDispatchEnd);
     assert.ok(src.includes('dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];'),
       'auto-retry path should remove completed dedupe marker by dispatch key');
@@ -2130,7 +2130,7 @@ async function testLegacyStatusMigration() {
   });
 
   await test('engine.js runCleanup contains legacy status migration code', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define LEGACY_DONE_STATUSES');
     assert.ok(src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
@@ -2419,8 +2419,8 @@ async function testIsRetryableFailureReason() {
   }
 
   if (!isRetryableFailureReason) {
-    // Verify it exists via source
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Verify it exists via source (may be in engine.js or engine/dispatch.js)
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') + fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     await test('isRetryableFailureReason is defined', () => {
       assert.ok(src.includes('function isRetryableFailureReason'));
     });
@@ -2674,7 +2674,7 @@ async function testRenderPlaybook() {
 async function testCompleteDispatch() {
   console.log('\n── engine.js — completeDispatch ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
 
   await test('completeDispatch caps completed list at 100', () => {
     assert.ok(src.includes('dispatch.completed.length >= 100'),
@@ -2794,7 +2794,7 @@ async function testDiscoverFromWorkItems() {
 async function testCheckTimeouts() {
   console.log('\n── engine.js — checkTimeouts ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
 
   await test('checkTimeouts uses configurable agentTimeout', () => {
     assert.ok(src.includes('config.engine?.agentTimeout') || src.includes('agentTimeout'),
@@ -2827,7 +2827,7 @@ async function testCheckTimeouts() {
 async function testAddToDispatch() {
   console.log('\n── engine.js — addToDispatch ──');
 
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
 
   await test('addToDispatch generates ID if missing', () => {
     assert.ok(src.includes('item.id = item.id ||'),
@@ -3500,7 +3500,7 @@ async function testHumanContributions() {
 async function testAgentSteering() {
   console.log('\n── Agent Steering ──');
 
-  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') + fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
   const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
 
   await test('POST /api/agents/steer endpoint exists', () => {
@@ -3841,7 +3841,10 @@ async function testDispatchCycleIntegration() {
   const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
   const cooldownSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
   const playbookSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
-  const engineSrc = engineSrcRaw + routingSrc + cooldownSrc + playbookSrc;
+  const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+  const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+  const engineSrc = engineSrcRaw + routingSrc + cooldownSrc + playbookSrc + dispatchSrc + timeoutSrc + cleanupSrc;
   const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
   const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
   const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
