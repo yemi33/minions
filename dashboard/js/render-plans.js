@@ -469,9 +469,14 @@ async function planView(file) {
 
 async function planApprove(file) {
   try {
-    await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
-    showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
-    refreshPlans();
+    const res = await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
+    if (res.ok) {
+      showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
+      refreshPlans();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Approve failed: ' + (d.error || 'unknown'));
+    }
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
@@ -496,10 +501,15 @@ async function planDelete(file) {
 
 async function planPause(file) {
   try {
-    await fetch('/api/plans/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
-    showToast('cmd-toast', 'Plan paused — no new items will be dispatched', true);
-    refreshPlans();
-    refresh();
+    const res = await fetch('/api/plans/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
+    if (res.ok) {
+      showToast('cmd-toast', 'Plan paused — no new items will be dispatched', true);
+      refreshPlans();
+      refresh();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Pause failed: ' + (d.error || 'unknown'));
+    }
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
@@ -507,9 +517,14 @@ async function planReject(file) {
   if (!confirm('Reject this plan? It will not be executed.')) return;
   const reason = prompt('Reason for rejection (optional):') || '';
   try {
-    await fetch('/api/plans/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, reason }) });
-    showToast('cmd-toast', 'Plan rejected', true);
-    refreshPlans();
+    const res = await fetch('/api/plans/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, reason }) });
+    if (res.ok) {
+      showToast('cmd-toast', 'Plan rejected', true);
+      refreshPlans();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Reject failed: ' + (d.error || 'unknown'));
+    }
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
