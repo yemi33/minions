@@ -635,6 +635,17 @@ function readBody(req) {
   });
 }
 
+const _rateLimits = new Map();
+function checkRateLimit(key, maxPerMinute) {
+  const now = Date.now();
+  const entries = _rateLimits.get(key) || [];
+  const recent = entries.filter(t => now - t < 60000);
+  if (recent.length >= maxPerMinute) return true;
+  recent.push(now);
+  _rateLimits.set(key, recent);
+  return false;
+}
+
 function jsonReply(res, code, data, req) {
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1270,7 +1281,6 @@ const server = http.createServer(async (req, res) => {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
     });
 
     // Send initial content
@@ -1387,7 +1397,7 @@ const server = http.createServer(async (req, res) => {
     const cat = match[1];
     const file = decodeURIComponent(match[2]);
     // Prevent path traversal
-    if (file.includes('..') || file.includes('/') || file.includes('\\')) {
+    if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) {
       return jsonReply(res, 400, { error: 'invalid file name' });
     }
     const content = safeRead(path.join(MINIONS_DIR, 'knowledge', cat, file));
@@ -1618,7 +1628,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
   async function handlePlansArchiveRead(req, res, match) {
     const file = decodeURIComponent(match[1]);
-    if (file.includes('..')) return jsonReply(res, 400, { error: 'invalid' });
+    if (file.includes('..') || file.includes('\0')) return jsonReply(res, 400, { error: 'invalid' });
     // Check prd/archive/ first for .json, then plans/archive/ for .md
     const archiveDir = file.endsWith('.json') ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
     let content = safeRead(path.join(archiveDir, file));
@@ -1634,7 +1644,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
   async function handlePlansRead(req, res, match) {
     const file = decodeURIComponent(match[1]);
-    if (file.includes('..') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
+    if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
     let content = safeRead(resolvePlanPath(file));
     // Fallback: check all directories (prd/, plans/, guides/, archives)
     if (!content) content = safeRead(path.join(PRD_DIR, file));
@@ -1801,7 +1811,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file is required' });
-      if (body.file.includes('..')) return jsonReply(res, 400, { error: 'invalid file path' });
+      if (body.file.includes('..') || body.file.includes('\0')) return jsonReply(res, 400, { error: 'invalid file path' });
 
       const prdPath = path.join(PRD_DIR, body.file);
       const plan = safeJson(prdPath);
@@ -1865,6 +1875,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
   }
 
   async function handlePlansExecute(req, res) {
+    if (checkRateLimit('plans-execute', 5)) return jsonReply(res, 429, { error: 'Rate limited — max 5 requests/minute' });
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
@@ -1975,7 +1986,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      if (body.file.includes('..') || body.file.includes('/') || body.file.includes('\\')) {
+      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid filename' });
       }
       const planPath = resolvePlanPath(body.file);
@@ -2345,6 +2356,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { name } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
+      if (name.includes('..') || name.includes('\0')) return jsonReply(res, 400, { error: 'Invalid file name' });
 
       const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       const content = safeRead(inboxPath);
@@ -2384,6 +2396,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { name, category } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
+      if (name.includes('..') || name.includes('\0')) return jsonReply(res, 400, { error: 'Invalid file name' });
       if (!category || !shared.KB_CATEGORIES.includes(category)) {
         return jsonReply(res, 400, { error: 'category required: ' + shared.KB_CATEGORIES.join(', ') });
       }
@@ -2420,7 +2433,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       const { name } = body;
-      if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
+      if (!name || name.includes('..') || name.includes('\0') || name.includes('/') || name.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid name' });
       }
       const filePath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
@@ -2446,7 +2459,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       const { name } = body;
-      if (!name || name.includes('..') || name.includes('/') || name.includes('\\')) {
+      if (!name || name.includes('..') || name.includes('\0') || name.includes('/') || name.includes('\\')) {
         return jsonReply(res, 400, { error: 'invalid name' });
       }
       const filePath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
@@ -2460,7 +2473,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
     const dir = params.get('dir');
-    if (!file || file.includes('..')) { res.statusCode = 400; res.end('Invalid file'); return; }
+    if (!file || file.includes('..') || file.includes('\0')) { res.statusCode = 400; res.end('Invalid file'); return; }
 
     let content = '';
     if (dir) {
@@ -2616,6 +2629,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   }
 
   async function handleCommandCenter(req, res) {
+    if (checkRateLimit('command-center', 10)) return jsonReply(res, 429, { error: 'Rate limited — max 10 requests/minute' });
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
@@ -3103,19 +3117,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   // ── Route Dispatcher ────────────────────────────────────────────────────────
 
   const pathname = req.url.split('?')[0];
+  const _reqStart = Date.now();
   for (const route of ROUTES) {
     if (route.method !== req.method) continue;
     if (typeof route.path === 'string') {
       // For /api/skill, match with query string prefix since it has no fixed path variant
       if (route.path === '/api/skill') {
         if (!req.url.startsWith('/api/skill?') && req.url !== '/api/skill') continue;
-        return await route.handler(req, res, {});
+        const _result = await route.handler(req, res, {});
+        if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+          console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
+        }
+        return _result;
       }
       if (pathname !== route.path) continue;
-      return await route.handler(req, res, {});
+      const _result = await route.handler(req, res, {});
+      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+        console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
+      }
+      return _result;
     }
     const m = pathname.match(route.path);
-    if (m) return await route.handler(req, res, m);
+    if (m) {
+      const _result = await route.handler(req, res, m);
+      if (pathname.startsWith('/api/') && !pathname.includes('/status') && !pathname.includes('/hot-reload') && !pathname.includes('/status-stream')) {
+        console.log(`  ${req.method} ${pathname} ${Date.now() - _reqStart}ms`);
+      }
+      return _result;
+    }
   }
 
   // Serve dashboard HTML with gzip + caching

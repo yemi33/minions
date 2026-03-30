@@ -3825,6 +3825,188 @@ async function testPlanPrdStateFlow() {
   });
 }
 
+// ─── Dispatch Cycle Integration Tests ────────────────────────────────────────
+
+async function testDispatchCycleIntegration() {
+  console.log('\n── Dispatch Cycle Integration ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Work item discovery (3 tests) ──
+
+  await test('discoverFromWorkItems reads work-items.json', () => {
+    assert.ok(engineSrc.includes('function discoverFromWorkItems'),
+      'engine.js must define discoverFromWorkItems');
+    assert.ok(engineSrc.includes('work-items.json'),
+      'discoverFromWorkItems must read work-items.json');
+  });
+
+  await test('discoverFromWorkItems checks dependency gates via areDependenciesMet', () => {
+    assert.ok(engineSrc.includes('function areDependenciesMet'),
+      'engine.js must define areDependenciesMet');
+    assert.ok(engineSrc.includes('areDependenciesMet(item'),
+      'discoverFromWorkItems must call areDependenciesMet');
+  });
+
+  await test('discoverFromWorkItems checks cooldown and deduplication', () => {
+    assert.ok(engineSrc.includes('function isOnCooldown'),
+      'engine.js must define isOnCooldown');
+    assert.ok(engineSrc.includes('function isAlreadyDispatched'),
+      'engine.js must define isAlreadyDispatched');
+    assert.ok(engineSrc.includes('isOnCooldown(key') && engineSrc.includes('isAlreadyDispatched(key'),
+      'discovery must check cooldown and deduplication');
+  });
+
+  // ── Agent routing (2 tests) ──
+
+  await test('Agent routing uses routing table via getRoutingTableCached', () => {
+    assert.ok(engineSrc.includes('function getRoutingTableCached'),
+      'engine.js must define getRoutingTableCached');
+    assert.ok(engineSrc.includes('getRoutingTableCached()'),
+      'Routing must call getRoutingTableCached');
+  });
+
+  await test('Agent routing checks monthly budget', () => {
+    assert.ok(engineSrc.includes('monthlyBudgetUsd'),
+      'engine.js must reference monthlyBudgetUsd');
+    assert.ok(engineSrc.includes('function getMonthlySpend') || engineSrc.includes('getMonthlySpend('),
+      'engine.js must have getMonthlySpend');
+    assert.ok(engineSrc.includes('getMonthlySpend(') && engineSrc.includes('monthlyBudgetUsd'),
+      'Routing must compare getMonthlySpend against monthlyBudgetUsd');
+  });
+
+  // ── Dispatch queue (2 tests) ──
+
+  await test('addToDispatch pushes to pending with timestamp', () => {
+    assert.ok(engineSrc.includes('function addToDispatch'),
+      'engine.js must define addToDispatch');
+    assert.ok(engineSrc.includes('pending') && engineSrc.includes('addToDispatch'),
+      'addToDispatch must push to pending queue');
+  });
+
+  await test('tickInner respects slotsAvailable and maxConcurrent', () => {
+    assert.ok(engineSrc.includes('function tickInner') || engineSrc.includes('async function tickInner'),
+      'engine.js must define tickInner');
+    assert.ok(engineSrc.includes('slotsAvailable') && engineSrc.includes('maxConcurrent'),
+      'tickInner must check slotsAvailable derived from maxConcurrent');
+  });
+
+  // ── Agent spawn (3 tests) ──
+
+  await test('Spawn creates worktree for implement tasks', () => {
+    assert.ok(engineSrc.includes('worktree') && engineSrc.includes('implement'),
+      'engine.js must create worktrees for implement tasks');
+    assert.ok(engineSrc.includes('runWorktreeAdd') || engineSrc.includes('git worktree add'),
+      'engine.js must invoke git worktree add');
+  });
+
+  await test('Spawn resolves dependency branches', () => {
+    assert.ok(engineSrc.includes('function resolveDependencyBranches'),
+      'engine.js must define resolveDependencyBranches');
+    assert.ok(engineSrc.includes('dependency branch') || engineSrc.includes('depBranch'),
+      'engine.js must resolve and merge dependency branches');
+  });
+
+  await test('Spawn renders playbook with system prompt', () => {
+    assert.ok(engineSrc.includes('function renderPlaybook'),
+      'engine.js must define renderPlaybook');
+    assert.ok(engineSrc.includes('renderPlaybook(') && engineSrc.includes('system'),
+      'spawnAgent must render playbook and set system prompt');
+  });
+
+  // ── Completion (4 tests) ──
+
+  await test('runPostCompletionHooks exists in lifecycle.js', () => {
+    assert.ok(lifecycleSrc.includes('function runPostCompletionHooks'),
+      'lifecycle.js must define runPostCompletionHooks');
+    assert.ok(engineSrc.includes('runPostCompletionHooks('),
+      'engine.js must call runPostCompletionHooks');
+  });
+
+  await test('Completion extracts PRs from output via syncPrsFromOutput', () => {
+    assert.ok(lifecycleSrc.includes('function syncPrsFromOutput'),
+      'lifecycle.js must define syncPrsFromOutput');
+    assert.ok(lifecycleSrc.includes('syncPrsFromOutput(') || engineSrc.includes('syncPrsFromOutput('),
+      'syncPrsFromOutput must be called during completion');
+  });
+
+  await test('Completion updates work item status', () => {
+    assert.ok(lifecycleSrc.includes('updateWorkItemStatus'),
+      'lifecycle.js must include updateWorkItemStatus');
+    assert.ok(engineSrc.includes('updateWorkItemStatus') || lifecycleSrc.includes('updateWorkItemStatus('),
+      'Completion must update work item status');
+  });
+
+  await test('Completion auto-retries on retryable failure when retries < 3', () => {
+    assert.ok(engineSrc.includes('retries < 3') || lifecycleSrc.includes('retries < 3'),
+      'Must check retries < 3 for auto-retry');
+    assert.ok(engineSrc.includes('_retryCount') || lifecycleSrc.includes('_retryCount'),
+      'Must track _retryCount on work items');
+    assert.ok(engineSrc.includes('auto-retry') || lifecycleSrc.includes('auto-retry'),
+      'Must log auto-retry attempts');
+  });
+
+  // ── File-watch discovery (1 test) ──
+
+  await test('Engine watches work-items.json for changes', () => {
+    // The engine discovers work items by reading work-items.json each tick
+    assert.ok(engineSrc.includes('discoverFromWorkItems') && engineSrc.includes('work-items.json'),
+      'Engine must discover work from work-items.json each tick cycle');
+    assert.ok(engineSrc.includes('discoverFromWorkItems(config'),
+      'discoverFromWorkItems must be called in the tick cycle');
+  });
+
+  // ── Central work items (2 tests) ──
+
+  await test('materializePlansAsWorkItems materializes PRD items into central work-items.json', () => {
+    assert.ok(engineSrc.includes('function materializePlansAsWorkItems'),
+      'engine.js must define materializePlansAsWorkItems');
+    assert.ok(engineSrc.includes('useCentral'),
+      'materializePlansAsWorkItems must handle useCentral fallback for no-project configs');
+  });
+
+  await test('Engine handles zero projects without FATAL error', () => {
+    // When no projects configured, engine falls back to central work-items.json
+    assert.ok(engineSrc.includes('work-items.json'),
+      'Engine must use central work-items.json as fallback');
+    // Verify no FATAL log for zero projects scenario
+    const fatalProjectMatch = engineSrc.match(/FATAL.*no.*project/i) || engineSrc.match(/FATAL.*zero.*project/i);
+    assert.ok(!fatalProjectMatch,
+      'Engine must not emit FATAL error for zero projects — it should gracefully fallback to central work items');
+  });
+
+  // ── SSE status push (1 test) ──
+
+  await test('Dashboard pushes status via SSE using _statusStreamClients', () => {
+    assert.ok(dashSrc.includes('_statusStreamClients'),
+      'dashboard.js must define _statusStreamClients');
+    assert.ok(dashSrc.includes('_statusStreamClients.add(res'),
+      'Dashboard must add clients to _statusStreamClients on SSE connect');
+    assert.ok(dashSrc.includes('res.write(') && dashSrc.includes('data:'),
+      'Dashboard must write SSE data frames to connected clients');
+  });
+
+  // ── Security (2 tests) ──
+
+  await test('Dashboard validates paths against directory traversal (..)', () => {
+    const dotDotChecks = (dashSrc.match(/includes\(['"]\.\.['"]|indexOf\(['"]\.\.['"]|startsWith/g) || []).length;
+    assert.ok(dotDotChecks >= 3,
+      `Dashboard must check for '..' in paths on multiple API endpoints (found ${dotDotChecks} checks, need >= 3)`);
+    assert.ok(dashSrc.includes("'..'") || dashSrc.includes('"..'),
+      'Dashboard must explicitly check for .. in user-supplied paths');
+  });
+
+  await test('Dashboard command-center endpoint exists with session management', () => {
+    assert.ok(dashSrc.includes('command-center'),
+      'Dashboard must have a command-center endpoint');
+    assert.ok(dashSrc.includes('sessionId') || dashSrc.includes('session_id'),
+      'Command-center must support session management to prevent abuse');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -3945,6 +4127,9 @@ async function main() {
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
     await testPlanPrdStateFlow();
+
+    // Dispatch cycle integration tests
+    await testDispatchCycleIntegration();
   } finally {
     cleanupTmpDirs();
   }
