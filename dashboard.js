@@ -180,7 +180,23 @@ function parsePinnedEntries(content) {
 let _statusCache = null;
 let _statusCacheTs = 0;
 const STATUS_CACHE_TTL = 10000; // 10s — reduces expensive aggregation frequency; mutations call invalidateStatusCache()
-function invalidateStatusCache() { _statusCache = null; }
+const _statusStreamClients = new Set();
+let _statusPushTimer = null;
+let _lastStatusHash = '';
+
+function invalidateStatusCache() {
+  _statusCache = null;
+  // Push to SSE clients (debounced 500ms to avoid flooding during batch mutations)
+  if (_statusPushTimer) return;
+  _statusPushTimer = setTimeout(() => {
+    _statusPushTimer = null;
+    if (_statusStreamClients.size === 0) return;
+    const data = JSON.stringify(getStatus());
+    for (const res of _statusStreamClients) {
+      try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+    }
+  }, 500);
+}
 
 function getStatus() {
   const now = Date.now();
@@ -220,6 +236,19 @@ function getStatus() {
   _statusCacheTs = now;
   return _statusCache;
 }
+
+// Periodic push for engine-driven changes (dispatch.json, control.json) that bypass invalidateStatusCache
+setInterval(() => {
+  if (_statusStreamClients.size === 0) return;
+  const status = getStatus();
+  const hash = require('crypto').createHash('md5').update(JSON.stringify(status)).digest('hex');
+  if (hash === _lastStatusHash) return;
+  _lastStatusHash = hash;
+  const data = JSON.stringify(status);
+  for (const res of _statusStreamClients) {
+    try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
+  }
+}, 10000);
 
 
 // ── Command Center: session state + helpers ─────────────────────────────────
@@ -2816,6 +2845,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Status & health
     { method: 'GET', path: '/api/status', desc: 'Full dashboard status snapshot (agents, PRDs, work items, dispatch, etc.)', handler: handleStatus },
+    { method: 'GET', path: '/api/status-stream', desc: 'SSE stream of real-time status updates', handler: (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      res.write('data: ' + JSON.stringify(getStatus()) + '\n\n');
+      _statusStreamClients.add(res);
+      req.on('close', () => _statusStreamClients.delete(res));
+    }},
     { method: 'GET', path: '/api/health', desc: 'Lightweight health check for monitoring', handler: handleHealth },
     { method: 'GET', path: '/api/hot-reload', desc: 'SSE stream for dashboard hot-reload notifications', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });

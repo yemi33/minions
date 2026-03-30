@@ -320,6 +320,45 @@ const commands = {
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
 
+    // File-change-driven work discovery — trigger tick when work-items or PRDs change
+    const _watchedFiles = new Set();
+    function watchForWorkChanges() {
+      const filesToWatch = [
+        path.join(MINIONS_DIR, 'work-items.json'),
+        path.join(ENGINE_DIR, 'dispatch.json'),
+      ];
+      // Watch project-specific work-items.json
+      const { getProjects } = require('./shared');
+      for (const p of getProjects(config)) {
+        filesToWatch.push(shared.projectWorkItemsPath(p));
+      }
+      // Watch PRD files
+      const prdDir = path.join(MINIONS_DIR, 'prd');
+      try {
+        for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
+          filesToWatch.push(path.join(prdDir, f));
+        }
+      } catch {}
+
+      for (const filePath of filesToWatch) {
+        if (_watchedFiles.has(filePath)) continue;
+        _watchedFiles.add(filePath);
+        try {
+          let _debounce = null;
+          fs.watchFile(filePath, { interval: 2000 }, () => {
+            // Debounce — multiple rapid writes should only trigger one tick
+            if (_debounce) return;
+            _debounce = setTimeout(() => {
+              _debounce = null;
+              e.log('info', `File change detected: ${path.basename(filePath)} — triggering tick`);
+              e.tick();
+            }, 1000);
+          });
+        } catch {}
+      }
+    }
+    watchForWorkChanges();
+
     // Graceful shutdown — wait for active agents before exiting
     let shuttingDown = false;
     function gracefulShutdown(signal) {
@@ -327,6 +366,7 @@ const commands = {
       shuttingDown = true;
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
+      for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch {} }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);
 
