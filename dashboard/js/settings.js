@@ -151,3 +151,5 @@ async function addProject() {
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsSettings = { openSettings, saveSettings, addProject };

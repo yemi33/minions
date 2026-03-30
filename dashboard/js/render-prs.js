@@ -143,3 +143,5 @@ async function _submitLinkPr() {
     }
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal };

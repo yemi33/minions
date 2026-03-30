@@ -169,3 +169,5 @@ async function showErrorDetails(agentId, reason, task) {
     document.getElementById('modal-body').textContent = 'Reason: ' + reason + '\n\n(Could not load agent output)';
   }
 }
+
+window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderDispatch, renderEngineLog, shortTime, showErrorDetails };

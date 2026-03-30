@@ -82,3 +82,5 @@ function rerenderPrdFromCache() {
   if (!window._lastStatus || !window._lastStatus.prdProgress) return;
   renderPrd(window._lastStatus.prd, window._lastStatus.prdProgress);
 }
+
+window.MinionsState = { getPageFromUrl, switchPage, getPrdRequeueState, setPrdRequeueState, clearPrdRequeueState, prunePrdRequeueState, rerenderPrdFromCache };

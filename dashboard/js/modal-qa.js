@@ -307,3 +307,5 @@ async function qaReplacePrd(planFile) {
   const btn = document.getElementById('qa-generate-prd-btn');
   if (btn) btn.innerHTML = '<span style="color:var(--orange);font-size:12px">Replacing PRD — old items paused, agent regenerating from revised plan.</span>';
 }
+
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaNewPrd, qaReplacePrd };

@@ -42,3 +42,5 @@ async function openAgentDetail(id) {
   document.getElementById('detail-overlay').classList.add('open');
   document.getElementById('detail-panel').classList.add('open');
 }
+
+window.MinionsAgents = { renderAgents, openAgentDetail };

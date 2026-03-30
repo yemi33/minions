@@ -129,3 +129,5 @@ function renderArchiveButtons(archives) {
     '<button class="archive-btn" onclick="openArchive(' + i + ')">Archived: ' + escHtml(a.version) + ' (' + a.total + ' items)</button>'
   ).join(' ');
 }
+
+window.MinionsModal = { closeModal, copyModalContent, showNotifBadge, clearNotifBadge, restoreNotifBadges, findCardForFile, renderArchiveButtons };

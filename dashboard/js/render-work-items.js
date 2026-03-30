@@ -396,3 +396,5 @@ function openAllWorkItems() {
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal').classList.add('open');
 }
+
+window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems };

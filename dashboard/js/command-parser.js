@@ -127,3 +127,5 @@ function cmdParseInput(raw) {
 
   return result;
 }
+
+window.MinionsCmdParser = { cmdUpdateAgentList, cmdUpdateProjectList, showToast, detectWorkItemType, cmdParseInput };

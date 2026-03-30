@@ -83,3 +83,5 @@ try {
   const _hotReload = new EventSource('/api/hot-reload');
   _hotReload.onmessage = (e) => { if (e.data === 'reload') location.reload(); };
 } catch { /* expected */ }
+
+window.MinionsRefresh = { refresh };

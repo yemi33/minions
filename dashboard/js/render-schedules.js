@@ -156,3 +156,5 @@ async function deleteSchedule(id) {
     }
   } catch (e) { alert('Delete error: ' + e.message); }
 }
+
+window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, submitSchedule, toggleScheduleEnabled, deleteSchedule };

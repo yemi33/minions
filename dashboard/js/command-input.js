@@ -266,3 +266,5 @@ function cmdInsertPopupItem(id) {
   cmdHidePopup();
   cmdRenderMeta();
 }
+
+window.MinionsCmdInput = { cmdAutoResize, cmdUpdateHighlight, syncHighlightScroll, cmdInputChanged, cmdKeyDown, cmdSubmit, cmdRenderMeta, cmdShowMentions, cmdShowProjects, cmdHidePopup, cmdInsertPopupItem };

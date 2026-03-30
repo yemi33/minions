@@ -180,3 +180,5 @@ function renderTokenUsage(metrics) {
 
   el.innerHTML = html;
 }
+
+window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage };

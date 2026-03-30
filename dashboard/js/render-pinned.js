@@ -51,3 +51,5 @@ async function removePinnedNote(title) {
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsPinned = { renderPinned, openPinNoteModal, submitPinnedNote, removePinnedNote };

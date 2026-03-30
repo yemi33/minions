@@ -157,3 +157,5 @@ async function sendSteering() {
     }
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsLive = { renderLiveChatMessage, startLiveStream, stopLiveStream, startLivePolling, stopLivePolling, refreshLiveOutput, sendSteering };

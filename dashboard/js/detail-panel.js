@@ -105,3 +105,5 @@ function renderDetailContent(detail, tab) {
     el.innerHTML = '<div class="section">' + escHtml(detail.outputLog || 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
   }
 }
+
+window.MinionsDetail = { closeDetail, renderDetailTabs, switchTab, renderDetailContent };

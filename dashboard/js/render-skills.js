@@ -87,3 +87,5 @@ function openSkill(file, source, dir) {
     })
     .catch(() => {});
 }
+
+window.MinionsSkills = { renderSkills, openSkill };

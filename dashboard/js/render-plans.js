@@ -629,3 +629,5 @@ async function triggerVerify(file) {
     }
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };

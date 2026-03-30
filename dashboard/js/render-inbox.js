@@ -198,3 +198,5 @@ async function doPromoteToKB(name, category) {
     }
   } catch (e) { alert('Error: ' + e.message); }
 }
+
+window.MinionsInbox = { renderInbox, promoteToKB, renderNotes, openNotesModal, modalToggleEdit, modalSaveEdit, modalCancelEdit, deleteInboxItem, openInboxInExplorer, openQuickNoteModal, submitQuickNote, doPromoteToKB };

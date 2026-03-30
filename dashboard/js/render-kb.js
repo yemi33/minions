@@ -162,3 +162,5 @@ async function kbOpenItem(category, file) {
     console.error('Failed to load KB item:', e);
   }
 }
+
+window.MinionsKb = { refreshKnowledgeBase, renderKnowledgeBase, kbSetTab, kbSweep, openCreateKbModal, submitKbEntry, kbOpenItem };

@@ -68,3 +68,5 @@ function timeSinceStr(date) {
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
 }
+
+window.MinionsCmdHistory = { cmdGetHistory, cmdSaveHistory, cmdShowHistory, cmdResubmit, timeSinceStr };

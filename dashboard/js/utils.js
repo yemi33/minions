@@ -40,3 +40,5 @@ function copyLlmText(btn) {
   btn.innerHTML = '&#10003;';
   setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
 }
+
+window.MinionsUtils = { wakeEngine, escHtml, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText };

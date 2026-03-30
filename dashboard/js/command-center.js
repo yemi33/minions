@@ -378,3 +378,5 @@ async function ccExecuteAction(action) {
   msgs.scrollTop = msgs.scrollHeight;
   refresh();
 }
+
+window.MinionsCC = { toggleCommandCenter, ccNewSession, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccExecuteAction };

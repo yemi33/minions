@@ -716,3 +716,5 @@ function openArchive(i) {
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal').classList.add('open');
 }
+
+window.MinionsPrd = { renderPrd, renderPrdProgress, openArchivedPrdModal, showArchivedPrdDetail, prdItemEdit, prdItemSave, prdItemRemove, prdItemRequeue, prdRegenerate, openArchive };
