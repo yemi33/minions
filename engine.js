@@ -356,16 +356,23 @@ function renderPlaybook(type, vars) {
     return null;
   }
 
-  // Inject pinned context (always visible to agents)
+  // Inject pinned context (always visible to agents) — capped at 4KB
   let pinnedContent = '';
   try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch {}
   if (pinnedContent) {
+    if (pinnedContent.length > 4096) pinnedContent = pinnedContent.slice(0, 4096) + '\n\n_...pinned.md truncated (read full file if needed)_';
     content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
   }
 
-  // Inject team notes context
-  const notes = getNotes();
+  // Inject team notes (single injection point — not in buildAgentContext) — capped at 8KB
+  let notes = getNotes();
   if (notes) {
+    if (notes.length > 8192) {
+      const sections = notes.split(/(?=^### )/m);
+      const recent = sections.slice(-10).join('');
+      notes = recent.length > 8192 ? recent.slice(0, 8192) + '\n\n_...notes truncated_' : recent;
+      notes += '\n\n_' + Math.max(0, sections.length - 10) + ' older entries in `notes.md` — Read if needed._';
+    }
     content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
   }
 
@@ -621,18 +628,8 @@ function buildAgentContext(agentId, config, project) {
     context += `## Pending Work Queue (${(dispatch.pending || []).length} items)\n\n${pendingItems.join('\n')}${(dispatch.pending || []).length > 10 ? '\n- ... and ' + ((dispatch.pending || []).length - 10) + ' more' : ''}\n\n`;
   }
 
-  // Team notes — last 5 sections only (recent learnings, not the full history)
-  const notes = getNotes();
-  if (notes) {
-    const sections = notes.split(/(?=^### )/m);
-    const header = sections[0] && !sections[0].startsWith('### ') ? sections.shift() : '';
-    if (sections.length > 5) {
-      const recent = sections.slice(-5).join('');
-      context += `## Team Notes (last 5 of ${sections.length})\n\n${recent}\n\n_${sections.length - 5} older entries in \`notes.md\` — Read if needed._\n\n`;
-    } else {
-      context += `## Team Notes\n\n${notes}\n\n`;
-    }
-  }
+  // Team notes injected via renderPlaybook (single injection point, with truncation)
+  // Not duplicated here to avoid double-injection and token waste
 
   return context;
 }
@@ -2815,7 +2812,7 @@ function discoverFromWorkItems(config, project) {
     try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
 
     // Inject references and acceptance criteria
-    const refs = (item.references || []).map(r =>
+    const refs = (item.references || []).filter(r => r && r.url).map(r =>
       '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
     ).join('\n');
     vars.references = refs ? '## References\n\n' + refs : '';
@@ -3110,7 +3107,7 @@ function discoverCentralWorkItems(config) {
         };
 
         // Inject references and acceptance criteria
-        const fanRefs = (item.references || []).map(r =>
+        const fanRefs = (item.references || []).filter(r => r && r.url).map(r =>
           '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
         ).join('\n');
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
@@ -3185,7 +3182,7 @@ function discoverCentralWorkItems(config) {
       try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch {}
 
       // Inject references and acceptance criteria
-      const normRefs = (item.references || []).map(r =>
+      const normRefs = (item.references || []).filter(r => r && r.url).map(r =>
         '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
       ).join('\n');
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
