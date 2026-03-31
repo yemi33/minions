@@ -82,30 +82,9 @@ function startLiveStream(agentId) {
   const msgEl = document.getElementById('live-messages');
   if (msgEl) msgEl.innerHTML = '';
 
-  liveEventSource = new EventSource('/api/agent/' + agentId + '/live-stream');
-
-  liveEventSource.onmessage = function(e) {
-    try {
-      const chunk = JSON.parse(e.data);
-      renderLiveChatMessage(chunk);
-    } catch (e) { console.error('live-stream:', e.message); }
-  };
-
-  liveEventSource.addEventListener('done', function() {
-    stopLiveStream();
-    const steerBar = document.getElementById('live-steer-bar');
-    if (steerBar) steerBar.style.display = 'none';
-    const statusLabel = document.getElementById('live-status-label');
-    if (statusLabel) { statusLabel.textContent = 'Completed'; statusLabel.style.color = 'var(--muted)'; }
-  });
-
-  liveEventSource.onerror = function() {
-    // Fall back to polling on SSE error
-    stopLiveStream();
-    startLivePolling();
-    const label = document.getElementById('live-status-label');
-    if (label) label.textContent = 'Auto-refreshing every 3s';
-  };
+  // Use polling instead of SSE to avoid HTTP/1.1 connection exhaustion
+  // (SSE holds a persistent connection, blocking CC and other API calls)
+  startLivePolling();
 }
 
 function stopLiveStream() {
