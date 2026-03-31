@@ -1960,6 +1960,13 @@ function discoverWork(config) {
     }
   } catch (e) { log('warn', 'discover scheduled work: ' + e.message); }
 
+  // Meeting work (multi-round team discussions)
+  try {
+    const { discoverMeetingWork } = require('./engine/meeting');
+    const meetingWork = discoverMeetingWork(config);
+    allWorkItems.push(...meetingWork);
+  } catch (e) { log('warn', 'discover meeting work: ' + e.message); }
+
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
     const items = safeJson(projectWorkItemsPath(project)) || [];

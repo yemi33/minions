@@ -63,7 +63,7 @@ function buildDashboardHtml() {
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
   // Assemble page fragments
-  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'engine'];
+  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'meetings', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
@@ -76,7 +76,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-pinned',
+    'render-other', 'render-schedules', 'render-meetings', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
@@ -227,6 +227,7 @@ function getStatus() {
       const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
       return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
     })(),
+    meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
     pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
@@ -3097,6 +3098,59 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'id, cron, title, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
     { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
     { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
+
+    // Meetings
+    { method: 'POST', path: '/api/meetings', desc: 'Create a team meeting', params: 'title, agenda, participants[]', handler: async (req, res) => {
+      const body = await readBody(req);
+      const { title, agenda, participants } = body;
+      if (!title || !agenda) return jsonReply(res, 400, { error: 'title and agenda required' });
+      const { createMeeting } = require('./engine/meeting');
+      const meeting = createMeeting({ title, agenda, participants: participants || [] });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, meeting });
+    }},
+
+    { method: 'GET', path: '/api/meetings', desc: 'List all meetings', handler: async (req, res) => {
+      const { getMeetings } = require('./engine/meeting');
+      return jsonReply(res, 200, { meetings: getMeetings() });
+    }},
+
+    { method: 'GET', path: /^\/api\/meetings\/(MTG-[\w]+)$/, desc: 'Get meeting detail', handler: async (req, res, match) => {
+      const { getMeeting } = require('./engine/meeting');
+      const meeting = getMeeting(match[1]);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
+      return jsonReply(res, 200, { meeting });
+    }},
+
+    { method: 'POST', path: '/api/meetings/note', desc: 'Add human note to active meeting', params: 'id, note', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id || !body.note) return jsonReply(res, 400, { error: 'id and note required' });
+      const { addMeetingNote } = require('./engine/meeting');
+      const meeting = addMeetingNote(body.id, body.note);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, meeting });
+    }},
+
+    { method: 'POST', path: '/api/meetings/advance', desc: 'Force advance meeting to next round', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { advanceMeetingRound } = require('./engine/meeting');
+      const meeting = advanceMeetingRound(body.id);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found or already completed' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, meeting });
+    }},
+
+    { method: 'POST', path: '/api/meetings/end', desc: 'End a meeting early', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { endMeeting } = require('./engine/meeting');
+      const meeting = endMeeting(body.id);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
 
     // Engine
     { method: 'POST', path: '/api/engine/wakeup', desc: 'Trigger immediate engine tick via control.json signal', handler: async (req, res) => {

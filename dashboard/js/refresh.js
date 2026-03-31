@@ -36,6 +36,7 @@ function _processStatusUpdate(data) {
   renderSkills(data.skills || []);
   renderMcpServers(data.mcpServers || []);
   renderSchedules(data.schedules || []);
+  renderMeetings(data.meetings || []);
   renderPinned(data.pinned || []);
   // Update sidebar counts
   const swi = document.getElementById('sidebar-wi');

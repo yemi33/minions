@@ -1074,6 +1074,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       } catch (err) { e.log('warn', `Decompose cleanup: ${err.message}`); }
     }
   }
+  // Meeting post-completion: collect findings/debate/conclusion
+  if (type === 'meeting' && meta?.meetingId) {
+    try {
+      const { collectMeetingFindings } = require('./meeting');
+      collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout);
+    } catch (err) { engine().log('warn', `Meeting collect: ${err.message}`); }
+  }
+
   // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
   if (isSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 

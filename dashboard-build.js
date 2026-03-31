@@ -20,7 +20,7 @@ function buildDashboardHtml() {
   const layout = safeRead(layoutPath);
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
-  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'engine'];
+  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'meetings', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
@@ -32,7 +32,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-pinned',
+    'render-other', 'render-schedules', 'render-meetings', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
