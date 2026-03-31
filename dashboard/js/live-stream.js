@@ -7,10 +7,38 @@ function renderLiveChatMessage(raw) {
   const el = document.getElementById('live-messages');
   if (!el) return;
 
+  function renderJsonObj(obj) {
+    if (obj.type === 'assistant' && obj.message?.content) {
+      for (const block of obj.message.content) {
+        if (block.type === 'thinking') {
+          el.innerHTML += '<div style="font-size:10px;color:var(--muted);padding:2px 8px;font-style:italic">\u{1F4AD} Thinking...</div>';
+        }
+        if (block.type === 'text' && block.text) {
+          el.innerHTML += '<div style="background:var(--surface2);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:90%;margin:4px 0;font-size:12px;white-space:pre-wrap;word-break:break-word">' + escHtml(block.text) + '</div>';
+        }
+        if (block.type === 'tool_use') {
+          el.innerHTML += '<div style="background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:10px;color:var(--muted);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">' +
+            '\u{1F527} ' + escHtml(block.name || 'tool') + '</div>' +
+            '<div style="display:none;background:var(--bg);padding:4px 8px;border-radius:4px;margin:0 0 4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;color:var(--muted)">' + escHtml(JSON.stringify(block.input, null, 2).slice(0, 500)) + '</div>';
+        }
+      }
+    }
+    if (obj.type === 'tool_result' || (obj.type === 'user' && obj.message?.content?.[0]?.type === 'tool_result')) {
+      const content = obj.message?.content?.[0]?.content || obj.content || '';
+      const text = typeof content === 'string' ? content : JSON.stringify(content);
+      if (text.length > 10) {
+        el.innerHTML += '<div style="background:var(--bg);border-left:2px solid var(--border);padding:2px 8px;margin:0 0 2px 16px;font-size:9px;font-family:monospace;color:var(--muted);max-height:100px;overflow-y:auto;white-space:pre-wrap;cursor:pointer" onclick="this.style.maxHeight=this.style.maxHeight===\'100px\'?\'none\':\'100px\'">' + escHtml(text.slice(0, 1000)) + (text.length > 1000 ? '...' : '') + '</div>';
+      }
+    }
+    if (obj.type === 'result') {
+      el.innerHTML += '<div style="background:rgba(63,185,80,0.1);border:1px solid var(--green);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--green)">\u2713 Task complete</div>';
+    }
+  }
+
   const lines = raw.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed.startsWith('#')) continue;
 
     // Human steering messages
     if (trimmed.startsWith('[human-steering]')) {
@@ -24,41 +52,17 @@ function renderLiveChatMessage(raw) {
       continue;
     }
 
-    // Try to parse as JSON (stream-json format)
-    if (trimmed.startsWith('{')) {
+    // JSON array format (--output-format json)
+    if (trimmed.startsWith('[')) {
       try {
-        const obj = JSON.parse(trimmed);
+        const arr = JSON.parse(trimmed);
+        if (Array.isArray(arr)) { for (const obj of arr) renderJsonObj(obj); continue; }
+      } catch { /* fall through to raw text */ }
+    }
 
-        // Assistant text message
-        if (obj.type === 'assistant' && obj.message?.content) {
-          for (const block of obj.message.content) {
-            if (block.type === 'text' && block.text) {
-              el.innerHTML += '<div style="background:var(--surface2);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:90%;margin:4px 0;font-size:12px;white-space:pre-wrap;word-break:break-word">' + escHtml(block.text) + '</div>';
-            }
-            if (block.type === 'tool_use') {
-              el.innerHTML += '<div style="background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:10px;color:var(--muted);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">' +
-                '🔧 ' + escHtml(block.name || 'tool') + '</div>' +
-                '<div style="display:none;background:var(--bg);padding:4px 8px;border-radius:4px;margin:0 0 4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;color:var(--muted)">' + escHtml(JSON.stringify(block.input, null, 2).slice(0, 500)) + '</div>';
-            }
-          }
-        }
-
-        // Tool result
-        if (obj.type === 'tool_result' || (obj.type === 'user' && obj.message?.content?.[0]?.type === 'tool_result')) {
-          const content = obj.message?.content?.[0]?.content || obj.content || '';
-          const text = typeof content === 'string' ? content : JSON.stringify(content);
-          if (text.length > 10) {
-            el.innerHTML += '<div style="background:var(--bg);border-left:2px solid var(--border);padding:2px 8px;margin:0 0 2px 16px;font-size:9px;font-family:monospace;color:var(--muted);max-height:100px;overflow-y:auto;white-space:pre-wrap;cursor:pointer" onclick="this.style.maxHeight=this.style.maxHeight===\'100px\'?\'none\':\'100px\'">' + escHtml(text.slice(0, 1000)) + (text.length > 1000 ? '...' : '') + '</div>';
-          }
-        }
-
-        // Result (final)
-        if (obj.type === 'result') {
-          el.innerHTML += '<div style="background:rgba(63,185,80,0.1);border:1px solid var(--green);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--green)">✓ Task complete</div>';
-        }
-
-        continue;
-      } catch { /* JSON parse fallback */ }
+    // Single JSON object (--output-format stream-json)
+    if (trimmed.startsWith('{')) {
+      try { renderJsonObj(JSON.parse(trimmed)); continue; } catch { /* fall through */ }
     }
 
     // Fallback: raw text (stderr, non-JSON lines)

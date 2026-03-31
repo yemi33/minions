@@ -177,32 +177,48 @@ function gitEnv() {
  * Single source of truth — used by llm.js, consolidation.js, and lifecycle.js.
  */
 function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
-  const lines = raw.split('\n');
   let text = '';
   let usage = null;
   let sessionId = null;
+
+  function extractResult(obj) {
+    if (obj.type !== 'result') return false;
+    if (obj.result) text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
+    if (obj.session_id) sessionId = obj.session_id;
+    if (obj.total_cost_usd || obj.usage) {
+      usage = {
+        costUsd: obj.total_cost_usd || 0,
+        inputTokens: obj.usage?.input_tokens || 0,
+        outputTokens: obj.usage?.output_tokens || 0,
+        cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
+        cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
+        durationMs: obj.duration_ms || 0,
+        numTurns: obj.num_turns || 0,
+      };
+    }
+    return true;
+  }
+
+  const lines = raw.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
-    if (!line || !line.startsWith('{')) continue;
-    try {
-      const obj = JSON.parse(line);
-      if (obj.type === 'result') {
-        if (obj.result) text = maxTextLength ? obj.result.slice(0, maxTextLength) : obj.result;
-        if (obj.session_id) sessionId = obj.session_id;
-        if (obj.total_cost_usd || obj.usage) {
-          usage = {
-            costUsd: obj.total_cost_usd || 0,
-            inputTokens: obj.usage?.input_tokens || 0,
-            outputTokens: obj.usage?.output_tokens || 0,
-            cacheRead: obj.usage?.cache_read_input_tokens || obj.usage?.cacheReadInputTokens || 0,
-            cacheCreation: obj.usage?.cache_creation_input_tokens || obj.usage?.cacheCreationInputTokens || 0,
-            durationMs: obj.duration_ms || 0,
-            numTurns: obj.num_turns || 0,
-          };
+    if (!line) continue;
+    // Handle JSON array format (--output-format json)
+    if (line.startsWith('[')) {
+      try {
+        const arr = JSON.parse(line);
+        for (let j = arr.length - 1; j >= 0; j--) {
+          if (extractResult(arr[j])) break;
         }
-        break;
-      }
-    } catch {}
+        if (text || usage) break;
+      } catch {}
+    }
+    // Handle newline-delimited format (--output-format stream-json)
+    if (line.startsWith('{')) {
+      try {
+        if (extractResult(JSON.parse(line))) break;
+      } catch {}
+    }
   }
   return { text, usage, sessionId };
 }

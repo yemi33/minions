@@ -213,12 +213,15 @@ function renderPlans(plans) {
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
     const showPause = effectiveStatus === 'in-progress' && prdFile && !isArchived;
     const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;
+    const showVerify = effectiveStatus === 'completed' && prdFile && !isArchived;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\')">Pause</button>' : '';
     const resumeBtn = showResume
       ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
         'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\')">' + (effectiveStatus === 'awaiting-approval' ? 'Approve' : 'Resume') + '</button>'
       : '';
+    const verifyBtn = showVerify ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
+      'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\')">Verify</button>' : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
@@ -235,7 +238,7 @@ function renderPlans(plans) {
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
             (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
-            executeBtn + pauseBtn + resumeBtn + deleteBtn +
+            executeBtn + pauseBtn + resumeBtn + verifyBtn + deleteBtn +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -448,10 +451,12 @@ async function planView(file) {
       'onclick="planPause(\'' + escHtml(normalizedFile) + '\');closeModal()">Pause</button>' : '';
     const modalResumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
       'onclick="planApprove(\'' + escHtml(normalizedFile) + '\');closeModal()">Resume</button>' : '';
+    const modalVerifyBtn = isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
+      'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\')">Verify</button>' : '';
 
     const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
     const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
-      (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') +
+      (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') +
       ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
       'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
     '</div>';

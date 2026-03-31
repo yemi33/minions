@@ -259,8 +259,33 @@ function endMeeting(meetingId) {
   return meeting;
 }
 
+function archiveMeeting(id) {
+  const meeting = getMeeting(id);
+  if (!meeting) return null;
+  meeting.status = 'archived';
+  meeting.archivedAt = new Date().toISOString();
+  saveMeeting(meeting);
+  return meeting;
+}
+
+function unarchiveMeeting(id) {
+  const meeting = getMeeting(id);
+  if (!meeting || meeting.status !== 'archived') return null;
+  meeting.status = 'completed';
+  delete meeting.archivedAt;
+  saveMeeting(meeting);
+  return meeting;
+}
+
+function deleteMeeting(id) {
+  const filePath = path.join(MEETINGS_DIR, id + '.json');
+  if (!fs.existsSync(filePath)) return false;
+  fs.unlinkSync(filePath);
+  return true;
+}
+
 module.exports = {
   MEETINGS_DIR, getMeetings, getMeeting, saveMeeting, createMeeting,
   discoverMeetingWork, collectMeetingFindings,
-  addMeetingNote, advanceMeetingRound, endMeeting,
+  addMeetingNote, advanceMeetingRound, endMeeting, archiveMeeting, unarchiveMeeting, deleteMeeting,
 };

@@ -140,11 +140,8 @@ function checkTimeouts(config) {
         // Extract output text for the output.log
         const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
         try {
-          const resultLine = liveLog.split('\n').find(l => l.includes('"type":"result"'));
-          if (resultLine) {
-            const result = JSON.parse(resultLine);
-            safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${result.result || '(no text)'}\n`);
-          }
+          const { text } = shared.parseStreamJsonOutput(liveLog);
+          safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
         completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');

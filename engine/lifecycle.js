@@ -72,7 +72,7 @@ function checkPlanCompletion(meta, config) {
   }
 
   const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
-  const failedItems = [];
+  const failedItems = planItems.filter(w => w.status === 'failed');
 
   // 1. Mark plan as completed
   plan.status = 'completed';
