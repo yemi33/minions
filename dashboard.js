@@ -600,17 +600,19 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson }) {
   const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
 
-  // Plans: Sonnet with tools for codebase-aware Q&A and edits
+  // Plans + meetings: Sonnet with tools for multi-turn codebase-aware Q&A
   // Everything else: Haiku, 1 turn, no tools — fast
   const isPlan = filePath && /^plans\//.test(filePath);
+  const isMeeting = filePath && /^meetings\//.test(filePath);
+  const isRich = isPlan || isMeeting;
   const result = await ccCall(message, {
     store: 'doc', sessionKey: filePath || title,
     extraContext: docContext, label: 'doc-chat',
-    timeout: isPlan ? 300000 : 60000,
-    maxTurns: isPlan ? 10 : 1,
-    model: isPlan ? 'sonnet' : 'haiku',
-    allowedTools: isPlan ? 'Read,Glob,Grep' : '',
-    skipStatePreamble: !isPlan,
+    timeout: isRich ? 300000 : 60000,
+    maxTurns: isRich ? 10 : 1,
+    model: isRich ? 'sonnet' : 'haiku',
+    allowedTools: isRich ? 'Read,Glob,Grep' : '',
+    skipStatePreamble: !isRich,
   });
 
   if (result.code !== 0 || !result.text) {
@@ -3152,6 +3154,32 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { endMeeting } = require('./engine/meeting');
       const meeting = endMeeting(body.id);
       if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/meetings/archive', desc: 'Archive a meeting', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { archiveMeeting } = require('./engine/meeting');
+      const meeting = archiveMeeting(body.id);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/meetings/unarchive', desc: 'Unarchive a meeting', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { unarchiveMeeting } = require('./engine/meeting');
+      const meeting = unarchiveMeeting(body.id);
+      if (!meeting) return jsonReply(res, 404, { error: 'Meeting not found or not archived' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/meetings/delete', desc: 'Delete a meeting', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { deleteMeeting } = require('./engine/meeting');
+      if (!deleteMeeting(body.id)) return jsonReply(res, 404, { error: 'Meeting not found' });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
     }},
