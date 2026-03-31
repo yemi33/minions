@@ -41,16 +41,18 @@ function safeWrite(p, data) {
           try { const ab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(ab), 0, 0, delay); } catch { /* fallback busy-wait */ const start = Date.now(); while (Date.now() - start < delay) {} }
           continue;
         }
-        // Final attempt failed — fall through to direct write
+        // Final attempt failed — throw to let caller retry
+        try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
+        throw e;
       }
     }
-    // All rename attempts failed — direct write as fallback (not atomic but won't lose data)
+    // All rename attempts exhausted without throw — should not happen, but clean up
     try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
-    fs.writeFileSync(p, content);
+    throw new Error(`[safeWrite] All 5 rename attempts failed for ${p}`);
   } catch (err) {
-    // Even direct write failed — log and clean up tmp
-    console.error(`[safeWrite] FAILED to write ${p}: ${err.message}`);
+    // Clean up tmp if it still exists, then re-throw — never silently swallow
     try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
+    throw err;
   }
 }
 
@@ -102,6 +104,9 @@ function mutateJsonFileLocked(filePath, mutateFn, {
   return withFileLock(lockPath, () => {
     let data = safeJson(filePath);
     if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
+    // Back up last-known-good state before mutation (best-effort)
+    const backupPath = filePath + '.bak';
+    try { if (fs.existsSync(filePath)) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
     const next = mutateFn(data);
     const finalData = next === undefined ? data : next;
     safeWrite(filePath, finalData);
