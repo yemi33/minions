@@ -1,24 +1,24 @@
 /**
- * engine/scheduler.js — Cron-style scheduled task discovery.
- * Zero dependencies — uses only Node.js built-ins.
+ * engine/scheduler.js -- Cron-style scheduled task discovery.
+ * Zero dependencies -- uses only Node.js built-ins.
  *
  * Config schema:
  *   config.schedules: Array<{
- *     id: string,          — unique schedule ID
- *     cron: string,        — simplified cron: "minute hour dayOfWeek" (0=Sun..6=Sat)
- *     type: string,        — work item type (implement, test, explore, ask, etc.)
- *     title: string,       — work item title
+ *     id: string,          -- unique schedule ID
+ *     cron: string,        -- simplified cron: "minute hour dayOfWeek" (0=Sun..6=Sat)
+ *     type: string,        -- work item type (implement, test, explore, ask, etc.)
+ *     title: string,       -- work item title
  *     description?: string,
- *     project?: string,    — target project name
- *     agent?: string,      — preferred agent ID
- *     enabled?: boolean    — default true
+ *     project?: string,    -- target project name
+ *     agent?: string,      -- preferred agent ID
+ *     enabled?: boolean    -- default true
  *   }>
  *
  * Cron field syntax:
- *   *     — every value
- *   N     — exact value (e.g., "0" = minute 0, "2" = 2am, "1" = Monday)
- *   N,M   — multiple values (e.g., "1,3,5" = Mon/Wed/Fri)
- *   * /N  — every Nth value (e.g., "* /15" = every 15 minutes) [no space — formatting only]
+ *   *     -- every value
+ *   N     -- exact value (e.g., "0" = minute 0, "2" = 2am, "1" = Monday)
+ *   N,M   -- multiple values (e.g., "1,3,5" = Mon/Wed/Fri)
+ *   * /N  -- every Nth value (e.g., "* /15" = every 15 minutes) [no space -- formatting only]
  */
 
 const fs = require('fs');
@@ -28,13 +28,9 @@ const { safeJson, safeWrite, mutateJsonFileLocked } = shared;
 
 const SCHEDULE_RUNS_PATH = path.join(__dirname, 'schedule-runs.json');
 
-/**
- * Parse a single cron field into a matcher function.
- * @param {string} field — e.g., "*", "5", "1,3,5", "*/15"
- * @param {number} min — minimum valid value (0 for minute/dow, 0 for hour)
- * @param {number} max — maximum valid value (59 for minute, 23 for hour, 6 for dow)
- * @returns {function(number): boolean}
- */
+// Parse a single cron field into a matcher function.
+// field: e.g., "*", "5", "1,3,5", "*/15"
+// min/max: valid range (0-59 for minute, 0-23 for hour, 0-6 for dow)
 function parseCronField(field, min, max) {
   field = field.trim();
   if (field === '*') return () => true;
@@ -59,11 +55,9 @@ function parseCronField(field, min, max) {
   return () => false;
 }
 
-/**
- * Parse a 3-field cron expression: "minute hour dayOfWeek"
- * @param {string} expr — e.g., "0 2 *" (2am daily), "0 9 1" (9am Monday), "*/30 * *" (every 30 min)
- * @returns {{ matches: function(Date): boolean }} or null if invalid
- */
+// Parse a 3-field cron expression: "minute hour dayOfWeek"
+// expr: e.g., "0 2 *" (2am daily), "0 9 1" (9am Monday), "*/30 * *" (every 30 min)
+// Returns { matches(date) } or null if invalid
 function parseCronExpr(expr) {
   if (!expr || typeof expr !== 'string') return null;
   const parts = expr.trim().split(/\s+/);
@@ -86,7 +80,7 @@ function parseCronExpr(expr) {
  * Check if a schedule should fire now, given its last run time.
  * Prevents double-firing within the same minute window.
  * @param {{ cron: string }} schedule
- * @param {string|null} lastRunAt — ISO timestamp of last run
+ * @param {string|null} lastRunAt -- ISO timestamp of last run
  * @returns {boolean}
  */
 function shouldRunNow(schedule, lastRunAt) {
@@ -108,8 +102,8 @@ function shouldRunNow(schedule, lastRunAt) {
 
 /**
  * Discover work items from configured schedules.
- * @param {object} config — full config object
- * @returns {Array<object>} — work items to create
+ * @param {object} config -- full config object
+ * @returns {Array<object>} -- work items to create
  */
 function discoverScheduledWork(config) {
   const schedules = config.schedules;
