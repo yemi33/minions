@@ -2748,6 +2748,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true });
   }
 
+  async function handleSchedulesParseNatural(req, res) {
+    const body = await readBody(req);
+    const { text } = body;
+    if (!text || !text.trim()) return jsonReply(res, 400, { error: 'text is required' });
+
+    const prompt = `Convert this schedule description to a 3-field cron expression (minute hour dayOfWeek, where dayOfWeek is 0=Sun..6=Sat or ranges like 1-5). Return JSON only: {"cron": "...", "description": "..."}. Input: ${text.trim()}`;
+    try {
+      const result = await llm.callLLM(prompt, '', { model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse' });
+      const parsed = JSON.parse(result.trim());
+      if (!parsed.cron) return jsonReply(res, 422, { error: 'Could not parse schedule' });
+      return jsonReply(res, 200, { cron: parsed.cron, description: parsed.description || '' });
+    } catch (e) {
+      return jsonReply(res, 422, { error: 'Parse failed: ' + e.message });
+    }
+  }
+
   async function handleEngineRestart(req, res) {
     try {
       const newPid = restartEngine();
@@ -3100,6 +3116,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
 
     // Schedules
+    { method: 'POST', path: '/api/schedules/parse-natural', desc: 'Parse natural language schedule text into cron expression', params: 'text', handler: handleSchedulesParseNatural },
     { method: 'GET', path: '/api/schedules', desc: 'Return schedules from config + last-run times', handler: handleSchedulesList },
     { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'id, cron, title, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
     { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
