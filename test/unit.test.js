@@ -4021,6 +4021,116 @@ async function testDispatchCycleIntegration() {
   });
 }
 
+// ─── Team Meetings Tests ────────────────────────────────────────────────────
+
+async function testMeetings() {
+  console.log('\n── Team Meetings ──');
+
+  const meetingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'meeting.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Meeting module
+  await test('createMeeting generates ID and sets investigating status', () => {
+    assert.ok(meetingSrc.includes('MTG-') && meetingSrc.includes("status: 'investigating'"),
+      'Should generate MTG- ID and start in investigating status');
+  });
+
+  await test('meeting has 3 rounds: investigating → debating → concluding', () => {
+    assert.ok(meetingSrc.includes("'investigating'") && meetingSrc.includes("'debating'") && meetingSrc.includes("'concluding'"),
+      'Should support all 3 round statuses');
+  });
+
+  await test('discoverMeetingWork dispatches all participants for investigate', () => {
+    assert.ok(meetingSrc.includes('participants') && meetingSrc.includes('meeting-investigate'),
+      'Should create work items for each participant in investigate round');
+  });
+
+  await test('discoverMeetingWork dispatches only concluder for conclude round', () => {
+    assert.ok(meetingSrc.includes('participants[0]') && meetingSrc.includes('meeting-conclude'),
+      'Should dispatch only first participant for conclusion');
+  });
+
+  await test('debate round includes all findings from round 1', () => {
+    assert.ok(meetingSrc.includes('all_findings') && meetingSrc.includes('findings'),
+      'Debate playbook vars should include all investigation findings');
+  });
+
+  await test('collectMeetingFindings auto-advances rounds', () => {
+    assert.ok(meetingSrc.includes('allSubmitted') && meetingSrc.includes("'debating'") && meetingSrc.includes("'concluding'"),
+      'Should advance to next round when all participants submit');
+  });
+
+  await test('meeting transcript written to inbox on completion', () => {
+    assert.ok(meetingSrc.includes('inbox') && meetingSrc.includes('transcript'),
+      'Should write meeting transcript to notes/inbox for consolidation');
+  });
+
+  await test('addMeetingNote stores human notes', () => {
+    assert.ok(meetingSrc.includes('humanNotes') && meetingSrc.includes('push'),
+      'Should append human notes to meeting');
+  });
+
+  // Engine integration
+  await test('discoverMeetingWork called in engine tick', () => {
+    assert.ok(engineSrc.includes('discoverMeetingWork'),
+      'Engine should call discoverMeetingWork during work discovery');
+  });
+
+  await test('lifecycle collects meeting findings on completion', () => {
+    assert.ok(lifecycleSrc.includes('collectMeetingFindings') && lifecycleSrc.includes("type === 'meeting'"),
+      'runPostCompletionHooks should call collectMeetingFindings for meeting type');
+  });
+
+  // Playbooks
+  await test('meeting playbooks exist', () => {
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'playbooks', 'meeting-investigate.md')), 'investigate playbook');
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'playbooks', 'meeting-debate.md')), 'debate playbook');
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'playbooks', 'meeting-conclude.md')), 'conclude playbook');
+  });
+
+  await test('debate playbook encourages disagreement', () => {
+    const debate = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'meeting-debate.md'), 'utf8');
+    assert.ok(debate.includes('disagree') || debate.includes('devil') || debate.includes('counterargument'),
+      'Debate playbook should explicitly encourage constructive disagreement');
+  });
+
+  // Dashboard
+  await test('meeting API endpoints in route registry', () => {
+    assert.ok(dashSrc.includes('/api/meetings') && dashSrc.includes('/api/meetings/note') && dashSrc.includes('/api/meetings/advance'),
+      'Should have meeting CRUD + note + advance + end endpoints');
+  });
+
+  await test('meetings included in status response', () => {
+    assert.ok(dashSrc.includes('meetings') && dashSrc.includes('getMeetings'),
+      'Status response should include active meetings');
+  });
+
+  await test('meetings page exists in dashboard', () => {
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'meetings.html')), 'meetings page fragment');
+    assert.ok(fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js')), 'meetings render module');
+  });
+
+  await test('render-meetings has create and detail functions', () => {
+    const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    assert.ok(renderSrc.includes('openCreateMeetingModal') && renderSrc.includes('openMeetingDetail'),
+      'Should have meeting creation modal and detail view');
+  });
+
+  await test('meeting routing exists', () => {
+    const routing = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
+    assert.ok(routing.includes('meeting'), 'routing.md should have meeting work type');
+  });
+
+  // CC retry button
+  await test('CC shows retry button on fetch failure', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes('ccRetryLast') && ccSrc.includes('Retry'),
+      'Should show retry button when CC fetch fails');
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -4144,6 +4254,7 @@ async function main() {
 
     // Dispatch cycle integration tests
     await testDispatchCycleIntegration();
+    await testMeetings();
   } finally {
     cleanupTmpDirs();
   }
