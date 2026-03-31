@@ -56,7 +56,9 @@ cd {{team_root}}
 git worktree remove ../worktrees/{{branch_name}} --force
 ```
 
-## Create PR
+## Create PR (MANDATORY)
+
+**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.
 
 {{pr_create_instructions}}
 - sourceRefName: `refs/heads/{{branch_name}}`

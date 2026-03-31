@@ -371,6 +371,9 @@ Available action types:
 - **plan-edit**: Revise/edit a plan .md file. Fields: file (plan .md filename from plans/), instruction (what to change).
 - **execute-plan**: Execute an existing plan .md file. Fields: file (plan .md filename), project (optional)
 - **file-edit**: Edit any minions file via LLM. Fields: file (path relative to minions dir), instruction (what to change).
+- **schedule**: Create or update a scheduled task. Fields: id (unique slug), title, cron (3-field: minute hour dayOfWeek), workType (implement/test/explore/ask/review/fix), project (optional), agent (optional), description (optional), priority (optional), enabled (default true). Example cron: "0 9 2" = every Tuesday at 9am.
+- **delete-schedule**: Delete a scheduled task. Fields: id.
+- **create-meeting**: Start a team meeting. Fields: topic, agents (array of agent IDs), rounds (optional, default 3), project (optional).
 
 ## Rules
 
@@ -419,7 +422,8 @@ ${projects}
 ### Scheduled Tasks
 ${schedSummary}
 
-To discover all available dashboard APIs, fetch GET http://localhost:7331/api/routes — it returns every endpoint with method, path, description, and accepted parameters.
+### Dashboard API (all endpoints)
+${_getApiRoutesSummary()}
 
 For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
 }
@@ -444,6 +448,16 @@ function parseCCActions(text) {
     if (actions.length > 0) displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
   }
   return { text: displayText, actions };
+}
+
+// ── API routes reference for CC — populated by server setup ──────────────────
+let _apiRoutesRef = null; // set to ROUTES array once server initializes
+function _getApiRoutesSummary() {
+  if (!_apiRoutesRef) return '(API routes not yet loaded — fetch GET /api/routes to discover endpoints)';
+  return _apiRoutesRef
+    .filter(r => r.path !== '/api/routes' && typeof r.path === 'string')
+    .map(r => `- \`${r.method} ${r.path}\` — ${r.desc}${r.params ? ' | Params: ' + r.params : ''}`)
+    .join('\n');
 }
 
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
@@ -3309,6 +3323,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
   ];
+
+  // Expose routes to CC preamble builder (once, on first request)
+  if (!_apiRoutesRef) _apiRoutesRef = ROUTES;
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────
 

@@ -384,6 +384,45 @@ async function ccExecuteAction(action) {
         }
         break;
       }
+      case 'schedule': {
+        const url = action._update ? '/api/schedules/update' : '/api/schedules';
+        const res = await fetch(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: action.id, title: action.title, cron: action.cron,
+            type: action.workType || 'implement',
+            project: action.project, agent: action.agent,
+            description: action.description, priority: action.priority,
+            enabled: action.enabled !== false,
+          })
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Schedule create failed'); }
+        status.innerHTML = '&#10003; Schedule ' + (action._update ? 'updated' : 'created') + ': <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'delete-schedule': {
+        const res = await fetch('/api/schedules/delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: action.id })
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Schedule delete failed'); }
+        status.innerHTML = '&#10003; Deleted schedule: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--orange)';
+        break;
+      }
+      case 'create-meeting': {
+        const res = await fetch('/api/meetings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: action.topic, agents: action.agents, rounds: action.rounds, project: action.project })
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Meeting create failed'); }
+        const d = await res.json();
+        status.innerHTML = '&#10003; Meeting started: <strong>' + escHtml(action.topic) + '</strong>' + (d.id ? ' (' + escHtml(d.id) + ')' : '');
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';

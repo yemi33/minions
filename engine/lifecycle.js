@@ -1136,8 +1136,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
     if (!existingPrFound) {
-      e.log('warn', `Agent completed implement task ${meta.item.id} but no PR was created`);
-      // Set noPr flag on the work item so the dashboard can surface this
+      e.log('warn', `Agent completed implement task ${meta.item.id} but no PR was created — reverting to failed for retry`);
+      // Revert to failed so auto-retry can re-attempt with PR creation
       let wiPath;
       if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
         wiPath = path.join(MINIONS_DIR, 'work-items.json');
@@ -1149,6 +1149,18 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         const wi = items.find(i => i.id === meta.item.id);
         if (wi) {
           wi.noPr = true;
+          wi.failReason = 'Completed without creating a pull request';
+          const retries = wi._retryCount || 0;
+          if (retries < 3) {
+            wi.status = 'pending';
+            wi._retryCount = retries + 1;
+            delete wi.dispatched_at;
+            delete wi.dispatched_to;
+            e.log('info', `Auto-retry ${retries + 1}/3 for ${meta.item.id} (no PR created)`);
+          } else {
+            wi.status = 'failed';
+            e.log('warn', `${meta.item.id} failed after 3 retries — no PR created`);
+          }
           shared.safeWrite(wiPath, items);
         }
       }
