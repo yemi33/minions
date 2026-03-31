@@ -109,7 +109,11 @@ function rebuildDashboardHtml() {
     HTML_GZ = zlib.gzipSync(HTML);
     HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
     console.log('  Dashboard hot-reloaded');
-    // Push reload to all connected browsers
+    // Push reload to all connected browsers via status-stream (saves a connection)
+    for (const res of _statusStreamClients) {
+      try { res.write('event: reload\ndata: reload\n\n'); } catch { _statusStreamClients.delete(res); }
+    }
+    // Legacy hot-reload clients
     for (const res of _hotReloadClients) {
       try { res.write('data: reload\n\n'); } catch { _hotReloadClients.delete(res); }
     }
