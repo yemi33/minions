@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.80 (2026-03-31)
+
+### Engine
+- engine/queries.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/modal-qa.js
+- dashboard/js/render-plans.js
+
 ## 0.1.79 (2026-03-31)
 
 ### Dashboard
