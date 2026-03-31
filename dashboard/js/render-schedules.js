@@ -1,5 +1,64 @@
 // render-schedules.js — Schedule rendering functions extracted from dashboard.html
 
+// Convert a 3-field cron expression (minute hour dayOfWeek) to human-readable text.
+// Returns the raw cron string for patterns that don't match common cases.
+function _cronToHuman(cron) {
+  if (!cron || typeof cron !== 'string') return cron || '';
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length < 2 || parts.length > 3) return cron;
+
+  const [minField, hourField, dowField] = [parts[0], parts[1], parts[2] || '*'];
+  const dayNames = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+
+  // Every minute
+  if (minField === '*' && hourField === '*' && dowField === '*') return 'Every minute';
+
+  // We only produce readable strings when minute and hour are single numbers
+  const min = parseInt(minField, 10);
+  const hour = parseInt(hourField, 10);
+  if (isNaN(min) || isNaN(hour) || String(min) !== minField.trim() || String(hour) !== hourField.trim()) return cron;
+
+  const timeStr = String(hour).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+
+  // Parse day-of-week field into a sorted set of day numbers
+  let days = null;
+  if (dowField === '*') {
+    days = null; // all days
+  } else if (/^\d+-\d+$/.test(dowField)) {
+    // Range: "1-5"
+    const [a, b] = dowField.split('-').map(Number);
+    if (isNaN(a) || isNaN(b)) return cron;
+    days = [];
+    for (let i = a; i <= b; i++) days.push(i);
+  } else if (/^\d+$/.test(dowField)) {
+    // Single value: "0"
+    days = [parseInt(dowField, 10)];
+  } else if (/^[\d,]+$/.test(dowField)) {
+    // List: "0,6" or "1,2,3,4,5"
+    days = dowField.split(',').map(Number).sort((a, b) => a - b);
+  } else {
+    return cron; // Complex expression — fall back
+  }
+
+  if (days === null) return 'Daily at ' + timeStr;
+
+  // Weekdays: 1,2,3,4,5
+  if (days.length === 5 && [1,2,3,4,5].every(d => days.includes(d))) return 'Weekdays at ' + timeStr;
+
+  // Weekends: 0,6
+  if (days.length === 2 && days.includes(0) && days.includes(6)) return 'Weekends at ' + timeStr;
+
+  // Single day
+  if (days.length === 1 && days[0] >= 0 && days[0] <= 6) return dayNames[days[0]] + ' at ' + timeStr;
+
+  // Multiple specific days
+  if (days.length > 0 && days.every(d => d >= 0 && d <= 6)) {
+    return days.map(d => dayNames[d]).join(', ') + ' at ' + timeStr;
+  }
+
+  return cron;
+}
+
 function renderSchedules(schedules) {
   const el = document.getElementById('scheduled-content');
   const countEl = document.getElementById('scheduled-count');
@@ -18,7 +77,7 @@ function renderSchedules(schedules) {
     html += '<tr>' +
       '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
       '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
-      '<td><code style="font-size:10px;color:var(--blue)">' + escHtml(s.cron || '') + '</code></td>' +
+      '<td title="' + escHtml(s.cron || '') + '"><code style="font-size:10px;color:var(--blue)">' + escHtml(_cronToHuman(s.cron || '')) + '</code></td>' +
       '<td>' + typeBadge + '</td>' +
       '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(s.project || '') + '</span></td>' +
       '<td><span class="pr-agent">' + escHtml(s.agent || 'auto') + '</span></td>' +
@@ -48,15 +107,14 @@ function _scheduleFormHtml(sched, isEdit) {
 
   return '<div style="display:flex;flex-direction:column;gap:12px;font-family:inherit">' +
     (isEdit ? '' :
-      '<label style="color:var(--text);font-size:var(--text-md)">ID (unique slug)' +
-        '<input id="sched-edit-id" value="' + escHtml(sched.id || '') + '" placeholder="e.g. nightly-tests" style="' + inputStyle + '">' +
+      '<label style="color:var(--text);font-size:var(--text-md)">ID <span style="font-size:10px;color:var(--muted)">(optional — auto-generated from title)</span>' +
+        '<input id="sched-edit-id" value="' + escHtml(sched.id || '') + '" placeholder="leave blank to auto-generate" style="' + inputStyle + '">' +
       '</label>') +
     '<label style="color:var(--text);font-size:var(--text-md)">Title' +
       '<input id="sched-edit-title" value="' + escHtml(sched.title || '') + '" style="' + inputStyle + '">' +
     '</label>' +
-    '<label style="color:var(--text);font-size:var(--text-md)">Cron <span style="font-size:10px;color:var(--muted)">(minute hour dayOfWeek)</span>' +
-      '<input id="sched-edit-cron" value="' + escHtml(sched.cron || '') + '" placeholder="0 2 *" style="' + inputStyle + '">' +
-    '</label>' +
+    '<input type="hidden" id="sched-edit-cron" value="' + escHtml(sched.cron || '') + '">' +
+    _schedulePickerHtml(sched.cron || '', inputStyle) +
     '<div style="display:flex;gap:12px">' +
       '<label style="color:var(--text);font-size:var(--text-md);flex:1">Type' +
         '<select id="sched-edit-type" style="' + inputStyle + '">' + typeOpts + '</select>' +
@@ -112,11 +170,11 @@ async function submitSchedule(isEdit) {
   const description = document.getElementById('sched-edit-desc').value;
   const id = isEdit ? window._editScheduleId : (document.getElementById('sched-edit-id') ? document.getElementById('sched-edit-id').value.trim() : '');
 
-  if (!id) { alert('ID is required'); return; }
   if (!title) { alert('Title is required'); return; }
   if (!cron) { alert('Cron expression is required'); return; }
 
-  const payload = { id, title, cron, type, priority, project: project || undefined, agent: agent || undefined, description: description || undefined, enabled: true };
+  const payload = { title, cron, type, priority, project: project || undefined, agent: agent || undefined, description: description || undefined, enabled: true };
+  if (id) payload.id = id;
   const url = isEdit ? '/api/schedules/update' : '/api/schedules';
   try {
     const res = await fetch(url, {
@@ -157,4 +215,4 @@ async function deleteSchedule(id) {
   } catch (e) { alert('Delete error: ' + e.message); }
 }
 
-window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, submitSchedule, toggleScheduleEnabled, deleteSchedule };
+window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman };
