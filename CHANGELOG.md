@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.72 (2026-03-31)
+
+### Dashboard
+- dashboard/js/live-stream.js
+
 ## 0.1.71 (2026-03-31)
 
 ### Dashboard
