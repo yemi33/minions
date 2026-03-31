@@ -6,10 +6,13 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid } = shared;
+const { safeJson, safeWrite, safeRead, uid, ENGINE_DEFAULTS } = shared;
 const queries = require('./queries');
-const { getDispatch } = queries;
+const { getDispatch, getConfig } = queries;
 const { renderPlaybook } = require('./playbook');
+
+/** Patterns that indicate an agent returned no meaningful output */
+const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 
 let _engine = null;
 function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
@@ -43,6 +46,7 @@ function createMeeting({ title, agenda, participants }) {
     participants: participants || [],
     createdBy: 'human',
     createdAt: new Date().toISOString(),
+    roundStartedAt: new Date().toISOString(),
     findings: {},
     debate: {},
     conclusion: null,
@@ -180,7 +184,16 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
   if (!meeting) return;
 
   const { text } = shared.parseStreamJsonOutput(output, { maxTextLength: 50000 });
-  const content = text || '(no output)';
+  const rawContent = (text || '').trim();
+
+  // Validate output — reject empty or placeholder responses
+  if (!rawContent || EMPTY_OUTPUT_PATTERNS.includes(rawContent)) {
+    e.log('warn', `Meeting ${meetingId}: agent ${agentId} returned empty output for ${roundName} — rejecting`);
+    // Don't record it — agent will be re-dispatched on next tick
+    saveMeeting(meeting);
+    return;
+  }
+  const content = rawContent;
 
   if (roundName === 'investigate') {
     meeting.findings[agentId] = { content, submittedAt: new Date().toISOString() };
@@ -221,10 +234,12 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     if (meeting.status === 'investigating') {
       meeting.status = 'debating';
       meeting.round = 2;
+      meeting.roundStartedAt = new Date().toISOString();
       e.log('info', `Meeting ${meetingId}: all findings in — advancing to debate`);
     } else if (meeting.status === 'debating') {
       meeting.status = 'concluding';
       meeting.round = 3;
+      meeting.roundStartedAt = new Date().toISOString();
       e.log('info', `Meeting ${meetingId}: all debate responses in — advancing to conclusion`);
     }
   }
@@ -246,6 +261,7 @@ function advanceMeetingRound(meetingId) {
   if (!meeting || meeting.status === 'completed') return null;
   if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
   else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
+  meeting.roundStartedAt = new Date().toISOString();
   saveMeeting(meeting);
   return meeting;
 }
@@ -259,8 +275,58 @@ function endMeeting(meetingId) {
   return meeting;
 }
 
+/**
+ * Check for meeting rounds that have exceeded the timeout.
+ * Auto-advances to the next round with whatever responses were received.
+ * Called from engine.js tick cycle.
+ */
+function checkMeetingTimeouts(config) {
+  const e = engine();
+  const meetings = getMeetings();
+  const timeout = (config.engine || {}).meetingRoundTimeout
+    || ENGINE_DEFAULTS.meetingRoundTimeout;
+
+  for (const meeting of meetings) {
+    if (meeting.status === 'completed') continue;
+    if (!meeting.roundStartedAt) continue;
+
+    const elapsed = Date.now() - new Date(meeting.roundStartedAt).getTime();
+    if (elapsed < timeout) continue;
+
+    const respondedCount = meeting.status === 'investigating'
+      ? Object.keys(meeting.findings || {}).length
+      : meeting.status === 'debating'
+        ? Object.keys(meeting.debate || {}).length
+        : 0;
+    const totalCount = meeting.participants.length;
+
+    if (meeting.status === 'investigating') {
+      e.log('warn', `Meeting ${meeting.id}: round 1 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to debate`);
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 1 timed out — ${respondedCount}/${totalCount} findings received`, at: new Date().toISOString() });
+      meeting.status = 'debating';
+      meeting.round = 2;
+      meeting.roundStartedAt = new Date().toISOString();
+      saveMeeting(meeting);
+    } else if (meeting.status === 'debating') {
+      e.log('warn', `Meeting ${meeting.id}: round 2 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to conclusion`);
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 2 timed out — ${respondedCount}/${totalCount} debate responses received`, at: new Date().toISOString() });
+      meeting.status = 'concluding';
+      meeting.round = 3;
+      meeting.roundStartedAt = new Date().toISOString();
+      saveMeeting(meeting);
+    } else if (meeting.status === 'concluding') {
+      e.log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — ending meeting without conclusion`);
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: 'Conclusion round timed out — meeting ended without conclusion', at: new Date().toISOString() });
+      meeting.status = 'completed';
+      meeting.completedAt = new Date().toISOString();
+      saveMeeting(meeting);
+    }
+  }
+}
+
 module.exports = {
   MEETINGS_DIR, getMeetings, getMeeting, saveMeeting, createMeeting,
-  discoverMeetingWork, collectMeetingFindings,
+  discoverMeetingWork, collectMeetingFindings, checkMeetingTimeouts,
   addMeetingNote, advanceMeetingRound, endMeeting,
+  EMPTY_OUTPUT_PATTERNS,
 };
