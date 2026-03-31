@@ -55,7 +55,7 @@ function ccUpdateSessionIndicator() {
     el.textContent = `Session: ${turns} turn${turns !== 1 ? 's' : ''}`;
     el.style.color = 'var(--green)';
   } else {
-    el.textContent = 'New session';
+    el.textContent = 'Ready';
     el.style.color = 'var(--muted)';
   }
 }
@@ -184,7 +184,7 @@ async function _ccDoSend(message, skipUserMsg) {
     const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
       .replace(/\n/g, '<br>');
-    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + ccElapsed + 's</div>');
+    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;padding-right:24px">' + ccElapsed + 's</div>');
 
     // Execute actions
     if (data.actions && data.actions.length > 0) {
