@@ -8,6 +8,26 @@ const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
+const LOG_PATH = path.join(__dirname, 'log.json');
+
+// ── Timestamps & Logging ────────────────────────────────────────────────────
+// Extracted from engine.js so engine/* modules can import directly without
+// circular-requiring the orchestrator.
+
+function ts() { return new Date().toISOString(); }
+function logTs() { return new Date().toLocaleTimeString(); }
+function dateStamp() { return new Date().toISOString().slice(0, 10); }
+
+function log(level, msg, meta = {}) {
+  const entry = { timestamp: ts(), level, message: msg, ...meta };
+  console.log(`[${logTs()}] [${level}] ${msg}`);
+
+  let logData = safeJson(LOG_PATH) || [];
+  if (!Array.isArray(logData)) logData = logData.entries || [];
+  logData.push(entry);
+  if (logData.length > 2000) logData.splice(0, logData.length - 2000);
+  safeWrite(LOG_PATH, logData);
+}
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -364,6 +384,11 @@ function addPrLink(prId, itemId) {
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
+  LOG_PATH,
+  ts,
+  logTs,
+  dateStamp,
+  log,
   safeRead,
   safeReadDir,
   safeJson,

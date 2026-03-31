@@ -6,13 +6,10 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid } = shared;
+const { safeJson, safeWrite, safeRead, uid, log } = shared;
 const queries = require('./queries');
 const { getDispatch } = queries;
 const { renderPlaybook } = require('./playbook');
-
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
 
 const MEETINGS_DIR = path.join(__dirname, '..', 'meetings');
 
@@ -175,7 +172,6 @@ function discoverMeetingWork(config) {
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
 function collectMeetingFindings(meetingId, agentId, roundName, output) {
-  const e = engine();
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
 
@@ -204,7 +200,7 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
       `meeting-${meetingId}-${new Date().toISOString().slice(0, 10)}.md`);
     safeWrite(inboxPath, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
 
-    e.log('info', `Meeting ${meetingId} completed — transcript written to inbox`);
+    log('info', `Meeting ${meetingId} completed — transcript written to inbox`);
     saveMeeting(meeting);
     return;
   }
@@ -221,11 +217,11 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     if (meeting.status === 'investigating') {
       meeting.status = 'debating';
       meeting.round = 2;
-      e.log('info', `Meeting ${meetingId}: all findings in — advancing to debate`);
+      log('info', `Meeting ${meetingId}: all findings in — advancing to debate`);
     } else if (meeting.status === 'debating') {
       meeting.status = 'concluding';
       meeting.round = 3;
-      e.log('info', `Meeting ${meetingId}: all debate responses in — advancing to conclusion`);
+      log('info', `Meeting ${meetingId}: all debate responses in — advancing to conclusion`);
     }
   }
 
