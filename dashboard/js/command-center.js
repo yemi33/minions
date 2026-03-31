@@ -184,7 +184,7 @@ async function _ccDoSend(message, skipUserMsg) {
     const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
       .replace(/\n/g, '<br>');
-    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;padding-right:24px">' + ccElapsed + 's</div>');
+    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
 
     // Execute actions
     if (data.actions && data.actions.length > 0) {
@@ -195,12 +195,31 @@ async function _ccDoSend(message, skipUserMsg) {
   } catch (e) {
     clearInterval(ccTimer);
     thinking.remove();
-    ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>');
+    const retryId = 'cc-retry-' + Date.now();
+    ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
+      '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
   } finally {
     _ccSending = false;
     // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
+}
+
+function ccRetryLast() {
+  // Find the last user message and resend it
+  const last = _ccMessages.filter(m => m.role === 'user').pop();
+  if (!last) return;
+  // Extract text from the HTML (strip tags)
+  const tmp = document.createElement('div');
+  tmp.innerHTML = last.html;
+  const text = tmp.textContent || tmp.innerText || '';
+  if (!text.trim()) return;
+  // Remove the error message (last assistant message)
+  const el = document.getElementById('cc-messages');
+  if (el?.lastElementChild) el.lastElementChild.remove();
+  _ccMessages = _ccMessages.slice(0, -1); // remove error from history
+  // Resend
+  _ccDoSend(text.trim());
 }
 
 async function ccExecuteAction(action) {
