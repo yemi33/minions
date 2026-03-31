@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.66 (2026-03-31)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+
 ## 0.1.65 (2026-03-31)
 
 ### Engine
