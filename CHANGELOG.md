@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.65 (2026-03-31)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/meeting.js
+- engine/playbook.js
+
+### Dashboard
+- dashboard-build.js
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/js/render-meetings.js
+- dashboard/layout.html
+- dashboard/pages/meetings.html
+
+### Playbooks
+- meeting-conclude.md
+- meeting-debate.md
+- meeting-investigate.md
+
+### Other
+- routing.md
+
 ## 0.1.64 (2026-03-31)
 
 ### Playbooks
