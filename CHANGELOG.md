@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.82 (2026-03-31)
+
+### Engine
+- engine/lifecycle.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/command-center.js
+
+### Playbooks
+- implement.md
+
 ## 0.1.81 (2026-03-31)
 
 ### Dashboard
