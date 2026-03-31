@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.71 (2026-03-31)
+
+### Dashboard
+- dashboard/js/refresh.js
+
 ## 0.1.70 (2026-03-31)
 
 ### Other
