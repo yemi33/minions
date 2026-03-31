@@ -57,22 +57,8 @@ async function refresh() {
 
 refresh();
 
-// SSE status stream — real-time push + hot-reload on one connection
-// (avoids exhausting HTTP/1.1's 6-connection-per-origin limit)
-let _statusStream = null;
-try {
-  _statusStream = new EventSource('/api/status-stream');
-  _statusStream.onmessage = (e) => {
-    try { _processStatusUpdate(JSON.parse(e.data)); } catch (e2) { console.error('status-stream:', e2.message); }
-  };
-  _statusStream.addEventListener('reload', () => { location.reload(); });
-  _statusStream.onerror = () => {
-    if (_statusStream) { _statusStream.close(); _statusStream = null; }
-    setInterval(refresh, 4000);
-  };
-} catch {
-  setInterval(refresh, 4000);
-}
+// Poll for status updates (SSE caused HTTP/1.1 connection exhaustion — CC fetch would fail)
+setInterval(refresh, 4000);
 
 // Wire sidebar navigation
 document.querySelectorAll('.sidebar-link').forEach(link => {
