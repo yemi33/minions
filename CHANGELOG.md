@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.73 (2026-03-31)
+
+### Dashboard
+- dashboard/js/refresh.js
+- dashboard/js/state.js
+- dashboard/styles.css
+
 ## 0.1.72 (2026-03-31)
 
 ### Dashboard
