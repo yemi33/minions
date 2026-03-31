@@ -263,7 +263,7 @@ const CC_SESSION_MAX_TURNS = 50;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 let ccInFlight = false;
 let ccInFlightSince = 0; // timestamp — auto-release stuck guard
-const CC_INFLIGHT_TIMEOUT_MS = 11 * 60 * 1000; // 11 minutes (slightly > LLM timeout)
+const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
