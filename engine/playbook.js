@@ -285,6 +285,22 @@ function renderPlaybook(type, vars) {
     content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
   }
 
+  // Warn on variables that resolved to empty string
+  const emptyVars = Object.entries(allVars)
+    .filter(([, val]) => String(val) === '')
+    .map(([key]) => key);
+  if (emptyVars.length > 0) {
+    const msg = `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`;
+    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+  }
+
+  // Warn on any remaining unresolved {{variable}} placeholders
+  const unresolved = [...new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)))];
+  if (unresolved.length > 0) {
+    const msg = `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`;
+    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+  }
+
   return content;
 }
 
