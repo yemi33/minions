@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.84 (2026-03-31)
+
+### Dashboard
+- dashboard/js/render-kb.js
+
 ## 0.1.83 (2026-03-31)
 
 ### Engine
