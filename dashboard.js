@@ -259,7 +259,7 @@ setInterval(() => {
 // ── Command Center: session state + helpers ─────────────────────────────────
 
 const CC_SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
-const CC_SESSION_MAX_TURNS = 50;
+const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 let ccInFlight = false;
 let ccInFlightSince = 0; // timestamp — auto-release stuck guard
@@ -538,7 +538,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model = 'sonnet' } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 50, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model = 'sonnet' } = {}) {
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
@@ -623,7 +623,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     store: 'doc', sessionKey: filePath || title,
     extraContext: docContext, label: 'doc-chat',
     timeout: isRich ? 300000 : 60000,
-    maxTurns: isRich ? 10 : 1,
+    maxTurns: isRich ? 50 : 1,
     model: isRich ? 'sonnet' : 'haiku',
     allowedTools: isRich ? 'Read,Glob,Grep' : '',
     skipStatePreamble: !isRich,
