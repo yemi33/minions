@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.74 (2026-03-31)
+
+### Dashboard
+- dashboard/js/render-meetings.js
+
 ## 0.1.73 (2026-03-31)
 
 ### Dashboard
