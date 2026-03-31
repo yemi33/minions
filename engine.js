@@ -1967,6 +1967,22 @@ function discoverWork(config) {
     allWorkItems.push(...meetingWork);
   } catch (e) { log('warn', 'discover meeting work: ' + e.message); }
 
+  // Periodic plan completion sweep — catch PRDs that completed while engine was down
+  // or where checkPlanCompletion missed the completion event
+  try {
+    const lifecycle = require('./engine/lifecycle');
+    const prdDir = path.join(MINIONS_DIR, 'prd');
+    if (fs.existsSync(prdDir)) {
+      for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
+        const plan = safeJson(path.join(prdDir, f));
+        if (!plan?.missing_features || plan.status === 'completed') continue;
+        if (plan.status !== 'approved' && plan.status !== 'active') continue;
+        // Simulate the meta object checkPlanCompletion expects
+        lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
+      }
+    }
+  } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
+
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
     const items = safeJson(projectWorkItemsPath(project)) || [];
