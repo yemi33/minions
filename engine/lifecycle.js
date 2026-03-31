@@ -31,7 +31,7 @@ function checkPlanCompletion(meta, config) {
 
   const projects = shared.getProjects(config);
 
-  // Collect work items from ALL projects (PRD items can span multiple projects)
+  // Collect work items from ALL projects + central (PRD items can be in either)
   let allWorkItems = [];
   for (const p of projects) {
     try {
@@ -39,6 +39,13 @@ function checkPlanCompletion(meta, config) {
       allWorkItems = allWorkItems.concat(wi);
     } catch { /* optional */ }
   }
+  // Also check central work-items.json (for no-project setups)
+  try {
+    const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+    for (const w of central) {
+      if (!allWorkItems.some(existing => existing.id === w.id)) allWorkItems.push(w);
+    }
+  } catch { /* optional */ }
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
