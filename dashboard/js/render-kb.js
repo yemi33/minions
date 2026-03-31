@@ -1,5 +1,17 @@
 // render-kb.js — Knowledge base rendering functions extracted from dashboard.html
 
+const KB_CAT_LABELS = {
+  architecture: 'Architecture', conventions: 'Conventions',
+  'project-notes': 'Project Notes', 'build-reports': 'Build Reports',
+  reviews: 'Reviews', learnings: 'Learnings', decisions: 'Decisions',
+  incidents: 'Incidents', 'api-notes': 'API Notes',
+};
+const KB_CAT_ICONS = {
+  architecture: '\u{1F3D7}', conventions: '\u{1F4CF}',
+  'project-notes': '\u{1F4DD}', 'build-reports': '\u{1F6E0}',
+  reviews: '\u{1F50D}', learnings: '\u{1F4A1}', decisions: '\u{2696}',
+  incidents: '\u{1F6A8}', 'api-notes': '\u{1F517}',
+};
 let _kbActiveTab = 'all';
 
 async function refreshKnowledgeBase() {
