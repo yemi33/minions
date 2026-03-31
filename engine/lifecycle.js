@@ -545,11 +545,10 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   const projects = shared.getProjects(config);
   const defaultProject = (meta?.project?.name && projects.find(p => p.name === meta.project.name)) || projects[0];
-  if (!defaultProject) return 0;
+  const useCentral = !defaultProject;
 
   // Match each PR to its correct project by finding which repo URL appears near the PR number in output
   function resolveProjectForPr(prId) {
-    // Look for the PR URL in output to determine which ADO project it belongs to
     for (const p of projects) {
       if (!p.prUrlBase) continue;
       const urlFragment = p.prUrlBase.replace(/pullrequest\/$/, '');
@@ -561,21 +560,32 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     return defaultProject;
   }
 
+  // Extract PR URL directly from agent output — no manual construction
+  function extractPrUrl(prId) {
+    const ghMatch = output.match(new RegExp(`https?://github\\.com/[^\\s"'\\)\\]]*?/pull/${prId}(?:[^\\s"'\\)\\]]*)`, 'i'));
+    if (ghMatch) return ghMatch[0].replace(/[.,;:]+$/, '');
+    const adoMatch = output.match(new RegExp(`https?://(?:dev\\.azure\\.com|[^/]+\\.visualstudio\\.com)[^\\s"'\\)\\]]*?pullrequest/${prId}(?:[^\\s"'\\)\\]]*)`, 'i'));
+    if (adoMatch) return adoMatch[0].replace(/[.,;:]+$/, '');
+    return '';
+  }
+
   const agentName = config.agents?.[agentId]?.name || agentId;
   let added = 0;
-  // Track which project PR files need writing
-  const dirtyProjects = new Map(); // projectName -> { project, prs, prPath }
+  const centralPrPath = path.join(MINIONS_DIR, 'pull-requests.json');
+  // Track which PR files need writing — keyed by target name
+  const dirtyTargets = new Map(); // name -> { prs, prPath }
 
   for (const prId of prMatches) {
     const fullId = `PR-${prId}`;
-    const targetProject = resolveProjectForPr(prId);
-    const prPath = shared.projectPrPath(targetProject);
+    const targetProject = useCentral ? null : resolveProjectForPr(prId);
+    const targetName = targetProject ? targetProject.name : '_central';
+    const prPath = targetProject ? shared.projectPrPath(targetProject) : centralPrPath;
 
-    // Load PRs for this project (cache per project)
-    if (!dirtyProjects.has(targetProject.name)) {
-      dirtyProjects.set(targetProject.name, { project: targetProject, prs: safeJson(prPath) || [], prPath });
+    // Load PRs for this target (cache per target)
+    if (!dirtyTargets.has(targetName)) {
+      dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
-    const entry = dirtyProjects.get(targetProject.name);
+    const entry = dirtyTargets.get(targetName);
     if (entry.prs.some(p => p.id === fullId || String(p.id).includes(prId))) continue;
 
     let title = meta?.item?.title || '';
@@ -592,7 +602,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       reviewStatus: 'pending',
       status: 'active',
       created: e.dateStamp(),
-      url: targetProject.prUrlBase ? targetProject.prUrlBase + prId : '',
+      url: extractPrUrl(prId),
       prdItems: meta?.item?.id ? [meta.item.id] : [],
       sourcePlan: meta?.item?.sourcePlan || '',
       itemType: meta?.item?.itemType || ''
@@ -601,9 +611,9 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     added++;
   }
 
-  for (const [name, entry] of dirtyProjects) {
+  for (const [name, entry] of dirtyTargets) {
     shared.safeWrite(entry.prPath, entry.prs);
-    e.log('info', `Synced PR(s) from ${agentName}'s output to ${name}/pull-requests.json`);
+    e.log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
   return added;
 }
