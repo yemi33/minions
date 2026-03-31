@@ -570,6 +570,11 @@ function getPrdInfo(config) {
       for (const wi of workItems) { if (wi.sourcePlan) wiById[wi.id] = wi; }
     } catch { /* optional */ }
   }
+  // Also check central work-items.json
+  try {
+    const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+    for (const wi of centralWi) { if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
+  } catch { /* optional */ }
 
   // PR-to-PRD linking — primary source is pr-links.json (single-writer, never clobbered by polling)
   const allPrs = getPullRequests(config);
@@ -600,7 +605,9 @@ function getPrdInfo(config) {
   const statusDisplay = { dispatched: 'in-progress', pending: 'missing' };
   for (const item of items) {
     const wi = wiById[item.id];
-    item.status = statusDisplay[item.status] || item.status || 'missing';
+    // Work item status is source of truth when available (PRD JSON may lag behind)
+    const rawStatus = wi ? (wi.status || item.status) : item.status;
+    item.status = statusDisplay[rawStatus] || rawStatus || 'missing';
     // Attach execution metadata for display (agent, PR link, fail reason)
     if (wi) {
       if (wi.dispatched_to) item._agent = wi.dispatched_to;
@@ -616,20 +623,15 @@ function getPrdInfo(config) {
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round((complete / total) * 100) : 0;
 
-  // Plan timings
+  // Plan timings — use wiById (already includes central work-items.json)
   const planTimings = {};
-  for (const project of projects) {
-    try {
-      const workItems = safeJson(projectWorkItemsPath(project)) || [];
-      for (const wi of workItems) {
-        if (!wi.sourcePlan) continue;
-        if (!planTimings[wi.sourcePlan]) planTimings[wi.sourcePlan] = { firstDispatched: null, lastCompleted: null, allDone: true };
-        const t = planTimings[wi.sourcePlan];
-        if (wi.dispatched_at) { const d = new Date(wi.dispatched_at).getTime(); if (!t.firstDispatched || d < t.firstDispatched) t.firstDispatched = d; }
-        if (wi.completedAt) { const c = new Date(wi.completedAt).getTime(); if (!t.lastCompleted || c > t.lastCompleted) t.lastCompleted = c; }
-        if (wi.status !== 'done' && wi.status !== 'in-pr') t.allDone = false; // in-pr treated as done for backward compat
-      }
-    } catch { /* optional */ }
+  for (const wi of Object.values(wiById)) {
+    if (!wi.sourcePlan) continue;
+    if (!planTimings[wi.sourcePlan]) planTimings[wi.sourcePlan] = { firstDispatched: null, lastCompleted: null, allDone: true };
+    const t = planTimings[wi.sourcePlan];
+    if (wi.dispatched_at) { const d = new Date(wi.dispatched_at).getTime(); if (!t.firstDispatched || d < t.firstDispatched) t.firstDispatched = d; }
+    if (wi.completedAt) { const c = new Date(wi.completedAt).getTime(); if (!t.lastCompleted || c > t.lastCompleted) t.lastCompleted = c; }
+    if (wi.status !== 'done' && wi.status !== 'in-pr') t.allDone = false; // in-pr treated as done for backward compat
   }
 
   const progress = {

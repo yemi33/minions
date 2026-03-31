@@ -215,13 +215,13 @@ function renderPlans(plans) {
     const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;
     const showVerify = effectiveStatus === 'completed' && prdFile && !isArchived;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
-      'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\')">Pause</button>' : '';
+      'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>' : '';
     const resumeBtn = showResume
       ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
-        'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\')">' + (effectiveStatus === 'awaiting-approval' ? 'Approve' : 'Resume') + '</button>'
+        'onclick="event.stopPropagation();planApprove(\'' + escHtml(prdFile) + '\',this)">' + (effectiveStatus === 'awaiting-approval' ? 'Approve' : 'Resume') + '</button>'
       : '';
     const verifyBtn = showVerify ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
-      'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\')">Verify</button>' : '';
+      'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
@@ -448,11 +448,11 @@ async function planView(file) {
     const modalInProgressLabel = hasActiveWork ? '<span style="font-size:10px;color:var(--blue)">In Progress</span>' : '';
     const isModalCompleted = planStatus === 'completed';
     const modalPauseBtn = isActive && !isMdPlan && !isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow)" ' +
-      'onclick="planPause(\'' + escHtml(normalizedFile) + '\');closeModal()">Pause</button>' : '';
+      'onclick="planPause(\'' + escHtml(normalizedFile) + '\',this)">Pause</button>' : '';
     const modalResumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
-      'onclick="planApprove(\'' + escHtml(normalizedFile) + '\');closeModal()">Resume</button>' : '';
+      'onclick="planApprove(\'' + escHtml(normalizedFile) + '\',this)">Resume</button>' : '';
     const modalVerifyBtn = isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
-      'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\')">Verify</button>' : '';
+      'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\',this)">Verify</button>' : '';
 
     const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
     const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
@@ -474,17 +474,20 @@ async function planView(file) {
   } catch (e) { console.error(e); }
 }
 
-async function planApprove(file) {
+async function planApprove(file, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Approving...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     const res = await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     if (res.ok) {
       showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
       refreshPlans();
+      refresh();
     } else {
+      if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
       alert('Approve failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function planDelete(file) {
@@ -506,7 +509,8 @@ async function planDelete(file) {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
-async function planPause(file) {
+async function planPause(file, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Pausing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     const res = await fetch('/api/plans/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     if (res.ok) {
@@ -514,10 +518,11 @@ async function planPause(file) {
       refreshPlans();
       refresh();
     } else {
+      if (btn) { btn.textContent = btn.dataset.origText || 'Pause'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
       alert('Pause failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Pause'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function planReject(file) {
@@ -618,7 +623,8 @@ async function openVerifyGuide(file) {
   } catch (e) { alert('Failed to load guide: ' + e.message); }
 }
 
-async function triggerVerify(file) {
+async function triggerVerify(file, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Verifying...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     const res = await fetch('/api/plans/trigger-verify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -626,13 +632,14 @@ async function triggerVerify(file) {
     });
     const d = await res.json();
     if (res.ok && d.ok) {
-      closeModal();
+      try { closeModal(); } catch { /* may not be open */ }
       refresh();
       showToast('cmd-toast', d.verifyId ? 'Verify task ' + d.verifyId + ' created' : (d.message || 'Done'), true);
     } else {
+      if (btn) { btn.textContent = btn.dataset.origText || 'Verify'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       alert('Failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Verify'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
 }
 
 window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };

@@ -2349,10 +2349,91 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       if (canEdit && fullPath) {
-        // Always save in-place — the engine's staleness detection handles PRD sync
-        // if the source plan changes while an active PRD is running.
         safeWrite(fullPath, content);
-        return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
+
+        // If editing a plan .md that has an active PRD, auto-pause execution
+        let pausedPrd = null;
+        if (body.filePath && body.filePath.startsWith('plans/') && body.filePath.endsWith('.md')) {
+          const planFile = body.filePath.replace(/^plans\//, '');
+          try {
+            const prdDir = path.join(MINIONS_DIR, 'prd');
+            if (fs.existsSync(prdDir)) {
+              for (const f of fs.readdirSync(prdDir)) {
+                if (!f.endsWith('.json')) continue;
+                const prd = safeJson(path.join(prdDir, f));
+                if (!prd || prd.source_plan !== planFile) continue;
+                if (prd.status === 'paused' || prd.status === 'rejected') continue;
+                // Found an active PRD linked to this plan — pause it
+                prd.status = 'paused';
+                prd.pausedAt = new Date().toISOString();
+                prd.pausedBy = 'plan-steering';
+                safeWrite(path.join(prdDir, f), prd);
+                pausedPrd = f;
+                // Pause work items (reuse pause logic inline)
+                const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+                for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
+                const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+                const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+                const killedAgents = new Set();
+                const resetItemIds = new Set();
+                for (const wiPath of wiPaths) {
+                  try {
+                    const items = safeJson(wiPath);
+                    if (!items) continue;
+                    let changed = false;
+                    for (const w of items) {
+                      if (w.sourcePlan !== f) continue;
+                      if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+                      if (w.status === 'dispatched') {
+                        const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
+                        if (activeEntry) {
+                          const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
+                          try {
+                            const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                            if (agentStatus.pid) {
+                              if (process.platform === 'win32') {
+                                try { require('child_process').execSync('taskkill /PID ' + agentStatus.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
+                              } else {
+                                try { process.kill(agentStatus.pid, 'SIGTERM'); } catch { /* process may be dead */ }
+                              }
+                            }
+                            agentStatus.status = 'idle';
+                            delete agentStatus.currentTask;
+                            delete agentStatus.dispatched;
+                            safeWrite(statusPath, agentStatus);
+                          } catch { /* agent reset */ }
+                          killedAgents.add(activeEntry.agent);
+                        }
+                      }
+                      w.status = 'pending';
+                      delete w.dispatched_at;
+                      delete w.dispatched_to;
+                      delete w.failReason;
+                      delete w.failedAt;
+                      changed = true;
+                      if (w.id) resetItemIds.add(w.id);
+                    }
+                    if (changed) safeWrite(wiPath, items);
+                  } catch { /* reset work items */ }
+                }
+                if (resetItemIds.size > 0 || killedAgents.size > 0) {
+                  mutateJsonFileLocked(dispatchPath, (dp) => {
+                    dp.active = (dp.active || []).filter(d => {
+                      if (d.meta?.item?.id && resetItemIds.has(d.meta.item.id)) return false;
+                      if (killedAgents.has(d.agent)) return false;
+                      return true;
+                    });
+                    return dp;
+                  }, { defaultValue: { pending: [], active: [], completed: [] } });
+                }
+                invalidateStatusCache();
+                break;
+              }
+            }
+          } catch (e) { console.error('auto-pause PRD on plan steer:', e.message); }
+        }
+
+        return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions, pausedPrd });
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }

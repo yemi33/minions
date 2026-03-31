@@ -218,6 +218,20 @@ async function _processQaMessage(message, selection) {
         document.getElementById('modal-body').textContent = display;
         _modalDocContext.content = display;
       }
+
+      // If editing paused an active PRD, show re-execute actions
+      if (data.pausedPrd && capturedFilePath) {
+        const planFile = capturedFilePath.replace(/^plans\//, '');
+        const esc = planFile.replace(/'/g, "\\'");
+        const actionDiv = document.createElement('div');
+        actionDiv.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
+        actionDiv.innerHTML =
+          '<span style="color:var(--orange);font-weight:600;font-size:12px;width:100%">Execution paused — plan was updated</span>' +
+          '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Re-execute with new PRD</button>' +
+          '<button onclick="this.closest(\'div\').innerHTML=\'<span style=color:var(--muted);font-size:11px>Paused. No work dispatched.</span>\'" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Keep paused</button>' +
+          '<span style="color:var(--muted);font-size:10px;width:100%">Re-execute replaces the old PRD with a fresh one from the updated plan.</span>';
+        thread.appendChild(actionDiv);
+      }
     } else {
       const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
       thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedErr + 's</div></div>';
