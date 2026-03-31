@@ -13,37 +13,54 @@ function renderPrd(prd, prog) {
     return;
   }
 
-  // Derive status from work items
-  const allWi = window._lastWorkItems || [];
-  const prdItems = (prog?.items || []).filter(i => !i._archived);
-  const implementItems = allWi.filter(w => prdItems.some(pi => pi.id === w.id));
-  const allDone = implementItems.length > 0 && implementItems.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
-  const hasActive = implementItems.some(w => w.status === 'pending' || w.status === 'dispatched');
-
-  // Find the active PRD file for action buttons
-  const prdFile = prd.existing?.[0]?.file || '';
-  const prdStatus = prd.existing?.[0]?.status || '';
-  const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : prdStatus || 'active';
-
   const statusColors = { 'completed': 'var(--green)', 'in-progress': 'var(--blue)', 'awaiting-approval': 'var(--yellow)', 'paused': 'var(--muted)', 'approved': 'var(--green)' };
   const statusLabels = { 'completed': 'Completed', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'paused': 'Paused', 'approved': 'Approved' };
 
-  let actions = '';
-  if (prdFile) {
-    if (effectiveStatus === 'awaiting-approval') {
-      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
-    } else if (effectiveStatus === 'completed') {
-      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
-        ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-left:4px" onclick="planDelete(\'' + escHtml(prdFile) + '\')">Archive</button>';
-    } else if (effectiveStatus === 'in-progress') {
-      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
-    } else if (effectiveStatus === 'paused') {
-      actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>';
-    }
-  }
+  // Show per-PRD status summary in header when multiple PRDs exist
+  const existing = prd.existing || [];
+  const allWi = window._lastWorkItems || [];
+  const prdItems = (prog?.items || []).filter(i => !i._archived);
 
-  badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + (statusLabels[effectiveStatus] || effectiveStatus) + '</span>' +
-    ' <span style="color:var(--muted);font-size:10px">' + (prd.age || '') + '</span>' + actions;
+  if (existing.length <= 1) {
+    // Single PRD — show status + actions in header
+    const implementItems = allWi.filter(w => prdItems.some(pi => pi.id === w.id));
+    const allDone = implementItems.length > 0 && implementItems.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+    const hasActive = implementItems.some(w => w.status === 'pending' || w.status === 'dispatched');
+    const prdFile = existing[0]?.file || '';
+    const prdStatus = existing[0]?.status || '';
+    const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : prdStatus || 'active';
+
+    let actions = '';
+    if (prdFile) {
+      if (effectiveStatus === 'awaiting-approval') {
+        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
+      } else if (effectiveStatus === 'completed') {
+        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
+          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-left:4px" onclick="planDelete(\'' + escHtml(prdFile) + '\')">Archive</button>';
+      } else if (effectiveStatus === 'in-progress') {
+        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
+      } else if (effectiveStatus === 'paused') {
+        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>';
+      }
+    }
+    badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + (statusLabels[effectiveStatus] || effectiveStatus) + '</span>' +
+      ' <span style="color:var(--muted);font-size:10px">' + (prd.age || '') + '</span>' + actions;
+  } else {
+    // Multiple PRDs — show count summary, per-PRD details are in renderPrdProgress groups
+    const counts = { completed: 0, 'in-progress': 0, 'awaiting-approval': 0, paused: 0 };
+    for (const p of existing) {
+      const items = prdItems.filter(i => i.source === p.file);
+      const wiForPrd = allWi.filter(w => items.some(pi => pi.id === w.id));
+      const allDone = wiForPrd.length > 0 && wiForPrd.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+      const hasActive = wiForPrd.some(w => w.status === 'pending' || w.status === 'dispatched');
+      const s = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : p.status || 'active';
+      counts[s] = (counts[s] || 0) + 1;
+    }
+    const parts = Object.entries(counts).filter(([, n]) => n > 0).map(([s, n]) =>
+      '<span style="font-size:10px;color:' + (statusColors[s] || 'var(--muted)') + '">' + n + ' ' + (statusLabels[s] || s).toLowerCase() + '</span>'
+    );
+    badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:var(--text)">' + existing.length + ' PRDs</span> ' + parts.join(' · ');
+  }
   section.innerHTML = '';
 }
 
@@ -52,10 +69,10 @@ function renderPrdProgress(prog) {
   const countEl = document.getElementById('prd-progress-count');
   if (!prog) { el.innerHTML = ''; countEl.textContent = '—'; return; }
 
-  // Compute progress from active (non-archived) items only
+  // Compute overall progress from active (non-archived) items
   const activeItems = (prog.items || []).filter(i => !i._archived);
   if (activeItems.length > 0) {
-    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length;
     countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
   } else {
     countEl.textContent = '—';
@@ -159,7 +176,7 @@ function renderPrdProgress(prog) {
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
       '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="color:var(--red);cursor:pointer;font-size:10px;padding:0 4px" title="Remove item">x</span>' +
-      (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 42px;line-height:1.4">' + escHtml(i.description) + '</div>' : '') +
+      (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 42px;line-height:1.4">' + renderMd(i.description) + '</div>' : '') +
     '</div>';
   };
 
@@ -220,6 +237,9 @@ function renderPrdProgress(prog) {
         : isCompleted
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
           : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
+    const archiveBtn = isCompleted
+      ? '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
+      : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
       ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
@@ -244,6 +264,7 @@ function renderPrdProgress(prog) {
         : '<span style="color:var(--muted);font-weight:400;font-size:10px;margin-left:auto;display:flex;align-items:center;gap:6px">' +
             sourcePlanLink +
             pauseResumeBtn +
+            archiveBtn +
             deleteBtn +
           '</span>') +
       staleRecovery +
