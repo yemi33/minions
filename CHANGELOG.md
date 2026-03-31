@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.64 (2026-03-31)
+
+### Playbooks
+- implement.md
+
+### Agents
+- agents/dallas/charter.md
+- agents/lambert/charter.md
+- agents/ralph/charter.md
+- agents/rebecca/charter.md
+- agents/ripley/charter.md
+
+### Other
+- skills/.gitkeep
+
 ## 0.1.63 (2026-03-31)
 
 ### Engine
