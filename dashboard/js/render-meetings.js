@@ -1,5 +1,7 @@
 // render-meetings.js — Team meeting rendering
 
+let _showArchived = false;
+
 function renderMeetings(meetings) {
   const el = document.getElementById('meetings-content');
   const countEl = document.getElementById('meetings-count');
@@ -8,12 +10,22 @@ function renderMeetings(meetings) {
     el.innerHTML = '<p class="empty">No meetings yet. Start one to have agents investigate, debate, and conclude on a topic.</p>';
     return;
   }
-  countEl.textContent = meetings.length;
 
-  const statusColors = { investigating: 'var(--blue)', debating: 'var(--purple,#a855f7)', concluding: 'var(--yellow)', completed: 'var(--green)' };
-  const statusLabels = { investigating: 'Round 1 — Investigating', debating: 'Round 2 — Debating', concluding: 'Round 3 — Concluding', completed: 'Completed' };
+  const active = meetings.filter(m => m.status !== 'archived');
+  const archived = meetings.filter(m => m.status === 'archived');
+  countEl.textContent = active.length;
 
-  el.innerHTML = meetings.map(m => {
+  const statusColors = { investigating: 'var(--blue)', debating: 'var(--purple,#a855f7)', concluding: 'var(--yellow)', completed: 'var(--green)', archived: 'var(--muted)' };
+  const statusLabels = { investigating: 'Round 1 — Investigating', debating: 'Round 2 — Debating', concluding: 'Round 3 — Concluding', completed: 'Completed', archived: 'Archived' };
+
+  const visible = _showArchived ? meetings : active;
+  if (visible.length === 0) {
+    el.innerHTML = '<p class="empty">No active meetings.</p>';
+    if (archived.length) el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">Show ' + archived.length + ' archived</button></div>';
+    return;
+  }
+
+  el.innerHTML = visible.map(m => {
     const statusColor = statusColors[m.status] || 'var(--muted)';
     const statusLabel = statusLabels[m.status] || m.status;
     const participantBadges = (m.participants || []).map(p => {
@@ -23,15 +35,35 @@ function renderMeetings(meetings) {
       return '<span style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:10px">' + icon + ' ' + escHtml(p) + '</span>';
     }).join(' ');
 
+    const dt = m.completedAt || m.createdAt;
+    const timeStr = dt ? new Date(dt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openMeetingDetail(\'' + escHtml(m.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:13px">' + escHtml(m.title) + '</strong>' +
-        '<span style="color:' + statusColor + ';font-size:11px;font-weight:600">' + statusLabel + '</span>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<span style="color:' + statusColor + ';font-size:11px;font-weight:600">' + statusLabel + '</span>' +
+          (m.status === 'archived'
+            ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();_unarchiveMeeting(\'' + escHtml(m.id) + '\')">Unarchive</button>'
+            : (m.status === 'completed' ? '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px" onclick="event.stopPropagation();_archiveMeeting(\'' + escHtml(m.id) + '\')">Archive</button>' : '')) +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
+        '</div>' +
       '</div>' +
+      (timeStr ? '<div style="margin-top:4px;font-size:10px;color:var(--muted)">' + escHtml(timeStr) + '</div>' : '') +
       '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' + participantBadges + '</div>' +
       '<div style="margin-top:6px;font-size:11px;color:var(--muted)">' + escHtml((m.agenda || '').slice(0, 100)) + (m.agenda?.length > 100 ? '...' : '') + '</div>' +
     '</div>';
   }).join('');
+
+  if (archived.length > 0) {
+    el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">' +
+      (_showArchived ? 'Hide' : 'Show') + ' ' + archived.length + ' archived</button></div>';
+  }
+}
+
+function _toggleArchivedMeetings() {
+  _showArchived = !_showArchived;
+  refresh();
 }
 
 function openMeetingDetail(id) {
@@ -64,14 +96,14 @@ function openMeetingDetail(id) {
         if (m.findings?.[agent]) {
           html += '<div style="padding:8px 12px;font-size:11px;border-bottom:1px solid var(--border)">' +
             '<div style="color:var(--muted);font-size:10px;margin-bottom:4px">Round 1 — Findings</div>' +
-            '<div style="white-space:pre-wrap;word-break:break-word">' + escHtml(m.findings[agent].content?.slice(0, 500) || '') + (m.findings[agent].content?.length > 500 ? '...' : '') + '</div></div>';
+            '<div style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto">' + escHtml(m.findings[agent].content || '') + '</div></div>';
         }
 
         // Debate
         if (m.debate?.[agent]) {
           html += '<div style="padding:8px 12px;font-size:11px;border-bottom:1px solid var(--border)">' +
             '<div style="color:var(--muted);font-size:10px;margin-bottom:4px">Round 2 — Debate</div>' +
-            '<div style="white-space:pre-wrap;word-break:break-word">' + escHtml(m.debate[agent].content?.slice(0, 500) || '') + (m.debate[agent].content?.length > 500 ? '...' : '') + '</div></div>';
+            '<div style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto">' + escHtml(m.debate[agent].content || '') + '</div></div>';
         }
 
         // Status
@@ -86,7 +118,7 @@ function openMeetingDetail(id) {
       if (m.conclusion) {
         html += '<div style="background:rgba(63,185,80,0.08);border:1px solid var(--green);border-radius:6px;padding:10px 14px">' +
           '<div style="color:var(--green);font-weight:600;font-size:12px;margin-bottom:6px">Conclusion (by ' + escHtml(m.conclusion.agent || '?') + ')</div>' +
-          '<div style="font-size:12px;white-space:pre-wrap;word-break:break-word">' + escHtml(m.conclusion.content?.slice(0, 1000) || '') + '</div></div>';
+          '<div style="font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto">' + escHtml(m.conclusion.content || '') + '</div></div>';
       }
 
       // Human notes
@@ -98,7 +130,17 @@ function openMeetingDetail(id) {
       }
 
       // Actions
-      if (m.status !== 'completed') {
+      if (m.status === 'archived') {
+        html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="_unarchiveMeeting(\'' + escHtml(m.id) + '\')">Unarchive</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
+        '</div>';
+      } else if (m.status === 'completed') {
+        html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="_archiveMeeting(\'' + escHtml(m.id) + '\')">Archive</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
+        '</div>';
+      } else {
         html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
           '<input id="meeting-note-input" type="text" placeholder="Add context for all agents..." style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px" onkeydown="if(event.key===\'Enter\')_submitMeetingNote(\'' + escHtml(m.id) + '\')">' +
           '<button onclick="_submitMeetingNote(\'' + escHtml(m.id) + '\')" style="padding:6px 12px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:11px">Add Note</button>' +
@@ -106,6 +148,7 @@ function openMeetingDetail(id) {
         '<div style="display:flex;gap:8px;margin-top:4px">' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow);border-color:var(--yellow)" onclick="_advanceMeeting(\'' + escHtml(m.id) + '\')">Skip to Next Round</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_endMeeting(\'' + escHtml(m.id) + '\')">End Meeting</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
         '</div>';
       }
 
@@ -115,6 +158,16 @@ function openMeetingDetail(id) {
       document.getElementById('modal-body').innerHTML = html;
       document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
       document.getElementById('modal-body').style.whiteSpace = 'normal';
+
+      // Wire up doc-chat Q&A panel for the meeting transcript
+      const transcript = (m.transcript || []).map(t =>
+        '### ' + t.agent + ' (' + t.type + ', Round ' + t.round + ')\n\n' + (t.content || '')
+      ).join('\n\n---\n\n');
+      const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
+      _modalDocContext = { title: 'Meeting: ' + m.title, content: meetingDoc, selection: '' };
+      _modalFilePath = 'meetings/' + m.id + '.json';
+      try { showModalQa(); } catch { /* expected if QA not loaded */ }
+
       document.getElementById('modal').classList.add('open');
     })
     .catch(e => alert('Error: ' + e.message));
@@ -196,6 +249,43 @@ async function _endMeeting(id) {
       body: JSON.stringify({ id })
     });
     try { closeModal(); } catch { /* expected */ }
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function _archiveMeeting(id) {
+  try {
+    const res = await fetch('/api/meetings/archive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
+    try { closeModal(); } catch { /* may not be open */ }
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function _unarchiveMeeting(id) {
+  try {
+    const res = await fetch('/api/meetings/unarchive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
+    try { closeModal(); } catch { /* may not be open */ }
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function _deleteMeeting(id) {
+  if (!confirm('Delete this meeting? This cannot be undone.')) return;
+  try {
+    const res = await fetch('/api/meetings/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
+    try { closeModal(); } catch { /* may not be open */ }
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
 }
