@@ -266,6 +266,7 @@ const ENGINE_DEFAULTS = {
   shutdownTimeout: 300000, // 5min — max wait for active agents during graceful shutdown
   allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
+  meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
 };
 
 const DEFAULT_AGENTS = {

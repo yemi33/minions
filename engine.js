@@ -2051,6 +2051,12 @@ async function tickInner() {
   checkSteering(config);
   checkIdleThreshold(config);
 
+  // 1b. Check for meeting round timeouts
+  try {
+    const { checkMeetingTimeouts } = require('./engine/meeting');
+    checkMeetingTimeouts(config);
+  } catch (e) { log('warn', 'check meeting timeouts: ' + e.message); }
+
   // In stopping state, only track agent completions — skip discovery and dispatch
   if (control.state === 'stopping') {
     log('info', `Engine stopping — ${activeProcesses.size} agent(s) still active, skipping discovery/dispatch`);
