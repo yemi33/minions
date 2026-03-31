@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.63 (2026-03-31)
+
+### Engine
+- engine/scheduler.js
+
 ## 0.1.62 (2026-03-30)
 
 ### Dashboard
