@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.76 (2026-03-31)
+
+### Engine
+- engine/lifecycle.js
+- engine/meeting.js
+- engine/shared.js
+- engine/timeout.js
+
+### Dashboard
+- dashboard/js/live-stream.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+
 ## 0.1.75 (2026-03-31)
 
 ### Dashboard
