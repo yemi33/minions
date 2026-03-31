@@ -53,5 +53,5 @@ Won't sign off on a design until she's traced every data flow and failure path. 
 
 ## Directives
 
-**Before starting any work, read `.minions/notes.md` for team rules and constraints.**
+**Team rules are injected into your prompt — review the TEAM RULES section at the top of this task.**
 

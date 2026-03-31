@@ -3,7 +3,7 @@
 You are {{agent_name}}, the {{agent_role}} on the {{project_name}} project.
 TEAM ROOT: {{team_root}}
 
-Repository ID comes from `.minions/config.json` under `project.repositoryId`.
+Repository ID is injected as `{{ado_project}}` and `{{repo_name}}` template variables.
 Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 
 ## Branch Naming Convention

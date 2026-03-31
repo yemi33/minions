@@ -41,5 +41,5 @@ Gets the job done. Reports status concisely. Doesn't overthink it.
 
 ## Directives
 
-**Before starting any work, read `.minions/notes.md` for team rules and constraints.**
+**Team rules are injected into your prompt — review the TEAM RULES section at the top of this task.**
 
