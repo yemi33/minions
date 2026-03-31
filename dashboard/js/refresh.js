@@ -1,5 +1,30 @@
 // refresh.js — Main refresh loop and initialization extracted from dashboard.html
 
+// Sidebar activity indicators — detect changes between refreshes
+let _prevCounts = {};
+function _detectPageChanges(data) {
+  const counts = {
+    completions: (data.dispatch?.completed || []).length,
+    workDone: (data.workItems || []).filter(w => w.status === 'done' || w.status === 'failed').length,
+    workTotal: (data.workItems || []).length,
+    prdComplete: data.prdProgress?.complete || 0,
+    prsMerged: (data.pullRequests || []).filter(p => p.status === 'merged').length,
+    inbox: (data.inbox?.items || []).length,
+    meetingRounds: (data.meetings || []).reduce((s, m) => s + (m.round || 0), 0),
+  };
+  const changes = {};
+  if (_prevCounts.completions !== undefined) {
+    if (counts.completions > _prevCounts.completions) changes.home = true;
+    if (counts.workDone > _prevCounts.workDone || counts.workTotal > _prevCounts.workTotal) changes.work = true;
+    if (counts.prdComplete > _prevCounts.prdComplete) changes.plans = true;
+    if (counts.prsMerged > _prevCounts.prsMerged) changes.prs = true;
+    if (counts.inbox > _prevCounts.inbox) changes.inbox = true;
+    if (counts.meetingRounds > _prevCounts.meetingRounds) changes.meetings = true;
+  }
+  _prevCounts = counts;
+  return changes;
+}
+
 function _processStatusUpdate(data) {
   // Detect fresh install — clear stale browser state if install ID changed
   if (data.installId) {
@@ -46,6 +71,16 @@ function _processStatusUpdate(data) {
   // Refresh KB and plans less frequently (every 3rd cycle = ~12s)
   if (!window._kbRefreshCount) window._kbRefreshCount = 0;
   if (window._kbRefreshCount++ % 3 === 0) { refreshKnowledgeBase(); refreshPlans(); }
+
+  // Sidebar activity indicators — show red dot on pages with new activity
+  try {
+    const changes = _detectPageChanges(data);
+    for (const page of Object.keys(changes)) {
+      if (currentPage === page) continue; // don't badge the active page
+      const link = document.querySelector('.sidebar-link[data-page="' + page + '"]');
+      if (link && !link.querySelector('.notif-badge')) showNotifBadge(link, 'done');
+    }
+  } catch { /* expected on first load */ }
 }
 
 async function refresh() {

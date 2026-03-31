@@ -21,7 +21,11 @@ function switchPage(page, pushState) {
   if (target) target.classList.add('active');
   document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
   const link = document.querySelector('.sidebar-link[data-page="' + page + '"]');
-  if (link) link.classList.add('active');
+  if (link) {
+    link.classList.add('active');
+    // Clear notification badge when visiting a page
+    try { clearNotifBadge(link); } catch { /* clearNotifBadge may not be loaded yet */ }
+  }
   if (pushState !== false) {
     const url = page === 'home' ? '/' : '/' + page;
     history.pushState({ page }, '', url);
