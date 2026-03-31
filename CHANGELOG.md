@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.79 (2026-03-31)
+
+### Dashboard
+- dashboard/js/render-prd.js
+
 ## 0.1.78 (2026-03-31)
 
 ### Engine
