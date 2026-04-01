@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.89 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/command-center.js
+- dashboard/js/render-meetings.js
+
 ## 0.1.88 (2026-04-01)
 
 ### Dashboard
