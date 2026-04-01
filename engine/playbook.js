@@ -206,9 +206,25 @@ function resolveTaskContext(item, config) {
   return resolved;
 }
 
+// ─── Critical Variable Definitions ─────────────────────────────────────────
+// Variables that MUST resolve to non-empty values for dispatch to proceed.
+// If any critical variable is empty or unresolved, renderPlaybook returns null.
+const CRITICAL_VARS = {
+  'implement': ['task_description', 'branch_name'],
+  'implement-shared': ['task_description', 'branch_name'],
+  'fix': ['task_description', 'branch_name'],
+  'work-item': ['task_description'],
+};
+
+// Module-level error state — callers check via getLastRenderError() after null return
+let _lastRenderError = null;
+
+function getLastRenderError() { return _lastRenderError; }
+
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
+  _lastRenderError = null;
   const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
@@ -299,6 +315,20 @@ function renderPlaybook(type, vars) {
   if (unresolved.length > 0) {
     const msg = `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`;
     try { engine().log('warn', msg); } catch { /* engine not ready */ }
+  }
+
+  // Block dispatch if critical variables are empty or unresolved
+  const criticalVars = CRITICAL_VARS[type] || [];
+  if (criticalVars.length > 0) {
+    const emptySet = new Set(emptyVars);
+    const unresolvedSet = new Set(unresolved);
+    const criticalMissing = criticalVars.filter(v => emptySet.has(v) || unresolvedSet.has(v));
+    if (criticalMissing.length > 0) {
+      const msg = `Playbook "${type}": critical variables empty or unresolved: ${criticalMissing.join(', ')} — blocking dispatch`;
+      log('warn', msg);
+      _lastRenderError = { reason: 'critical_vars_missing', vars: criticalMissing, message: msg };
+      return null;
+    }
   }
 
   return content;
@@ -472,6 +502,8 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 
 module.exports = {
   renderPlaybook,
+  getLastRenderError,
+  CRITICAL_VARS,
   buildSystemPrompt,
   buildAgentContext,
   selectPlaybook,
