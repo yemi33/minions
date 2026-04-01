@@ -880,7 +880,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
-function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount) {
+function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {
 
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
   const metrics = safeJson(metricsPath) || {};
@@ -891,6 +891,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   const m = metrics[agentId];
   m.lastTask = dispatchItem.task;
   m.lastCompleted = ts();
+  if (model) m.model = model;
   if (result === 'success') {
     m.tasksCompleted++;
     if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
@@ -930,8 +931,8 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
 // ─── Agent Output Parsing ────────────────────────────────────────────────────
 
 function parseAgentOutput(stdout) {
-  const { text, usage, sessionId } = shared.parseStreamJsonOutput(stdout, { maxTextLength: 2000 });
-  return { resultSummary: text, taskUsage: usage, sessionId };
+  const { text, usage, sessionId, model } = shared.parseStreamJsonOutput(stdout, { maxTextLength: 2000 });
+  return { resultSummary: text, taskUsage: usage, sessionId, model };
 }
 
 /**
@@ -1016,7 +1017,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const meta = dispatchItem.meta;
   const isSuccess = code === 0;
   const result = isSuccess ? 'success' : 'error';
-  const { resultSummary, taskUsage, sessionId } = parseAgentOutput(stdout);
+  const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
   // Save session for potential resume on next dispatch
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
@@ -1179,7 +1180,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // Don't count auto-retries as errors in metrics — only count final outcomes
   const isAutoRetry = !isSuccess && meta?.item?.id && (meta.item._retryCount || 0) < 3;
   const metricsResult = isAutoRetry ? 'retry' : result;
-  updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount);
+  updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
   return { resultSummary, taskUsage };
 }

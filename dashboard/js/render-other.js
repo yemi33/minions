@@ -142,12 +142,14 @@ function renderTokenUsage(metrics) {
   const agentsWithUsage = agents.filter(([, m]) => (m.totalCostUsd || 0) > 0);
   if (agentsWithUsage.length > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Agent Usage</div>';
-    html += '<table class="token-agent-table"><thead><tr><th>Agent</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/task</th></tr></thead><tbody>';
+    html += '<table class="token-agent-table"><thead><tr><th>Agent</th><th>Model</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/task</th></tr></thead><tbody>';
     for (const [id, m] of agentsWithUsage.sort((a, b) => (b[1].totalCostUsd || 0) - (a[1].totalCostUsd || 0))) {
       const tasks = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
       const perTask = tasks > 0 ? fmtCost((m.totalCostUsd || 0) / tasks) : '-';
+      const modelLabel = (m.model || '').replace(/^claude-/, '').replace(/\[.*\]$/, '') || '-';
       html += '<tr>' +
         '<td style="font-weight:600">' + escHtml(id) + '</td>' +
+        '<td style="color:var(--muted);font-size:10px">' + escHtml(modelLabel) + '</td>' +
         '<td>' + fmtCost(m.totalCostUsd || 0) + '</td>' +
         '<td>' + fmtTokens(m.totalInputTokens || 0) + '</td>' +
         '<td>' + fmtTokens(m.totalOutputTokens || 0) + '</td>' +
@@ -161,8 +163,8 @@ function renderTokenUsage(metrics) {
   // Engine (Haiku) usage table
   const engineEntries = Object.entries(engine).filter(([, e]) => (e.costUsd || 0) > 0 || (e.calls || 0) > 0);
   if (engineEntries.length > 0) {
-    const labels = { 'consolidation': 'Consolidation', 'command-center': 'Command Center', 'doc-chat': 'Doc Chat' };
-    html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Engine Usage (Haiku)</div>';
+    const labels = { 'consolidation': 'Consolidation', 'command-center': 'Command Center', 'doc-chat': 'Doc Chat', 'kb-sweep': 'KB Sweep', 'schedule-parse': 'Schedule Parse' };
+    html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Engine Usage</div>';
     html += '<table class="token-agent-table"><thead><tr><th>Operation</th><th>Cost</th><th>Calls</th><th>Input</th><th>Output</th><th>$/call</th></tr></thead><tbody>';
     for (const [cat, e] of engineEntries.sort((a, b) => (b[1].costUsd || 0) - (a[1].costUsd || 0))) {
       const perCall = (e.calls || 0) > 0 ? fmtCost((e.costUsd || 0) / e.calls) : '-';

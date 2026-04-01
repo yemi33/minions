@@ -205,6 +205,7 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
   let text = '';
   let usage = null;
   let sessionId = null;
+  let model = null;
 
   function extractResult(obj) {
     if (obj.type !== 'result') return false;
@@ -225,6 +226,16 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
   }
 
   const lines = raw.split('\n');
+  // Scan forward for model from init message (appears early in output)
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    const line = lines[i].trim();
+    if (!line || !line.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj.type === 'system' && obj.subtype === 'init' && obj.model) { model = obj.model; break; }
+    } catch {}
+  }
+  // Scan backward for result (appears at end of output)
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -245,7 +256,7 @@ function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
       } catch {}
     }
   }
-  return { text, usage, sessionId };
+  return { text, usage, sessionId, model };
 }
 
 // ── Knowledge Base ──────────────────────────────────────────────────────────
