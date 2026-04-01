@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.134 (2026-04-01)
+
+### Dashboard
+- dashboard/pages/plans.html
+
 ## 0.1.133 (2026-04-01)
 
 ### Dashboard
