@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.140 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/command-center.js
+- dashboard/js/render-pipelines.js
+
 ## 0.1.139 (2026-04-01)
 
 ### Dashboard
