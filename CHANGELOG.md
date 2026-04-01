@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.97 (2026-04-01)
+
+### Engine
+- engine/ado.js
+- engine/github.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-prd.js
+- dashboard/js/render-prs.js
+
 ## 0.1.96 (2026-04-01)
 
 ### Engine
