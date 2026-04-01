@@ -4,6 +4,30 @@ let allWorkItems = [];
 let wiPage = 0;
 const WI_PER_PAGE = 20;
 
+// Track retry state per work item so loading/success/error survives re-renders
+const _wiRetryState = {}; // { [id]: { status: 'pending'|'done'|'error', message?, until? } }
+function setWiRetryState(id, state) { _wiRetryState[id] = state; }
+function getWiRetryState(id) {
+  const s = _wiRetryState[id];
+  if (!s) return null;
+  if (s.until && Date.now() > s.until) { delete _wiRetryState[id]; return null; }
+  return s;
+}
+
+function wiRetryBtn(item) {
+  const rs = getWiRetryState(item.id);
+  if (rs && rs.status === 'pending') {
+    return '<span style="font-size:9px;padding:1px 6px;color:var(--yellow);border:1px solid rgba(210,153,34,0.35);background:rgba(210,153,34,0.1);border-radius:3px;cursor:wait;margin-left:4px">Retrying\u2026</span>';
+  }
+  if (rs && rs.status === 'done') {
+    return '<span style="font-size:9px;padding:1px 6px;color:var(--green);border:1px solid rgba(63,185,80,0.35);background:rgba(63,185,80,0.1);border-radius:3px;margin-left:4px">Requeued</span>';
+  }
+  if (rs && rs.status === 'error') {
+    return '<span style="font-size:9px;padding:1px 6px;color:var(--red);border:1px solid rgba(248,81,73,0.35);background:rgba(248,81,73,0.1);border-radius:3px;margin-left:4px;cursor:pointer" title="' + escHtml(rs.message || 'Retry failed') + ' — click to try again" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry failed</span>';
+  }
+  return '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry</button>';
+}
+
 function wiRow(item) {
   const statusBadge = (s) => {
     const cls = s === 'failed' ? 'rejected' : s === 'needs-human-review' ? 'needs-review' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : 'draft';
@@ -23,7 +47,7 @@ function wiRow(item) {
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
       (item._pendingReason ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
-      (item.status === 'failed' ? ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\',this)">Retry</button>' : '') +
+      (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
     '<td>' +
       (item.completedAgents && item.completedAgents.length > 0
@@ -211,23 +235,33 @@ async function toggleWorkItemArchive() {
   } catch (e) { el.innerHTML = '<p class="empty">Failed to load archive.</p>'; }
 }
 
-async function retryWorkItem(id, source, btn) {
-  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Retrying...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+async function retryWorkItem(id, source) {
+  // Prevent double-click: if already retrying, ignore
+  const existing = getWiRetryState(id);
+  if (existing && existing.status === 'pending') return;
+
+  setWiRetryState(id, { status: 'pending' });
+  renderWorkItems(allWorkItems);
   try {
     const res = await fetch('/api/work-items/retry', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
     if (res.ok) {
+      setWiRetryState(id, { status: 'done', until: Date.now() + 8000 });
       showToast('cmd-toast', 'Work item ' + id + ' reset to pending', true);
       wakeEngine();
       refresh();
     } else {
-      if (btn) { btn.textContent = btn.dataset.origText || 'Retry'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
-      alert('Retry failed: ' + (d.error || 'unknown'));
+      const msg = d.error || 'unknown';
+      setWiRetryState(id, { status: 'error', message: msg, until: Date.now() + 10000 });
+      renderWorkItems(allWorkItems);
     }
-  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Retry'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Retry error: ' + e.message); }
+  } catch (e) {
+    setWiRetryState(id, { status: 'error', message: e.message, until: Date.now() + 10000 });
+    renderWorkItems(allWorkItems);
+  }
 }
 
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
