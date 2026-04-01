@@ -1453,55 +1453,53 @@ const server = http.createServer(async (req, res) => {
         manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });
       }
 
-      const prompt = `You are a knowledge base curator. Analyze these ${manifest.length} knowledge base entries and produce a cleanup plan.
+      const { callLLM, trackEngineUsage } = require('./engine/llm');
+      const BATCH_SIZE = 80; // ~80 entries per batch to stay within Haiku context
+      const batches = [];
+      for (let i = 0; i < manifest.length; i += BATCH_SIZE) {
+        batches.push(manifest.slice(i, i + BATCH_SIZE));
+      }
+
+      const plan = { duplicates: [], reclassify: [], remove: [] };
+      for (let b = 0; b < batches.length; b++) {
+        const batch = batches[b];
+        const offset = b * BATCH_SIZE;
+        const prompt = `You are a knowledge base curator. Analyze these ${batch.length} entries (batch ${b + 1}/${batches.length}, indices ${offset}-${offset + batch.length - 1}) and produce a cleanup plan.
 
 ## Entries
 
-${manifest.map((m, i) => `<entry index="${i}" category="${m.category}" file="${m.file}" date="${m.date}" agent="${m.agent || 'unknown'}">
+${batch.map((m, i) => `<entry index="${offset + i}" category="${m.category}" file="${m.file}" date="${m.date}" agent="${m.agent || 'unknown'}">
 ${m.title}
-${m.content.slice(0, 1500)}
+${m.content.slice(0, 800)}
 </entry>`).join('\n\n')}
 
 ## Instructions
 
-1. **Find duplicates**: entries with substantially the same content or insights (same findings from different agents or dispatch runs). List pairs/groups by index. When choosing which to keep, prefer the more recent entry (later date) as it likely reflects the current state of the codebase.
+1. **Find duplicates**: entries with substantially the same content (same findings, different agents/runs). List pairs by index. Prefer keeping the more recent entry.
+2. **Find misclassified**: entries in the wrong category.
+3. **Find stale/empty**: entries with no actionable content (boilerplate, bail-out notes, "no changes needed").
 
-2. **Find misclassified**: entries in the wrong category. Common: build reports in conventions, reviews in architecture.
+Respond with ONLY valid JSON: { "duplicates": [{ "keep": N, "remove": [N], "reason": "..." }], "reclassify": [{ "index": N, "from": "cat", "to": "cat", "reason": "..." }], "remove": [{ "index": N, "reason": "..." }] }
+If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
-3. **Find stale/empty**: entries with no actionable content (boilerplate, "no changes needed", bail-out notes).
+        const result = await callLLM(prompt, 'Output only JSON.', {
+          timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1
+        });
+        trackEngineUsage('kb-sweep', result.usage);
 
-## Output Format
-
-Respond with ONLY valid JSON (no markdown fences, no preamble):
-
-{
-  "duplicates": [
-    { "keep": 0, "remove": [1, 5], "reason": "same PR review findings" }
-  ],
-  "reclassify": [
-    { "index": 3, "from": "conventions", "to": "build-reports", "reason": "..." }
-  ],
-  "remove": [
-    { "index": 7, "reason": "empty bail-out note" }
-  ]
-}
-
-If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
-
-      const { callLLM, trackEngineUsage } = require('./engine/llm');
-      const result = await callLLM(prompt, 'You are a concise knowledge curator. Output only JSON.', {
-        timeout: 180000, label: 'kb-sweep', model: 'haiku', maxTurns: 1
-      });
-      trackEngineUsage('kb-sweep', result.usage);
-
-      let plan;
-      try {
-        let jsonStr = result.text.trim();
-        const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) jsonStr = fenceMatch[1].trim();
-        plan = JSON.parse(jsonStr);
-      } catch {
-        return jsonReply(res, 200, { ok: false, error: 'LLM returned invalid JSON', raw: result.text.slice(0, 500) });
+        let batchPlan;
+        try {
+          let jsonStr = (result.text || '').trim();
+          const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+          if (fenceMatch) jsonStr = fenceMatch[1].trim();
+          batchPlan = JSON.parse(jsonStr);
+        } catch {
+          console.log(`[kb-sweep] batch ${b + 1}/${batches.length} returned invalid JSON, skipping`);
+          continue;
+        }
+        if (batchPlan.duplicates) plan.duplicates.push(...batchPlan.duplicates);
+        if (batchPlan.reclassify) plan.reclassify.push(...batchPlan.reclassify);
+        if (batchPlan.remove) plan.remove.push(...batchPlan.remove);
       }
 
       let removed = 0, reclassified = 0, merged = 0;
