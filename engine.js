@@ -1955,19 +1955,29 @@ function discoverWork(config) {
 
   // Periodic plan completion sweep — catch PRDs that completed while engine was down
   // or where checkPlanCompletion missed the completion event
-  try {
-    const lifecycle = require('./engine/lifecycle');
-    const prdDir = path.join(MINIONS_DIR, 'prd');
-    if (fs.existsSync(prdDir)) {
-      for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
-        const plan = safeJson(path.join(prdDir, f));
-        if (!plan?.missing_features || plan.status === 'completed') continue;
-        if (plan.status !== 'approved' && plan.status !== 'active') continue;
-        // Simulate the meta object checkPlanCompletion expects
-        lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
+  // Throttled to every 10 ticks (~5 min) to reduce call volume (P3 decision)
+  if (tickCount % 10 === 0) {
+    try {
+      const lifecycle = require('./engine/lifecycle');
+      const prdDir = path.join(MINIONS_DIR, 'prd');
+      if (fs.existsSync(prdDir)) {
+        for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
+          if (completedPlanCache.has(f)) continue;
+          const plan = safeJson(path.join(prdDir, f));
+          if (!plan?.missing_features || plan.status === 'completed') {
+            if (plan?.status === 'completed') completedPlanCache.add(f);
+            continue;
+          }
+          if (plan.status !== 'approved' && plan.status !== 'active') continue;
+          // Simulate the meta object checkPlanCompletion expects
+          lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
+          // If plan transitioned to completed, cache it
+          const after = safeJson(path.join(prdDir, f));
+          if (after?.status === 'completed') completedPlanCache.add(f);
+        }
       }
-    }
-  } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
+    } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
+  }
 
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
@@ -2004,6 +2014,10 @@ function discoverWork(config) {
 // ─── Main Tick ──────────────────────────────────────────────────────────────
 
 let tickCount = 0;
+
+// In-memory cache of plan filenames confirmed completed — avoids redundant
+// checkPlanCompletion calls.  Cleared automatically on engine restart.
+const completedPlanCache = new Set();
 
 let tickRunning = false;
 
@@ -2068,9 +2082,15 @@ async function tickInner() {
     try {
       const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
       for (const file of prdFiles) {
+        if (completedPlanCache.has(file)) continue;
         const plan = safeJson(path.join(PRD_DIR, file));
         if (plan && plan.missing_features && plan.status !== 'completed') {
           checkPlanCompletion({ item: { sourcePlan: file } }, config);
+          // If plan transitioned to completed, cache it
+          const after = safeJson(path.join(PRD_DIR, file));
+          if (after?.status === 'completed') completedPlanCache.add(file);
+        } else if (plan?.status === 'completed') {
+          completedPlanCache.add(file);
         }
       }
     } catch (err) { log('warn', `Plan completion check error: ${err?.message || err}`); }
