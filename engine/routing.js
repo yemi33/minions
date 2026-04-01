@@ -8,15 +8,11 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead } = shared;
+const { safeJson, safeRead, log, ts } = shared;
 const { ENGINE_DIR, DISPATCH_PATH } = queries;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const ROUTING_PATH = path.join(MINIONS_DIR, 'routing.md');
-
-// Lazy require to avoid circular dependency with engine.js
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
 
 // ─── Temp Agents ─────────────────────────────────────────────────────────────
 
@@ -140,8 +136,8 @@ function resolveAgent(workType, config, authorAgent = null) {
   if (config.engine?.allowTempAgents) {
     const tempId = `temp-${shared.uid()}`;
     _claimedAgents.add(tempId);
-    tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 9)}`, role: 'Temporary Agent', createdAt: engine().ts() });
-    engine().log('info', `Spawning temp agent ${tempId} — all permanent agents busy`);
+    tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 9)}`, role: 'Temporary Agent', createdAt: ts() });
+    log('info', `Spawning temp agent ${tempId} — all permanent agents busy`);
     return tempId;
   }
 

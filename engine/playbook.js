@@ -290,15 +290,13 @@ function renderPlaybook(type, vars) {
     .filter(([, val]) => String(val) === '')
     .map(([key]) => key);
   if (emptyVars.length > 0) {
-    const msg = `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`;
-    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+    log('warn', `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`);
   }
 
   // Warn on any remaining unresolved {{variable}} placeholders
   const unresolved = [...new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)))];
   if (unresolved.length > 0) {
-    const msg = `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`;
-    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+    log('warn', `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`);
   }
 
   return content;
