@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.88 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+
 ## 0.1.87 (2026-04-01)
 
 ### Engine
