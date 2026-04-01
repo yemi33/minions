@@ -1,8 +1,11 @@
 // render-meetings.js — Team meeting rendering
 
 let _showArchived = false;
+const MTG_PER_PAGE = 10;
+let _mtgPage = 0;
 
 function renderMeetings(meetings) {
+  meetings = (meetings || []).filter(function(m) { return !isDeleted('mtg:' + m.id); });
   const el = document.getElementById('meetings-content');
   const countEl = document.getElementById('meetings-count');
   if (!meetings || meetings.length === 0) {
@@ -25,7 +28,12 @@ function renderMeetings(meetings) {
     return;
   }
 
-  el.innerHTML = visible.map(m => {
+  const totalPages = Math.ceil(visible.length / MTG_PER_PAGE);
+  if (_mtgPage >= totalPages) _mtgPage = totalPages - 1;
+  const start = _mtgPage * MTG_PER_PAGE;
+  const pageItems = visible.slice(start, start + MTG_PER_PAGE);
+
+  el.innerHTML = pageItems.map(m => {
     const statusColor = statusColors[m.status] || 'var(--muted)';
     const statusLabel = statusLabels[m.status] || m.status;
     const participantBadges = (m.participants || []).map(p => {
@@ -55,14 +63,27 @@ function renderMeetings(meetings) {
     '</div>';
   }).join('');
 
+  if (visible.length > MTG_PER_PAGE) {
+    el.innerHTML += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (start + 1) + ' to ' + Math.min(start + MTG_PER_PAGE, visible.length) + ' of ' + visible.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_mtgPage === 0 ? 'disabled' : '') + '" onclick="_mtgPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_mtgPage >= totalPages - 1 ? 'disabled' : '') + '" onclick="_mtgNext()">Next</button>' +
+      '</div></div>';
+  }
+
   if (archived.length > 0) {
     el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">' +
       (_showArchived ? 'Hide' : 'Show') + ' ' + archived.length + ' archived</button></div>';
   }
 }
 
+function _mtgPrev() { if (_mtgPage > 0) { _mtgPage--; refresh(); } }
+function _mtgNext() { _mtgPage++; refresh(); }
+
 function _toggleArchivedMeetings() {
   _showArchived = !_showArchived;
+  _mtgPage = 0;
   refresh();
 }
 
@@ -207,37 +228,37 @@ async function _submitCreateMeeting() {
   const checks = document.querySelectorAll('#mtg-participants input[type="checkbox"]:checked');
   const participants = [...checks].map(c => c.value);
   if (participants.length < 2) { alert('Select at least 2 participants'); return; }
-
+  try { closeModal(); } catch { /* expected */ }
+  showToast('cmd-toast', 'Meeting started with ' + participants.length + ' agents', true);
   try {
     const res = await fetch('/api/meetings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, agenda, participants })
     });
     const data = await res.json();
-    if (res.ok) {
-      try { closeModal(); } catch { /* expected */ }
-      wakeEngine();
-      refresh();
-      try { showToast('cmd-toast', 'Meeting started with ' + participants.length + ' agents', true); } catch { /* expected */ }
-    } else { alert('Failed: ' + (data.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { wakeEngine(); refresh(); }
+    else { alert('Failed: ' + (data.error || 'unknown')); openCreateMeetingModal(); }
+  } catch (e) { alert('Error: ' + e.message); openCreateMeetingModal(); }
 }
 
 async function _submitMeetingNote(id) {
   const input = document.getElementById('meeting-note-input');
   if (!input?.value?.trim()) return;
+  const note = input.value.trim();
+  input.value = '';
   try {
-    await fetch('/api/meetings/note', {
+    const res = await fetch('/api/meetings/note', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, note: input.value.trim() })
+      body: JSON.stringify({ id, note })
     });
-    input.value = '';
-    openMeetingDetail(id); // refresh the modal
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) openMeetingDetail(id);
+    else { input.value = note; alert('Failed to add note'); }
+  } catch (e) { input.value = note; alert('Error: ' + e.message); }
 }
 
 async function _advanceMeeting(id) {
   if (!confirm('Skip to next round? Agents that haven\'t finished will be skipped.')) return;
+  showToast('cmd-toast', 'Advancing to next round...', true);
   try {
     await fetch('/api/meetings/advance', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -250,38 +271,42 @@ async function _advanceMeeting(id) {
 
 async function _endMeeting(id) {
   if (!confirm('End this meeting? Current round will be stopped.')) return;
+  try { closeModal(); } catch { /* expected */ }
+  showToast('cmd-toast', 'Meeting ended', true);
   try {
     await fetch('/api/meetings/end', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    try { closeModal(); } catch { /* expected */ }
     refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 async function _archiveMeeting(id) {
+  markDeleted('mtg:' + id);
+  try { closeModal(); } catch { /* may not be open */ }
+  document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
+  showToast('cmd-toast', 'Meeting archived', true);
   try {
     const res = await fetch('/api/meetings/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
-    try { closeModal(); } catch { /* may not be open */ }
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 async function _unarchiveMeeting(id) {
+  try { closeModal(); } catch { /* may not be open */ }
+  document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
+  showToast('cmd-toast', 'Meeting unarchived', true);
   try {
     const res = await fetch('/api/meetings/unarchive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
-    try { closeModal(); } catch { /* may not be open */ }
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 function _viewPlanWithBack(file, meetingId) {
@@ -382,15 +407,16 @@ async function _createPlanFromMeeting(id, btn) {
 
 async function _deleteMeeting(id) {
   if (!confirm('Delete this meeting? This cannot be undone.')) return;
+  markDeleted('mtg:' + id);
+  try { closeModal(); } catch { /* may not be open */ }
+  document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
   try {
     const res = await fetch('/api/meetings/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
-    try { closeModal(); } catch { /* may not be open */ }
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 window.MinionsMeetings = { renderMeetings, openMeetingDetail, openCreateMeetingModal };

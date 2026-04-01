@@ -181,6 +181,7 @@ let _schedPage = 0;
 const SCHED_PER_PAGE = 15;
 
 function renderSchedules(schedules) {
+  schedules = schedules.filter(function(s) { return !isDeleted('sched:' + s.id); });
   const el = document.getElementById('scheduled-content');
   const countEl = document.getElementById('scheduled-count');
   countEl.textContent = schedules.length;
@@ -431,6 +432,8 @@ async function submitSchedule(isEdit) {
 }
 
 async function toggleScheduleEnabled(id, enabled) {
+  // Optimistic toggle — swap badge text immediately
+  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) { var badge = r.querySelector('.status-badge'); if (badge) badge.textContent = enabled ? 'ENABLED' : 'DISABLED'; } });
   try {
     const res = await fetch('/api/schedules/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -438,23 +441,23 @@ async function toggleScheduleEnabled(id, enabled) {
     });
     if (res.ok) { refresh(); } else {
       const d = await res.json().catch(() => ({}));
-      _showScheduleError('Toggle failed: ' + (d.error || 'unknown'));
+      _showScheduleError('Toggle failed: ' + (d.error || 'unknown')); refresh();
     }
-  } catch (e) { _showScheduleError('Toggle error: ' + e.message); }
+  } catch (e) { _showScheduleError('Toggle error: ' + e.message); refresh(); }
 }
 
 async function deleteSchedule(id) {
   if (!confirm('Delete scheduled task "' + id + '"?')) return;
+  markDeleted('sched:' + id);
+  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  showToast('cmd-toast', 'Schedule deleted', true);
   try {
     const res = await fetch('/api/schedules/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (res.ok) { refresh(); showToast('cmd-toast', 'Schedule deleted', true); } else {
-      const d = await res.json().catch(() => ({}));
-      _showScheduleError('Delete failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { _showScheduleError('Delete error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); _showScheduleError('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { _showScheduleError('Delete error: ' + e.message); refresh(); }
 }
 
 // Expose _generateScheduleId globally for the inline oninput handler

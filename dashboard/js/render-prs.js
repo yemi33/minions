@@ -130,20 +130,16 @@ async function _submitLinkPr() {
   const context = document.getElementById('pr-link-context')?.value || '';
   const autoObserve = document.getElementById('pr-link-observe')?.checked || false;
 
+  try { closeModal(); } catch { /* expected */ }
+  showToast('cmd-toast', 'PR linked' + (autoObserve ? ' (auto-observe on)' : ''), true);
   try {
     const res = await fetch('/api/pull-requests/link', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, title, project, context, autoObserve })
     });
     const data = await res.json();
-    if (res.ok) {
-      try { closeModal(); } catch { /* expected */ }
-      refresh();
-      try { showToast('cmd-toast', 'PR ' + (data.id || '') + ' linked' + (autoObserve ? ' (auto-observe on)' : ''), true); } catch { /* expected */ }
-    } else {
-      alert('Failed: ' + (data.error || 'unknown'));
-    }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); } else { alert('Failed: ' + (data.error || 'unknown')); openAddPrModal(); }
+  } catch (e) { alert('Error: ' + e.message); openAddPrModal(); }
 }
 
 window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal };

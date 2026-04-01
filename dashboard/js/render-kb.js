@@ -147,14 +147,15 @@ async function submitKbEntry() {
   const title = document.getElementById('kb-new-title').value;
   const content = document.getElementById('kb-new-content').value;
   if (!title || !content) { alert('Title and content are required'); return; }
+  try { closeModal(); } catch { /* may not be open */ }
+  showToast('cmd-toast', 'KB entry created', true);
   try {
     const res = await fetch('/api/knowledge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category, title, content })
     });
-    if (res.ok) { closeModal(); refreshKnowledgeBase(); showToast('cmd-toast', 'KB entry created', true); }
-    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refreshKnowledgeBase(); } else { const d = await res.json().catch(() => ({})); alert('KB create failed: ' + (d.error || 'unknown')); openNewKbModal(); }
+  } catch (e) { alert('Error: ' + e.message); openNewKbModal(); }
 }
 
 async function kbOpenItem(category, file) {

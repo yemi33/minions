@@ -1,6 +1,7 @@
 // render-inbox.js — Inbox and notes rendering functions extracted from dashboard.html
 
 function renderInbox(inbox) {
+  inbox = inbox.filter(function(item) { return !isDeleted('inbox:' + item.name); });
   inboxData = inbox;
   const list = document.getElementById('inbox-list');
   const count = document.getElementById('inbox-count');
@@ -128,13 +129,16 @@ function modalCancelEdit() {
 
 async function deleteInboxItem(name) {
   if (!confirm('Delete "' + name + '" from inbox?')) return;
+  markDeleted('inbox:' + name);
+  const card = document.querySelector('.inbox-item[data-file="notes/inbox/' + CSS.escape(name) + '"]');
+  if (card) card.remove();
   try {
     const res = await fetch('/api/inbox/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-    if (res.ok) { refresh(); } else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Delete error: ' + e.message); refresh(); }
 }
 
 async function openInboxInExplorer(name) {
@@ -169,35 +173,33 @@ async function submitQuickNote() {
   const title = titleEl.value;
   const content = contentEl.value;
   if (!title && !content) { alert('Title or content required'); return; }
+  try { closeModal(); } catch { /* expected */ }
+  showToast('cmd-toast', 'Note saved to inbox', true);
   try {
     const res = await fetch('/api/notes', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title || 'Quick note', what: content || title })
     });
-    if (res.ok) {
-      try { closeModal(); } catch { /* expected */ }
-      refresh();
-      try { showToast('cmd-toast', 'Note saved to inbox', true); } catch { /* expected */ }
-    }
-    else { const d = await res.json().catch(() => ({})); alert('Error: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error saving note: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { const d = await res.json().catch(() => ({})); alert('Note failed: ' + (d.error || 'unknown')); openQuickNoteModal(); }
+  } catch (e) { alert('Error saving note: ' + e.message); openQuickNoteModal(); }
 }
 
 async function doPromoteToKB(name, category) {
+  try { closeModal(); } catch { /* expected */ }
+  markDeleted('inbox:' + name);
+  const card = document.querySelector('.inbox-item[data-file="notes/inbox/' + CSS.escape(name) + '"]');
+  if (card) card.remove();
+  showToast('cmd-toast', 'Promoted to Knowledge Base', true);
   try {
     const res = await fetch('/api/inbox/promote-kb', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, category })
     });
     const data = await res.json();
-    if (res.ok) {
-      closeModal();
-      refresh();
-      refreshKnowledgeBase();
-    } else {
-      alert('Failed: ' + (data.error || 'unknown'));
-    }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refreshKnowledgeBase(); }
+    else { alert('Failed: ' + (data.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 window.MinionsInbox = { renderInbox, promoteToKB, renderNotes, openNotesModal, modalToggleEdit, modalSaveEdit, modalCancelEdit, deleteInboxItem, openInboxInExplorer, openQuickNoteModal, submitQuickNote, doPromoteToKB };

@@ -47,6 +47,7 @@ function wiRow(item) {
 }
 
 function renderWorkItems(items) {
+  items = items.filter(function(w) { return !isDeleted('wi:' + w.id); });
   // Sort: active/dispatched first, then by most recent activity
   const statusOrder = { dispatched: 0, pending: 1, queued: 1, failed: 2, done: 3 };
   items.sort((a, b) => {
@@ -146,43 +147,41 @@ async function submitWorkItemEdit(id, source) {
   const acRaw = document.getElementById('wi-edit-ac')?.value || '';
   const acceptanceCriteria = acRaw.split('\n').filter(function(l) { return l.trim(); });
   if (!title) { alert('Title is required'); return; }
+  try { closeModal(); } catch { /* may not be open */ }
+  showToast('cmd-toast', 'Work item updated', true);
   try {
     const res = await fetch('/api/work-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined, title, description, type, priority, agent, references, acceptanceCriteria })
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Work item updated', true); } else {
-      const d = await res.json();
-      alert('Update failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { alert('Update error: ' + e.message); }
+    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); alert('Update failed: ' + (d.error || 'unknown')); editWorkItem(id, source); }
+  } catch (e) { alert('Update error: ' + e.message); editWorkItem(id, source); }
 }
 
 async function deleteWorkItem(id, source) {
   if (!confirm('Delete work item ' + id + '? This will kill any running agent and remove all dispatch history.')) return;
+  markDeleted('wi:' + id);
+  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (res.ok) { refresh(); } else {
-      const d = await res.json();
-      alert('Delete failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { alert('Delete error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Delete error: ' + e.message); refresh(); }
 }
 
 async function archiveWorkItem(id, source) {
+  markDeleted('wi:' + id);
+  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  showToast('cmd-toast', 'Archived ' + id, true);
   try {
     const res = await fetch('/api/work-items/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (res.ok) { refresh(); } else {
-      const d = await res.json();
-      alert('Archive failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { alert('Archive error: ' + e.message); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Archive failed: ' + (d.error || 'unknown')); refresh(); return; }
+  } catch (e) { alert('Archive error: ' + e.message); refresh(); }
 }
 
 let wiArchiveVisible = false;
@@ -269,13 +268,14 @@ async function submitFeedback(id, source) {
   const rating = _feedbackRating;
   if (!rating) { alert('Please select a rating first'); return; }
   const comment = document.getElementById('feedback-comment')?.value || '';
+  try { closeModal(); } catch { /* may not be open */ }
+  showToast('cmd-toast', 'Feedback saved — agents will learn from it', true);
   try {
     const res = await fetch('/api/work-items/feedback', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source, rating, comment })
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Feedback saved — agents will learn from it', true); }
-    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
+    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); alert('Feedback failed: ' + (d.error || 'unknown')); }
   } catch (e) { alert('Error: ' + e.message); }
 }
 
@@ -341,20 +341,22 @@ async function _submitCreateWorkItem() {
     if (acceptanceCriteria.length) body.acceptanceCriteria = acceptanceCriteria;
     if (references.length && references[0].url) body.references = references;
 
+    try { closeModal(); } catch { /* expected */ }
+    showToast('cmd-toast', 'Creating work item...', true);
     const res = await fetch('/api/work-items', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
     const data = await res.json();
     if (res.ok) {
-      try { closeModal(); } catch { /* expected */ }
       wakeEngine();
       refresh();
-      try { showToast('cmd-toast', 'Work item ' + (data.id || '') + ' created', true); } catch { /* expected */ }
+      showToast('cmd-toast', 'Work item ' + (data.id || '') + ' created', true);
     } else {
       alert('Failed: ' + (data.error || 'unknown'));
+      openCreateWorkItemModal();
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { alert('Error: ' + e.message); openCreateWorkItemModal(); }
 }
 
 function openWorkItemDetail(id) {

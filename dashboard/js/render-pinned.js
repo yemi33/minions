@@ -1,6 +1,7 @@
 // dashboard/js/render-pinned.js — Pinned context notes rendering and management
 
 function renderPinned(entries) {
+  entries = (entries || []).filter(function(e) { return !isDeleted('pin:' + e.title); });
   const el = document.getElementById('pinned-content');
   if (!el) return;
   if (!entries || entries.length === 0) {
@@ -37,19 +38,22 @@ async function submitPinnedNote() {
   const content = document.getElementById('pin-content').value;
   const level = document.getElementById('pin-level').value;
   if (!title || !content) { alert('Title and content required'); return; }
+  try { closeModal(); } catch { /* may not be open */ }
+  showToast('cmd-toast', 'Note pinned', true);
   try {
     const res = await fetch('/api/pinned', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, level }) });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Note pinned', true); }
-    else { const d = await res.json(); alert('Error: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); alert('Pin failed: ' + (d.error || 'unknown')); openPinNoteModal(); }
+  } catch (e) { alert('Error: ' + e.message); openPinNoteModal(); }
 }
 
 async function removePinnedNote(title) {
   if (!confirm('Unpin "' + title + '"?')) return;
+  markDeleted('pin:' + title);
+  const btn = event?.target; if (btn) { const card = btn.closest('.pinned-card') || btn.parentElement?.parentElement; if (card) card.remove(); }
   try {
-    await fetch('/api/pinned/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+    const res = await fetch('/api/pinned/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
+    if (!res.ok) { alert('Unpin failed'); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 window.MinionsPinned = { renderPinned, openPinNoteModal, submitPinnedNote, removePinnedNote };

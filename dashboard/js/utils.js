@@ -3,6 +3,11 @@
 // Signal the engine to tick immediately (pick up new work without waiting 60s)
 function wakeEngine() { fetch('/api/engine/wakeup', { method: 'POST' }).catch(() => {}); }
 
+// Optimistic delete suppression — prevent auto-refresh from re-showing deleted items
+const _deletedIds = new Map(); // key → expiry timestamp
+function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppress for 10s
+function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
+
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
