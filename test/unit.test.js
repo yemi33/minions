@@ -2235,6 +2235,30 @@ async function testPreflightModule() {
     // Wait for it to complete (don't leave dangling promises)
     return result.catch(() => {});
   });
+
+  await test('findClaudeBinary does not shell-interpolate paths (no command injection)', () => {
+    // Read the source of preflight.js and verify no shell interpolation of `which` variable
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    // Must NOT contain bash -c "cat '${which}'" or similar shell interpolation of file paths
+    assert.ok(!src.includes('cat \'${which}'), 'Source must not shell-interpolate which variable via cat');
+    assert.ok(!src.includes('cat "${which}'), 'Source must not shell-interpolate which variable via cat (double quotes)');
+    // Should use fs.readFileSync for reading the wrapper file
+    assert.ok(src.includes('fs.readFileSync('), 'Should use fs.readFileSync to read wrapper file');
+  });
+
+  await test('findClaudeBinary fallback handles paths with special chars safely', () => {
+    // This test verifies that the wrapper-reading fallback uses fs.readFileSync
+    // (not shell interpolation) by checking the source doesn't construct shell commands
+    // with user-controlled path variables
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    // The only execSync calls with string interpolation should NOT include file paths
+    const execSyncCalls = src.match(/execSync\(`[^`]*\$\{[^`]*`/g) || [];
+    for (const call of execSyncCalls) {
+      // Allowed: tasklist with control.pid (a number from our own JSON)
+      // Not allowed: any call interpolating 'which' or file path variables
+      assert.ok(!call.includes('${which'), `Found unsafe shell interpolation of path variable: ${call}`);
+    }
+  });
 }
 
 // ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
