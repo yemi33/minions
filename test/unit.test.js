@@ -3151,6 +3151,60 @@ async function testRunPostCompletionHooks() {
       'Should check plan completion when agent succeeds with sourcePlan');
   });
 
+  // ─── checkPlanCompletion idempotency tests ──────────────────────────────────
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('checkPlanCompletion has _completionNotified idempotency guard', () => {
+    assert.ok(lifecycleSrc.includes('_completionNotified'),
+      'Should check _completionNotified flag for idempotency');
+    assert.ok(lifecycleSrc.includes('if (plan._completionNotified) return'),
+      'Should return early when _completionNotified is set');
+  });
+
+  await test('checkPlanCompletion persists _completionNotified via mutateJsonFileLocked', () => {
+    assert.ok(lifecycleSrc.includes('mutateJsonFileLocked(planPath'),
+      'Should use mutateJsonFileLocked to persist _completionNotified flag');
+    assert.ok(lifecycleSrc.includes("data._completionNotified = true"),
+      'Should set _completionNotified = true in the mutation');
+  });
+
+  await test('checkPlanCompletion does not use uniquePath for inbox summary', () => {
+    // uniquePath at the inbox summary line was replaced with slug+date dedup
+    const inboxSummarySection = lifecycleSrc.split('Write summary to notes/inbox')[1]?.split('Resolve the primary project')[0] || '';
+    assert.ok(!inboxSummarySection.includes('uniquePath'),
+      'Should not use uniquePath for plan completion inbox summary');
+    assert.ok(inboxSummarySection.includes('safeReadDir') || inboxSummarySection.includes('summarySlug'),
+      'Should use slug+date dedup pattern for inbox summary');
+  });
+
+  await test('checkPlanCompletion guards inbox write with slug+date dedup (not uniquePath)', () => {
+    // The inbox summary section should use safeReadDir + startsWith for dedup
+    const inboxSection = lifecycleSrc.split('Write summary to notes/inbox')[1]?.split('Resolve the primary project')[0] || '';
+    assert.ok(inboxSection.includes('safeReadDir'), 'Should use safeReadDir for inbox dedup check');
+    assert.ok(inboxSection.includes('dateStamp()'), 'Should include dateStamp in dedup slug');
+    assert.ok(inboxSection.includes('.startsWith('), 'Should use startsWith to check existing files');
+    assert.ok(!inboxSection.includes('uniquePath'), 'Should NOT use uniquePath for inbox summary');
+  });
+
+  await test('checkPlanCompletion sets _completionNotified on in-memory plan object', () => {
+    // The flag must be set on the local `plan` variable too so later safeWrite(planPath, plan)
+    // does not overwrite the persisted flag
+    assert.ok(lifecycleSrc.includes('plan._completionNotified = true'),
+      'Should set _completionNotified on in-memory plan object (not just in mutateJsonFileLocked)');
+  });
+
+  await test('checkPlanCompletion crash recovery: completed plan without _completionNotified falls through', () => {
+    // When plan.status === 'completed' but _completionNotified is NOT set, the function must
+    // NOT return early — it should fall through to create verify/PR items (crash recovery path)
+    const guardSection = lifecycleSrc.split("plan.status === 'completed'")[1]?.split('const projects')[0] || '';
+    assert.ok(guardSection.includes('if (plan._completionNotified) return'),
+      'Should only return early within the completed guard when _completionNotified is set');
+    // Verify the guard is INSIDE the status === completed block, not standalone
+    assert.ok(!lifecycleSrc.includes('if (plan._completionNotified) return;\n  if (plan.status'),
+      'The _completionNotified guard should be inside the completed status check, not before it');
+  });
+
   await test('runPostCompletionHooks calls updateMetrics', () => {
     assert.ok(src.includes('updateMetrics') || src.includes('trackEngineUsage'),
       'Should update agent metrics after completion');
