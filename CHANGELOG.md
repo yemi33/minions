@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.117 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/pages/plans.html
+
 ## 0.1.116 (2026-04-01)
 
 ### Dashboard
