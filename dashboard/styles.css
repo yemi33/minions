@@ -188,7 +188,7 @@
   .prd-item-priority.low { background: rgba(139,148,158,0.15); color: var(--muted); }
   .prd-project-badge { font-size: var(--text-xs); padding: var(--space-1) 5px; border-radius: var(--radius-md); background: rgba(56,139,253,0.12); color: var(--blue); border: 1px solid rgba(56,139,253,0.25); white-space: nowrap; }
 
-  .notes-preview { max-height: 400px; overflow-y: auto; font-size: var(--text-md); line-height: 1.6; color: var(--muted); font-family: Consolas, monospace; white-space: pre-wrap; word-wrap: break-word; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-6) var(--space-7); cursor: pointer; transition: border-color var(--transition-base); }
+  .notes-preview { max-height: 400px; overflow-y: auto; font-size: var(--text-md); line-height: 1.6; color: var(--muted); font-family: 'Segoe UI', system-ui, sans-serif; white-space: normal; word-wrap: break-word; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-6) var(--space-7); cursor: pointer; transition: border-color var(--transition-base); }
   .notes-preview:hover { border-color: var(--blue); }
   .inbox-item { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: var(--radius-sm); padding: var(--space-5) var(--space-6); cursor: pointer; }
   .inbox-item:hover { border-color: var(--blue); border-left-color: var(--blue); }
