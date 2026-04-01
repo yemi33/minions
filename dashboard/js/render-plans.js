@@ -461,9 +461,16 @@ async function planView(file) {
       'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
     '</div>';
     document.getElementById('modal-title').innerHTML = escHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;
-    document.getElementById('modal-body').textContent = text;
-    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    const modalBody = document.getElementById('modal-body');
+    if (normalizedFile.endsWith('.json')) {
+      modalBody.textContent = text;
+      modalBody.style.fontFamily = 'Consolas, monospace';
+      modalBody.style.whiteSpace = 'pre-wrap';
+    } else {
+      modalBody.innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(text) + '</div>';
+      modalBody.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+      modalBody.style.whiteSpace = 'normal';
+    }
     _modalDocContext = { title, content: text, selection: '' };
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
     // Clear notification badge when opening this document
@@ -505,6 +512,25 @@ async function planDelete(file) {
     } else {
       const d = await res.json();
       alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function planArchive(file) {
+  if (!confirm('Archive PRD "' + file + '"? Work items will be preserved.')) return;
+  try {
+    const res = await fetch('/api/plans/archive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file })
+    });
+    if (res.ok) {
+      closeModal();
+      showToast('cmd-toast', 'PRD archived', true);
+      refreshPlans();
+      refresh();
+    } else {
+      const d = await res.json();
+      alert('Archive failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Error: ' + e.message); }
 }
@@ -578,9 +604,15 @@ async function planOpenInDocChat(file) {
       try { title = JSON.parse(raw).plan_summary || file; } catch {}
     }
     document.getElementById('modal-title').textContent = 'Edit: ' + title;
-    document.getElementById('modal-body').textContent = text;
-    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    if (normalizedFile.endsWith('.json')) {
+      document.getElementById('modal-body').textContent = text;
+      document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+      document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    } else {
+      document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(text) + '</div>';
+      document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+      document.getElementById('modal-body').style.whiteSpace = 'normal';
+    }
     _modalDocContext = { title: title, content: text, selection: '' };
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
     const card = findCardForFile(_modalFilePath);
@@ -612,9 +644,9 @@ async function openVerifyGuide(file) {
     const content = await fetch('/api/plans/' + encodeURIComponent(normalizedFile)).then(r => r.text());
     document.getElementById('modal-title').innerHTML = 'Manual Testing Guide' +
       ' <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px;vertical-align:middle" onclick="openArchivedPrdModal()">Back</button>';
-    document.getElementById('modal-body').textContent = content;
-    document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-    document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+    document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(content) + '</div>';
+    document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+    document.getElementById('modal-body').style.whiteSpace = 'normal';
     _modalDocContext = { title: 'Manual Testing Guide', content, selection: '' };
     _modalFilePath = 'prd/' + normalizedFile; showModalQa();
     const card = findCardForFile(_modalFilePath);
@@ -642,4 +674,4 @@ async function triggerVerify(file, btn) {
   } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Verify'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
 }
 
-window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
+window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };

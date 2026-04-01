@@ -36,7 +36,7 @@ function renderPrd(prd, prog) {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
       } else if (effectiveStatus === 'completed') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
-          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-left:4px" onclick="planDelete(\'' + escHtml(prdFile) + '\')">Archive</button>';
+          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\')">Archive</button>';
       } else if (effectiveStatus === 'in-progress') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
       } else if (effectiveStatus === 'paused') {
@@ -238,7 +238,7 @@ function renderPrdProgress(prog) {
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
           : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
     const archiveBtn = isCompleted
-      ? '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
+      ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
       : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
@@ -250,6 +250,7 @@ function renderPrdProgress(prog) {
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
       pausedLabel +
       staleLabel +
+      '<span style="font-weight:700;font-size:11px;color:' + (done === g.items.length && g.items.length > 0 ? 'var(--green)' : 'var(--text)') + '">' + (g.items.length > 0 ? Math.round((done / g.items.length) * 100) : 0) + '%</span>' +
       '<span style="color:var(--muted);font-weight:400;font-size:10px">' + g.items.length + ' items' +
         (done ? ' · ' + done + ' done' : '') + (wip ? ' · ' + wip + ' active' : '') +
       '</span>' +

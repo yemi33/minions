@@ -2065,6 +2065,37 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handlePlansArchive(req, res) {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
+        return jsonReply(res, 400, { error: 'invalid filename' });
+      }
+      const planPath = resolvePlanPath(body.file);
+      if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
+
+      // Move to archive directory
+      const archiveDir = body.file.endsWith('.json') ? path.join(PRD_DIR, 'archive') : path.join(PLANS_DIR, 'archive');
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      const archivePath = path.join(archiveDir, body.file);
+      fs.renameSync(planPath, archivePath);
+
+      // Mark archived in JSON if PRD
+      if (body.file.endsWith('.json')) {
+        try {
+          const prd = JSON.parse(safeRead(archivePath) || '{}');
+          prd.status = 'archived';
+          prd.archivedAt = new Date().toISOString();
+          safeWrite(archivePath, prd);
+        } catch { /* optional */ }
+      }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, archived: body.file });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   async function handlePlansRevise(req, res) {
     try {
       const body = await readBody(req);
@@ -3083,6 +3114,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/reject', desc: 'Reject a plan', params: 'file, rejectedBy?, reason?', handler: handlePlansReject },
     { method: 'POST', path: '/api/plans/regenerate', desc: 'Reset pending/failed work items for a plan so they re-materialize', params: 'source', handler: handlePlansRegenerate },
     { method: 'POST', path: '/api/plans/delete', desc: 'Delete a plan file and clean up work items', params: 'file', handler: handlePlansDelete },
+    { method: 'POST', path: '/api/plans/archive', desc: 'Move a plan/PRD to archive (preserves work items)', params: 'file', handler: handlePlansArchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
     { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
