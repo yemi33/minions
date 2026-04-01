@@ -1131,7 +1131,7 @@ function materializePlansAsWorkItems(config) {
 
         const id = item.id; // Work item ID = PRD item ID — no indirection
         const complexity = item.estimated_complexity || 'medium';
-        const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+        const criteria = (Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : []).map(c => `- ${c}`).join('\n');
 
         const newItem = {
           id,
@@ -1471,7 +1471,7 @@ function discoverFromWorkItems(config, project) {
       '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
     ).join('\n');
     vars.references = refs ? '## References\n\n' + refs : '';
-    const ac = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+    const ac = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
     vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
 
     // Inject checkpoint context if agent left a checkpoint.json from a prior run
@@ -1806,7 +1806,7 @@ function discoverCentralWorkItems(config) {
           '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
         ).join('\n');
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
-        const fanAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+        const fanAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
 
         if (workType === 'ask') {
@@ -1888,7 +1888,7 @@ function discoverCentralWorkItems(config) {
         '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
       ).join('\n');
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
-      const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+      const normAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
       vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
 
       // Inject checkpoint context if agent left a checkpoint.json from a prior run
