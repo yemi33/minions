@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.103 (2026-04-01)
+
+### Engine
+- engine/lifecycle.js
+- engine/meeting.js
+- engine/shared.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.102 (2026-04-01)
 
 ### Engine
