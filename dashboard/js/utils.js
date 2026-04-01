@@ -114,6 +114,33 @@ function renderMd(s) {
       continue;
     }
 
+    // Table: detect | col | col | rows, consume until non-table line
+    if (line.match(/^\|.+\|/)) {
+      closeList();
+      var tableRows = [];
+      var sepIdx = -1;
+      while (i < lines.length && lines[i].match(/^\|.+\|/)) {
+        var row = lines[i].replace(/^\|/, '').replace(/\|$/, '').split('|').map(function(c) { return c.trim(); });
+        if (lines[i].match(/^\|[\s:]*-{2,}[\s:]*\|/)) { sepIdx = tableRows.length; }
+        else { tableRows.push(row); }
+        i++;
+      }
+      i--; // back up one since the for loop will increment
+      var tableHtml = '<table class="pr-table" style="margin:4px 0;font-size:11px"><thead><tr>';
+      if (tableRows.length > 0) {
+        tableRows[0].forEach(function(c) { tableHtml += '<th>' + c + '</th>'; });
+        tableHtml += '</tr></thead><tbody>';
+        for (var ti = 1; ti < tableRows.length; ti++) {
+          tableHtml += '<tr>';
+          tableRows[ti].forEach(function(c) { tableHtml += '<td>' + c + '</td>'; });
+          tableHtml += '</tr>';
+        }
+        tableHtml += '</tbody></table>';
+      }
+      out.push(tableHtml);
+      continue;
+    }
+
     // Checkbox list (must come before UL — both start with - )
     var cbMatch = line.match(/^(\s*)[-*]\s\[([ xX])\]\s(.+)/);
     if (cbMatch) {
