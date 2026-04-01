@@ -179,8 +179,8 @@ function consolidateWithLLM(items, existingNotes, files, config) {
 
   proc.on('close', (code) => {
     clearTimeout(timeout);
-    safeUnlink(promptPath);
-    safeUnlink(sysPromptPath);
+    try { safeUnlink(promptPath); } catch (err) { log('warn', `Temp file cleanup failed: ${promptPath} — ${err.message}`); }
+    try { safeUnlink(sysPromptPath); } catch (err) { log('warn', `Temp file cleanup failed: ${sysPromptPath} — ${err.message}`); }
 
     const parsed = parseStreamJsonOutput(stdout);
     const extractedText = parsed.text;
@@ -231,8 +231,8 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   proc.on('error', (err) => {
     clearTimeout(timeout);
     log('warn', `LLM consolidation spawn error: ${err.message} — falling back to regex`);
-    safeUnlink(promptPath);
-    safeUnlink(sysPromptPath);
+    try { safeUnlink(promptPath); } catch (unlinkErr) { log('warn', `Temp file cleanup failed: ${promptPath} — ${unlinkErr.message}`); }
+    try { safeUnlink(sysPromptPath); } catch (unlinkErr) { log('warn', `Temp file cleanup failed: ${sysPromptPath} — ${unlinkErr.message}`); }
     consolidateWithRegex(items, files);
     _clearProcessingState();
   });
@@ -296,13 +296,15 @@ function consolidateWithRegex(items, files) {
   const deduped = [];
   for (const insight of allInsights) {
     const fpWords = insight.fingerprint.split(' ').filter(w => w.length > 4).slice(0, 5);
-    if (fpWords.length >= 3 && fpWords.every(w => existingNotes.includes(w))) continue;
+    // Use word-boundary regex to avoid substring false positives (e.g. 'fix' matching 'prefix')
+    if (fpWords.length >= 3 && fpWords.every(w => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(existingNotes))) continue;
     const existing = seen.get(insight.fingerprint);
     if (existing) { if (!existing.sources.includes(insight.agent)) existing.sources.push(insight.agent); continue; }
     let isDup = false;
     for (const [fp, entry] of seen) {
-      const a = new Set(fp.split(' ')), b = new Set(insight.fingerprint.split(' '));
-      // Require at least 3 words in both fingerprints for meaningful similarity check
+      // Filter to meaningful words (>4 chars) to avoid short-word false positives like 'fix' vs 'prefix'
+      const a = new Set(fp.split(' ').filter(w => w.length > 2)), b = new Set(insight.fingerprint.split(' ').filter(w => w.length > 2));
+      // Require at least 3 meaningful words in both fingerprints for similarity check
       if (a.size >= 3 && b.size >= 3 && [...a].filter(w => b.has(w)).length / Math.max(a.size, b.size) > 0.7) {
         if (!entry.sources.includes(insight.agent)) entry.sources.push(insight.agent); isDup = true; break;
       }
@@ -352,7 +354,9 @@ function classifyToKnowledgeBase(items) {
   if (!fs.existsSync(KNOWLEDGE_DIR)) fs.mkdirSync(KNOWLEDGE_DIR, { recursive: true });
 
   const categoryDirs = {};
-  for (const cat of KB_CATEGORIES) {
+  // Include 'general' as fallback category even if not in KB_CATEGORIES
+  const allCategories = KB_CATEGORIES.includes('general') ? KB_CATEGORIES : [...KB_CATEGORIES, 'general'];
+  for (const cat of allCategories) {
     categoryDirs[cat] = path.join(KNOWLEDGE_DIR, cat);
     if (!fs.existsSync(categoryDirs[cat])) fs.mkdirSync(categoryDirs[cat], { recursive: true });
   }
@@ -360,7 +364,12 @@ function classifyToKnowledgeBase(items) {
   let classified = 0;
   for (const item of items) {
     const content = item.content || '';
-    const category = classifyInboxItem(item.name, content);
+    const rawCategory = classifyInboxItem(item.name, content);
+    // Fallback to 'general' if the classified category isn't in our known category map
+    const category = categoryDirs[rawCategory] ? rawCategory : 'general';
+    if (rawCategory !== category) {
+      log('warn', `Unknown KB category '${rawCategory}' for ${item.name} — falling back to 'general'`);
+    }
 
     const agentMatch = item.name.match(/^(\w+)-/);
     const agent = agentMatch ? agentMatch[1] : 'unknown';
