@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.105 (2026-04-01)
+
+### Dashboard
+- dashboard/js/render-inbox.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.104 (2026-04-01)
 
 ### Engine
