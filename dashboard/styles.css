@@ -581,6 +581,13 @@
   .notif-badge.processing span:nth-child(2) { animation-delay: 0.2s; }
   .notif-badge.processing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes notifPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* Command Center resize handle */
+  .cc-resize-handle { position: absolute; top: 0; left: -3px; bottom: 0; width: 6px; cursor: col-resize; z-index: 301; }
+  .cc-resize-handle::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 2px; height: 32px; background: var(--border); border-radius: 2px; opacity: 0; transition: opacity 0.15s; }
+  .cc-resize-handle:hover::after, .cc-resize-handle.active::after { opacity: 1; background: var(--blue); }
+  body.cc-resizing { cursor: col-resize !important; user-select: none !important; }
+
   .modal-body { padding: var(--space-7) var(--space-8); overflow-y: auto; overflow-x: auto; white-space: pre-wrap; font-size: var(--text-md); line-height: 1.7; color: var(--muted); font-family: Consolas, monospace; }
 
   /* Responsive: tablet / narrow window */

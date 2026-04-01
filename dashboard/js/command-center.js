@@ -9,6 +9,7 @@ let _ccQueue = [];
 function toggleCommandCenter() {
   _ccOpen = !_ccOpen;
   const drawer = document.getElementById('cc-drawer');
+  if (_ccOpen) ccApplySavedWidth();
   drawer.style.display = _ccOpen ? 'flex' : 'none';
   if (_ccOpen) {
     clearNotifBadge(document.getElementById('cc-toggle-btn'));
@@ -460,6 +461,64 @@ async function ccExecuteAction(action) {
   msgs.appendChild(status);
   msgs.scrollTop = msgs.scrollHeight;
   refresh();
+}
+
+// --- CC Resize Logic ---
+const CC_MIN_WIDTH = 320;
+const CC_MAX_WIDTH_RATIO = 0.8; // 80% of viewport
+const CC_DEFAULT_WIDTH = 420;
+const CC_WIDTH_KEY = 'cc-drawer-width';
+
+function ccApplySavedWidth() {
+  const drawer = document.getElementById('cc-drawer');
+  if (!drawer) return;
+  const saved = parseInt(localStorage.getItem(CC_WIDTH_KEY), 10);
+  if (saved && saved >= CC_MIN_WIDTH) {
+    const maxW = Math.floor(window.innerWidth * CC_MAX_WIDTH_RATIO);
+    drawer.style.width = Math.min(saved, maxW) + 'px';
+  }
+}
+
+function ccInitResize() {
+  const handle = document.getElementById('cc-resize-handle');
+  const drawer = document.getElementById('cc-drawer');
+  if (!handle || !drawer) return;
+
+  let startX = 0;
+  let startW = 0;
+
+  function onMouseMove(e) {
+    const maxW = Math.floor(window.innerWidth * CC_MAX_WIDTH_RATIO);
+    const delta = startX - e.clientX; // dragging left = wider
+    const newW = Math.max(CC_MIN_WIDTH, Math.min(startW + delta, maxW));
+    drawer.style.width = newW + 'px';
+  }
+
+  function onMouseUp() {
+    document.removeEventListener('mousemove', onMouseMove);
+    document.removeEventListener('mouseup', onMouseUp);
+    document.body.classList.remove('cc-resizing');
+    handle.classList.remove('active');
+    // Persist
+    try { localStorage.setItem(CC_WIDTH_KEY, parseInt(drawer.style.width, 10)); } catch {}
+  }
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = drawer.offsetWidth;
+    document.body.classList.add('cc-resizing');
+    handle.classList.add('active');
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
+}
+
+// Init resize on DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', ccInitResize);
+} else {
+  ccInitResize();
 }
 
 window.MinionsCC = { toggleCommandCenter, ccNewSession, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccExecuteAction };
