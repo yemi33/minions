@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.102 (2026-04-01)
+
+### Engine
+- engine/scheduler.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.101 (2026-04-01)
 
 ### Engine
