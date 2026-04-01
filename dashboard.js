@@ -3095,7 +3095,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
 
       safeWrite(configPath, config);
-      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Restart engine for changes to take full effect.' });
+      // Refresh in-memory CONFIG so subsequent reads see the update
+      reloadConfig();
+      invalidateStatusCache();
+      console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
+      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Engine picks up changes on next tick.' });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -3332,6 +3336,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, file: path.basename(filePath) });
     }},
 
+    { method: 'POST', path: '/api/agents/charter', desc: 'Save agent charter', params: 'agent, content', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.agent || body.content == null) return jsonReply(res, 400, { error: 'agent and content required' });
+      const agentId = body.agent.replace(/[^a-zA-Z0-9_-]/g, '');
+      const charterDir = path.join(MINIONS_DIR, 'agents', agentId);
+      if (!fs.existsSync(charterDir)) fs.mkdirSync(charterDir, { recursive: true });
+      safeWrite(path.join(charterDir, 'charter.md'), body.content);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
     { method: 'POST', path: '/api/agents/steer', desc: 'Inject steering message into a running agent', params: 'agent, message', handler: async (req, res) => {
       const body = await readBody(req);
       const { agent: agentId, message } = body;
