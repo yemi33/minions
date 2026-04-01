@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.137 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/pages/inbox.html
+- dashboard/pages/pipelines.html
+
 ## 0.1.136 (2026-04-01)
 
 ### Dashboard
