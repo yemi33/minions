@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.87 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/consolidation.js
+- engine/dispatch.js
+- engine/lifecycle.js
+- engine/meeting.js
+- engine/playbook.js
+- engine/shared.js
+
+### Other
+- test/unit.test.js
+- tools/generate-pixel-art.js
+- tools/pixel-robot.bmp
+
 ## 0.1.86 (2026-03-31)
 
 ### Dashboard
