@@ -5732,8 +5732,12 @@ async function testSyncPrsFromOutputCentral() {
   });
 
   await test('implement playbook marks PR creation as mandatory', () => {
+    // PR section is now dynamically injected via {{pr_section}} template variable in engine.js
     const playbook = fs.readFileSync(path.join(__dirname, '..', 'playbooks', 'implement.md'), 'utf8');
-    assert.ok(playbook.includes('MANDATORY'), 'implement playbook should mark PR creation as MANDATORY');
+    assert.ok(playbook.includes('{{pr_section}}'), 'implement playbook should include pr_section template variable');
+    // Verify the MANDATORY text exists in the engine dispatch code
+    const engineSrc = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('MANDATORY'), 'engine.js should contain MANDATORY PR text for pr_section');
   });
 }
 
@@ -5742,6 +5746,30 @@ async function testNoRetryPrCompletion() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Completed without creating a pull request'), 'should set failReason for no-PR completion');
     assert.ok(src.includes('Auto-retry') && src.includes('no PR created'), 'should auto-retry when no PR');
+  });
+
+  await test('lifecycle skips no-PR retry when skipPr is set', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('!meta?.item?.skipPr'), 'should check skipPr flag before reverting for no-PR');
+  });
+
+  await test('skipPr accepted by work-items API', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('body.skipPr'), 'dashboard.js should accept skipPr from request body');
+    assert.ok(src.includes('item.skipPr'), 'dashboard.js should persist skipPr on work item');
+  });
+
+  await test('skipPr produces push-only pr_section in engine', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(src.includes('item.skipPr'), 'engine.js should check skipPr on work item');
+    assert.ok(src.includes('PR creation is skipped'), 'engine.js should include skip-PR instructions');
+    assert.ok(src.includes('pr_section'), 'engine.js should set pr_section template variable');
+  });
+
+  await test('dashboard UI exposes skipPr checkbox', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('wi-new-skippr'), 'render-work-items.js should include skipPr checkbox');
+    assert.ok(src.includes('skipPr'), 'render-work-items.js should send skipPr in request body');
   });
 }
 

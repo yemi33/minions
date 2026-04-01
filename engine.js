@@ -1474,6 +1474,11 @@ function discoverFromWorkItems(config, project) {
     const ac = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
     vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
 
+    // Inject PR section — conditional based on skipPr flag
+    vars.pr_section = item.skipPr
+      ? '## Push Branch\n\n**PR creation is skipped for this work item.** Push your branch and report the branch name.\n\n```bash\ngit push -u origin {{branch_name}}\n```\n\nInclude the branch name in your completion summary.'
+      : '## Create PR (MANDATORY)\n\n**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.\n\n{{pr_create_instructions}}\n- sourceRefName: `refs/heads/{{branch_name}}`\n- targetRefName: `refs/heads/{{main_branch}}`\n- title: `{{commit_message}}`\n- labels: `["minions:{{agent_id}}"]`\n\nInclude in the PR description:\n- What was built and why\n- Files changed\n- How to build and test, browser URL if applicable\n- Test plan\n\n## Post self-review on PR\n\n{{pr_comment_instructions}}\n- pullRequestId: `<from PR creation>`\n- Re-read your own diff critically before posting\n- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`';
+
     // Inject checkpoint context if agent left a checkpoint.json from a prior run
     vars.checkpoint_context = '';
     try {
@@ -1808,6 +1813,12 @@ function discoverCentralWorkItems(config) {
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
         const fanAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
+
+        // Inject PR section — conditional based on skipPr flag
+        const fanBranch = '{{branch_name}}';
+        vars.pr_section = item.skipPr
+          ? '## Push Branch\n\n**PR creation is skipped for this work item.** Push your branch and report the branch name.\n\n```bash\ngit push -u origin ' + fanBranch + '\n```\n\nInclude the branch name in your completion summary.'
+          : '## Create PR (MANDATORY)\n\n**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.\n\n{{pr_create_instructions}}\n- sourceRefName: `refs/heads/' + fanBranch + '`\n- targetRefName: `refs/heads/{{main_branch}}`\n- title: `{{commit_message}}`\n- labels: `["minions:{{agent_id}}"]`\n\nInclude in the PR description:\n- What was built and why\n- Files changed\n- How to build and test, browser URL if applicable\n- Test plan\n\n## Post self-review on PR\n\n{{pr_comment_instructions}}\n- pullRequestId: `<from PR creation>`\n- Re-read your own diff critically before posting\n- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`';
 
         if (workType === 'ask') {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
