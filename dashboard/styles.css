@@ -131,9 +131,12 @@
   .token-bar:hover .token-bar-tip { display: block; }
   .token-chart-labels { display: flex; gap: 3px; }
   .token-chart-labels span { flex: 1; min-width: 8px; max-width: 24px; font-size: 8px; color: var(--muted); text-align: center; overflow: hidden; }
-  .token-agent-table { width: 100%; margin-top: var(--space-5); }
+  .token-agent-table { width: 100%; margin-top: var(--space-5); table-layout: fixed; }
   .token-agent-table th { text-align: left; font-size: var(--text-sm); color: var(--muted); font-weight: 500; padding: var(--space-2) var(--space-4); border-bottom: 1px solid var(--border); }
-  .token-agent-table td { font-size: var(--text-base); padding: var(--space-2) var(--space-4); }
+  .token-agent-table th:first-child { width: 28%; }
+  .token-agent-table th:not(:first-child) { text-align: right; }
+  .token-agent-table td { font-size: var(--text-base); padding: var(--space-2) var(--space-4); font-variant-numeric: tabular-nums; }
+  .token-agent-table td:not(:first-child) { text-align: right; }
   .kb-tabs { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-4); }
   .kb-tab { background: var(--surface2); border: 1px solid var(--border); color: var(--muted); font-size: var(--text-base); cursor: pointer; padding: var(--space-1) var(--space-5); border-radius: var(--radius-sm); transition: all var(--transition-base); }
   .kb-tab:hover { color: var(--text); border-color: var(--text); }
