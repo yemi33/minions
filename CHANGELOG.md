@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.126 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/shared.js
+
+### Dashboard
+- dashboard/js/detail-panel.js
+- dashboard/js/render-meetings.js
+- dashboard/js/render-work-items.js
+- dashboard/js/settings.js
+
 ## 0.1.125 (2026-04-01)
 
 ### Dashboard
