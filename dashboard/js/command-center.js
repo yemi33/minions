@@ -66,7 +66,7 @@ function ccAddMessage(role, html, skipSave) {
   const isUser = role === 'user';
   const div = document.createElement('div');
   const isAssistant = !isUser;
-  div.className = isAssistant ? 'cc-msg-assistant' : '';
+  div.className = isAssistant ? 'cc-msg-assistant md-content' : '';
   div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
     (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
   div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
@@ -180,11 +180,9 @@ async function _ccDoSend(message, skipUserMsg) {
       ccUpdateSessionIndicator();
     }
 
-    // Render markdown-ish response
+    // Render markdown response
     const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-    const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
-      .replace(/\n/g, '<br>');
+    const rendered = renderMd(data.text || '');
     ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
 
     // Execute actions
