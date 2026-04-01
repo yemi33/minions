@@ -238,9 +238,7 @@ function renderPrdProgress(prog) {
         : isCompleted
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
           : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
-    const archiveBtn = isCompleted
-      ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
-      : '';
+    const archiveBtn = (isCompleted || isPaused) ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.3);border-radius:3px">Archive</span>' : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
       ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
@@ -509,6 +507,7 @@ function showArchivedPrdDetail(idx) {
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'graph\';showArchivedPrdDetail(' + idx + ')">Graph</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'list\';showArchivedPrdDetail(' + idx + ')">List</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);margin-left:auto" onclick="triggerVerify(\'' + escHtml(g.file) + '\')">Trigger Verify</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="planUnarchive(\'' + escHtml(g.file) + '\',this)">Unarchive</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="openArchivedPrdModal()">Back</button>' +
   '</div>';
 
