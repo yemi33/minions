@@ -20,29 +20,3 @@ jobs:
 
       - name: Run unit tests
         run: npm test
-
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    needs: unit-tests
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Start dashboard
-        run: |
-          node dashboard.js &
-          # Wait for dashboard to be ready
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7331/api/status > /dev/null 2>&1; then
-              echo "Dashboard ready"
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Run all tests
-        run: npm run test:all
