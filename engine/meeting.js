@@ -206,15 +206,13 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     meeting.status = 'completed';
     meeting.completedAt = new Date().toISOString();
 
-    // Write transcript to inbox so agents learn from it
+    // Write transcript to inbox so agents learn from it (slug-based dedup)
     const config = queries.getConfig();
     const agents = config.agents || {};
     const transcript = meeting.transcript.map(t =>
       `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
     ).join('\n\n---\n\n');
-    const inboxPath = path.join(__dirname, '..', 'notes', 'inbox',
-      `meeting-${meetingId}-${new Date().toISOString().slice(0, 10)}.md`);
-    safeWrite(inboxPath, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+    shared.writeToInbox('meeting', meetingId, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
 
     log('info', `Meeting ${meetingId} completed — transcript written to inbox`);
     saveMeeting(meeting);

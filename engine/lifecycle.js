@@ -137,17 +137,10 @@ function checkPlanCompletion(meta, config) {
     ...uniquePrs.map(pr => `- ${pr.id}: ${pr.title || ''} ${pr.url || ''}`),
   ].filter(Boolean).join('\n');
 
-  // Write summary to notes/inbox (slug+date dedup — same pattern as writeInboxAlert in dispatch.js)
-  const summarySlug = `prd-completion-${planFile.replace('.json', '')}`;
-  const summaryFile = `${summarySlug}-${dateStamp()}.md`;
-  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
-  const existing = safeReadDir(inboxDir).find(f => f.startsWith(`${summarySlug}-${dateStamp()}`));
-  if (!existing) {
-    shared.safeWrite(path.join(inboxDir, summaryFile), summary);
-    log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
-  } else {
-    log('info', `PRD completion summary already exists for today: ${existing}, skipping inbox write`);
-  }
+  // Write summary to notes/inbox (slug-based dedup prevents duplicates on same day)
+  const slug = `prd-completion-${planFile.replace('.json', '')}`;
+  const wrote = shared.writeToInbox('engine', slug, summary);
+  if (wrote) log('info', `PRD completion summary written to notes/inbox/`);
 
   // Persist _completionNotified flag atomically BEFORE creating work items.
   // This prevents duplicate inbox notes on re-entry. Work item creation below has its own
@@ -892,8 +885,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
   if (reviewFiles.length === 0) return;
   const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).join('\n\n');
-  const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${pr.id}-${today}.md`;
-  const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
+  const slug = `feedback-from-${reviewerAgentId}-${pr.id}`;
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
     `**PR:** ${pr.id} — ${pr.title || ''}\n` +
     `**Reviewer:** ${config.agents[reviewerAgentId]?.name || reviewerAgentId}\n` +
@@ -902,8 +894,8 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
     `## Action Required\n\nRead this feedback carefully. When you work on similar tasks in the future, ` +
     `avoid the patterns flagged here. If you are assigned to fix this PR, ` +
     `address every point raised above.\n`;
-  shared.safeWrite(feedbackPath, content);
-  log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
+  const wrote = shared.writeToInbox(authorAgentId, slug, content);
+  if (wrote) log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
 function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {

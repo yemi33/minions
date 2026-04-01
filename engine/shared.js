@@ -169,6 +169,33 @@ function uniquePath(filePath) {
   return `${base}-${Date.now()}${ext}`;
 }
 
+// ── Inbox Helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Write a file to notes/inbox/ with slug+date-based dedup.
+ * Filename: `{agentId}-{slug}-{YYYY-MM-DD}.md`
+ * If a file with the same prefix already exists for today, skip the write.
+ * Pattern matches writeInboxAlert() in dispatch.js.
+ * @param {string} agentId - Agent or source identifier (e.g. 'engine', 'ralph')
+ * @param {string} slug - Short descriptive slug (e.g. 'prd-completion-plan1')
+ * @param {string} content - Markdown content to write
+ * @returns {boolean} true if a write occurred, false if deduped/skipped
+ */
+function writeToInbox(agentId, slug, content, _inboxDir) {
+  try {
+    const inboxDir = _inboxDir || path.join(MINIONS_DIR, 'notes', 'inbox');
+    const prefix = `${agentId}-${slug}-${dateStamp()}`;
+    const existing = safeReadDir(inboxDir).find(f => f.startsWith(prefix));
+    if (existing) return false;
+    const filePath = path.join(inboxDir, `${prefix}.md`);
+    safeWrite(filePath, content);
+    return true;
+  } catch (e) {
+    log('warn', `writeToInbox failed: ${e.message}`);
+    return false;
+  }
+}
+
 // ── Process Spawning ────────────────────────────────────────────────────────
 // All child process calls go through these to ensure windowsHide: true
 
@@ -479,6 +506,7 @@ module.exports = {
   mutateJsonFileLocked,
   uid,
   uniquePath,
+  writeToInbox,
   exec,
   execSilent,
   run,
