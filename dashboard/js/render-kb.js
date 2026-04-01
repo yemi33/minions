@@ -162,7 +162,10 @@ async function kbOpenItem(category, file) {
     const content = await fetch('/api/knowledge/' + category + '/' + encodeURIComponent(file)).then(r => r.text());
     const display = content.replace(/^---[\s\S]*?---\n*/m, '');
     document.getElementById('modal-title').textContent = file;
-    document.getElementById('modal-body').textContent = display;
+    const modalBody = document.getElementById('modal-body');
+    modalBody.innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(display) + '</div>';
+    modalBody.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+    modalBody.style.whiteSpace = 'normal';
     _modalDocContext = { title: file, content: display, selection: '' };
     _modalFilePath = 'knowledge/' + category + '/' + file; showModalQa();
     // Clear notification badge when opening this document
