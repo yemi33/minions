@@ -120,7 +120,7 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
-const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
+const { renderPlaybook, getLastRenderError, buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
   getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
@@ -1493,9 +1493,17 @@ function discoverFromWorkItems(config, project) {
     if (playbookName === 'work-item' && workType === 'review') {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
     }
-    const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
+    const rendered = renderPlaybook(playbookName, vars);
+    const renderError = getLastRenderError();
+    // If critical vars are missing, block dispatch entirely — don't fall through to work-item playbook
+    const prompt = item.prompt || rendered || (renderError ? null : (renderPlaybook('work-item', vars) || item.description));
     if (!prompt) {
-      log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
+      if (renderError) {
+        log('warn', `Skipping ${item.id}: ${renderError.message}`);
+        if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; needsWrite = true; }
+      } else {
+        log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
+      }
       continue;
     }
 
@@ -1782,9 +1790,16 @@ function discoverCentralWorkItems(config) {
         }
 
         const playbookName = selectPlaybook(workType, item);
-        const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
+        const rendered = renderPlaybook(playbookName, vars);
+        const renderError = getLastRenderError();
+        const prompt = rendered || (renderError ? null : renderPlaybook('work-item', vars));
         if (!prompt) {
-          log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
+          if (renderError) {
+            log('warn', `Fan-out: ${item.id} → ${agent.id}: ${renderError.message}`);
+            if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; }
+          } else {
+            log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
+          }
           continue;
         }
 
@@ -1894,9 +1909,16 @@ function discoverCentralWorkItems(config) {
       }
 
       const playbookName = selectPlaybook(workType, item);
-      const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
+      const rendered = renderPlaybook(playbookName, vars);
+      const renderError = getLastRenderError();
+      const prompt = rendered || (renderError ? null : renderPlaybook('work-item', vars));
       if (!prompt) {
-        log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
+        if (renderError) {
+          log('warn', `Dispatch: ${item.id}: ${renderError.message}`);
+          item._pendingReason = 'critical_vars_missing';
+        } else {
+          log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
+        }
         item.status = 'pending';
         continue;
       }
@@ -2378,6 +2400,7 @@ module.exports = {
 
   // Playbooks
   renderPlaybook,
+  getLastRenderError,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,

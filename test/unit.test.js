@@ -3035,6 +3035,84 @@ async function testRenderPlaybook() {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
   });
+
+  // ── Critical variable blocking tests ──
+
+  let getLastRenderError;
+  try {
+    getLastRenderError = require(path.join(MINIONS_DIR, 'engine')).getLastRenderError;
+  } catch {}
+
+  await test('renderPlaybook returns null when critical task_description is empty (implement)', () => {
+    if (!getLastRenderError) { skip('critical-vars-no-fn', 'getLastRenderError not exported'); return; }
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: '', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.strictEqual(result, null, 'Should return null when task_description is empty');
+    const err = getLastRenderError();
+    assert.ok(err, 'Should set lastRenderError');
+    assert.strictEqual(err.reason, 'critical_vars_missing');
+    assert.ok(err.vars.includes('task_description'), 'Should list task_description as missing');
+  });
+
+  await test('renderPlaybook returns null when critical branch_name is empty (fix)', () => {
+    if (!getLastRenderError) { skip('critical-vars-fix', 'getLastRenderError not exported'); return; }
+    const result = renderPlaybook('fix', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Fix something', work_item_id: 'W001',
+      branch_name: '', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.strictEqual(result, null, 'Should return null when branch_name is empty for fix playbook');
+    const err = getLastRenderError();
+    assert.ok(err && err.reason === 'critical_vars_missing', 'Should be critical_vars_missing');
+    assert.ok(err.vars.includes('branch_name'), 'Should list branch_name as missing');
+  });
+
+  await test('renderPlaybook returns content when non-critical var is empty', () => {
+    if (!getLastRenderError) { skip('non-critical-vars', 'getLastRenderError not exported'); return; }
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Real description', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+      references: '',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return content when only non-critical vars are empty');
+    const err = getLastRenderError();
+    assert.strictEqual(err, null, 'Should not set lastRenderError for non-critical vars');
+  });
+
+  await test('renderPlaybook allows empty critical vars for playbook types without CRITICAL_VARS', () => {
+    if (!getLastRenderError) { skip('no-critical-vars-type', 'getLastRenderError not exported'); return; }
+    const result = renderPlaybook('plan', {
+      agent_name: 'TestAgent', agent_role: 'Analyst', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_description: '', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    // plan playbook has no critical vars, so empty task_description should NOT block
+    assert.ok(result === null || typeof result === 'string',
+      'Plan playbook should not be blocked by empty vars (may return null if plan playbook missing)');
+    const err = getLastRenderError();
+    assert.ok(!err || err.reason !== 'critical_vars_missing',
+      'Should not set critical_vars_missing error for plan type');
+  });
+
+  await test('CRITICAL_VARS map defines expected entries', () => {
+    let CRITICAL_VARS;
+    try { CRITICAL_VARS = require(path.join(MINIONS_DIR, 'engine', 'playbook')).CRITICAL_VARS; } catch {}
+    if (!CRITICAL_VARS) { skip('critical-vars-map', 'CRITICAL_VARS not exported'); return; }
+    assert.ok(Array.isArray(CRITICAL_VARS['implement']), 'implement should have critical vars');
+    assert.ok(CRITICAL_VARS['implement'].includes('task_description'), 'implement needs task_description');
+    assert.ok(CRITICAL_VARS['implement'].includes('branch_name'), 'implement needs branch_name');
+    assert.ok(Array.isArray(CRITICAL_VARS['fix']), 'fix should have critical vars');
+    assert.ok(CRITICAL_VARS['fix'].includes('task_description'), 'fix needs task_description');
+    assert.ok(CRITICAL_VARS['fix'].includes('branch_name'), 'fix needs branch_name');
+  });
 }
 
 // ─── engine.js — completeDispatch Tests ─────────────────────────────────────
