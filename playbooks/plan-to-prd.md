@@ -25,7 +25,7 @@ A user has provided a plan. Analyze it against the codebase and produce a struct
 
 Write the PRD to: `{{team_root}}/prd/{{project_name_lower}}-{{date}}.json`
 
-**If that file already exists**, append a counter: `{{project_name_lower}}-{{date}}-2.json`, `-3.json`, etc. Do NOT overwrite an existing PRD file — the engine tracks work items by filename.
+**If that file already exists** (check BOTH `prd/` AND `prd/archive/`), append a counter: `{{project_name_lower}}-{{date}}-2.json`, `-3.json`, etc. Do NOT overwrite or reuse a filename from an archived PRD — the engine tracks work items by filename and will collide with old items.
 
 This file is NOT checked into the repo. The engine reads it on every tick and dispatches implementation work automatically.
 
