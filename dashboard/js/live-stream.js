@@ -14,7 +14,7 @@ function renderLiveChatMessage(raw) {
           el.innerHTML += '<div style="font-size:10px;color:var(--muted);padding:2px 8px;font-style:italic">\u{1F4AD} Thinking...</div>';
         }
         if (block.type === 'text' && block.text) {
-          el.innerHTML += '<div style="background:var(--surface2);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:90%;margin:4px 0;font-size:12px;white-space:pre-wrap;word-break:break-word">' + escHtml(block.text) + '</div>';
+          el.innerHTML += '<div style="background:var(--surface2);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:90%;margin:4px 0;font-size:12px;word-break:break-word">' + renderMd(block.text) + '</div>';
         }
         if (block.type === 'tool_use') {
           el.innerHTML += '<div style="background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:10px;color:var(--muted);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">' +

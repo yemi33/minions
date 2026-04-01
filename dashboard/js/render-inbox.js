@@ -55,7 +55,7 @@ function renderNotes(notes) {
   }
 
   if (!content || !content.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
-  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + escHtml(content) + '</div>';
+  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + renderMd(content) + '</div>';
 }
 
 function openNotesModal() {

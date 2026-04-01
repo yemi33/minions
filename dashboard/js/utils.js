@@ -41,4 +41,118 @@ function copyLlmText(btn) {
   setTimeout(() => { btn.innerHTML = '&#x2398;'; }, 1500);
 }
 
-window.MinionsUtils = { wakeEngine, escHtml, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText };
+/**
+ * Lightweight markdown → HTML renderer. XSS-safe (escapes first, then transforms).
+ * Handles: headings, bold, italic, inline code, code blocks, links, blockquotes,
+ * horizontal rules, ordered/unordered/checkbox lists, and tables.
+ */
+function renderMd(s) {
+  if (!s) return '';
+  let html = escHtml(s);
+
+  // 1. Extract code blocks and inline code into placeholders (protect from other transforms)
+  const codeSlots = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
+    codeSlots.push('<pre style="background:var(--bg);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px;margin:4px 0"><code>' + code + '</code></pre>');
+    return '\x00CB' + (codeSlots.length - 1) + '\x00';
+  });
+  html = html.replace(/`([^`\n]+)`/g, function(_, code) {
+    codeSlots.push('<code style="background:var(--bg);padding:1px 4px;border-radius:3px;font-size:0.9em">' + code + '</code>');
+    return '\x00CB' + (codeSlots.length - 1) + '\x00';
+  });
+
+  // 2. Inline transforms (before block processing so they work inside list items etc.)
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
+  html = html.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<em>$1</em>');
+  html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
+  html = html.replace(/~~(.+?)~~/g, '<s>$1</s>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--blue)">$1</a>');
+
+  // 3. Block-level processing (line by line)
+  var lines = html.split('\n');
+  var out = [];
+  var inList = false;
+  var listType = '';
+
+  function closeList() { if (inList) { out.push(listType === 'ol' ? '</ol>' : '</ul>'); inList = false; } }
+  function openList(type) {
+    if (inList && listType !== type) closeList();
+    if (!inList) {
+      var style = type === 'ol' ? 'margin:2px 0 2px 20px;padding:0' : type === 'cb' ? 'margin:2px 0 2px 16px;padding:0;list-style:none' : 'margin:2px 0 2px 16px;padding:0';
+      out.push('<' + (type === 'ol' ? 'ol' : 'ul') + ' style="' + style + '">');
+      inList = true; listType = type === 'cb' ? 'ul' : type;
+    }
+  }
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+
+    // Code block placeholder — pass through as-is
+    if (line.match(/^\x00CB\d+\x00$/)) { closeList(); out.push(line); continue; }
+
+    // Headings
+    var headMatch = line.match(/^(#{1,4})\s+(.+)/);
+    if (headMatch) {
+      closeList();
+      var sizes = { 1: '16px', 2: '14px', 3: '13px', 4: '12px' };
+      out.push('<div style="font-weight:600;font-size:' + sizes[headMatch[1].length] + ';margin:8px 0 4px">' + headMatch[2] + '</div>');
+      continue;
+    }
+
+    // Horizontal rule (only bare ---, ***, ___ lines)
+    if (/^[-*_]{3,}\s*$/.test(line) && !/\S/.test(line.replace(/[-*_]/g, ''))) {
+      closeList();
+      out.push('<hr style="border:none;border-top:1px solid var(--border);margin:8px 0">');
+      continue;
+    }
+
+    // Blockquote
+    if (line.match(/^&gt;\s?/)) {
+      closeList();
+      out.push('<div style="border-left:3px solid var(--border);padding-left:8px;color:var(--muted);margin:2px 0">' + line.replace(/^(&gt;\s?)+/, '') + '</div>');
+      continue;
+    }
+
+    // Checkbox list (must come before UL — both start with - )
+    var cbMatch = line.match(/^(\s*)[-*]\s\[([ xX])\]\s(.+)/);
+    if (cbMatch) {
+      openList('cb');
+      out.push('<li>' + (cbMatch[2] !== ' ' ? '\u2611' : '\u2610') + ' ' + cbMatch[3] + '</li>');
+      continue;
+    }
+
+    // Unordered list (- or * followed by space and content, not bare --- or ***)
+    var ulMatch = line.match(/^(\s*)[-*]\s+(.+)/);
+    if (ulMatch) {
+      openList('ul');
+      out.push('<li>' + ulMatch[2] + '</li>');
+      continue;
+    }
+
+    // Ordered list
+    var olMatch = line.match(/^(\s*)\d+\.\s+(.+)/);
+    if (olMatch) {
+      openList('ol');
+      out.push('<li>' + olMatch[2] + '</li>');
+      continue;
+    }
+
+    // Non-list line — close any open list
+    closeList();
+
+    // Blank line → spacer
+    if (!line.trim()) { out.push('<div style="height:4px"></div>'); continue; }
+
+    out.push('<div>' + line + '</div>');
+  }
+  closeList();
+  html = out.join('\n');
+
+  // 4. Restore code placeholders
+  html = html.replace(/\x00CB(\d+)\x00/g, function(_, idx) { return codeSlots[idx]; });
+
+  return html;
+}
+
+window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText };

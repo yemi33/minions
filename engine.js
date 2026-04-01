@@ -262,7 +262,10 @@ function spawnAgent(dispatchItem, config) {
   const startedAt = ts();
 
   // Resolve project context for this dispatch
-  const project = meta?.project || getProjects(config)[0] || {};
+  // meta.project has {name, localPath} — enrich with full config (mainBranch, repoHost, etc.)
+  const metaProject = meta?.project || {};
+  const fullProject = getProjects(config).find(p => p.name === metaProject.name || p.localPath === metaProject.localPath) || getProjects(config)[0] || {};
+  const project = { ...fullProject, ...metaProject };
   const rootDir = project.localPath ? path.resolve(project.localPath) : path.resolve(MINIONS_DIR, '..');
 
   // Determine working directory
@@ -318,47 +321,61 @@ function spawnAgent(dispatchItem, config) {
             }
           } else {
             log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
+            const mainRef = sanitizeBranch(project.mainBranch || 'main');
             try {
-              runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${sanitizeBranch(project.mainBranch || 'main')}`, _worktreeGitOpts, worktreeCreateRetries);
+              runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (e1) {
-              // Branch already exists or checked out elsewhere — try without -b
-              try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
-              try {
-                runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
-                log('info', `Reusing existing branch: ${branchName}`);
-              } catch (e2) {
-                // "already checked out" or "already used by worktree" — find and reuse or recover
-                const alreadyUsed = e2.message?.includes('already checked out') || e2.message?.includes('already used by worktree')
-                  || e1.message?.includes('already checked out') || e1.message?.includes('already used by worktree');
-                if (alreadyUsed) {
-                  const existingWtPath = findExistingWorktree(rootDir, branchName);
-                  if (existingWtPath && fs.existsSync(existingWtPath)) {
-                    // Directory exists — reuse it if no other active dispatch is using it
-                    const dispatch = safeJson(DISPATCH_PATH) || {};
-                    const activelyUsed = (dispatch.active || []).some(d => {
-                      const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
-                      return dBranch === branchName && d.id !== id;
-                    });
-                    if (activelyUsed) {
-                      log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
-                      throw e2;
+              const branchExists = e1.message?.includes('already exists');
+              log('warn', `Worktree -b failed for ${branchName}: ${e1.message?.split('\n')[0]}`);
+              if (!branchExists) {
+                // Transient error (lock, timeout) — prune, clean, and retry -b once more
+                log('info', `Retrying -b create after prune for ${branchName}`);
+                try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 15000 }); } catch { /* optional */ }
+                removeStaleIndexLock(rootDir);
+                // Clean up partial worktree directory from failed attempt
+                try { if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* optional */ }
+                try {
+                  runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, 0);
+                } catch (e1b) {
+                  log('error', `Worktree -b retry also failed for ${branchName}: ${e1b.message?.split('\n')[0]}`);
+                  throw e1b;
+                }
+              } else {
+                // Branch already exists — try checkout without -b
+                try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+                try {
+                  runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                  log('info', `Reusing existing branch: ${branchName}`);
+                } catch (e2) {
+                  // "already checked out" or "already used by worktree" — find and reuse or recover
+                  const alreadyUsed = e2.message?.includes('already checked out') || e2.message?.includes('already used by worktree')
+                    || e1.message?.includes('already checked out') || e1.message?.includes('already used by worktree');
+                  if (alreadyUsed) {
+                    const existingWtPath = findExistingWorktree(rootDir, branchName);
+                    if (existingWtPath && fs.existsSync(existingWtPath)) {
+                      const dispatch = safeJson(DISPATCH_PATH) || {};
+                      const activelyUsed = (dispatch.active || []).some(d => {
+                        const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
+                        return dBranch === branchName && d.id !== id;
+                      });
+                      if (activelyUsed) {
+                        log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
+                        throw e2;
+                      }
+                      log('info', `Branch ${branchName} already checked out at ${existingWtPath} — reusing`);
+                      worktreePath = existingWtPath;
+                    } else if (existingWtPath && !fs.existsSync(existingWtPath)) {
+                      log('warn', `Branch ${branchName} tracked in missing dir ${existingWtPath} — pruning and recreating`);
+                      try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+                      runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                      log('info', `Recovered worktree for ${branchName} after stale entry prune`);
+                    } else {
+                      try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+                      runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                     }
-                    // Reuse the existing worktree — update path so the rest of spawnAgent uses it
-                    log('info', `Branch ${branchName} already checked out at ${existingWtPath} — reusing`);
-                    worktreePath = existingWtPath;
-                  } else if (existingWtPath && !fs.existsSync(existingWtPath)) {
-                    // Directory gone but git still tracks it — prune and recreate
-                    log('warn', `Branch ${branchName} tracked in missing dir ${existingWtPath} — pruning and recreating`);
-                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
-                    runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
-                    log('info', `Recovered worktree for ${branchName} after stale entry prune`);
                   } else {
-                    // Can't find the worktree at all — prune and retry
-                    try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
-                    runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                    throw e2;
                   }
-                } else {
-                  throw e2;
                 }
               }
             }
@@ -1378,6 +1395,7 @@ function discoverFromWorkItems(config, project) {
       safeWrite(projectWorkItemsPath(project), items);
     }
     if (isAlreadyDispatched(key)) {
+      if (item.status === 'pending') { item.status = 'dispatched'; needsWrite = true; }
       if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
       skipped.gated++; continue;
     }

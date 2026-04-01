@@ -2082,17 +2082,61 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       fs.renameSync(planPath, archivePath);
 
       // Mark archived in JSON if PRD
+      let archivedSource = null;
       if (body.file.endsWith('.json')) {
         try {
           const prd = JSON.parse(safeRead(archivePath) || '{}');
           prd.status = 'archived';
           prd.archivedAt = new Date().toISOString();
           safeWrite(archivePath, prd);
+          // Also archive linked source plan
+          if (prd.source_plan) {
+            const mdPath = path.join(PLANS_DIR, prd.source_plan);
+            if (fs.existsSync(mdPath)) {
+              const planArchive = path.join(PLANS_DIR, 'archive');
+              if (!fs.existsSync(planArchive)) fs.mkdirSync(planArchive, { recursive: true });
+              fs.renameSync(mdPath, path.join(planArchive, prd.source_plan));
+              archivedSource = prd.source_plan;
+            }
+          }
         } catch { /* optional */ }
       }
 
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, archived: body.file });
+      return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  async function handlePlansUnarchive(req, res) {
+    try {
+      const body = await readBody(req);
+      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
+        return jsonReply(res, 400, { error: 'invalid filename' });
+      }
+      const isJson = body.file.endsWith('.json');
+      const targetDir = isJson ? PRD_DIR : PLANS_DIR;
+      const archivePath = path.join(targetDir, 'archive', body.file);
+      if (!fs.existsSync(archivePath)) return jsonReply(res, 404, { error: 'File not found in archive' });
+      fs.renameSync(archivePath, path.join(targetDir, body.file));
+
+      // Also unarchive linked source plan
+      let unarchivedSource = null;
+      if (isJson) {
+        try {
+          const prd = safeJson(path.join(targetDir, body.file));
+          if (prd?.source_plan) {
+            const mdArchivePath = path.join(PLANS_DIR, 'archive', prd.source_plan);
+            if (fs.existsSync(mdArchivePath)) {
+              fs.renameSync(mdArchivePath, path.join(PLANS_DIR, prd.source_plan));
+              unarchivedSource = prd.source_plan;
+            }
+          }
+        } catch { /* optional */ }
+      }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, unarchivedSource });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -3115,6 +3159,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/regenerate', desc: 'Reset pending/failed work items for a plan so they re-materialize', params: 'source', handler: handlePlansRegenerate },
     { method: 'POST', path: '/api/plans/delete', desc: 'Delete a plan file and clean up work items', params: 'file', handler: handlePlansDelete },
     { method: 'POST', path: '/api/plans/archive', desc: 'Move a plan/PRD to archive (preserves work items)', params: 'file', handler: handlePlansArchive },
+    { method: 'POST', path: '/api/plans/unarchive', desc: 'Restore a plan/PRD from archive', params: 'file', handler: handlePlansUnarchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
     { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },

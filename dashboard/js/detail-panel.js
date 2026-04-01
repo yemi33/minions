@@ -44,21 +44,21 @@ function renderDetailContent(detail, tab) {
       if (detail.statusData.completed_at) html += 'Completed: ' + detail.statusData.completed_at + '\n';
       html += '</div>';
       if (detail.statusData.resultSummary) {
-        html += '<h4>Last Result</h4><div class="section" style="border-left:3px solid var(--green);padding-left:12px">' + escHtml(detail.statusData.resultSummary) + '</div>';
+        html += '<h4>Last Result</h4><div class="section" style="border-left:3px solid var(--green);padding-left:12px">' + renderMd(detail.statusData.resultSummary) + '</div>';
       }
     }
 
     if (detail.inboxContents && detail.inboxContents.length > 0) {
       html += '<h4>Notes & Findings (' + detail.inboxContents.length + ')</h4>';
       detail.inboxContents.forEach(item => {
-        html += '<div class="section"><strong style="color:var(--purple)">' + escHtml(item.name) + '</strong>\n\n' + escHtml(item.content) + '</div>';
+        html += '<div class="section"><strong style="color:var(--purple)">' + escHtml(item.name) + '</strong><div style="margin-top:4px">' + renderMd(item.content) + '</div></div>';
       });
     } else {
       html += '<h4>Notes & Findings</h4><div class="section" style="color:var(--muted);font-style:italic">No notes or findings written yet.</div>';
     }
 
     if (detail.outputLog) {
-      html += '<h4>Latest Output</h4><div class="section">' + escHtml(detail.outputLog) + '</div>';
+      html += '<h4>Latest Output</h4><div class="section">' + renderMd(detail.outputLog) + '</div>';
     }
 
     el.innerHTML = html;
@@ -79,7 +79,7 @@ function renderDetailContent(detail, tab) {
       '</div>';
     startLiveStream(currentAgentId);
   } else if (tab === 'charter') {
-    el.innerHTML = '<div class="section">' + escHtml(detail.charter || 'No charter found.') + '</div>';
+    el.innerHTML = '<div class="section">' + renderMd(detail.charter || 'No charter found.') + '</div>';
   } else if (tab === 'history') {
     let html = '';
     // Recent dispatch results

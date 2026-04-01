@@ -11,7 +11,7 @@ function renderAgents(agents) {
       </div>
       <div class="agent-role">${a.role}</div>
       <div class="agent-action" title="${escHtml(a.lastAction)}">${escHtml(a.lastAction)}</div>
-      ${a.resultSummary ? `<div class="agent-result" title="${escHtml(a.resultSummary)}">${escHtml(a.resultSummary.slice(0, 200))}${a.resultSummary.length > 200 ? '...' : ''}</div>` : ''}
+      ${a.resultSummary ? `<div class="agent-result" title="${escHtml(a.resultSummary)}">${renderMd(a.resultSummary.slice(0, 200))}${a.resultSummary.length > 200 ? '...' : ''}</div>` : ''}
     </div>
   `).join('');
 }
@@ -29,7 +29,7 @@ async function openAgentDetail(id) {
   document.getElementById('detail-status-line').innerHTML =
     '<span class="status-badge ' + badgeClass + '">' + agent.status.toUpperCase() + '</span> ' +
     '<span style="color:var(--muted)">' + escHtml(agent.lastAction) + '</span>' +
-    (agent.resultSummary ? '<div style="margin-top:4px;font-size:11px;color:var(--text);line-height:1.4">' + escHtml(agent.resultSummary.slice(0, 300)) + '</div>' : '');
+    (agent.resultSummary ? '<div style="margin-top:4px;font-size:11px;color:var(--text);line-height:1.4">' + renderMd(agent.resultSummary.slice(0, 300)) + '</div>' : '');
 
   try {
     const detail = await fetch('/api/agent/' + id).then(r => r.json());

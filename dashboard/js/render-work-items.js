@@ -2,7 +2,7 @@
 
 let allWorkItems = [];
 let wiPage = 0;
-const WI_PER_PAGE = 6;
+const WI_PER_PAGE = 20;
 
 function wiRow(item) {
   const statusBadge = (s) => {
@@ -23,7 +23,7 @@ function wiRow(item) {
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
       (item._pendingReason ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
-      (item.status === 'failed' ? ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\')">Retry</button>' : '') +
+      (item.status === 'failed' ? ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="event.stopPropagation();retryWorkItem(\'' + escHtml(item.id) + '\',\'' + escHtml(item._source || '') + '\',this)">Retry</button>' : '') +
     '</td>' +
     '<td>' +
       (item.completedAgents && item.completedAgents.length > 0
@@ -210,17 +210,23 @@ async function toggleWorkItemArchive() {
   } catch (e) { el.innerHTML = '<p class="empty">Failed to load archive.</p>'; }
 }
 
-async function retryWorkItem(id, source) {
+async function retryWorkItem(id, source, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Retrying...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     const res = await fetch('/api/work-items/retry', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (res.ok) { wakeEngine(); refresh(); } else {
-      const d = await res.json();
+    if (res.ok) {
+      showToast('cmd-toast', 'Work item ' + id + ' reset to pending', true);
+      wakeEngine();
+      refresh();
+    } else {
+      if (btn) { btn.textContent = btn.dataset.origText || 'Retry'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+      const d = await res.json().catch(() => ({}));
       alert('Retry failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { alert('Retry error: ' + e.message); }
+  } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Retry'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Retry error: ' + e.message); }
 }
 
 function wiPrev() { if (wiPage > 0) { wiPage--; renderWorkItems(allWorkItems); } }
@@ -365,7 +371,7 @@ function openWorkItemDetail(id) {
     '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
     '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
     '</div>';
-  html += field('Description', '<div style="white-space:pre-wrap;font-size:12px">' + escHtml(item.description || item.title || '—') + '</div>');
+  html += field('Description', '<div style="font-size:12px">' + renderMd(item.description || item.title || '—') + '</div>');
   html += field('Agent', escHtml(item.dispatched_to || item.agent || 'Auto'));
   html += field('Source', escHtml(item._source || 'central'));
   if (item.created) html += field('Created', escHtml(new Date(item.created).toLocaleString()));

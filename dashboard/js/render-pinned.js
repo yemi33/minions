@@ -15,7 +15,7 @@ function renderPinned(entries) {
         '<strong style="font-size:var(--text-md)">' + escHtml(e.title) + '</strong>' +
         '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="removePinnedNote(\'' + escHtml(e.title) + '\')">Unpin</button>' +
       '</div>' +
-      '<div style="font-size:var(--text-sm);color:var(--muted);margin-top:4px">' + escHtml(e.content.slice(0, 200)) + '</div>' +
+      '<div style="font-size:var(--text-sm);color:var(--muted);margin-top:4px">' + renderMd(e.content.slice(0, 200)) + '</div>' +
     '</div>'
   ).join('');
 }

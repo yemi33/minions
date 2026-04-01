@@ -187,6 +187,16 @@ function getAgents(config) {
     ? config.agents
     : shared.DEFAULT_AGENTS;
   const roster = Object.entries(agents).map(([id, info]) => ({ id, ...info }));
+
+  // Include temp agents that are currently active so they show up in agent tiles
+  const dispatch = getDispatch();
+  const seen = new Set(roster.map(a => a.id));
+  for (const d of (dispatch.active || [])) {
+    if (d.agent && d.agent.startsWith('temp-') && !seen.has(d.agent)) {
+      roster.push({ id: d.agent, name: d.agentName || d.agent, role: d.agentRole || 'Temp Agent', emoji: '\u{1F4A8}', skills: [], _temp: true });
+      seen.add(d.agent);
+    }
+  }
   const allInboxFiles = safeReadDir(INBOX_DIR);
 
   return roster.map(a => {

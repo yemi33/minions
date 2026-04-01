@@ -201,7 +201,7 @@ async function _processQaMessage(message, selection) {
       const suffix = data.edited ? '\n\n\u2713 Document saved.' : '';
       const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
       const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsed + 's</div>';
-      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + escHtml(data.answer + suffix) + qaTimeLabel + '</div>';
+      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + renderMd(data.answer + suffix) + qaTimeLabel + '</div>';
 
       // Track conversation history
       _qaHistory.push({ role: 'user', text: message });
@@ -215,7 +215,15 @@ async function _processQaMessage(message, selection) {
       // Refresh modal body if document was edited
       if (data.edited && data.content) {
         const display = data.content.replace(/^---[\s\S]*?---\n*/m, '');
-        document.getElementById('modal-body').textContent = display;
+        const isJson = capturedFilePath && capturedFilePath.endsWith('.json');
+        const body = document.getElementById('modal-body');
+        if (isJson) {
+          body.textContent = display;
+        } else {
+          body.innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(display) + '</div>';
+          body.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+          body.style.whiteSpace = 'normal';
+        }
         _modalDocContext.content = display;
       }
 

@@ -334,7 +334,7 @@ async function reconcilePrs(config) {
     for (const ghPr of ghPrs) {
       const prId = `PR-${ghPr.number}`;
       const branch = ghPr.head?.ref || '';
-      const wiMatch = branch.match(/(P-[a-f0-9]{6,})/i) || branch.match(/(PL-W\d+)/i);
+      const wiMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(PL-W\d+)/i);
       const linkedItemId = wiMatch ? wiMatch[1] : null;
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;
@@ -356,7 +356,7 @@ async function reconcilePrs(config) {
       existingPrs.push({
         id: prId,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
-        agent: (ghPr.user?.login || 'unknown').toLowerCase(),
+        agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
         branch,
         reviewStatus: 'pending',
         status: 'active',

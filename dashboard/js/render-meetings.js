@@ -136,10 +136,16 @@ function openMeetingDetail(id) {
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
         '</div>';
       } else if (m.status === 'completed') {
-        html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
+        const linkedPlan = _findLinkedPlan(m);
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:8px">' +
+          (linkedPlan
+            ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--blue);border-color:var(--blue)" onclick="_viewPlanWithBack(\'' + escHtml(linkedPlan.file) + '\',\'' + escHtml(m.id) + '\')">View Plan</button>' +
+              '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="_createPlanFromMeeting(\'' + escHtml(m.id) + '\',this)">New Plan</button>'
+            : '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="_createPlanFromMeeting(\'' + escHtml(m.id) + '\',this)">Create Plan from Meeting</button>') +
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="_archiveMeeting(\'' + escHtml(m.id) + '\')">Archive</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
-        '</div>';
+        '</div>' +
+        '<div style="font-size:9px;color:var(--muted);margin-top:4px">Use the Q&amp;A below to discuss action items' + (linkedPlan ? '' : ', then create a plan to execute them') + '.</div>';
       } else {
         html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
           '<input id="meeting-note-input" type="text" placeholder="Add context for all agents..." style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px" onkeydown="if(event.key===\'Enter\')_submitMeetingNote(\'' + escHtml(m.id) + '\')">' +
@@ -165,7 +171,8 @@ function openMeetingDetail(id) {
       ).join('\n\n---\n\n');
       const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
       _modalDocContext = { title: 'Meeting: ' + m.title, content: meetingDoc, selection: '' };
-      _modalFilePath = 'meetings/' + m.id + '.json';
+      // Completed/archived meetings: read-only Q&A (no file editing to avoid corrupting JSON)
+      _modalFilePath = (m.status === 'completed' || m.status === 'archived') ? null : 'meetings/' + m.id + '.json';
       try { showModalQa(); } catch { /* expected if QA not loaded */ }
 
       document.getElementById('modal').classList.add('open');
@@ -275,6 +282,102 @@ async function _unarchiveMeeting(id) {
     try { closeModal(); } catch { /* may not be open */ }
     refresh();
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+function _viewPlanWithBack(file, meetingId) {
+  planView(file);
+  // After modal opens, prepend a back button to return to meeting
+  setTimeout(function() {
+    const title = document.getElementById('modal-title');
+    if (title && !title.querySelector('.mtg-back-btn')) {
+      const back = document.createElement('button');
+      back.className = 'pr-pager-btn mtg-back-btn';
+      back.style.cssText = 'font-size:9px;padding:2px 8px;margin-right:8px;vertical-align:middle';
+      back.textContent = '\u2190 Back to Meeting';
+      back.onclick = function() { openMeetingDetail(meetingId); };
+      title.prepend(back);
+    }
+  }, 100);
+}
+
+function _findLinkedPlan(meeting) {
+  if (!meeting?.conclusion?.content) return null;
+  const match = meeting.conclusion.content.match(/plans\/([\w-]+\.md)/);
+  if (!match) return null;
+  const file = match[1];
+  const plans = window._lastStatus?.plans || [];
+  return plans.find(function(p) { return p.file === file; }) || { file, summary: file };
+}
+
+async function _createPlanFromMeeting(id, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Checking...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  function resetBtn() { if (btn) { btn.textContent = btn.dataset.origText || 'Create Plan'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  try {
+    const res = await fetch('/api/meetings/' + encodeURIComponent(id));
+    const data = await res.json();
+    if (!data.meeting) { resetBtn(); alert('Meeting not found'); return; }
+    const m = data.meeting;
+
+    // Check if a plan already exists for this meeting
+    const existing = _findLinkedPlan(m);
+    if (existing) {
+      resetBtn();
+      if (!confirm('A plan already exists: "' + existing.summary + '"\n\nCreate a new one anyway?')) return;
+    }
+
+    if (btn) btn.textContent = 'Generating plan...';
+
+    // Use doc-chat to generate a structured plan from the meeting
+    const transcript = (m.transcript || []).map(function(t) {
+      return '### ' + t.agent + ' (' + t.type + ', Round ' + t.round + ')\n\n' + (t.content || '');
+    }).join('\n\n---\n\n');
+    const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
+
+    // Include Q&A thread if present
+    let humanContext = '';
+    const qaThread = document.getElementById('modal-qa-thread');
+    if (qaThread) {
+      const qaText = qaThread.innerText.trim();
+      if (qaText.length > 20) humanContext = '\n\n## Human Discussion\n\n' + qaText.slice(0, 3000);
+    }
+
+    const genRes = await fetch('/api/doc-chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: 'Create an actionable implementation plan from this meeting. Extract concrete action items from the conclusion and debates. For each item include: what to do, which files/areas to change, priority (high/medium/low), and estimated complexity (small/medium/large). Structure it as a plan ready for execution. Do NOT include preamble — start with the plan title.' + humanContext,
+        document: meetingDoc,
+        title: 'Meeting: ' + m.title,
+      })
+    });
+    const genData = await genRes.json();
+    if (!genRes.ok || !genData.ok) { resetBtn(); alert('Failed to generate plan: ' + (genData.error || 'unknown')); return; }
+
+    const planContent = genData.answer || '';
+    const title = 'Meeting follow-up: ' + (m.title || id);
+    const planRes = await fetch('/api/plans/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, content: planContent })
+    });
+    const planData = await planRes.json();
+    if (planRes.ok && planData.ok) {
+      showToast('cmd-toast', 'Plan created: ' + planData.file, true);
+      if (btn) {
+        btn.textContent = 'Plan created';
+        btn.style.color = 'var(--green)';
+        btn.style.borderColor = 'var(--green)';
+        btn.style.opacity = '1';
+        const viewLink = document.createElement('button');
+        viewLink.className = 'pr-pager-btn';
+        viewLink.style.cssText = 'font-size:9px;padding:2px 8px;color:var(--blue);border-color:var(--blue);pointer-events:auto';
+        viewLink.textContent = 'View Plan';
+        viewLink.onclick = function() { _viewPlanWithBack(planData.file, id); };
+        btn.parentElement.insertBefore(viewLink, btn.nextSibling);
+      }
+    } else {
+      resetBtn();
+      alert('Failed: ' + (planData.error || 'unknown'));
+    }
+  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
 }
 
 async function _deleteMeeting(id) {
