@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.128 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/dispatch.js
+- engine/lifecycle.js
+- engine/timeout.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-work-items.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.127 (2026-04-01)
 
 ### Engine
