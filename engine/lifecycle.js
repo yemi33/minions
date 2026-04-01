@@ -1119,6 +1119,47 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     } catch (err) { log('warn', `Session save: ${err.message}`); }
   }
 
+  // ── Accumulate per-work-item cost tracking ──────────────────────────────────
+  if (taskUsage && meta?.item?.id) {
+    try {
+      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+        ? path.join(MINIONS_DIR, 'work-items.json')
+        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+      if (wiPath) {
+        mutateJsonFileLocked(wiPath, (items) => {
+          if (!Array.isArray(items)) return items;
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) {
+            wi._totalCostUsd = (wi._totalCostUsd || 0) + (taskUsage.costUsd || 0);
+            wi._totalInputTokens = (wi._totalInputTokens || 0) + (taskUsage.inputTokens || 0);
+            wi._totalOutputTokens = (wi._totalOutputTokens || 0) + (taskUsage.outputTokens || 0);
+          }
+          return items;
+        }, { defaultValue: [] });
+
+        // Cost ceiling circuit breaker — treat like evalMaxIterations exceeded
+        const engineCfg = config?.engine || {};
+        const evalMaxCost = engineCfg.evalMaxCost != null ? engineCfg.evalMaxCost : shared.ENGINE_DEFAULTS.evalMaxCost;
+        if (evalMaxCost != null && evalMaxCost > 0) {
+          const freshItems = safeJson(wiPath) || [];
+          const wi = freshItems.find(i => i.id === meta.item.id);
+          if (wi && wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
+            mutateJsonFileLocked(wiPath, (items) => {
+              if (!Array.isArray(items)) return items;
+              const target = items.find(i => i.id === meta.item.id);
+              if (target) {
+                target.status = 'needs-human-review';
+                target.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds evalMaxCost ceiling $${evalMaxCost.toFixed(2)}`;
+                log('warn', `Work item ${meta.item.id} exceeded cost ceiling ($${wi._totalCostUsd.toFixed(2)} > $${evalMaxCost.toFixed(2)}) — needs-human-review`);
+              }
+              return items;
+            }, { defaultValue: [] });
+          }
+        }
+      }
+    } catch (err) { log('warn', `Cost accumulation: ${err.message}`); }
+  }
+
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;
   if (type === 'decompose' && isSuccess && meta?.item?.id) {

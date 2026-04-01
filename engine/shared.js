@@ -358,6 +358,7 @@ const ENGINE_DEFAULTS = {
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
   evalLoop: true, // enable evaluate→fix loop after implementation completes
   evalMaxIterations: 3, // max evaluate→fix cycles before escalating to human
+  evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
 };
 
 const DEFAULT_AGENTS = {
