@@ -179,6 +179,89 @@ async function _parseNaturalCron() {
 
 let _schedPage = 0;
 const SCHED_PER_PAGE = 15;
+let _schedViewMode = 'list';
+
+const _SLOT_COLORS = {
+  implement: { bg: 'rgba(88,166,255,0.15)', border: 'var(--blue)', text: 'var(--blue)' },
+  review: { bg: 'rgba(188,140,255,0.15)', border: 'var(--purple)', text: 'var(--purple)' },
+  fix: { bg: 'rgba(210,153,34,0.15)', border: 'var(--yellow)', text: 'var(--yellow)' },
+  explore: { bg: 'rgba(139,148,158,0.15)', border: 'var(--muted)', text: 'var(--muted)' },
+  test: { bg: 'rgba(227,179,65,0.15)', border: 'var(--orange)', text: 'var(--orange)' },
+  ask: { bg: 'rgba(63,185,80,0.15)', border: 'var(--green)', text: 'var(--green)' },
+};
+
+function _renderViewToggle() {
+  const isList = _schedViewMode === 'list';
+  return '<div style="display:flex;gap:4px;margin-bottom:8px">' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isList ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="_schedSetView(\'list\')">List</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isList ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="_schedSetView(\'calendar\')">Calendar</button>' +
+  '</div>';
+}
+
+function _schedSetView(mode) {
+  _schedViewMode = mode;
+  renderSchedules(window._lastSchedules || []);
+}
+
+function _renderScheduleCalendar(schedules) {
+  // Parse each schedule into day+hour slots
+  const slots = []; // { schedule, day, hour, minute }
+  for (const s of schedules) {
+    const p = _parseCronToPicker(s.cron || '');
+    for (const day of p.days) {
+      slots.push({ schedule: s, day: day, hour: p.hour, minute: p.minute });
+    }
+  }
+
+  // Find hours that have slots (compact — skip empty hours)
+  const hoursUsed = new Set();
+  for (const sl of slots) hoursUsed.add(sl.hour);
+  const hours = [...hoursUsed].sort(function(a, b) { return a - b; });
+
+  if (hours.length === 0) {
+    return '<p class="empty">No schedules to show in calendar view.</p>';
+  }
+
+  // Build grid: header row + one row per hour
+  // Columns: Mon(1) Tue(2) Wed(3) Thu(4) Fri(5) Sat(6) Sun(0)
+  var dayOrder = [1, 2, 3, 4, 5, 6, 0];
+  var dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  var html = '<div class="sched-cal">';
+  // Header row
+  html += '<div class="sched-cal-header"></div>'; // empty top-left
+  for (var d = 0; d < 7; d++) {
+    html += '<div class="sched-cal-header">' + dayLabels[d] + '</div>';
+  }
+
+  // One row per hour
+  for (var hi = 0; hi < hours.length; hi++) {
+    var hour = hours[hi];
+    html += '<div class="sched-cal-hour">' + String(hour).padStart(2, '0') + ':00</div>';
+    for (var di = 0; di < 7; di++) {
+      var dayNum = dayOrder[di];
+      var cellSlots = slots.filter(function(sl) { return sl.hour === hour && sl.day === dayNum; });
+      html += '<div class="sched-cal-cell">';
+      for (var si = 0; si < cellSlots.length; si++) {
+        var sl = cellSlots[si];
+        var s = sl.schedule;
+        var colors = _SLOT_COLORS[s.type || 'implement'] || _SLOT_COLORS.implement;
+        var opacity = s.enabled === false ? '0.4' : '1';
+        var strikeStyle = s.enabled === false ? 'text-decoration:line-through;' : '';
+        var timeLabel = String(sl.hour).padStart(2, '0') + ':' + String(sl.minute).padStart(2, '0');
+        html += '<div class="sched-cal-slot" style="background:' + colors.bg + ';border-left-color:' + colors.border + ';color:' + colors.text + ';opacity:' + opacity + '" ' +
+          'onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')" title="' + escHtml(s.title + ' — ' + timeLabel + ' — ' + (s.type || 'implement')) + '">' +
+          '<span style="font-weight:600;' + strikeStyle + '">' + escHtml((s.title || s.id).slice(0, 25)) + '</span>' +
+          '<span style="font-size:9px;opacity:0.7"> ' + timeLabel + '</span>' +
+        '</div>';
+      }
+      if (cellSlots.length === 0) html += '&nbsp;';
+      html += '</div>';
+    }
+  }
+  html += '</div>';
+  return html;
+}
 
 function renderSchedules(schedules) {
   schedules = schedules.filter(function(s) { return !isDeleted('sched:' + s.id); });
@@ -191,45 +274,51 @@ function renderSchedules(schedules) {
     return;
   }
 
-  const totalPages = Math.ceil(schedules.length / SCHED_PER_PAGE);
-  if (_schedPage >= totalPages) _schedPage = totalPages - 1;
-  const start = _schedPage * SCHED_PER_PAGE;
-  const pageItems = schedules.slice(start, start + SCHED_PER_PAGE);
+  let html = _renderViewToggle();
 
-  let html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Schedule</th><th>Type</th><th>Project</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th></th></tr></thead><tbody>';
-  for (const s of pageItems) {
-    const enabledBadge = s.enabled
-      ? '<span class="pr-badge approved">enabled</span>'
-      : '<span class="pr-badge rejected">disabled</span>';
-    const lastRun = s._lastRun ? timeAgo(s._lastRun) : 'never';
-    const typeBadge = '<span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span>';
-    const humanCron = _cronToHuman(s.cron || '');
-    html += '<tr style="cursor:pointer" onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
-      '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
-      '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
-      '<td><span title="' + escHtml(s.cron || '') + '" style="font-size:11px;color:var(--blue)">' + escHtml(humanCron) + '</span></td>' +
-      '<td>' + typeBadge + '</td>' +
-      '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(s.project || '') + '</span></td>' +
-      '<td><span class="pr-agent">' + escHtml(s.agent || 'auto') + '</span></td>' +
-      '<td>' + enabledBadge + '</td>' +
-      '<td><span class="pr-date">' + escHtml(lastRun) + '</span></td>' +
-      '<td style="white-space:nowrap">' +
-        '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';border-color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';margin-right:4px" onclick="event.stopPropagation();toggleScheduleEnabled(\'' + escHtml(s.id) + '\',' + !s.enabled + ')" title="' + (s.enabled ? 'Disable' : 'Enable') + '">' + (s.enabled ? '&#x23F8;' : '&#x25B6;') + '</button>' +
-        '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();openEditScheduleModal(\'' + escHtml(s.id) + '\')" title="Edit">&#x270E;</button>' +
-        '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteSchedule(\'' + escHtml(s.id) + '\')" title="Delete">&#x2715;</button>' +
-      '</td>' +
-    '</tr>';
-  }
-  html += '</tbody></table></div>';
+  if (_schedViewMode === 'calendar') {
+    html += _renderScheduleCalendar(schedules);
+  } else {
+    const totalPages = Math.ceil(schedules.length / SCHED_PER_PAGE);
+    if (_schedPage >= totalPages) _schedPage = totalPages - 1;
+    const start = _schedPage * SCHED_PER_PAGE;
+    const pageItems = schedules.slice(start, start + SCHED_PER_PAGE);
 
-  if (schedules.length > SCHED_PER_PAGE) {
-    html += '<div class="pr-pager">' +
-      '<span class="pr-page-info">Showing ' + (start+1) + ' to ' + Math.min(start+SCHED_PER_PAGE, schedules.length) + ' of ' + schedules.length + '</span>' +
-      '<div class="pr-pager-btns">' +
-        '<button class="pr-pager-btn ' + (_schedPage === 0 ? 'disabled' : '') + '" onclick="_schedPrev()">Prev</button>' +
-        '<button class="pr-pager-btn ' + (_schedPage >= totalPages-1 ? 'disabled' : '') + '" onclick="_schedNext()">Next</button>' +
-      '</div>' +
-    '</div>';
+    html += '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Schedule</th><th>Type</th><th>Project</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th></th></tr></thead><tbody>';
+    for (const s of pageItems) {
+      const enabledBadge = s.enabled
+        ? '<span class="pr-badge approved">enabled</span>'
+        : '<span class="pr-badge rejected">disabled</span>';
+      const lastRun = s._lastRun ? timeAgo(s._lastRun) : 'never';
+      const typeBadge = '<span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span>';
+      const humanCron = _cronToHuman(s.cron || '');
+      html += '<tr style="cursor:pointer" onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
+        '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
+        '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
+        '<td><span title="' + escHtml(s.cron || '') + '" style="font-size:11px;color:var(--blue)">' + escHtml(humanCron) + '</span></td>' +
+        '<td>' + typeBadge + '</td>' +
+        '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(s.project || '') + '</span></td>' +
+        '<td><span class="pr-agent">' + escHtml(s.agent || 'auto') + '</span></td>' +
+        '<td>' + enabledBadge + '</td>' +
+        '<td><span class="pr-date">' + escHtml(lastRun) + '</span></td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';border-color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + ';margin-right:4px" onclick="event.stopPropagation();toggleScheduleEnabled(\'' + escHtml(s.id) + '\',' + !s.enabled + ')" title="' + (s.enabled ? 'Disable' : 'Enable') + '">' + (s.enabled ? '&#x23F8;' : '&#x25B6;') + '</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--blue);border-color:var(--blue);margin-right:4px" onclick="event.stopPropagation();openEditScheduleModal(\'' + escHtml(s.id) + '\')" title="Edit">&#x270E;</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" onclick="event.stopPropagation();deleteSchedule(\'' + escHtml(s.id) + '\')" title="Delete">&#x2715;</button>' +
+        '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table></div>';
+
+    if (schedules.length > SCHED_PER_PAGE) {
+      html += '<div class="pr-pager">' +
+        '<span class="pr-page-info">Showing ' + (start+1) + ' to ' + Math.min(start+SCHED_PER_PAGE, schedules.length) + ' of ' + schedules.length + '</span>' +
+        '<div class="pr-pager-btns">' +
+          '<button class="pr-pager-btn ' + (_schedPage === 0 ? 'disabled' : '') + '" onclick="_schedPrev()">Prev</button>' +
+          '<button class="pr-pager-btn ' + (_schedPage >= totalPages-1 ? 'disabled' : '') + '" onclick="_schedNext()">Next</button>' +
+        '</div>' +
+      '</div>';
+    }
   }
 
   el.innerHTML = html;
@@ -463,4 +552,4 @@ async function deleteSchedule(id) {
 // Expose _generateScheduleId globally for the inline oninput handler
 window._generateScheduleId = _generateScheduleId;
 
-window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, openScheduleDetail, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview, _schedPrev, _schedNext };
+window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, openScheduleDetail, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview, _schedPrev, _schedNext, _schedSetView };
