@@ -43,11 +43,13 @@ function safeJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
 
+let _tmpCounter = 0;
+
 function safeWrite(p, data) {
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
-  const tmp = p + '.tmp.' + process.pid;
+  const tmp = p + '.tmp.' + process.pid + '.' + (++_tmpCounter);
   try {
     fs.writeFileSync(tmp, content);
     // Atomic rename — retry on Windows EPERM (file locking)
@@ -58,7 +60,7 @@ function safeWrite(p, data) {
       } catch (e) {
         if (e.code === 'EPERM' && attempt < 4) {
           const delay = 50 * (attempt + 1); // 50, 100, 150, 200ms
-          try { const ab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(ab), 0, 0, delay); } catch { /* fallback busy-wait */ const start = Date.now(); while (Date.now() - start < delay) {} }
+          sleepMs(delay);
           continue;
         }
         // Final attempt failed — throw to let caller retry
@@ -85,10 +87,12 @@ function sleepMs(ms) {
     const ab = new SharedArrayBuffer(4);
     Atomics.wait(new Int32Array(ab), 0, 0, ms);
   } catch {
-    const start = Date.now();
-    while (Date.now() - start < ms) {}
+    // Fallback: synchronous sleep via child process — avoids busy-wait blocking the event loop
+    _spawnSync(process.execPath, ['-e', `setTimeout(()=>{},${Math.max(0, Math.floor(ms))})`], { windowsHide: true });
   }
 }
+
+const LOCK_STALE_MS = 60000; // 60 seconds — force-remove locks older than this
 
 function withFileLock(lockPath, fn, {
   timeoutMs = 5000,
@@ -104,6 +108,14 @@ function withFileLock(lockPath, fn, {
       break;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
+      // Check for stale lock — if lock file is older than LOCK_STALE_MS, force-remove it
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+          try { fs.unlinkSync(lockPath); } catch { /* race: another process removed it */ }
+          continue; // retry immediately after removing stale lock
+        }
+      } catch { /* lock file disappeared between EEXIST and stat — retry will succeed */ }
       sleepMs(retryDelayMs);
     }
   }
@@ -372,6 +384,23 @@ function getAdoOrgBase(project) {
     : `https://dev.azure.com/${project.adoOrg}`;
 }
 
+// ── Path Sanitization ───────────────────────────────────────────────────────
+
+/**
+ * Resolve a user-supplied path relative to a base directory and verify the
+ * result stays within the base. Throws if the resolved path escapes baseDir.
+ * Use to prevent path-traversal attacks on any user-facing file endpoint.
+ */
+function sanitizePath(baseDir, userInput) {
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedFull = path.resolve(resolvedBase, userInput);
+  // Append path.sep so "/foo" doesn't match "/foobar"
+  if (!resolvedFull.startsWith(resolvedBase + path.sep) && resolvedFull !== resolvedBase) {
+    throw new Error(`Path traversal blocked: ${userInput} resolves outside ${baseDir}`);
+  }
+  return resolvedFull;
+}
+
 // ── Branch Sanitization ──────────────────────────────────────────────────────
 
 function sanitizeBranch(name) {
@@ -452,7 +481,10 @@ module.exports = {
   addPrLink,
   nextWorkItemId,
   getAdoOrgBase,
+  sanitizePath,
   sanitizeBranch,
   parseSkillFrontmatter,
+  sleepMs,
+  LOCK_STALE_MS,
 };
 
