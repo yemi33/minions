@@ -1,0 +1,22 @@
+{
+  "plan_summary": "Test idempotency plan",
+  "project": "_test-idem-proj",
+  "branch_strategy": "shared-branch",
+  "missing_features": [
+    {
+      "id": "TI-001",
+      "title": "Feature A",
+      "acceptance_criteria": [
+        "AC1"
+      ]
+    },
+    {
+      "id": "TI-002",
+      "title": "Feature B",
+      "acceptance_criteria": [
+        "AC2"
+      ]
+    }
+  ],
+  "feature_branch": "feat/test-shared"
+}
