@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.130 (2026-04-01)
+
+### Engine
+- engine/lifecycle.js
+- engine/shared.js
+- engine/timeout.js
+
+### Dashboard
+- dashboard.js
+
 ## 0.1.129 (2026-04-01)
 
 ### Engine
