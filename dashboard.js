@@ -239,6 +239,11 @@ function getStatus() {
     meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
     pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
+    autoMode: {
+      approvePlans: !!CONFIG.engine?.autoApprovePlans,
+      decompose: CONFIG.engine?.autoDecompose !== false,
+      tempAgents: !!CONFIG.engine?.allowTempAgents,
+    },
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
     timestamp: new Date().toISOString(),

@@ -46,6 +46,11 @@ function _processStatusUpdate(data) {
   cmdUpdateProjectList(data.projects || []);
   renderNotes(data.notes);
   renderPrd(data.prd, data.prdProgress);
+  // Auto-approve badge
+  const autoEl = document.getElementById('auto-approve-badge');
+  if (autoEl) autoEl.innerHTML = data.autoMode?.approvePlans
+    ? '<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--green);border:1px solid rgba(63,185,80,0.3)">AUTO-APPROVE</span>'
+    : '';
   renderPrs(data.pullRequests || []);
   renderArchiveButtons(data.archivedPrds || []);
   renderEngineStatus(data.engine);
