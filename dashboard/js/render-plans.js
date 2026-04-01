@@ -80,8 +80,13 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
   if (allDone && !hasActiveWork) return 'completed';
   if (hasActiveWork || hasPendingPrd) return 'in-progress';
   if (hasFailed && !hasActiveWork) return 'has-failures';
+
   if (prdJsonStatus === 'awaiting-approval' && implementWi.length === 0) return 'awaiting-approval';
   if (prdJsonStatus === 'approved' && implementWi.length === 0) return 'approved';
+
+  // plan-to-prd conversion done but no implement items and PRD is gone — truly completed
+  const prdConversionDone = wi.some(w => w.type === 'plan-to-prd' && w.status === 'done');
+  if (prdConversionDone && implementWi.length === 0) return 'completed';
 
   return prdJsonStatus || 'active';
 }
@@ -172,7 +177,14 @@ function renderPlans(plans) {
     if (prdFile && p.format !== 'prd') {
       const linkedPrd = plans.find(pp => pp.file === prdFile && pp.format === 'prd');
       if (linkedPrd) prdJsonStatus = linkedPrd.status || prdJsonStatus;
+      // If the linked PRD was archived, treat the .md plan as completed
+      else if (!linkedPrd) {
+        const archivedPrd = archivedPlans.find(pp => pp.file === prdFile && pp.format === 'prd');
+        if (archivedPrd) prdJsonStatus = 'completed';
+      }
     }
+    // 'converted' means plan-to-PRD succeeded — treat as 'approved' for status derivation
+    if (prdJsonStatus === 'converted') prdJsonStatus = prdFile ? 'approved' : 'completed';
 
     // Single source of truth: derive status from work items
     const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, prdJsonStatus, allWi);
@@ -180,7 +192,8 @@ function renderPlans(plans) {
     const statusLabelsMap = {
       'completed': 'Completed', 'in-progress': 'In Progress', 'paused': 'Paused',
       'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected',
-      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active'
+      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active',
+      'converted': 'Converted to PRD', 'draft': 'Draft'
     };
     const label = statusLabelsMap[effectiveStatus] || effectiveStatus;
     const needsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
@@ -222,6 +235,10 @@ function renderPlans(plans) {
       : '';
     const verifyBtn = showVerify ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green)" ' +
       'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' : '';
+    const showArchive = !isArchived;
+    const archiveFile = prdFile || p.file;
+    const archiveBtn = showArchive ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" ' +
+      'onclick="event.stopPropagation();planArchive(\'' + escHtml(archiveFile) + '\',this)">Archive</button>' : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
@@ -238,7 +255,7 @@ function renderPlans(plans) {
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
             (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
-            executeBtn + pauseBtn + resumeBtn + verifyBtn + deleteBtn +
+            executeBtn + pauseBtn + resumeBtn + verifyBtn + archiveBtn + deleteBtn +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -432,11 +449,12 @@ async function planView(file) {
     const isPaused = planStatus === 'awaiting-approval' || planStatus === 'paused';
     // Check if work is in progress for this plan
     const wi = window._lastWorkItems || [];
+    // Find the linked PRD for this .md plan (if any)
+    const linkedPrdFile = isMdPlan ? (window._lastStatus?.plans || []).find(p => p.sourcePlan === normalizedFile && p.format === 'prd')?.file : null;
     const hasActiveWork = wi.some(w =>
       (w.status === 'pending' || w.status === 'dispatched') &&
       (w.planFile === normalizedFile || w.sourcePlan === normalizedFile ||
-       // For .md plans: any work item with a sourcePlan .json means the plan is being executed
-        (isMdPlan && w.sourcePlan && w.sourcePlan.endsWith('.json')))
+        (linkedPrdFile && w.sourcePlan === linkedPrdFile))
     );
     const prdCompleted = wi.some(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === normalizedFile);
     // Check if a PRD already exists for this plan (via plans list sourcePlan linkage)
@@ -454,9 +472,12 @@ async function planView(file) {
     const modalVerifyBtn = isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
       'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\',this)">Verify</button>' : '';
 
+    const modalArchiveBtn = '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--muted)" ' +
+      'onclick="planArchive(\'' + escHtml(normalizedFile) + '\')">Archive</button>';
     const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
     const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
       (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') +
+      ' ' + modalArchiveBtn +
       ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
       'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
     '</div>';
@@ -516,23 +537,27 @@ async function planDelete(file) {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
-async function planArchive(file) {
-  if (!confirm('Archive PRD "' + file + '"? Work items will be preserved.')) return;
+async function planArchive(file, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Archiving...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  function resetBtn() { if (btn) { btn.textContent = btn.dataset.origText || 'Archive'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
   try {
     const res = await fetch('/api/plans/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file })
     });
-    if (res.ok) {
-      closeModal();
-      showToast('cmd-toast', 'PRD archived', true);
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) { resetBtn(); alert('Archive failed — dashboard may need a restart'); return; }
+    const d = await res.json().catch(() => ({}));
+    if (res.ok && d.ok) {
+      try { closeModal(); } catch { /* may not be open */ }
+      showToast('cmd-toast', 'Archived' + (file.endsWith('.json') ? ' PRD and source plan' : ''), true);
       refreshPlans();
       refresh();
     } else {
-      const d = await res.json();
+      resetBtn();
       alert('Archive failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
 }
 
 async function planPause(file, btn) {
@@ -674,4 +699,26 @@ async function triggerVerify(file, btn) {
   } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Verify'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
 }
 
-window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
+async function planUnarchive(file, btn) {
+  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Restoring...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  function resetBtn() { if (btn) { btn.textContent = btn.dataset.origText || 'Unarchive'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  try {
+    const res = await fetch('/api/plans/unarchive', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file })
+    });
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) { resetBtn(); alert('Unarchive failed — dashboard may need a restart'); return; }
+    const d = await res.json().catch(() => ({}));
+    if (res.ok && d.ok) {
+      showToast('cmd-toast', 'Restored from archive', true);
+      refreshPlans();
+      refresh();
+    } else {
+      resetBtn();
+      alert('Unarchive failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
+}
+
+window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planUnarchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
