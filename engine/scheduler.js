@@ -61,11 +61,11 @@ function parseCronField(field, min, max) {
 function parseCronExpr(expr) {
   if (!expr || typeof expr !== 'string') return null;
   const parts = expr.trim().split(/\s+/);
-  if (parts.length < 2 || parts.length > 3) return null;
+  if (parts.length !== 3) return null;
 
   const minuteMatcher = parseCronField(parts[0], 0, 59);
   const hourMatcher = parseCronField(parts[1], 0, 23);
-  const dowMatcher = parts[2] ? parseCronField(parts[2], 0, 6) : () => true;
+  const dowMatcher = parseCronField(parts[2], 0, 6);
 
   return {
     matches(date) {

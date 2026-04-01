@@ -55,6 +55,7 @@ function skip(name, reason) {
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
+const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
 
 // ─── shared.js Tests ─────────────────────────────────────────────────────────
 
@@ -4712,6 +4713,70 @@ async function testMeetings() {
   });
 }
 
+// ─── scheduler.js Tests ─────────────────────────────────────────────────────
+
+async function testSchedulerCronParsing() {
+  console.log('\n── scheduler.js — Cron Parsing ──');
+
+  await test('parseCronExpr rejects 2-field cron expression', () => {
+    const result = scheduler.parseCronExpr('0 2');
+    assert.strictEqual(result, null, 'should return null for 2-field cron');
+  });
+
+  await test('parseCronExpr rejects 1-field cron expression', () => {
+    const result = scheduler.parseCronExpr('0');
+    assert.strictEqual(result, null, 'should return null for 1-field cron');
+  });
+
+  await test('parseCronExpr rejects 4-field cron expression', () => {
+    const result = scheduler.parseCronExpr('0 2 * *');
+    assert.strictEqual(result, null, 'should return null for 4-field cron');
+  });
+
+  await test('parseCronExpr accepts valid 3-field cron expression', () => {
+    const result = scheduler.parseCronExpr('0 2 *');
+    assert.ok(result !== null, 'should return a cron object');
+    assert.strictEqual(typeof result.matches, 'function', 'should have matches()');
+  });
+
+  await test('parseCronExpr 3-field matches correctly', () => {
+    const cron = scheduler.parseCronExpr('30 14 1');
+    // Monday at 14:30
+    const monday = new Date(2026, 2, 30, 14, 30); // March 30, 2026 is a Monday
+    assert.strictEqual(cron.matches(monday), true, 'should match Monday 14:30');
+    // Wrong hour
+    const wrongHour = new Date(2026, 2, 30, 15, 30);
+    assert.strictEqual(cron.matches(wrongHour), false, 'should not match wrong hour');
+  });
+
+  await test('parseCronExpr rejects null/undefined/empty', () => {
+    assert.strictEqual(scheduler.parseCronExpr(null), null);
+    assert.strictEqual(scheduler.parseCronExpr(undefined), null);
+    assert.strictEqual(scheduler.parseCronExpr(''), null);
+    assert.strictEqual(scheduler.parseCronExpr(42), null);
+  });
+
+  await test('parseCronField handles wildcard', () => {
+    const matcher = scheduler.parseCronField('*', 0, 59);
+    assert.strictEqual(matcher(0), true);
+    assert.strictEqual(matcher(59), true);
+  });
+
+  await test('parseCronField handles step syntax', () => {
+    const matcher = scheduler.parseCronField('*/15', 0, 59);
+    assert.strictEqual(matcher(0), true);
+    assert.strictEqual(matcher(15), true);
+    assert.strictEqual(matcher(7), false);
+  });
+
+  await test('parseCronField handles list syntax', () => {
+    const matcher = scheduler.parseCronField('1,3,5', 0, 6);
+    assert.strictEqual(matcher(1), true);
+    assert.strictEqual(matcher(3), true);
+    assert.strictEqual(matcher(2), false);
+  });
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -4846,6 +4911,9 @@ async function main() {
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
+
+    // Scheduler tests
+    await testSchedulerCronParsing();
   } finally {
     cleanupTmpDirs();
   }
