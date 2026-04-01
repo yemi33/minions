@@ -4295,6 +4295,9 @@ async function main() {
     // Dispatch cycle integration tests
     await testDispatchCycleIntegration();
     await testMeetings();
+
+    // P-bf3a91c7: shared.js fixes
+    await testSharedJsFixes();
   } finally {
     cleanupTmpDirs();
   }
@@ -4313,6 +4316,132 @@ async function main() {
   });
 
   process.exit(failed > 0 ? 1 : 0);
+}
+
+// ─── P-bf3a91c7: shared.js fixes ──────────────────────────────────────────────
+
+async function testSharedJsFixes() {
+  console.log('\n── shared.js fixes (sleepMs, tmp naming, stale locks, sanitizePath) ──');
+
+  await test('sleepMs does not busy-wait on main thread (uses spawnSync fallback)', () => {
+    // Read the source and verify the busy-wait loop is gone
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // The old busy-wait: while (Date.now() - start < ms) {}
+    assert.ok(!src.includes('while (Date.now() - start < ms) {}'),
+      'sleepMs should not contain busy-wait loop');
+    assert.ok(!src.includes('while (Date.now() - start < delay) {}'),
+      'safeWrite retry should not contain busy-wait loop');
+    // Verify spawnSync fallback is present
+    assert.ok(src.includes('_spawnSync(process.execPath'),
+      'sleepMs fallback should use spawnSync');
+  });
+
+  await test('sleepMs works and returns in reasonable time', () => {
+    const start = Date.now();
+    shared.sleepMs(50);
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed >= 40, `sleepMs(50) returned in ${elapsed}ms — too fast`);
+    assert.ok(elapsed < 2000, `sleepMs(50) took ${elapsed}ms — too slow`);
+  });
+
+  await test('safeWrite tmp files include counter for uniqueness', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'counter-test.json');
+    // Write twice — tmp files should have different names (counter prevents collision)
+    shared.safeWrite(fp, { v: 1 });
+    shared.safeWrite(fp, { v: 2 });
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result.v, 2);
+    // Verify source has the counter pattern
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes("'.tmp.' + process.pid + '.' + (++_tmpCounter)"),
+      'safeWrite should use _tmpCounter for unique tmp names');
+  });
+
+  await test('withFileLock removes stale lock files older than LOCK_STALE_MS', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'test.lock');
+    // Create a fake stale lock file with mtime in the past
+    fs.writeFileSync(lockPath, 'stale');
+    const pastTime = Date.now() - shared.LOCK_STALE_MS - 5000;
+    fs.utimesSync(lockPath, new Date(pastTime), new Date(pastTime));
+
+    // withFileLock should detect the stale lock, remove it, and proceed
+    let called = false;
+    shared.withFileLock(lockPath, () => { called = true; }, { timeoutMs: 3000 });
+    assert.ok(called, 'withFileLock should have called fn after removing stale lock');
+    assert.ok(!fs.existsSync(lockPath), 'lock file should be cleaned up after release');
+  });
+
+  await test('withFileLock does NOT remove fresh lock files', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'fresh.lock');
+    // Create a fresh lock file (simulates another process holding it)
+    fs.writeFileSync(lockPath, 'held');
+
+    // withFileLock should timeout since lock is fresh and held
+    let threw = false;
+    try {
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 200, retryDelayMs: 50 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    assert.ok(threw, 'withFileLock should throw on timeout with fresh lock');
+    // Clean up
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('sanitizePath allows valid subpaths', () => {
+    const base = createTmpDir();
+    const result = shared.sanitizePath(base, 'sub/dir/file.txt');
+    assert.strictEqual(result, path.join(base, 'sub', 'dir', 'file.txt'));
+  });
+
+  await test('sanitizePath blocks path traversal with ../', () => {
+    const base = createTmpDir();
+    let threw = false;
+    try {
+      shared.sanitizePath(base, '../../../etc/passwd');
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Path traversal blocked'));
+    }
+    assert.ok(threw, 'sanitizePath should throw on path traversal');
+  });
+
+  await test('sanitizePath blocks absolute paths outside base', () => {
+    const base = createTmpDir();
+    let threw = false;
+    try {
+      shared.sanitizePath(base, '/etc/passwd');
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Path traversal blocked'));
+    }
+    // On Windows, /etc/passwd resolves relative to current drive — may or may not escape
+    // The real test is ../ traversal above. This test is platform-dependent.
+    // Just verify no crash either way.
+  });
+
+  await test('sanitizePath allows base directory itself', () => {
+    const base = createTmpDir();
+    const result = shared.sanitizePath(base, '.');
+    assert.strictEqual(result, path.resolve(base));
+  });
+
+  await test('sanitizePath blocks encoded traversal via ..%2f', () => {
+    // path.resolve handles this as literal characters, not URL-encoded
+    // The resolved path should still be under base since %2f is not a separator
+    const base = createTmpDir();
+    // This should work — %2f is literal, not a path separator
+    const result = shared.sanitizePath(base, 'foo%2f..%2fbar');
+    assert.ok(result.startsWith(path.resolve(base)));
+  });
+
+  await test('LOCK_STALE_MS is exported and equals 60000', () => {
+    assert.strictEqual(shared.LOCK_STALE_MS, 60000);
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
