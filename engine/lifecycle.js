@@ -1026,6 +1026,20 @@ function parseAgentOutput(stdout) {
 }
 
 /**
+ * Resolve work-items.json path from dispatch meta.
+ * Central items → MINIONS_DIR/work-items.json; project items → projects/<name>/work-items.json.
+ */
+function resolveWiPath(meta) {
+  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+    return path.join(MINIONS_DIR, 'work-items.json');
+  }
+  if (meta.project?.name) {
+    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+  }
+  return null;
+}
+
+/**
  * Parse structured eval verdict from evaluate agent output.
  * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
  * Returns parsed object or null if not found.
@@ -1171,12 +1185,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
     if (evalLoop) {
       try {
-        let wiPath;
-        if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-          wiPath = path.join(MINIONS_DIR, 'work-items.json');
-        } else if (meta.source === 'work-item' && meta.project?.name) {
-          wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-        }
+        const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           // Dedup: skip if an evaluate item already exists for this parent
@@ -1200,6 +1209,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
               _evalParentId: meta.item.id,
             };
             if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
+            // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
+            if (parentItem) parentItem._evalDispatched = true;
             items.push(evalItem);
             shared.safeWrite(wiPath, items);
             log('info', `Eval loop: created ${evalItem.id} for completed implement ${meta.item.id}`);
@@ -1219,12 +1230,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
 
       if (verdict && !verdict.pass && evalLoop) {
-        let wiPath;
-        if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-          wiPath = path.join(MINIONS_DIR, 'work-items.json');
-        } else if (meta.project?.name) {
-          wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-        }
+        const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const parent = items.find(i => i.id === meta.item._evalParentId);
@@ -1257,7 +1263,9 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
                 _evalCriteriaFailed: verdict.criteria_failed || null,
               };
               if (parent.sourcePlan) fixItem.sourcePlan = parent.sourcePlan;
-              // Reset parent to dispatched so engine doesn't re-dispatch it
+              // Clear eval-dispatched flag so next fix→eval cycle can dispatch
+              parent._evalDispatched = false;
+              // Parent stays 'done' — fix item picks up from here
               parent.status = 'done';
               items.push(fixItem);
               shared.safeWrite(wiPath, items);

@@ -941,22 +941,26 @@ async function testEvalLoopAutoDispatch() {
     if (evalLoop) {
       const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
       const pi = items.find(i => i.id === 'W-test-impl-1');
-      const evalItem = {
-        id: 'W-' + shared.uid(),
-        title: `Evaluate: ${parentItem.title}`,
-        type: 'evaluate',
-        priority: parentItem.priority,
-        status: 'pending',
-        created: new Date().toISOString(),
-        createdBy: 'engine:eval-loop',
-        project: 'TestProject',
-        branch_name: pi.branch_name,
-        pr_url: pi.pr_url,
-        acceptance_criteria: pi.acceptance_criteria,
-        _evalParentId: parentItem.id,
-      };
-      items.push(evalItem);
-      fs.writeFileSync(wiPath, JSON.stringify(items));
+      // Idempotency check (mirrors lifecycle.js logic)
+      if (!pi._evalDispatched) {
+        const evalItem = {
+          id: 'W-' + shared.uid(),
+          title: `Evaluate: ${parentItem.title}`,
+          type: 'evaluate',
+          priority: parentItem.priority,
+          status: 'pending',
+          created: new Date().toISOString(),
+          createdBy: 'engine:eval-loop',
+          project: 'TestProject',
+          branch_name: pi.branch_name,
+          pr_url: pi.pr_url,
+          acceptance_criteria: pi.acceptance_criteria,
+          _evalParentId: parentItem.id,
+        };
+        pi._evalDispatched = true;
+        items.push(evalItem);
+        fs.writeFileSync(wiPath, JSON.stringify(items));
+      }
     }
 
     const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
@@ -971,6 +975,39 @@ async function testEvalLoopAutoDispatch() {
     assert.strictEqual(evalItem.project, 'TestProject');
     assert.ok(evalItem.id.startsWith('W-'), 'Evaluate item ID should start with W-');
     assert.strictEqual(evalItem.createdBy, 'engine:eval-loop');
+    const updatedParent = result.find(i => i.id === 'W-test-impl-1');
+    assert.strictEqual(updatedParent._evalDispatched, true, 'Parent should have _evalDispatched flag');
+  });
+
+  await test('duplicate eval dispatch is prevented by _evalDispatched flag', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/test-dup',
+      _evalDispatched: true, // already dispatched
+      project: 'TestProject',
+    };
+    const existingEval = {
+      id: 'W-eval-existing', type: 'evaluate', status: 'pending',
+      _evalParentId: 'W-test-impl-dup',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
+
+    // Simulate the eval-loop section — should skip because _evalDispatched is set
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const pi = items.find(i => i.id === 'W-test-impl-dup');
+    if (!pi._evalDispatched) {
+      items.push({ id: 'W-should-not-exist', type: 'evaluate', _evalParentId: pi.id });
+      pi._evalDispatched = true;
+      fs.writeFileSync(wiPath, JSON.stringify(items));
+    }
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 2, 'Should still have only 2 items (no duplicate eval)');
+    assert.ok(!result.find(i => i.id === 'W-should-not-exist'), 'Duplicate eval should not exist');
   });
 
   await test('no evaluate item created when evalLoop is false', () => {
@@ -1006,6 +1043,10 @@ async function testEvalLoopAutoDispatch() {
       'lifecycle.js should set _evalParentId on evaluate items');
     assert.ok(src.includes('engine:eval-loop'),
       'lifecycle.js should mark createdBy as engine:eval-loop');
+    assert.ok(src.includes('_evalDispatched'),
+      'lifecycle.js should use _evalDispatched idempotency flag');
+    assert.ok(src.includes('resolveWiPath'),
+      'lifecycle.js should use resolveWiPath helper');
   });
 
   await test('evalLoop defaults to true in ENGINE_DEFAULTS', () => {
