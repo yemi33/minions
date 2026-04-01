@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.141 (2026-04-01)
+
+### Dashboard
+- dashboard/pages/pipelines.html
+- dashboard/pages/schedule.html
+
 ## 0.1.140 (2026-04-01)
 
 ### Dashboard
