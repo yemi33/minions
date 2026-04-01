@@ -2,7 +2,6 @@
 
 let _modalDocContext = { title: '', content: '', selection: '' };
 let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
-let _modalOriginalPlan = null; // tracks original plan file when editing a forked version
 
 function showModalQa() {
   document.getElementById('modal-qa').style.display = '';
@@ -235,9 +234,9 @@ async function _processQaMessage(message, selection) {
         actionDiv.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
         actionDiv.innerHTML =
           '<span style="color:var(--orange);font-weight:600;font-size:12px;width:100%">Execution paused — plan was updated</span>' +
-          '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Re-execute with new PRD</button>' +
+          '<button onclick="planExecute(\'' + esc + '\', \'\', null)" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Re-execute plan</button>' +
           '<button onclick="this.closest(\'div\').innerHTML=\'<span style=color:var(--muted);font-size:11px>Paused. No work dispatched.</span>\'" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Keep paused</button>' +
-          '<span style="color:var(--muted);font-size:10px;width:100%">Re-execute replaces the old PRD with a fresh one from the updated plan.</span>';
+          '<span style="color:var(--muted);font-size:10px;width:100%">Re-execute creates a new PRD from the updated plan.</span>';
         thread.appendChild(actionDiv);
       }
     } else {
@@ -289,45 +288,4 @@ async function _processQaMessage(message, selection) {
   }
 }
 
-async function qaNewPrd(planFile) {
-  qaDisablePrdButtons();
-  const allPlans = window._lastStatus?.plans || [];
-  const mdPlan = allPlans.find(p => p.file === planFile);
-  const project = mdPlan?.project || '';
-
-  planExecute(planFile, project, null);
-
-  const btn = document.getElementById('qa-generate-prd-btn');
-  if (btn) btn.innerHTML = '<span style="color:var(--green);font-size:12px">New PRD dispatched — existing work continues, agent creating fresh PRD from revised plan.</span>';
-}
-
-async function qaReplacePrd(planFile) {
-  qaDisablePrdButtons();
-  const allPlans = window._lastStatus?.plans || [];
-  const mdPlan = allPlans.find(p => p.file === planFile);
-  const project = mdPlan?.project || '';
-  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
-
-  if (existingPrd) {
-    // Pause first to stop materialization, then clean pending items
-    try {
-      await fetch('/api/plans/pause', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: existingPrd.file })
-      });
-    } catch (e) { console.error('plan pause:', e.message); }
-    try {
-      await fetch('/api/plans/regenerate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: existingPrd.file })
-      });
-    } catch (e) { console.error('plan regenerate:', e.message); }
-  }
-
-  planExecute(planFile, project, null);
-
-  const btn = document.getElementById('qa-generate-prd-btn');
-  if (btn) btn.innerHTML = '<span style="color:var(--orange);font-size:12px">Replacing PRD — old items paused, agent regenerating from revised plan.</span>';
-}
-
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaNewPrd, qaReplacePrd };
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend };

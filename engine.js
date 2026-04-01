@@ -743,7 +743,7 @@ function areDependenciesMet(item, config) {
     } catch (e) { log('warn', 'read project work items for deps: ' + e.message); }
   }
   // PRD item statuses that count as "done" for dep resolution
-  const PRD_MET_STATUSES = new Set(['done', 'in-pr', 'implemented', 'complete']);
+  const PRD_MET_STATUSES = new Set(['done']);
 
   for (const depId of deps) {
     const depItem = allWorkItems.find(w => w.id === depId);
@@ -977,7 +977,7 @@ function materializePlansAsWorkItems(config) {
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
-            const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
+            const completedStatuses = new Set(['done']);
             const completedItems = (plan.missing_features || [])
               .filter(f => completedStatuses.has(f.status))
               .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -1057,7 +1057,7 @@ function materializePlansAsWorkItems(config) {
     const useCentral = !defaultProject;
 
     const statusFilter = ['missing', 'planned'];
-    // Also materialize in-pr/done items that never got a work item (race with PR status sync)
+    // Also materialize done items that never got a work item (race with PR status sync)
     const allExistingWiIds = new Set();
     for (const p of allProjects) {
       for (const w of (safeJson(projectWorkItemsPath(p)) || [])) {
@@ -1070,7 +1070,7 @@ function materializePlansAsWorkItems(config) {
     }
     const items = plan.missing_features.filter(f =>
       statusFilter.includes(f.status) ||
-      ((f.status === 'in-pr' || f.status === 'done') && f.id && !allExistingWiIds.has(f.id))
+      (f.status === 'done' && f.id && !allExistingWiIds.has(f.id))
     );
 
     // Group items by target project (per-item project field overrides plan-level project)
@@ -2203,7 +2203,7 @@ async function tickInner() {
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
-    // Check if any plans can be marked completed (all features done/in-pr)
+    // Check if any plans can be marked completed (all features done)
     try {
       const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
       for (const file of prdFiles) {

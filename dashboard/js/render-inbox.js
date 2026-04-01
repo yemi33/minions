@@ -72,7 +72,6 @@ function openNotesModal() {
   _modalEditable = 'notes.md';
   _modalFilePath = 'notes.md'; showModalQa();
   document.getElementById('modal-edit-btn').style.display = '';
-  // steer btn removed — unified send
   document.getElementById('modal').classList.add('open');
 }
 

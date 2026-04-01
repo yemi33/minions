@@ -3207,13 +3207,12 @@ async function testAreDependenciesMet() {
       'Should return string "failed" when any dependency has failed');
   });
 
-  await test('areDependenciesMet uses PRD_MET_STATUSES for all done aliases', () => {
+  await test('areDependenciesMet uses PRD_MET_STATUSES for done status', () => {
     assert.ok(src.includes("PRD_MET_STATUSES"),
       'Should use PRD_MET_STATUSES set for status checking');
-    // Verify the set includes all legacy aliases
-    assert.ok(src.includes("'done'") && src.includes("'in-pr'") &&
-              src.includes("'implemented'") && src.includes("'complete'"),
-      'PRD_MET_STATUSES should include done, in-pr, implemented, complete');
+    // Legacy aliases removed — only 'done' is canonical
+    assert.ok(src.includes("new Set(['done'])"),
+      'PRD_MET_STATUSES should only include done (legacy aliases removed)');
   });
 
   await test('areDependenciesMet uses PRD_MET_STATUSES for work item status check', () => {

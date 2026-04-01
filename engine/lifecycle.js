@@ -58,7 +58,7 @@ function checkPlanCompletion(meta, config) {
   const unmaterialized = [...planFeatureIds].filter(id => {
     if (workItemById[id]) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && prdItem.status === 'done');
   });
   if (unmaterialized.length > 0) {
     log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
@@ -70,7 +70,7 @@ function checkPlanCompletion(meta, config) {
     const w = workItemById[id];
     if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && prdItem.status === 'done');
   });
   if (notDone.length > 0) {
     log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
@@ -740,7 +740,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   }
 
   if (mergedItemId) {
-    // Mark PRD feature as implemented
+    // Mark PRD feature as done
     const prdDir = path.join(MINIONS_DIR, 'prd');
     try {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
@@ -749,13 +749,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
-        if (feature && feature.status !== 'implemented') {
-          feature.status = 'implemented';
+        if (feature && feature.status !== 'done') {
+          feature.status = 'done';
           shared.safeWrite(path.join(prdDir, pf), plan);
           updated++;
         }
       }
-      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
+      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done

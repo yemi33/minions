@@ -178,8 +178,6 @@
   .prd-items-list { display: flex; flex-direction: column; gap: 3px; max-height: 400px; overflow-y: auto; padding: 0 8px; }
   .prd-item-row { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--radius-sm); font-size: var(--text-base); background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--border); }
   .prd-item-row.st-done { border-left-color: var(--green); }
-  .prd-item-row.st-implemented { border-left-color: var(--green); } /* legacy alias */
-  .prd-item-row.st-in-pr { border-left-color: var(--green); } /* backward compat: treated as done */
   .prd-item-row.st-in-progress { border-left-color: var(--yellow); animation: prdWipPulse 2s infinite; }
   @keyframes prdWipPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0); } 50% { box-shadow: 0 0 0 4px rgba(210,153,34,0.2); } }
   .prd-item-row.st-failed { border-left-color: var(--red); }
@@ -1171,7 +1169,7 @@ function renderPrdProgress(prog) {
   // Compute progress from active (non-archived) items only
   const activeItems = (prog.items || []).filter(i => !i._archived);
   if (activeItems.length > 0) {
-    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    const activeDone = activeItems.filter(i => i.status === 'done').length;
     countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
   } else {
     countEl.textContent = '—';
@@ -1180,7 +1178,7 @@ function renderPrdProgress(prog) {
   function renderGroupStats(items) {
     const total = items.length;
     if (total === 0) return '';
-    const done = items.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    const done = items.filter(i => i.status === 'done').length;
     const inProgress = items.filter(i => i.status === 'in-progress').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
@@ -1210,13 +1208,11 @@ function renderPrdProgress(prog) {
   const statusBadge = (s) => {
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
-      'implemented': 'background:rgba(63,185,80,0.15);color:var(--green)', /* legacy alias */
-      'in-pr':  'background:rgba(63,185,80,0.15);color:var(--green)', /* backward compat: displayed as done */
       'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
     };
-    const labels = { 'done': 'DONE', 'implemented': 'DONE', 'in-pr': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
+    const labels = { 'done': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -1295,7 +1291,7 @@ function renderPrdProgress(prog) {
   const timings = prog.planTimings || {};
 
   const renderGroupHeader = (g) => {
-    const done = g.items.filter(i => i.status === 'done' || i.status === 'complete' || i.status === 'implemented').length;
+    const done = g.items.filter(i => i.status === 'done').length;
     const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isAwaitingApproval = g.planStatus === 'awaiting-approval';
@@ -1394,7 +1390,7 @@ function renderPrdProgress(prog) {
     });
 
     const statusColor = (s) => {
-      if (s === 'done' || s === 'implemented' || s === 'in-pr') return 'var(--green)'; // in-pr treated as done
+      if (s === 'done') return 'var(--green)';
       if (s === 'in-progress') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
@@ -1565,7 +1561,7 @@ function openArchivedPrdModal() {
     // Picker: list archived plans, click to expand
     html = '<div style="margin-bottom:12px;font-size:12px;color:var(--muted)">Select an archived PRD to view:</div>';
     html += groups.map((g, i) => {
-      const done = g.items.filter(it => it.status === 'done' || it.status === 'implemented' || it.status === 'complete').length;
+      const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
       return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
@@ -1661,7 +1657,7 @@ async function prdItemEdit(source, itemId) {
 
   // Build completion summary section
   let completionHtml = '';
-  const isDone = item.status === 'done' || item.status === 'implemented' || item.status === 'complete' || item.status === 'in-pr'; // in-pr treated as done for backward compat
+  const isDone = item.status === 'done';
   const isFailed = item.status === 'failed';
   const isActive = item.status === 'in-progress' || item.status === 'dispatched';
 
@@ -1931,7 +1927,6 @@ function openNotesModal() {
   _modalEditable = 'notes.md';
   _modalFilePath = 'notes.md'; showModalQa();
   document.getElementById('modal-edit-btn').style.display = '';
-  // steer btn removed — unified send
   document.getElementById('modal').classList.add('open');
 }
 
@@ -2130,8 +2125,6 @@ function closeModal() {
   // Clear edit/steer state
   _modalEditable = null;
   _modalFilePath = null;
-  _modalOriginalPlan = null;
-  // steer btn removed — unified send
   const body = document.getElementById('modal-body');
   body.contentEditable = 'false';
   body.style.border = '';
@@ -2194,7 +2187,7 @@ function openArchive(i) {
       html += '<div class="archive-feature">' +
         '<span class="feat-id">' + escHtml(f.id) + '</span> ' +
         '<span class="prd-item-priority ' + pClass + '">' + escHtml(f.priority || '') + '</span>' +
-        (f.status ? ' <span class="pr-badge ' + (f.status === 'complete' || f.status === 'done' || f.status === 'in-pr' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status === 'in-pr' ? 'done' : f.status) + '</span>' : '') +
+        (f.status ? ' <span class="pr-badge ' + (f.status === 'done' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status) + '</span>' : '') +
         '<div class="feat-name">' + escHtml(f.name) + '</div>' +
         '<div class="feat-desc">' + escHtml(f.description || '') + '</div>' +
         (f.rationale ? '<div class="feat-desc" style="margin-top:4px;color:var(--yellow)">Rationale: ' + escHtml(f.rationale) + '</div>' : '') +
@@ -3539,7 +3532,6 @@ async function cmdSubmit() {
 
 let _modalDocContext = { title: '', content: '', selection: '' };
 let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
-let _modalOriginalPlan = null; // tracks original plan file when editing a forked version
 
 // ─── Notification Badges ──────────────────────────────────────────────────────
 // Show a red dot on a card/button when a background response arrives
@@ -4131,91 +4123,6 @@ async function planApprove(file) {
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
-// Disable all PRD action buttons to prevent double-clicks
-function qaDisablePrdButtons() {
-  const container = document.getElementById('qa-generate-prd-btn');
-  if (container) container.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
-}
-
-// Show plan version action buttons (Run alongside / Replace / Just save)
-function showPlanVersionActions(thread, newFile, originalFile) {
-  const esc = newFile.replace(/'/g, "\\'");
-  // Look up existing PRD for the original plan's project
-  const allPlans = window._lastStatus?.plans || [];
-  const origPlan = allPlans.find(p => p.file === originalFile);
-  const project = origPlan?.project || '';
-  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project && p.status !== 'completed');
-
-  const btn = document.createElement('div');
-  btn.id = 'qa-generate-prd-btn';
-  btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
-
-  if (existingPrd) {
-    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created — existing PRD running</span>' +
-      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Execute this plan as a separate PRD alongside the current one">Run alongside</button>' +
-      '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--orange);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Pause existing PRD, clean pending items, execute this plan instead">Replace old PRD</button>' +
-      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer" title="Keep the new version saved without dispatching any work">Just save</button>' +
-      '<span style="color:var(--muted);font-size:10px;width:100%">Run alongside keeps current work going. Replace pauses it and starts fresh.</span>';
-  } else {
-    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created</span>' +
-      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Execute plan</button>' +
-      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Just save</button>' +
-      '<span style="color:var(--muted);font-size:10px">Execute dispatches an agent to create PRD items from this plan</span>';
-  }
-  // Remove any previous action buttons
-  const old = thread.querySelector('#qa-generate-prd-btn');
-  if (old) old.remove();
-  thread.appendChild(btn);
-}
-
-function qaJustSave(el) {
-  const container = el.closest('#qa-generate-prd-btn');
-  if (container) container.innerHTML = '<span style="color:var(--muted);font-size:11px">Saved. No work dispatched.</span>';
-}
-
-// Replace existing PRD: pause old, clean pending items, regenerate from revised plan
-async function qaReplacePrd(planFile) {
-  qaDisablePrdButtons();
-  const allPlans = window._lastStatus?.plans || [];
-  const mdPlan = allPlans.find(p => p.file === planFile);
-  const project = mdPlan?.project || '';
-  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project);
-
-  if (existingPrd) {
-    // Pause first to stop materialization, then clean pending items
-    try {
-      await fetch('/api/plans/pause', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file: existingPrd.file })
-      });
-    } catch {}
-    try {
-      await fetch('/api/plans/regenerate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: existingPrd.file })
-      });
-    } catch {}
-  }
-
-  planExecute(planFile, project, null);
-
-  const btn = document.getElementById('qa-generate-prd-btn');
-  if (btn) btn.innerHTML = '<span style="color:var(--orange);font-size:12px">Replacing PRD — old items paused, agent regenerating from revised plan.</span>';
-}
-
-// New PRD: keep existing PRD running, create fresh PRD from revised plan
-async function qaNewPrd(planFile) {
-  qaDisablePrdButtons();
-  const allPlans = window._lastStatus?.plans || [];
-  const mdPlan = allPlans.find(p => p.file === planFile);
-  const project = mdPlan?.project || '';
-
-  planExecute(planFile, project, null);
-
-  const btn = document.getElementById('qa-generate-prd-btn');
-  if (btn) btn.innerHTML = '<span style="color:var(--green);font-size:12px">New PRD dispatched — existing work continues, agent creating fresh PRD from revised plan.</span>';
-}
-
 async function planExecute(file, project, btn) {
   if (btn) { btn.textContent = 'Executing...'; btn.disabled = true; btn.style.color = 'var(--blue)'; }
   try {
@@ -4429,7 +4336,6 @@ async function planView(file) {
     // Clear notification badge when opening this document
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
-    // steer btn removed — unified send
     document.getElementById('modal').classList.add('open');
   } catch (e) { console.error(e); }
 }
@@ -4568,7 +4474,6 @@ async function kbOpenItem(category, file) {
     // Clear notification badge when opening this document
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
-    // steer btn removed — unified send
     document.getElementById('modal').classList.add('open');
   } catch (e) {
     console.error('Failed to load KB item:', e);
