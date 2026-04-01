@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.123 (2026-04-01)
+
+### Engine
+- engine/ado-mcp-wrapper.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/detail-panel.js
+- dashboard/js/modal-qa.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-plans.js
+- dashboard/js/utils.js
+- dashboard/styles.css
+
 ## 0.1.122 (2026-04-01)
 
 ### Other
