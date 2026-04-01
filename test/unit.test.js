@@ -846,6 +846,101 @@ async function testConsolidationHelpers() {
   });
 }
 
+// ─── Content-Hash Circuit Breaker Tests ─────────────────────────────────────
+
+async function testContentHashCircuitBreaker() {
+  console.log('\n── consolidation.js — Content-Hash Circuit Breaker ──');
+
+  let checkDuplicateHash;
+  try {
+    const consolidation = require(path.join(MINIONS_DIR, 'engine', 'consolidation'));
+    checkDuplicateHash = consolidation.checkDuplicateHash;
+  } catch {
+    skip('content-hash circuit breaker', 'consolidation.js not loadable');
+    return;
+  }
+
+  if (!checkDuplicateHash) {
+    skip('content-hash circuit breaker', 'checkDuplicateHash not exported');
+    return;
+  }
+
+  await test('checkDuplicateHash returns false for empty items', () => {
+    assert.strictEqual(checkDuplicateHash([]).isDuplicate, false);
+    assert.strictEqual(checkDuplicateHash(null).isDuplicate, false);
+  });
+
+  await test('checkDuplicateHash detects >80% duplicates', () => {
+    const dupContent = '# Plan completion\nAll items done for plan X';
+    const items = [];
+    // 9 identical items + 1 different = 90% duplicates
+    for (let i = 0; i < 9; i++) items.push({ name: `note-${i}.md`, content: dupContent });
+    items.push({ name: 'unique-note.md', content: 'completely different content here' });
+
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, true);
+    assert.strictEqual(result.count, 9);
+    assert.strictEqual(result.total, 10);
+    assert.ok(result.hash.length === 64, 'hash should be SHA-256 hex');
+  });
+
+  await test('checkDuplicateHash returns false for diverse content', () => {
+    const items = [
+      { name: 'a.md', content: 'Alpha content about feature A' },
+      { name: 'b.md', content: 'Beta content about feature B' },
+      { name: 'c.md', content: 'Gamma content about feature C' },
+      { name: 'd.md', content: 'Delta content about feature D' },
+      { name: 'e.md', content: 'Epsilon content about feature E' },
+    ];
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, false);
+  });
+
+  await test('checkDuplicateHash handles exactly 80% (not triggered)', () => {
+    const dupContent = 'Same content repeated';
+    const items = [];
+    // 4 identical + 1 different = exactly 80%, should NOT trigger (>80% required)
+    for (let i = 0; i < 4; i++) items.push({ name: `dup-${i}.md`, content: dupContent });
+    items.push({ name: 'unique.md', content: 'different content' });
+
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, false, 'exactly 80% should not trigger circuit breaker');
+  });
+
+  await test('checkDuplicateHash triggers at 81%+', () => {
+    const dupContent = 'Same content repeated many times';
+    const items = [];
+    // 9 identical + 2 different = ~81.8% duplicates
+    for (let i = 0; i < 9; i++) items.push({ name: `dup-${i}.md`, content: dupContent });
+    items.push({ name: 'unique1.md', content: 'different A' });
+    items.push({ name: 'unique2.md', content: 'different B' });
+
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, true);
+  });
+
+  await test('checkDuplicateHash uses first 200 chars + length for hashing', () => {
+    // Two items with same first 200 chars but different lengths should hash differently
+    const base = 'x'.repeat(200);
+    const items = [
+      { name: 'a.md', content: base + 'short' },
+      { name: 'b.md', content: base + 'much longer additional content here' },
+    ];
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, false, 'different lengths should produce different hashes');
+  });
+
+  await test('checkDuplicateHash handles items with empty content', () => {
+    const items = [];
+    // 5 items with empty content (all identical hash)
+    for (let i = 0; i < 5; i++) items.push({ name: `empty-${i}.md`, content: '' });
+    items.push({ name: 'real.md', content: 'actual content' });
+    // 5/6 = 83.3% > 80%
+    const result = checkDuplicateHash(items);
+    assert.strictEqual(result.isDuplicate, true);
+  });
+}
+
 // ─── Reconciliation Tests ───────────────────────────────────────────────────
 
 async function testReconciliation() {
@@ -4211,6 +4306,7 @@ async function main() {
 
     // consolidation.js tests
     await testConsolidationHelpers();
+    await testContentHashCircuitBreaker();
 
     // github.js tests
     await testGithubHelpers();
