@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.106 (2026-04-01)
+
+### Engine
+- engine/consolidation.js
+
+### Other
+- prd/_test-idempotency.json.bak
+
 ## 0.1.105 (2026-04-01)
 
 ### Dashboard
