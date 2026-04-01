@@ -154,6 +154,51 @@ async function testIdGeneration() {
     assert.ok(result.endsWith('file-4.txt'), `Expected -4, got: ${result}`);
   });
 
+  // ── writeToInbox ──
+
+  await test('writeToInbox writes file with agentId-slug-date pattern', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const result = shared.writeToInbox('ralph', 'test-slug', '# Test content', inboxDir);
+    assert.strictEqual(result, true, 'Should return true when write occurs');
+    const files = fs.readdirSync(inboxDir);
+    assert.strictEqual(files.length, 1, 'Should have exactly one file');
+    assert.ok(files[0].startsWith('ralph-test-slug-'), `File should start with ralph-test-slug-, got: ${files[0]}`);
+    assert.ok(files[0].endsWith('.md'), 'File should end with .md');
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.strictEqual(content, '# Test content');
+  });
+
+  await test('writeToInbox deduplicates on same agentId+slug+date', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const first = shared.writeToInbox('engine', 'prd-completion', '# First', inboxDir);
+    assert.strictEqual(first, true, 'First write should succeed');
+    const second = shared.writeToInbox('engine', 'prd-completion', '# Second', inboxDir);
+    assert.strictEqual(second, false, 'Second write should be deduped');
+    const files = fs.readdirSync(inboxDir);
+    assert.strictEqual(files.length, 1, 'Should still have only one file');
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.strictEqual(content, '# First', 'Content should be from first write');
+  });
+
+  await test('writeToInbox allows different slugs on same day', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    shared.writeToInbox('engine', 'slug-a', '# A', inboxDir);
+    shared.writeToInbox('engine', 'slug-b', '# B', inboxDir);
+    const files = fs.readdirSync(inboxDir);
+    assert.strictEqual(files.length, 2, 'Different slugs should create separate files');
+  });
+
+  await test('writeToInbox returns false on error (missing dir)', () => {
+    const result = shared.writeToInbox('test', 'slug', 'content', '/nonexistent/path/inbox');
+    assert.strictEqual(result, false, 'Should return false on error');
+  });
+
   await test('nextWorkItemId increments from existing items', () => {
     const items = [{ id: 'W001' }, { id: 'W002' }, { id: 'W005' }];
     assert.strictEqual(shared.nextWorkItemId(items, 'W'), 'W006');
