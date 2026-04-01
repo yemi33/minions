@@ -488,9 +488,7 @@ async function planView(file) {
       modalBody.style.fontFamily = 'Consolas, monospace';
       modalBody.style.whiteSpace = 'pre-wrap';
     } else {
-      modalBody.innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(text) + '</div>';
-      modalBody.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-      modalBody.style.whiteSpace = 'normal';
+      modalBody.innerHTML = renderMd(text);
     }
     _modalDocContext = { title, content: text, selection: '' };
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
@@ -634,9 +632,7 @@ async function planOpenInDocChat(file) {
       document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
       document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
     } else {
-      document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(text) + '</div>';
-      document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-      document.getElementById('modal-body').style.whiteSpace = 'normal';
+      document.getElementById('modal-body').innerHTML = renderMd(text);
     }
     _modalDocContext = { title: title, content: text, selection: '' };
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
@@ -669,9 +665,7 @@ async function openVerifyGuide(file) {
     const content = await fetch('/api/plans/' + encodeURIComponent(normalizedFile)).then(r => r.text());
     document.getElementById('modal-title').innerHTML = 'Manual Testing Guide' +
       ' <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;margin-left:8px;vertical-align:middle" onclick="openArchivedPrdModal()">Back</button>';
-    document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(content) + '</div>';
-    document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-    document.getElementById('modal-body').style.whiteSpace = 'normal';
+    document.getElementById('modal-body').innerHTML = renderMd(content);
     _modalDocContext = { title: 'Manual Testing Guide', content, selection: '' };
     _modalFilePath = 'prd/' + normalizedFile; showModalQa();
     const card = findCardForFile(_modalFilePath);

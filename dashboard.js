@@ -747,7 +747,7 @@ function spawnEngine() {
     if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete childEnv[key];
   }
   const engineProc = cpSpawn(process.execPath, [path.join(MINIONS_DIR, 'engine.js'), 'start'], {
-    cwd: MINIONS_DIR, stdio: 'ignore', detached: true, env: childEnv,
+    cwd: MINIONS_DIR, stdio: 'ignore', detached: true, env: childEnv, windowsHide: true,
   });
   engineProc.unref();
   return engineProc.pid;
@@ -758,7 +758,7 @@ function killEnginePid(pid) {
   try {
     const safePid = shared.validatePid(pid);
     if (process.platform === 'win32') {
-      execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+      execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
     } else {
       process.kill(safePid, 'SIGKILL');
     }
@@ -1271,7 +1271,7 @@ const server = http.createServer(async (req, res) => {
             try {
               const safePid = shared.validatePid(status.pid);
               if (process.platform === 'win32') {
-                require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+                require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
               } else {
                 process.kill(safePid, 'SIGTERM');
               }
@@ -1866,7 +1866,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
                     try {
                       const safePid = shared.validatePid(agentStatus.pid);
                       if (process.platform === 'win32') {
-                        require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+                        require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
                       } else {
                         process.kill(safePid, 'SIGTERM');
                       }
@@ -2567,7 +2567,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                               try {
                                 const safePid = shared.validatePid(agentStatus.pid);
                                 if (process.platform === 'win32') {
-                                  require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+                                  require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
                                 } else {
                                   process.kill(safePid, 'SIGTERM');
                                 }
@@ -3602,7 +3602,7 @@ server.listen(PORT, '127.0.0.1', () => {
       let alive = false;
       try {
         if (process.platform === 'win32') {
-          const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', timeout: 3000 });
+          const out = execSync(`tasklist /FI "PID eq ${control.pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
           alive = out.includes(String(control.pid));
         } else {
           process.kill(control.pid, 0); // signal 0 = check existence

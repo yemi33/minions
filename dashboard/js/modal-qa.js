@@ -220,7 +220,7 @@ async function _processQaMessage(message, selection) {
         if (isJson) {
           body.textContent = display;
         } else {
-          body.innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(display) + '</div>';
+          body.innerHTML = renderMd(display);
           body.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
           body.style.whiteSpace = 'normal';
         }

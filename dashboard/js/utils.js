@@ -187,7 +187,7 @@ function renderMd(s) {
   // 4. Restore code placeholders
   html = html.replace(/\x00CB(\d+)\x00/g, function(_, idx) { return codeSlots[idx]; });
 
-  return html;
+  return '<div class="md-content">' + html + '</div>';
 }
 
 window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText };

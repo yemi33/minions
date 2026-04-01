@@ -79,7 +79,16 @@ function renderDetailContent(detail, tab) {
       '</div>';
     startLiveStream(currentAgentId);
   } else if (tab === 'charter') {
-    el.innerHTML = '<div class="section">' + renderMd(detail.charter || 'No charter found.') + '</div>';
+    const charterContent = detail.charter || '';
+    el.innerHTML =
+      '<div style="display:flex;gap:6px;margin-bottom:8px">' +
+        '<button class="pr-pager-btn" id="charter-edit-btn" style="font-size:10px;padding:2px 10px" onclick="_toggleCharterEdit()">Edit</button>' +
+        '<button class="pr-pager-btn" id="charter-save-btn" style="font-size:10px;padding:2px 10px;color:var(--green);border-color:var(--green);display:none" onclick="_saveCharter()">Save</button>' +
+        '<button class="pr-pager-btn" id="charter-cancel-btn" style="font-size:10px;padding:2px 10px;display:none" onclick="_cancelCharterEdit()">Cancel</button>' +
+      '</div>' +
+      '<div id="charter-view" class="section">' + renderMd(charterContent || 'No charter found. Click Edit to create one.') + '</div>' +
+      '<textarea id="charter-editor" style="display:none;width:100%;min-height:300px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:Consolas,monospace;font-size:12px;resize:vertical">' + escHtml(charterContent) + '</textarea>';
+    el._charterRaw = charterContent;
   } else if (tab === 'history') {
     let html = '';
     // Recent dispatch results
@@ -99,11 +108,52 @@ function renderDetailContent(detail, tab) {
       html += '</tbody></table>';
     }
     // Raw history.md
-    html += '<h4>Task History</h4><div class="section">' + escHtml(detail.history || 'No history yet.') + '</div>';
+    html += '<h4>Task History</h4><div class="section">' + renderMd(detail.history || 'No history yet.') + '</div>';
     el.innerHTML = html;
   } else if (tab === 'output') {
-    el.innerHTML = '<div class="section">' + escHtml(detail.outputLog || 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
+    el.innerHTML = '<div class="section">' + renderMd(detail.outputLog || 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
   }
+}
+
+function _toggleCharterEdit() {
+  document.getElementById('charter-view').style.display = 'none';
+  document.getElementById('charter-editor').style.display = '';
+  document.getElementById('charter-edit-btn').style.display = 'none';
+  document.getElementById('charter-save-btn').style.display = '';
+  document.getElementById('charter-cancel-btn').style.display = '';
+  document.getElementById('charter-editor').focus();
+}
+
+function _cancelCharterEdit() {
+  const el = document.getElementById('detail-content');
+  document.getElementById('charter-editor').value = el._charterRaw || '';
+  document.getElementById('charter-view').style.display = '';
+  document.getElementById('charter-editor').style.display = 'none';
+  document.getElementById('charter-edit-btn').style.display = '';
+  document.getElementById('charter-save-btn').style.display = 'none';
+  document.getElementById('charter-cancel-btn').style.display = 'none';
+}
+
+async function _saveCharter() {
+  const content = document.getElementById('charter-editor').value;
+  const btn = document.getElementById('charter-save-btn');
+  btn.textContent = 'Saving...'; btn.style.pointerEvents = 'none';
+  try {
+    const res = await fetch('/api/agents/charter', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: currentAgentId, content })
+    });
+    if (res.ok) {
+      document.getElementById('charter-view').innerHTML = renderMd(content);
+      document.getElementById('detail-content')._charterRaw = content;
+      _cancelCharterEdit();
+      showToast('cmd-toast', 'Charter saved', true);
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Save failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Save failed: ' + e.message); }
+  btn.textContent = 'Save'; btn.style.pointerEvents = '';
 }
 
 window.MinionsDetail = { closeDetail, renderDetailTabs, switchTab, renderDetailContent };

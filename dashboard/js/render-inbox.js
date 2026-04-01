@@ -65,7 +65,7 @@ function openNotesModal() {
   if (!preview) return;
   const content = preview._rawContent || preview.textContent;
   document.getElementById('modal-title').textContent = 'Team Notes';
-  document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(content) + '</div>';
+  document.getElementById('modal-body').innerHTML = renderMd(content);
   document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   _modalDocContext = { title: 'Team Notes', content, selection: '' };

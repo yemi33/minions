@@ -33,6 +33,7 @@ const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', [
   stdio: 'inherit',
   env: { ...process.env, AZURE_DEVOPS_EXT_PAT: token },
   windowsHide: true,
+  shell: false,
 });
 
 child.on('exit', (code) => process.exit(code || 0));
