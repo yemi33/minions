@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.146 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cleanup.js
+- engine/cooldown.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/meeting.js
+- engine/playbook.js
+- engine/routing.js
+- engine/shared.js
+- engine/timeout.js
+
+### Dashboard
+- dashboard/js/render-other.js
+- dashboard/js/render-work-items.js
+- dashboard/pages/engine.html
+- dashboard/styles.css
+
+### Playbooks
+- evaluate.md
+- fix.md
+- implement.md
+
+### Other
+- CLAUDE.md
+- routing.md
+- test/unit.test.js
+
 ## 0.1.143 (2026-04-01)
 
 ### Engine
