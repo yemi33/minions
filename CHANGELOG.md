@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.116 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/command-center.js
+
 ## 0.1.115 (2026-04-01)
 
 ### Engine
