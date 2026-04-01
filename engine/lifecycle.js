@@ -6,8 +6,8 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, execSilent, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp } = shared;
+const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks, addPrLink,
+  mutateJsonFileLocked, log, ts, dateStamp } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -21,7 +21,12 @@ function checkPlanCompletion(meta, config) {
   const planPath = path.join(PRD_DIR, planFile);
   const plan = safeJson(planPath);
   if (!plan?.missing_features) return;
-  if (plan.status === 'completed') return;
+  if (plan.status === 'completed') {
+    // Idempotency guard: if we already sent the completion notification, skip entirely.
+    // If _completionNotified is NOT set, fall through — crash recovery path:
+    // engine crashed after setting status=completed but before creating verify/PR items.
+    if (plan._completionNotified) return;
+  }
 
   const projects = shared.getProjects(config);
 
@@ -132,10 +137,26 @@ function checkPlanCompletion(meta, config) {
     ...uniquePrs.map(pr => `- ${pr.id}: ${pr.title || ''} ${pr.url || ''}`),
   ].filter(Boolean).join('\n');
 
-  // Write summary to notes/inbox
-  const summaryFile = `prd-completion-${planFile.replace('.json', '')}-${ts().slice(0, 10)}.md`;
-  shared.safeWrite(shared.uniquePath(path.join(MINIONS_DIR, 'notes', 'inbox', summaryFile)), summary);
-  log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
+  // Write summary to notes/inbox (slug+date dedup — same pattern as writeInboxAlert in dispatch.js)
+  const summarySlug = `prd-completion-${planFile.replace('.json', '')}`;
+  const summaryFile = `${summarySlug}-${dateStamp()}.md`;
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+  const existing = safeReadDir(inboxDir).find(f => f.startsWith(`${summarySlug}-${dateStamp()}`));
+  if (!existing) {
+    shared.safeWrite(path.join(inboxDir, summaryFile), summary);
+    log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
+  } else {
+    log('info', `PRD completion summary already exists for today: ${existing}, skipping inbox write`);
+  }
+
+  // Persist _completionNotified flag atomically BEFORE creating work items.
+  // This prevents duplicate inbox notes on re-entry. Work item creation below has its own
+  // existingPrItem/existingVerify guards, so the flag does NOT block crash recovery of those.
+  plan._completionNotified = true;
+  mutateJsonFileLocked(planPath, (data) => {
+    data._completionNotified = true;
+    return data;
+  });
 
   // Resolve the primary project for writing new work items (PR, verify)
   const projectName = plan.project;
