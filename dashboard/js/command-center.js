@@ -434,6 +434,20 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'edit-pipeline': {
+        const body = { id: action.id };
+        if (action.title) body.title = action.title;
+        if (action.stages) body.stages = action.stages;
+        if (action.trigger !== undefined) body.trigger = action.trigger;
+        const res = await fetch('/api/pipelines/update', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Pipeline update failed'); }
+        status.innerHTML = '&#10003; Updated pipeline: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';

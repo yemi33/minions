@@ -387,6 +387,7 @@ Available action types:
 - **delete-schedule**: Delete a scheduled task. Fields: id.
 - **create-meeting**: Start a team meeting. Fields: title (short meeting name), agenda (detailed text — what agents should investigate/debate, numbered items work best), agents (array of agent IDs), rounds (optional, default 3), project (optional).
 - **set-config**: Update engine settings. Fields: setting (setting name), value (new value). Valid settings: autoApprovePlans (bool), autoDecompose (bool), allowTempAgents (bool), maxConcurrent (number), maxTurns (number). Example: { "type": "set-config", "setting": "autoApprovePlans", "value": true }
+- **edit-pipeline**: Update an existing pipeline. Fields: id (pipeline ID), title (optional), stages (optional, JSON array), trigger (optional, { cron: "minute hour dow" } or null for manual).
 
 ## Rules
 
