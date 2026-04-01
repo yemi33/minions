@@ -1011,7 +1011,8 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     if (taskUsage.numTurns > cp.maxTurns) cp.maxTurns = taskUsage.numTurns;
     // Check if this dispatch hit the turn limit
     const engineConfig = require('./queries').getConfig()?.engine || {};
-    const turnLimit = engineConfig.maxTurns || 100;
+    // maxTurns default defined in ENGINE_DEFAULTS (shared.js) — avoid hardcoded fallback
+    const turnLimit = engineConfig.maxTurns || shared.ENGINE_DEFAULTS.maxTurns;
     if (taskUsage.numTurns >= turnLimit) cp.turnLimitHits++;
   }
 
@@ -1206,7 +1207,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (meta?.item?.id) {
     try {
       const engineConfig = (config.engine || {});
-      const turnLimit = engineConfig.maxTurns || 100;
+      // maxTurns resolved from config, fallback to ENGINE_DEFAULTS (shared.js)
+      const turnLimit = engineConfig.maxTurns || shared.ENGINE_DEFAULTS.maxTurns;
       const turnCount = taskUsage?.numTurns || 0;
       const hitTurnLimit = turnCount >= turnLimit;
       let outputLogSizeBytes = 0;
