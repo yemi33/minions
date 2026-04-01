@@ -388,6 +388,9 @@ function openWorkItemDetail(id) {
   if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
   if (item._humanFeedback) html += field('Human Feedback', (item._humanFeedback.rating === 'up' ? '👍' : '👎') + (item._humanFeedback.comment ? ' — ' + escHtml(item._humanFeedback.comment) : ''));
   if (item._pr) html += field('Pull Request', '<a href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="color:var(--blue)">' + escHtml(item._pr) + '</a>');
+  if (item._totalCostUsd != null) html += field('Cumulative Cost', '$' + Number(item._totalCostUsd).toFixed(4));
+  if (item._totalInputTokens) html += field('Total Input Tokens', Number(item._totalInputTokens).toLocaleString());
+  if (item._totalOutputTokens) html += field('Total Output Tokens', Number(item._totalOutputTokens).toLocaleString());
   html += '</div>';
 
   document.getElementById('modal-title').textContent = item.title || item.id;
