@@ -31,6 +31,11 @@ async function openSettings() {
       settingsField('Heartbeat Timeout', 'set-heartbeatTimeout', e.heartbeatTimeout || 300000, 'ms', 'No output = dead after this') +
       settingsField('Worktree Create Timeout', 'set-worktreeCreateTimeout', e.worktreeCreateTimeout || 300000, 'ms', 'Timeout for git worktree add (increase for large repos/Windows)') +
       settingsField('Worktree Create Retries', 'set-worktreeCreateRetries', e.worktreeCreateRetries || 1, '', 'Retry count for transient worktree add failures (0-3)') +
+      settingsField('Worktree Root', 'set-worktreeRoot', e.worktreeRoot || '../worktrees', '', 'Relative path for git worktrees') +
+      settingsField('Idle Alert', 'set-idleAlertMinutes', e.idleAlertMinutes || 15, 'min', 'Alert after agent idle this long') +
+      settingsField('Shutdown Timeout', 'set-shutdownTimeout', e.shutdownTimeout || 300000, 'ms', 'Max wait for agents during graceful shutdown') +
+      settingsField('Restart Grace Period', 'set-restartGracePeriod', e.restartGracePeriod || 1200000, 'ms', 'Grace period before orphan detection on restart') +
+      settingsField('Meeting Round Timeout', 'set-meetingRoundTimeout', e.meetingRoundTimeout || 600000, 'ms', 'Auto-advance meeting round after this') +
     '</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
       settingsToggle('Auto-approve Plans', 'set-autoApprovePlans', !!e.autoApprovePlans, 'PRDs are approved automatically without human review') +
@@ -108,6 +113,11 @@ async function saveSettings() {
       heartbeatTimeout: document.getElementById('set-heartbeatTimeout').value,
       worktreeCreateTimeout: document.getElementById('set-worktreeCreateTimeout').value,
       worktreeCreateRetries: document.getElementById('set-worktreeCreateRetries').value,
+      worktreeRoot: document.getElementById('set-worktreeRoot').value,
+      idleAlertMinutes: document.getElementById('set-idleAlertMinutes').value,
+      shutdownTimeout: document.getElementById('set-shutdownTimeout').value,
+      restartGracePeriod: document.getElementById('set-restartGracePeriod').value,
+      meetingRoundTimeout: document.getElementById('set-meetingRoundTimeout').value,
       autoApprovePlans: document.getElementById('set-autoApprovePlans').checked,
       autoDecompose: document.getElementById('set-autoDecompose').checked,
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,

@@ -3071,6 +3071,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (e.heartbeatTimeout !== undefined) config.engine.heartbeatTimeout = Math.max(60000, Number(e.heartbeatTimeout) || D.heartbeatTimeout);
         if (e.worktreeCreateTimeout !== undefined) config.engine.worktreeCreateTimeout = Math.max(60000, Number(e.worktreeCreateTimeout) || D.worktreeCreateTimeout);
         if (e.worktreeCreateRetries !== undefined) config.engine.worktreeCreateRetries = Math.max(0, Math.min(3, Number(e.worktreeCreateRetries) || D.worktreeCreateRetries));
+        if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
+        if (e.idleAlertMinutes !== undefined) config.engine.idleAlertMinutes = Math.max(1, Number(e.idleAlertMinutes) || D.idleAlertMinutes);
+        if (e.shutdownTimeout !== undefined) config.engine.shutdownTimeout = Math.max(30000, Number(e.shutdownTimeout) || D.shutdownTimeout);
+        if (e.restartGracePeriod !== undefined) config.engine.restartGracePeriod = Math.max(60000, Number(e.restartGracePeriod) || D.restartGracePeriod);
+        if (e.meetingRoundTimeout !== undefined) config.engine.meetingRoundTimeout = Math.max(60000, Number(e.meetingRoundTimeout) || D.meetingRoundTimeout);
         if (e.autoApprovePlans !== undefined) config.engine.autoApprovePlans = !!e.autoApprovePlans;
         if (e.autoDecompose !== undefined) config.engine.autoDecompose = !!e.autoDecompose;
         if (e.allowTempAgents !== undefined) config.engine.allowTempAgents = !!e.allowTempAgents;
