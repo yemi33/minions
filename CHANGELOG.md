@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.136 (2026-04-01)
+
+### Dashboard
+- dashboard/pages/engine.html
+- dashboard/pages/home.html
+- dashboard/pages/meetings.html
+- dashboard/pages/plans.html
+- dashboard/pages/prs.html
+- dashboard/pages/schedule.html
+- dashboard/pages/work.html
+
+### Other
+- test/unit.test.js
+
 ## 0.1.135 (2026-04-01)
 
 ### Dashboard
