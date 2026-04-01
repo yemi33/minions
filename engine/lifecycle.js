@@ -653,6 +653,7 @@ function updatePrAfterReview(agentId, pr, project) {
 
   // Set reviewStatus to 'waiting' (single source of truth — synced from ADO/GitHub votes on next poll)
   target.reviewStatus = 'waiting';
+  target._reviewedOnce = true;
   target.minionsReview = {
     reviewer: reviewerName,
     reviewedAt: ts(),
