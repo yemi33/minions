@@ -507,6 +507,10 @@
   .dispatch-type.plan { background: rgba(168,85,247,0.15); color: #a855f7; }
   .dispatch-type.plan-to-prd { background: rgba(168,85,247,0.1); color: #a855f7; }
   .dispatch-type.ask { background: rgba(63,185,80,0.15); color: var(--green); }
+  .dispatch-type.evaluate { background: rgba(248,81,73,0.15); color: var(--red); }
+  .dispatch-type.verify { background: rgba(63,185,80,0.2); color: var(--green); }
+  .dispatch-type.meeting { background: rgba(88,166,255,0.2); color: var(--blue); }
+  .dispatch-type.decompose { background: rgba(188,140,255,0.2); color: var(--purple); }
   .dispatch-type.manual { background: rgba(139,148,158,0.15); color: var(--muted); }
   .dispatch-agent { font-weight: 600; color: var(--text); }
   .dispatch-task { flex: 1; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
