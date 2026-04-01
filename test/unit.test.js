@@ -4123,6 +4123,46 @@ async function testMeetings() {
     assert.ok(routing.includes('meeting'), 'routing.md should have meeting work type');
   });
 
+  // Round timeout
+  await test('checkMeetingTimeouts exported and callable from engine tick', () => {
+    assert.ok(meetingSrc.includes('checkMeetingTimeouts') && meetingSrc.includes('module.exports'),
+      'checkMeetingTimeouts should be exported from meeting.js');
+    assert.ok(engineSrc.includes('checkMeetingTimeouts'),
+      'Engine tick should call checkMeetingTimeouts');
+  });
+
+  await test('meeting round timeout is configurable via meetingRoundTimeout', () => {
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes('meetingRoundTimeout') && sharedSrc.includes('600000'),
+      'ENGINE_DEFAULTS should include meetingRoundTimeout of 600000ms (10min)');
+    assert.ok(meetingSrc.includes('meetingRoundTimeout'),
+      'meeting.js should read meetingRoundTimeout from config');
+  });
+
+  await test('meetings track roundStartedAt timestamp', () => {
+    assert.ok(meetingSrc.includes('roundStartedAt'),
+      'Should track when each round started for timeout calculation');
+  });
+
+  await test('timeout auto-advances round with partial responses', () => {
+    assert.ok(meetingSrc.includes('timed out') && meetingSrc.includes('advancing'),
+      'Should log timeout and advance to next round');
+    assert.ok(meetingSrc.includes("type: 'timeout'"),
+      'Should record timeout events in meeting transcript');
+  });
+
+  await test('output validation rejects empty/placeholder responses', () => {
+    assert.ok(meetingSrc.includes('EMPTY_OUTPUT_PATTERNS'),
+      'Should define patterns for empty/placeholder output');
+    assert.ok(meetingSrc.includes("'(no output)'") && meetingSrc.includes('rejecting'),
+      'Should reject (no output) and log a warning');
+  });
+
+  await test('conclusion timeout ends meeting without conclusion', () => {
+    assert.ok(meetingSrc.includes('concluding') && meetingSrc.includes('ended without conclusion'),
+      'Should end meeting if conclusion round times out');
+  });
+
   // CC retry button
   await test('CC shows retry button on fetch failure', () => {
     const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');

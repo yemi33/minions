@@ -10,7 +10,7 @@ const queries = require('./queries');
 const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked,
-  getProjects, projectWorkItemsPath } = shared;
+  getProjects, projectWorkItemsPath, log, ts, dateStamp } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -18,13 +18,6 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 // Lazy require to break circular dependency with engine.js
 let _lifecycle = null;
 function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); return _lifecycle; }
-
-// ─── Engine utilities (lazy require to avoid circular deps) ──────────────────
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
-function log(level, msg, meta) { return engine().log(level, msg, meta); }
-function ts() { return engine().ts(); }
-function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 

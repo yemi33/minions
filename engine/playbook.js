@@ -9,20 +9,14 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, getProjects } = shared;
+const { safeJson, safeRead, getProjects, log, dateStamp } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const PLAYBOOKS_DIR = path.join(MINIONS_DIR, 'playbooks');
 
-// Lazy require to avoid circular dependency with engine.js
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
-
 // Import tempAgents from routing module
 const { tempAgents } = require('./routing');
-
-function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
 // ─── Repo Host Helpers ──────────────────────────────────────────────────────
 
@@ -123,7 +117,7 @@ function resolveTaskContext(item, config) {
     name: (a.name || id).toLowerCase(),
   }));
   const resolved = { additionalContext: '', referencedFiles: [] };
-  const log = (...args) => engine().log(...args);
+
 
   // Match agent references: "ripley's plan", "dallas's pr", "lambert's output", etc.
   for (const agent of agentNames) {
@@ -194,7 +188,7 @@ function resolveTaskContext(item, config) {
   // If no specific reference was resolved but the text mentions "the plan" or "latest plan",
   // find the most recent plan
   if (!resolved.additionalContext && /\b(the|latest|last|recent)\s+plan\b/i.test(text)) {
-    const log = (...args) => engine().log(...args);
+  
     try {
       const plans = fs.readdirSync(path.join(MINIONS_DIR, 'plans'))
         .filter(f => f.endsWith('.md') || f.endsWith('.json'))
@@ -218,7 +212,7 @@ function renderPlaybook(type, vars) {
   const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
-    engine().log('warn', `Playbook not found: ${type}`);
+    log('warn', `Playbook not found: ${type}`);
     return null;
   }
 
@@ -291,6 +285,22 @@ function renderPlaybook(type, vars) {
     content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
   }
 
+  // Warn on variables that resolved to empty string
+  const emptyVars = Object.entries(allVars)
+    .filter(([, val]) => String(val) === '')
+    .map(([key]) => key);
+  if (emptyVars.length > 0) {
+    const msg = `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`;
+    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+  }
+
+  // Warn on any remaining unresolved {{variable}} placeholders
+  const unresolved = [...new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)))];
+  if (unresolved.length > 0) {
+    const msg = `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`;
+    try { engine().log('warn', msg); } catch { /* engine not ready */ }
+  }
+
   return content;
 }
 
@@ -338,7 +348,7 @@ function buildSystemPrompt(agentId, config, project) {
 function buildAgentContext(agentId, config, project) {
   project = project || getProjects(config)[0] || {};
   let context = '';
-  const log = (...args) => engine().log(...args);
+
 
   // Agent history — last 5 tasks only (keeps it relevant, avoids 37KB dumps)
   const history = safeRead(path.join(AGENTS_DIR, agentId, 'history.md'));

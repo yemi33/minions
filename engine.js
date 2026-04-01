@@ -82,29 +82,15 @@ function validateConfig(config) {
   }
 }
 
-const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, projectPrPath, getAdoOrgBase, sanitizeBranch, parseSkillFrontmatter, safeReadDir } = shared;
+const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, projectPrPath, getAdoOrgBase, sanitizeBranch, parseSkillFrontmatter, safeReadDir,
+  ts, logTs, dateStamp, log } = shared;
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
-
-function ts() { return new Date().toISOString(); }
-function logTs() { return new Date().toLocaleTimeString(); }
-function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
 const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
-
-function log(level, msg, meta = {}) {
-  const entry = { timestamp: ts(), level, message: msg, ...meta };
-  console.log(`[${logTs()}] [${level}] ${msg}`);
-
-  let logData = safeJson(LOG_PATH) || [];
-  if (!Array.isArray(logData)) logData = logData.entries || [];
-  logData.push(entry);
-  if (logData.length > 2000) logData.splice(0, logData.length - 2000);
-  safeWrite(LOG_PATH, logData);
-}
 
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
@@ -2050,6 +2036,12 @@ async function tickInner() {
   checkTimeouts(config);
   checkSteering(config);
   checkIdleThreshold(config);
+
+  // 1b. Check for meeting round timeouts
+  try {
+    const { checkMeetingTimeouts } = require('./engine/meeting');
+    checkMeetingTimeouts(config);
+  } catch (e) { log('warn', 'check meeting timeouts: ' + e.message); }
 
   // In stopping state, only track agent completions — skip discovery and dispatch
   if (control.state === 'stopping') {

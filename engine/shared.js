@@ -8,6 +8,26 @@ const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
+const LOG_PATH = path.join(__dirname, 'log.json');
+
+// ── Timestamps & Logging ────────────────────────────────────────────────────
+// Extracted from engine.js so engine/* modules can import directly without
+// circular-requiring the orchestrator.
+
+function ts() { return new Date().toISOString(); }
+function logTs() { return new Date().toLocaleTimeString(); }
+function dateStamp() { return new Date().toISOString().slice(0, 10); }
+
+function log(level, msg, meta = {}) {
+  const entry = { timestamp: ts(), level, message: msg, ...meta };
+  console.log(`[${logTs()}] [${level}] ${msg}`);
+
+  let logData = safeJson(LOG_PATH) || [];
+  if (!Array.isArray(logData)) logData = logData.entries || [];
+  logData.push(entry);
+  if (logData.length > 2000) logData.splice(0, logData.length - 2000);
+  safeWrite(LOG_PATH, logData);
+}
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
 
@@ -41,16 +61,18 @@ function safeWrite(p, data) {
           try { const ab = new SharedArrayBuffer(4); Atomics.wait(new Int32Array(ab), 0, 0, delay); } catch { /* fallback busy-wait */ const start = Date.now(); while (Date.now() - start < delay) {} }
           continue;
         }
-        // Final attempt failed — fall through to direct write
+        // Final attempt failed — throw to let caller retry
+        try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
+        throw e;
       }
     }
-    // All rename attempts failed — direct write as fallback (not atomic but won't lose data)
+    // All rename attempts exhausted without throw — should not happen, but clean up
     try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
-    fs.writeFileSync(p, content);
+    throw new Error(`[safeWrite] All 5 rename attempts failed for ${p}`);
   } catch (err) {
-    // Even direct write failed — log and clean up tmp
-    console.error(`[safeWrite] FAILED to write ${p}: ${err.message}`);
+    // Clean up tmp if it still exists, then re-throw — never silently swallow
     try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
+    throw err;
   }
 }
 
@@ -102,6 +124,9 @@ function mutateJsonFileLocked(filePath, mutateFn, {
   return withFileLock(lockPath, () => {
     let data = safeJson(filePath);
     if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
+    // Back up last-known-good state before mutation (best-effort)
+    const backupPath = filePath + '.bak';
+    try { if (fs.existsSync(filePath)) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
     const next = mutateFn(data);
     const finalData = next === undefined ? data : next;
     safeWrite(filePath, finalData);
@@ -261,6 +286,7 @@ const ENGINE_DEFAULTS = {
   shutdownTimeout: 300000, // 5min — max wait for active agents during graceful shutdown
   allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
+  meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
 };
 
 const DEFAULT_AGENTS = {
@@ -380,6 +406,11 @@ function addPrLink(prId, itemId) {
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
+  LOG_PATH,
+  ts,
+  logTs,
+  dateStamp,
+  log,
   safeRead,
   safeReadDir,
   safeJson,
