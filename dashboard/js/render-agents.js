@@ -17,10 +17,10 @@ function renderAgents(agents) {
 }
 
 async function openAgentDetail(id) {
-  currentAgentId = id;
   const agent = agentData.find(a => a.id === id);
-  currentTab = (agent?.status === 'working') ? 'live' : 'thought-process';
   if (!agent) return;
+  currentAgentId = id;
+  currentTab = (agent.status === 'working') ? 'live' : 'thought-process';
 
   document.getElementById('detail-agent-name').innerHTML =
     '<span style="font-size:22px">' + agent.emoji + '</span> ' + agent.name + ' — ' + agent.role;

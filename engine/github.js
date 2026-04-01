@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 

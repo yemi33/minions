@@ -13,7 +13,7 @@ function closeModal() {
   if (_qaSessionKey && (_qaHistory.length > 0 || _qaQueue.length > 0)) {
     _qaSessions.set(_qaSessionKey, {
       history: _qaHistory,
-      threadHtml: document.getElementById('modal-qa-thread').innerHTML,
+      threadHtml: (document.getElementById('modal-qa-thread') || {}).innerHTML || '',
       docContext: { ..._modalDocContext },
       filePath: _modalFilePath,
     });

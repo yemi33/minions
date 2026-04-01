@@ -25,7 +25,7 @@ function findClaudeBinary() {
   // Fallback: parse the shell wrapper
   try {
     const which = execSync('bash -c "which claude"', { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim();
-    const whichNative = which.replace(/^\/c\//, 'C:/').replace(/\//g, path.sep);
+    const whichNative = which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
     const wrapper = fs.readFileSync(whichNative, 'utf8');
     const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);
     if (m) {

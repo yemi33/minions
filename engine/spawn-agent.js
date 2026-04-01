@@ -39,10 +39,11 @@ for (const p of searchPaths) {
 if (!claudeBin) {
   try {
     const which = exec('bash -c "which claude"', { encoding: 'utf8', env }).trim();
-    const wrapper = exec(`bash -c "cat '${which}'"`, { encoding: 'utf8', env });
+    const whichNative = which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
+    const wrapper = fs.readFileSync(whichNative, 'utf8');
     const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);
     if (m) {
-      const basedir = path.dirname(which.replace(/^\/c\//, 'C:/').replace(/\//g, path.sep));
+      const basedir = path.dirname(whichNative);
       claudeBin = path.join(basedir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
     }
   } catch { /* optional */ }
