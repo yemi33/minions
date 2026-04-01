@@ -32,6 +32,11 @@ async function openSettings() {
       settingsField('Worktree Create Timeout', 'set-worktreeCreateTimeout', e.worktreeCreateTimeout || 300000, 'ms', 'Timeout for git worktree add (increase for large repos/Windows)') +
       settingsField('Worktree Create Retries', 'set-worktreeCreateRetries', e.worktreeCreateRetries || 1, '', 'Retry count for transient worktree add failures (0-3)') +
     '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
+      settingsToggle('Auto-approve Plans', 'set-autoApprovePlans', !!e.autoApprovePlans, 'PRDs are approved automatically without human review') +
+      settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
+      settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
+    '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
@@ -72,6 +77,14 @@ async function openSettings() {
   document.getElementById('modal').classList.add('open');
 }
 
+function settingsToggle(label, id, checked, hint) {
+  return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0">' +
+    '<input type="checkbox" id="' + id + '"' + (checked ? ' checked' : '') + ' style="accent-color:var(--blue);width:16px;height:16px;cursor:pointer">' +
+    '<label for="' + id + '" style="font-size:12px;color:var(--text);cursor:pointer">' + escHtml(label) + '</label>' +
+    (hint ? '<span style="font-size:9px;color:var(--muted)">' + escHtml(hint) + '</span>' : '') +
+  '</div>';
+}
+
 function settingsField(label, id, value, unit, hint) {
   return '<div>' +
     '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">' + escHtml(label) + (unit ? ' <span style="opacity:0.6">(' + escHtml(unit) + ')</span>' : '') + '</label>' +
@@ -95,6 +108,9 @@ async function saveSettings() {
       heartbeatTimeout: document.getElementById('set-heartbeatTimeout').value,
       worktreeCreateTimeout: document.getElementById('set-worktreeCreateTimeout').value,
       worktreeCreateRetries: document.getElementById('set-worktreeCreateRetries').value,
+      autoApprovePlans: document.getElementById('set-autoApprovePlans').checked,
+      autoDecompose: document.getElementById('set-autoDecompose').checked,
+      allowTempAgents: document.getElementById('set-allowTempAgents').checked,
     };
 
     const claudePayload = {

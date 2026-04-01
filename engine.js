@@ -1031,8 +1031,19 @@ function materializePlansAsWorkItems(config) {
     // Human approval gate: plans start as 'awaiting-approval' and must be approved before work begins
     // Plans without a status (legacy) or with status 'approved' are allowed through
     const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
-    if (planStatus === 'awaiting-approval' || planStatus === 'paused' || planStatus === 'rejected' || planStatus === 'revision-requested') {
-      continue; // Skip — waiting for human approval, paused, or revision
+    if (planStatus === 'awaiting-approval') {
+      if (config.engine?.autoApprovePlans) {
+        plan.status = 'approved';
+        plan.approvedAt = new Date().toISOString();
+        plan.approvedBy = 'auto-mode';
+        safeWrite(prdPath, plan);
+        log('info', `Auto-approved plan: ${file}`);
+      } else {
+        continue; // Skip — waiting for human approval
+      }
+    }
+    if (planStatus === 'paused' || planStatus === 'rejected' || planStatus === 'revision-requested') {
+      continue; // Skip — paused or revision requested
     }
     // Stale PRDs: source plan was revised — don't materialize NEW items until user regenerates
     if (plan.planStale) {

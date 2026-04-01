@@ -3065,6 +3065,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (e.heartbeatTimeout !== undefined) config.engine.heartbeatTimeout = Math.max(60000, Number(e.heartbeatTimeout) || D.heartbeatTimeout);
         if (e.worktreeCreateTimeout !== undefined) config.engine.worktreeCreateTimeout = Math.max(60000, Number(e.worktreeCreateTimeout) || D.worktreeCreateTimeout);
         if (e.worktreeCreateRetries !== undefined) config.engine.worktreeCreateRetries = Math.max(0, Math.min(3, Number(e.worktreeCreateRetries) || D.worktreeCreateRetries));
+        if (e.autoApprovePlans !== undefined) config.engine.autoApprovePlans = !!e.autoApprovePlans;
+        if (e.autoDecompose !== undefined) config.engine.autoDecompose = !!e.autoDecompose;
+        if (e.allowTempAgents !== undefined) config.engine.allowTempAgents = !!e.allowTempAgents;
       }
 
       if (body.claude) {
