@@ -19,7 +19,7 @@ function renderPipelines(pipelines) {
     const lastRun = (p.runs || []).slice(-1)[0];
     const statusColor = activeRun ? 'var(--blue)' : lastRun?.status === 'completed' ? 'var(--green)' : lastRun?.status === 'failed' ? 'var(--red)' : 'var(--muted)';
     const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status) : 'Never run';
-    const trigger = p.trigger?.cron ? 'Cron: ' + p.trigger.cron : 'Manual';
+    const trigger = p.trigger?.cron ? _cronToHuman(p.trigger.cron) : 'Manual';
 
     // Stage flow visualization
     var stageFlow = (p.stages || []).map(function(s) {
@@ -52,7 +52,7 @@ function openPipelineDetail(id) {
   // Status + actions
   var activeRun = (p.runs || []).find(function(r) { return r.status === 'running'; });
   html += '<div style="display:flex;justify-content:space-between;align-items:center">' +
-    '<span style="font-size:10px;color:var(--muted)">' + (p.trigger?.cron ? 'Cron: ' + p.trigger.cron : 'Manual trigger') + '</span>' +
+    '<span style="font-size:10px;color:var(--muted)">' + (p.trigger?.cron ? escHtml(_cronToHuman(p.trigger.cron)) + ' <span style="opacity:0.6">(' + escHtml(p.trigger.cron) + ', ' + escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone) + ')</span>' : 'Manual trigger') + '</span>' +
     '<div style="display:flex;gap:6px">' +
       (activeRun ? '' : '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="_triggerPipeline(\'' + escHtml(id) + '\',this)">Run Now</button>') +
       '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="_togglePipelineEnabled(\'' + escHtml(id) + '\',' + !p.enabled + ',this)">' + (p.enabled !== false ? 'Disable' : 'Enable') + '</button>' +
@@ -142,13 +142,52 @@ async function _deletePipelineConfirm(id) {
 
 function openCreatePipelineModal() {
   var inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
+  var pillStyle = 'display:inline-block;padding:4px 10px;margin:2px;border:1px solid var(--border);border-radius:12px;cursor:pointer;font-size:11px;color:var(--text);background:var(--bg);user-select:none;transition:all 0.15s';
+  var linkStyle = 'font-size:10px;color:var(--blue);cursor:pointer;text-decoration:underline;margin-right:8px';
+  var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  // Hour options (0-23)
+  var hourOpts = '';
+  for (var h = 0; h < 24; h++) hourOpts += '<option value="' + h + '"' + (h === 9 ? ' selected' : '') + '>' + String(h).padStart(2, '0') + '</option>';
+  // Minute options (0, 5, 10, ..., 55)
+  var minOpts = '';
+  for (var m = 0; m <= 55; m += 5) minOpts += '<option value="' + m + '"' + (m === 0 ? ' selected' : '') + '>' + String(m).padStart(2, '0') + '</option>';
+
+  var dayOrder = [0, 1, 2, 3, 4, 5, 6];
+  var dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  var dayPills = dayOrder.map(function(d) {
+    var active = d >= 1 && d <= 5; // default weekdays
+    return '<span class="sched-day-pill' + (active ? ' active' : '') + '" data-day="' + d + '" ' +
+      'style="' + pillStyle + (active ? ';background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" ' +
+      'onclick="_toggleDayPill(this);_updatePlCronPreview()">' + dayLabels[d] + '</span>';
+  }).join('');
 
   document.getElementById('modal-title').textContent = 'New Pipeline';
   document.getElementById('modal-body').innerHTML =
     '<div style="display:flex;flex-direction:column;gap:10px">' +
       '<label style="color:var(--text);font-size:var(--text-md)">ID<input id="pl-id" style="' + inputStyle + '" placeholder="e.g. daily-audit-cycle"></label>' +
       '<label style="color:var(--text);font-size:var(--text-md)">Title<input id="pl-title" style="' + inputStyle + '" placeholder="e.g. Daily audit and improvement cycle"></label>' +
-      '<label style="color:var(--text);font-size:var(--text-md)">Trigger (cron, optional)<input id="pl-cron" style="' + inputStyle + '" placeholder="e.g. 0 9 * (9am daily) — leave empty for manual"></label>' +
+      '<div>' +
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+          '<label style="color:var(--text);font-size:var(--text-md);margin:0">Schedule</label>' +
+          '<label style="font-size:11px;color:var(--muted);cursor:pointer"><input type="checkbox" id="pl-use-cron" checked onchange="_updatePlCronPreview()" style="accent-color:var(--blue)"> Enable automatic trigger</label>' +
+        '</div>' +
+        '<div id="pl-cron-picker">' +
+          '<div style="display:flex;gap:8px;align-items:center">' +
+            '<select id="pl-pick-hour" style="' + inputStyle + ';width:auto;display:inline-block" onchange="_updatePlCronPreview()">' + hourOpts + '</select>' +
+            '<span style="color:var(--muted)">:</span>' +
+            '<select id="pl-pick-minute" style="' + inputStyle + ';width:auto;display:inline-block" onchange="_updatePlCronPreview()">' + minOpts + '</select>' +
+            '<span style="font-size:10px;color:var(--muted)">' + escHtml(tz) + '</span>' +
+          '</div>' +
+          '<div style="margin-top:8px">' + dayPills + '</div>' +
+          '<div style="margin-top:6px">' +
+            '<span style="' + linkStyle + '" onclick="_quickSelectDays(\'all\');_updatePlCronPreview()">Every day</span>' +
+            '<span style="' + linkStyle + '" onclick="_quickSelectDays(\'weekdays\');_updatePlCronPreview()">Weekdays</span>' +
+            '<span style="' + linkStyle + '" onclick="_quickSelectDays(\'weekends\');_updatePlCronPreview()">Weekends</span>' +
+          '</div>' +
+          '<div id="pl-cron-preview" style="margin-top:4px;font-size:11px;color:var(--blue)"></div>' +
+        '</div>' +
+      '</div>' +
       '<label style="color:var(--text);font-size:var(--text-md)">Stages (JSON array)<textarea id="pl-stages" rows="10" style="' + inputStyle + ';resize:vertical;font-family:Consolas,monospace" placeholder=\'[{"id":"audit","type":"task","title":"Audit codebase","taskType":"explore"},{"id":"discuss","type":"meeting","title":"Discuss findings","dependsOn":["audit"],"participants":["all"]}]\'></textarea></label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
@@ -156,12 +195,30 @@ function openCreatePipelineModal() {
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
+  _updatePlCronPreview();
+}
+
+function _updatePlCronPreview() {
+  var useCron = document.getElementById('pl-use-cron')?.checked;
+  var pickerEl = document.getElementById('pl-cron-picker');
+  if (pickerEl) pickerEl.style.opacity = useCron ? '1' : '0.4';
+  if (pickerEl) pickerEl.style.pointerEvents = useCron ? '' : 'none';
+  if (!useCron) { window._plComputedCron = ''; var prev = document.getElementById('pl-cron-preview'); if (prev) prev.textContent = 'Manual trigger only'; return; }
+  var hour = parseInt(document.getElementById('pl-pick-hour')?.value || '9', 10);
+  var minute = parseInt(document.getElementById('pl-pick-minute')?.value || '0', 10);
+  var days = [];
+  document.querySelectorAll('.sched-day-pill').forEach(function(btn) { if (btn.classList.contains('active')) days.push(parseInt(btn.dataset.day, 10)); });
+  var cron = _pickerToCron(hour, minute, days);
+  window._plComputedCron = cron;
+  var prev = document.getElementById('pl-cron-preview');
+  if (prev) prev.textContent = cron ? '\u2192 ' + _cronToHuman(cron) : '(select at least one day)';
 }
 
 async function _submitCreatePipeline() {
   var id = document.getElementById('pl-id')?.value?.trim();
   var title = document.getElementById('pl-title')?.value?.trim();
-  var cron = document.getElementById('pl-cron')?.value?.trim();
+  var useCron = document.getElementById('pl-use-cron')?.checked;
+  var cron = useCron ? (window._plComputedCron || '') : '';
   var stagesRaw = document.getElementById('pl-stages')?.value?.trim();
   if (!id || !title) { alert('ID and title required'); return; }
   var stages;
