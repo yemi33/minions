@@ -79,8 +79,12 @@ function discoverMeetingWork(config) {
     const agents = config.agents || {};
 
     if (roundName === 'concluding') {
-      // Only one agent concludes (first participant)
-      const concluder = meeting.participants[0];
+      // Pick the first non-busy participant as concluder (fallback to any participant)
+      const busyAgents = new Set(
+        (dispatch.active || []).map(d => d.agent).filter(Boolean)
+      );
+      const concluder = meeting.participants.find(p => !busyAgents.has(p))
+        || meeting.participants[0];
       if (!concluder) continue;
       const key = `meeting-${meeting.id}-r${round}-${concluder}`;
       if (activeKeys.has(key)) continue;
