@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.92 (2026-04-01)
+
+### Engine
+- engine/lifecycle.js
+- engine/shared.js
+
+### Dashboard
+- dashboard/js/render-other.js
+
 ## 0.1.91 (2026-04-01)
 
 ### Dashboard
