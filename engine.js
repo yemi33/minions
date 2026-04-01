@@ -691,13 +691,14 @@ function spawnAgent(dispatchItem, config) {
   // Move pending -> active under a lock to avoid cross-process lost updates (engine/dashboard)
   mutateDispatch((dispatch) => {
     const idx = dispatch.pending.findIndex(d => d.id === id);
-    if (idx < 0) return;
+    if (idx < 0) return dispatch;
     const item = dispatch.pending.splice(idx, 1)[0];
     item.started_at = startedAt;
     delete item.skipReason;
     if (!dispatch.active.some(d => d.id === id)) {
       dispatch.active.push(item);
     }
+    return dispatch;
   });
 
   return proc;
@@ -1365,9 +1366,8 @@ function discoverFromWorkItems(config, project) {
     // This protects against persisted state drift from old runtime versions.
     try {
       mutateDispatch((dp) => {
-        const before = Array.isArray(dp.completed) ? dp.completed.length : 0;
         dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== key) : [];
-        return dp.completed.length !== before ? dp : undefined;
+        return dp;
       });
       dispatchCooldowns.delete(key);
     } catch (e) { log('warn', 'self-heal dispatch state: ' + e.message); }
@@ -2128,9 +2128,8 @@ async function tickInner() {
                 try {
                     const key = `work-${project.name}-${item.id}`;
                     mutateDispatch((dp) => {
-                      const before = dp.completed.length;
                       dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                      if (dp.completed.length !== before) return dp;
+                      return dp;
                     });
                   } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
 
@@ -2164,6 +2163,7 @@ async function tickInner() {
                       const key = `work-${project.name}-${dep.id}`;
                       mutateDispatch((dp) => {
                         dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                        return dp;
                       });
                     } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
                   }
@@ -2208,6 +2208,7 @@ async function tickInner() {
   mutateDispatch((dp) => {
     dp.pending = dispatch.pending;
     dp.active = dispatch.active || dp.active;
+    return dp;
   });
 
   // Only dispatch to agents that aren't already busy (one task per agent at a time).
@@ -2226,8 +2227,39 @@ async function tickInner() {
   const dispatched = new Set();
   for (const item of toDispatch) {
     if (!dispatched.has(item.id)) {
-      spawnAgent(item, config);
-      dispatched.add(item.id);
+      const proc = spawnAgent(item, config);
+      if (proc === null) {
+        // spawnAgent failed (e.g., worktree creation error). It already called
+        // completeDispatch internally which handles retry logic, but log at the
+        // dispatch-loop level for visibility and handle any edge cases where
+        // completeDispatch wasn't called.
+        log('error', `spawnAgent returned null for ${item.id} (${item.type} → ${item.agent}) — spawn failed`);
+        // Defensive: ensure the work item is re-queued if completeDispatch didn't fire
+        if (item.meta?.item?.id) {
+          try {
+            const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
+              ? path.join(ENGINE_DIR, '..', 'work-items.json')
+              : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
+            if (wiPath) {
+              const items = safeJson(wiPath) || [];
+              const wi = items.find(i => i.id === item.meta.item.id);
+              if (wi && wi.status === 'dispatched') {
+                // completeDispatch didn't update the work item — re-queue manually
+                wi.status = 'pending';
+                wi._retryCount = (wi._retryCount || 0) + 1;
+                wi._lastRetryReason = 'spawnAgent returned null';
+                wi._lastRetryAt = ts();
+                delete wi.dispatched_at;
+                delete wi.dispatched_to;
+                safeWrite(wiPath, items);
+                log('info', `Re-queued ${item.meta.item.id} as pending (retry ${wi._retryCount})`);
+              }
+            }
+          } catch (e) { log('warn', `Failed to re-queue work item after spawn failure: ${e.message}`); }
+        }
+      } else {
+        dispatched.add(item.id);
+      }
     }
   }
 
@@ -2250,7 +2282,7 @@ async function tickInner() {
     }
   }
   if (skipReasonChanged) {
-    mutateDispatch((dp) => { dp.pending = postDispatch.pending; });
+    mutateDispatch((dp) => { dp.pending = postDispatch.pending; return dp; });
   }
 }
 
