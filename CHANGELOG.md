@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.101 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/cleanup.js
+- engine/consolidation.js
+- engine/dispatch.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/preflight.js
+- engine/queries.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.97 (2026-04-01)
 
 ### Engine
