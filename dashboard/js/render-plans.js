@@ -172,19 +172,15 @@ function renderPlans(plans) {
     const isArchived = p.archived;
 
     // For .md plans with a linked PRD, use the PRD's status as the authoritative intent
-    // (p.status for .md is 'draft'/'converted'/'active', not the PRD lifecycle status)
     let prdJsonStatus = p.status || 'active';
     if (prdFile && p.format !== 'prd') {
       const linkedPrd = plans.find(pp => pp.file === prdFile && pp.format === 'prd');
       if (linkedPrd) prdJsonStatus = linkedPrd.status || prdJsonStatus;
-      // If the linked PRD was archived, treat the .md plan as completed
       else if (!linkedPrd) {
         const archivedPrd = archivedPlans.find(pp => pp.file === prdFile && pp.format === 'prd');
         if (archivedPrd) prdJsonStatus = 'completed';
       }
     }
-    // 'converted' means plan-to-PRD succeeded — treat as 'approved' for status derivation
-    if (prdJsonStatus === 'converted') prdJsonStatus = prdFile ? 'approved' : 'completed';
 
     // Single source of truth: derive status from work items
     const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, prdJsonStatus, allWi);
@@ -192,14 +188,13 @@ function renderPlans(plans) {
     const statusLabelsMap = {
       'completed': 'Completed', 'in-progress': 'In Progress', 'paused': 'Paused',
       'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected',
-      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active',
-      'converted': 'Converted to PRD', 'draft': 'Draft'
+      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active'
     };
     const label = statusLabelsMap[effectiveStatus] || effectiveStatus;
     const needsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
     const isRevision = effectiveStatus === 'revision-requested';
     const isCompleted = effectiveStatus === 'completed';
-    const isDraft = (p.format === 'draft' || rawStatus === 'draft') && !isCompleted;
+    const isDraft = p.format === 'draft' && !isCompleted;
     // For .md drafts: show Execute only if no PRD exists yet (not already executed)
 
     let actions = '';
@@ -571,7 +566,10 @@ async function planArchive(file, btn) {
     const d = await res.json().catch(() => ({}));
     if (res.ok && d.ok) {
       try { closeModal(); } catch { /* may not be open */ }
-      showToast('cmd-toast', 'Archived' + (file.endsWith('.json') ? ' PRD and source plan' : ''), true);
+      var msg = 'Archived';
+      if (d.archivedSource) msg += ' PRD + source plan (' + d.archivedSource + ')';
+      if (d.cancelledItems) msg += ', cancelled ' + d.cancelledItems + ' pending item(s)';
+      showToast('cmd-toast', msg, true);
       refreshPlans();
       refresh();
     } else {
