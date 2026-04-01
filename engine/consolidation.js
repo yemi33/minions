@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const shared = require('./shared');
 const { safeRead, safeWrite, safeUnlink, runFile, cleanChildEnv,
   parseStreamJsonOutput, classifyInboxItem, KB_CATEGORIES, log, dateStamp } = shared;
@@ -115,6 +116,23 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   _consolidationInFlight = true;
   _consolidationStartedAt = Date.now();
   for (const f of files) _processingFiles.add(f);
+
+  // ─── Content-hash circuit breaker: skip LLM if >80% items are near-duplicates
+  const dupCheck = checkDuplicateHash(items);
+  if (dupCheck.isDuplicate) {
+    log('info', `Skipped LLM consolidation: ${dupCheck.count}/${dupCheck.total} items are duplicates (hash: ${dupCheck.hash.slice(0, 8)})`);
+    // Archive duplicate files directly
+    if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+    for (const f of files) {
+      try {
+        fs.renameSync(path.join(INBOX_DIR, f), shared.uniquePath(path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)));
+      } catch (err) { log('warn', `Inbox archive (dup skip): ${err.message}`); }
+    }
+    for (const f of files) _processingFiles.delete(f);
+    _consolidationInFlight = false;
+    _consolidationStartedAt = 0;
+    return;
+  }
 
   const kbPaths = items.map(item => {
     const cat = classifyInboxItem(item.name, item.content);
@@ -412,8 +430,30 @@ function archiveInboxFiles(files) {
   }
 }
 
+/**
+ * Check if >80% of items share the same content hash (first 200 chars + length).
+ * Returns { isDuplicate, hash, count, total } or { isDuplicate: false }.
+ * Exported for testing.
+ */
+function checkDuplicateHash(items) {
+  if (!items || items.length === 0) return { isDuplicate: false };
+  const hashCounts = new Map();
+  for (const item of items) {
+    const content = item.content || '';
+    const hash = crypto.createHash('sha256').update(content.slice(0, 200) + ':' + content.length).digest('hex');
+    hashCounts.set(hash, (hashCounts.get(hash) || 0) + 1);
+  }
+  for (const [hash, count] of hashCounts) {
+    if (count / items.length > 0.8) {
+      return { isDuplicate: true, hash, count, total: items.length };
+    }
+  }
+  return { isDuplicate: false };
+}
+
 module.exports = {
   consolidateInbox,
   classifyToKnowledgeBase,
+  checkDuplicateHash,
 };
 
