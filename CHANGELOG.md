@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.124 (2026-04-01)
+
+### Dashboard
+- dashboard/js/render-schedules.js
+- dashboard/styles.css
+
 ## 0.1.123 (2026-04-01)
 
 ### Engine
