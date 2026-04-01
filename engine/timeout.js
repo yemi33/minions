@@ -8,16 +8,15 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeRead, safeWrite, safeJson, getProjects, projectWorkItemsPath, ENGINE_DEFAULTS: DEFAULTS } = shared;
+const { safeRead, safeWrite, safeJson, getProjects, projectWorkItemsPath, log, ts, ENGINE_DEFAULTS: DEFAULTS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
 
 // Lazy require to break circular dependency with engine.js
+// Only needed for engine().activeProcesses and engine().engineRestartGraceUntil — log/ts come from shared.js
 let _engine = null;
 function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
-function log(level, msg, meta) { return engine().log(level, msg, meta); }
-function ts() { return engine().ts(); }
 
 // Lazy require for dispatch module (also circular via engine)
 let _dispatch = null;
