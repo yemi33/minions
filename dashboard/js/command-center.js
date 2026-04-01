@@ -414,11 +414,11 @@ async function ccExecuteAction(action) {
       case 'create-meeting': {
         const res = await fetch('/api/meetings', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title || action.topic, agenda: action.agenda || action.topic, participants: action.agents, rounds: action.rounds, project: action.project })
+          body: JSON.stringify({ title: action.title, agenda: action.agenda, participants: action.agents, rounds: action.rounds, project: action.project })
         });
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Meeting create failed'); }
         const d = await res.json();
-        status.innerHTML = '&#10003; Meeting started: <strong>' + escHtml(action.topic) + '</strong>' + (d.id ? ' (' + escHtml(d.id) + ')' : '');
+        status.innerHTML = '&#10003; Meeting started: <strong>' + escHtml(action.title) + '</strong>' + (d.id ? ' (' + escHtml(d.id) + ')' : '');
         status.style.color = 'var(--green)';
         wakeEngine();
         break;
