@@ -3011,6 +3011,223 @@ async function testRunPostCompletionHooks() {
   });
 }
 
+// ─── checkPlanCompletion Functional Idempotency Tests ───────────────────────
+
+async function testCheckPlanCompletionIdempotency() {
+  console.log('\n── lifecycle.js — checkPlanCompletion Idempotency (functional) ──');
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const testPlanFile = '_test-idempotency.json';
+  const testProjectName = '_test-idem-proj';
+
+  // Paths that checkPlanCompletion will use (derived from MINIONS_DIR)
+  const prdDir = path.join(MINIONS_DIR, 'prd');
+  const prdArchiveDir = path.join(prdDir, 'archive');
+  const plansDir = path.join(MINIONS_DIR, 'plans');
+  const plansArchiveDir = path.join(plansDir, 'archive');
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+  const projectStateDir = path.join(MINIONS_DIR, 'projects', testProjectName);
+
+  // Ensure dirs exist
+  for (const d of [prdDir, prdArchiveDir, plansDir, plansArchiveDir, inboxDir, projectStateDir]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
+
+  // Helper: build a minimal valid PRD
+  function makePrd(overrides = {}) {
+    return {
+      plan_summary: 'Test idempotency plan',
+      project: testProjectName,
+      branch_strategy: 'parallel',
+      missing_features: [
+        { id: 'TI-001', title: 'Feature A', acceptance_criteria: ['AC1'] },
+        { id: 'TI-002', title: 'Feature B', acceptance_criteria: ['AC2'] },
+      ],
+      ...overrides,
+    };
+  }
+
+  // Helper: build matching work items (all done)
+  function makeWorkItems() {
+    return [
+      { id: 'TI-001', title: 'Implement: Feature A', type: 'implement', status: 'done',
+        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
+      { id: 'TI-002', title: 'Implement: Feature B', type: 'implement', status: 'done',
+        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T02:00:00Z' },
+    ];
+  }
+
+  const tmpDir = createTmpDir();
+  const meta = { item: { sourcePlan: testPlanFile } };
+  const config = {
+    projects: [{ name: testProjectName, localPath: tmpDir, mainBranch: 'main' }],
+  };
+
+  // Cleanup helper — removes all test artifacts
+  function cleanup() {
+    try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(path.join(prdArchiveDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(path.join(projectStateDir, 'work-items.json')); } catch {}
+    try { fs.unlinkSync(path.join(projectStateDir, 'pull-requests.json')); } catch {}
+    try { fs.rmdirSync(projectStateDir); } catch {}
+    // Clean inbox files matching our test slug
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
+    // Clean plans
+    for (const d of [plansDir, plansArchiveDir]) {
+      const files = shared.safeReadDir(d).filter(f => f.includes('_test-idem'));
+      for (const f of files) { try { fs.unlinkSync(path.join(d, f)); } catch {} }
+    }
+  }
+
+  // ── Test 1: First call creates inbox + verify + sets _completionNotified ──
+  await test('checkPlanCompletion first call: creates inbox, verify item, sets _completionNotified', () => {
+    cleanup();
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // _completionNotified should be set (check archived copy since PRD gets moved)
+    const archivedPlan = shared.safeJson(path.join(prdArchiveDir, testPlanFile));
+    assert.ok(archivedPlan, 'PRD should be archived after completion');
+    assert.strictEqual(archivedPlan._completionNotified, true,
+      '_completionNotified flag should be set after first call');
+    assert.strictEqual(archivedPlan.status, 'completed',
+      'Plan status should be set to completed');
+
+    // Inbox file should exist
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxFiles.length, 1, 'Exactly one inbox file should be created');
+
+    // Verify work item should be created
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(verifyItems.length, 1, 'Exactly one verify work item should be created');
+
+    cleanup();
+  });
+
+  // ── Test 2: Second call with _completionNotified returns early ──
+  await test('checkPlanCompletion second call: _completionNotified guard prevents duplicates', () => {
+    cleanup();
+    // Set up PRD with _completionNotified already set (simulates re-entry after first call)
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd({
+      status: 'completed', _completionNotified: true,
+    }));
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // No inbox file should be created
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxFiles.length, 0, 'No inbox file should be created when _completionNotified is set');
+
+    // No verify work item should be created
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify');
+    assert.strictEqual(verifyItems.length, 0, 'No verify work item when _completionNotified is set');
+
+    // PRD should not be re-archived (still at original path)
+    assert.ok(fs.existsSync(path.join(prdDir, testPlanFile)),
+      'PRD should not be moved when _completionNotified guard triggers');
+
+    cleanup();
+  });
+
+  // ── Test 3: Call twice end-to-end — only one set of side effects ──
+  await test('checkPlanCompletion called twice: only one inbox file and one verify item total', () => {
+    cleanup();
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+
+    // First call — should create everything
+    lifecycle.checkPlanCompletion(meta, config);
+
+    const inboxAfterFirst = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxAfterFirst.length, 1, 'First call creates one inbox file');
+
+    // Restore PRD from archive so second call can find it (simulates crash before archive)
+    const archived = shared.safeJson(path.join(prdArchiveDir, testPlanFile));
+    assert.ok(archived, 'Archived PRD should exist after first call');
+    shared.safeWrite(path.join(prdDir, testPlanFile), archived);
+
+    // Second call — should return early due to _completionNotified
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // Still only one inbox file
+    const inboxAfterSecond = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxAfterSecond.length, 1,
+      'Second call should not create additional inbox files');
+
+    // Still only one verify work item
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(verifyItems.length, 1,
+      'Second call should not create additional verify work items');
+
+    cleanup();
+  });
+
+  // ── Test 4: Crash recovery — status=completed without _completionNotified falls through ──
+  await test('checkPlanCompletion crash recovery: completed but no flag creates verify item', () => {
+    cleanup();
+    // Simulate crash: status is completed but _completionNotified was never set
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd({ status: 'completed' }));
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // Should have created inbox and verify (crash recovery path)
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-idempotency'));
+    assert.strictEqual(inboxFiles.length, 1,
+      'Crash recovery should create inbox file');
+
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(verifyItems.length, 1,
+      'Crash recovery should create verify work item');
+
+    // Flag should now be set in the archived copy
+    const archivedPlan = shared.safeJson(path.join(prdArchiveDir, testPlanFile));
+    assert.strictEqual(archivedPlan?._completionNotified, true,
+      'Crash recovery should set _completionNotified for next re-entry');
+
+    cleanup();
+  });
+
+  // ── Test 5: shared-branch plan creates PR item only once ──
+  await test('checkPlanCompletion shared-branch: only one PR work item across two calls', () => {
+    cleanup();
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd({
+      branch_strategy: 'shared-branch',
+      feature_branch: 'feat/test-shared',
+    }));
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), makeWorkItems());
+
+    // First call
+    lifecycle.checkPlanCompletion(meta, config);
+
+    const workItems1 = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const prItems1 = workItems1.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(prItems1.length, 1, 'First call creates one PR work item for shared-branch');
+
+    // Restore from archive
+    const archived = shared.safeJson(path.join(prdArchiveDir, testPlanFile));
+    shared.safeWrite(path.join(prdDir, testPlanFile), archived);
+
+    // Second call — should return early
+    lifecycle.checkPlanCompletion(meta, config);
+
+    const workItems2 = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const prItems2 = workItems2.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
+    assert.strictEqual(prItems2.length, 1,
+      'Second call should not create additional PR work items');
+
+    cleanup();
+  });
+}
+
 // ─── spawn-agent.js Tests ───────────────────────────────────────────────────
 
 async function testSpawnAgentScript() {
@@ -4345,6 +4562,9 @@ async function main() {
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
     await testPlanPrdStateFlow();
+
+    // checkPlanCompletion idempotency (functional)
+    await testCheckPlanCompletionIdempotency();
 
     // Dispatch cycle integration tests
     await testDispatchCycleIntegration();
