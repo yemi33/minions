@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.135 (2026-04-01)
+
+### Dashboard
+- dashboard/pages/tools.html
+
 ## 0.1.134 (2026-04-01)
 
 ### Dashboard
