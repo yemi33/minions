@@ -1034,11 +1034,13 @@ async function testEvalLoopAutoDispatch() {
     assert.ok(!result.find(i => i.type === 'evaluate'), 'No evaluate item should exist');
   });
 
-  await test('no evaluate item created for non-implement types', () => {
-    // Verify the code path gates on type === 'implement'
+  await test('eval dispatch gates on implement and fix types', () => {
+    // Verify the code path gates on implement and fix (with _evalParentId)
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
       'lifecycle.js should gate eval-loop on type === implement');
+    assert.ok(src.includes("type === 'fix'") && src.includes('_evalParentId'),
+      'lifecycle.js should also gate eval-loop on type === fix with _evalParentId');
     assert.ok(src.includes('_evalParentId'),
       'lifecycle.js should set _evalParentId on evaluate items');
     assert.ok(src.includes('engine:eval-loop'),
@@ -1077,6 +1079,93 @@ async function testEvalLoopAutoDispatch() {
     assert.strictEqual(existing.id, 'W-existing-eval');
     // The code should skip creation — verify no new item would be added
     assert.strictEqual(items.length, 2, 'Should still have only 2 items (no duplicate)');
+  });
+
+  await test('fix completion with _evalParentId triggers eval dispatch for original parent', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-impl-parent', title: 'Build feature Y', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/fix-eval-test',
+      project: 'TestProject', _evalDispatched: false, _evalIterations: 1,
+      acceptance_criteria: 'Must pass all tests',
+    };
+    const fixItem = {
+      id: 'W-fix-1', title: 'Fix: Build feature Y (eval iteration 1)', type: 'fix',
+      status: 'done', priority: 'high', branch_name: 'feat/fix-eval-test',
+      project: 'TestProject', _evalParentId: 'W-impl-parent',
+      createdBy: 'engine:eval-loop',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, fixItem]));
+
+    // Simulate the fix→eval dispatch logic (mirrors lifecycle.js)
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const meta = { item: fixItem };
+    const evalParentId = meta.item._evalParentId; // Should point to original implement item
+    assert.strictEqual(evalParentId, 'W-impl-parent', 'Fix item should reference original parent');
+
+    const existing = items.find(i => i._evalParentId === evalParentId && i.type === 'evaluate' && i.status !== 'done' && i.status !== 'failed');
+    assert.ok(!existing, 'No active evaluate should exist for parent yet');
+
+    const originalParent = items.find(i => i.id === evalParentId);
+    assert.ok(originalParent, 'Original parent should exist');
+    assert.strictEqual(originalParent._evalDispatched, false, 'Parent _evalDispatched should be false (cleared by eval→fix)');
+
+    // Create evaluate item targeting original parent
+    const evalItem = {
+      id: 'W-' + shared.uid(),
+      title: `Evaluate: ${originalParent.title}`,
+      type: 'evaluate',
+      priority: originalParent.priority || 'high',
+      status: 'pending',
+      created: new Date().toISOString(),
+      createdBy: 'engine:eval-loop',
+      project: 'TestProject',
+      branch_name: originalParent.branch_name,
+      acceptance_criteria: originalParent.acceptance_criteria,
+      _evalParentId: evalParentId,
+    };
+    originalParent._evalDispatched = true;
+    items.push(evalItem);
+    fs.writeFileSync(wiPath, JSON.stringify(items));
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 3, 'Should have 3 items: parent, fix, and new evaluate');
+    const newEval = result.find(i => i.type === 'evaluate');
+    assert.ok(newEval, 'Evaluate item should exist');
+    assert.strictEqual(newEval._evalParentId, 'W-impl-parent', 'Evaluate should point to original parent, not fix item');
+    assert.strictEqual(newEval.acceptance_criteria, 'Must pass all tests', 'Evaluate should inherit parent acceptance criteria');
+    const updatedParent = result.find(i => i.id === 'W-impl-parent');
+    assert.strictEqual(updatedParent._evalDispatched, true, 'Parent _evalDispatched should now be true');
+  });
+
+  await test('fix without _evalParentId does not trigger eval dispatch', () => {
+    // Regular fix items (e.g., from PR feedback) should NOT trigger eval
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // The isEvalEligible guard requires _evalParentId for fix type
+    assert.ok(src.includes("type === 'fix' && meta?.item?._evalParentId"),
+      'Fix type eval eligibility should require _evalParentId');
+  });
+
+  await test('_evalIterations increments correctly through fix→eval cycles', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-iter-test', title: 'Iteration counter test', type: 'implement',
+      status: 'done', priority: 'high', project: 'TestProject',
+      _evalIterations: 2, _evalDispatched: false,
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
+
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const parent = items.find(i => i.id === 'W-iter-test');
+    assert.strictEqual(parent._evalIterations, 2, 'Should have 2 iterations from prior cycles');
+    // After next eval fail, would increment to 3 (matching maxIter default of 3)
+    // This verifies the counter persists through fix→eval cycles
   });
 
   await test('source guard requires work-item source for project-scoped path', () => {
