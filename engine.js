@@ -1796,6 +1796,7 @@ function discoverCentralWorkItems(config) {
         if (!prompt) {
           if (renderError) {
             log('warn', `Fan-out: ${item.id} → ${agent.id}: ${renderError.message}`);
+            if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; }
           } else {
             log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
           }
