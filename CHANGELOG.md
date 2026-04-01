@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.96 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/github.js
+- engine/queries.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/detail-panel.js
+- dashboard/js/live-stream.js
+- dashboard/js/modal-qa.js
+- dashboard/js/render-agents.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-meetings.js
+- dashboard/js/render-pinned.js
+- dashboard/js/render-work-items.js
+- dashboard/js/utils.js
+
+### Playbooks
+- meeting-conclude.md
+
 ## 0.1.95 (2026-04-01)
 
 ### Dashboard
