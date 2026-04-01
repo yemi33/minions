@@ -2,7 +2,7 @@
 
 let allPrs = [];
 let prPage = 0;
-const PR_PER_PAGE = 3;
+const PR_PER_PAGE = 25;
 
 function prRow(pr) {
   // Minions review (agent) state — separate from ADO human review
@@ -84,7 +84,7 @@ function openModal(i) {
   document.getElementById('modal-title').textContent = item.name;
   document.getElementById('modal-body').innerHTML =
     '<div style="margin-bottom:12px"><button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escHtml(item.name) + '\')">Add to Knowledge Base</button></div>' +
-    '<pre style="white-space:pre-wrap;word-wrap:break-word;margin:0;font-family:Consolas,monospace;font-size:12px;line-height:1.7;color:var(--muted)">' + escHtml(item.content) + '</pre>';
+    '<div style="font-size:12px;line-height:1.7;color:var(--muted)">' + renderMd(item.content) + '</div>';
   _modalDocContext = { title: item.name, content: item.content, selection: '' };
   _modalFilePath = 'notes/inbox/' + item.name; showModalQa();
   // Clear notification badge when opening this document
