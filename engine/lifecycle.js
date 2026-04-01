@@ -987,6 +987,26 @@ function parseAgentOutput(stdout) {
 }
 
 /**
+ * Parse structured eval verdict from evaluate agent output.
+ * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
+ * Returns parsed object or null if not found.
+ */
+function parseEvalVerdict(text) {
+  if (!text) return null;
+  // Look for JSON fenced block first, then bare JSON
+  const fenced = text.match(/```(?:json)?\s*\n(\{[\s\S]*?"pass"\s*:[\s\S]*?\})\s*\n```/);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
+  }
+  // Try bare JSON with "pass" key
+  const bare = text.match(/(\{[\s\S]*?"pass"\s*:[\s\S]*?\})/);
+  if (bare) {
+    try { return JSON.parse(bare[1]); } catch { /* ignore */ }
+  }
+  return null;
+}
+
+/**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
  */
@@ -1126,6 +1146,66 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       } catch (err) {
         log('warn', `Eval loop dispatch error: ${err.message}`);
       }
+    }
+  }
+
+  // Evaluate completion: parse verdict and handle eval→fix iteration loop
+  if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
+    try {
+      const verdict = parseEvalVerdict(resultSummary || stdout);
+      const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
+      const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
+
+      if (verdict && !verdict.pass && evalLoop) {
+        let wiPath;
+        if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+          wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        } else if (meta.project?.name) {
+          wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+        }
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          const parent = items.find(i => i.id === meta.item._evalParentId);
+          if (parent) {
+            const iterations = (parent._evalIterations || 0) + 1;
+            parent._evalIterations = iterations;
+
+            if (iterations >= maxIter) {
+              // Max iterations reached — escalate to human review
+              parent.status = 'needs-human-review';
+              parent._evalEscalatedAt = ts();
+              shared.safeWrite(wiPath, items);
+              log('info', `Eval loop: ${parent.id} reached ${iterations}/${maxIter} iterations — escalated to needs-human-review`);
+            } else {
+              // Create fix work item with evaluator feedback
+              const fixItem = {
+                id: 'W-' + shared.uid(),
+                title: `Fix: ${parent.title || parent.id} (eval iteration ${iterations})`,
+                type: 'fix',
+                priority: parent.priority || 'high',
+                status: 'pending',
+                created: ts(),
+                createdBy: 'engine:eval-loop',
+                project: meta.project?.name || meta.item.project,
+                branch_name: parent.branch_name || meta.item.branch_name || null,
+                pr_url: parent.pr_url || meta.item.pr_url || null,
+                acceptance_criteria: parent.acceptance_criteria || null,
+                _evalParentId: parent.id,
+                _evalFeedback: verdict.feedback || null,
+                _evalCriteriaFailed: verdict.criteria_failed || null,
+              };
+              if (parent.sourcePlan) fixItem.sourcePlan = parent.sourcePlan;
+              // Reset parent to dispatched so engine doesn't re-dispatch it
+              parent.status = 'done';
+              items.push(fixItem);
+              shared.safeWrite(wiPath, items);
+              log('info', `Eval loop: created fix ${fixItem.id} for failed eval on ${parent.id} (iteration ${iterations}/${maxIter})`);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log('warn', `Eval verdict processing error: ${err.message}`);
     }
   }
 
@@ -1329,6 +1409,7 @@ module.exports = {
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,
+  parseEvalVerdict,
   runPostCompletionHooks,
   syncPrdFromPrs,
 };
