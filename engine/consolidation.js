@@ -118,28 +118,20 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   for (const f of files) _processingFiles.add(f);
 
   // ─── Content-hash circuit breaker: skip LLM if >80% items are near-duplicates
-  if (items.length > 0) {
-    const hashCounts = new Map();
-    for (const item of items) {
-      const content = item.content || '';
-      const hash = crypto.createHash('sha256').update(content.slice(0, 200) + ':' + content.length).digest('hex');
-      hashCounts.set(hash, (hashCounts.get(hash) || 0) + 1);
+  const dupCheck = checkDuplicateHash(items);
+  if (dupCheck.isDuplicate) {
+    log('info', `Skipped LLM consolidation: ${dupCheck.count}/${dupCheck.total} items are duplicates (hash: ${dupCheck.hash.slice(0, 8)})`);
+    // Archive duplicate files directly
+    if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+    for (const f of files) {
+      try {
+        fs.renameSync(path.join(INBOX_DIR, f), shared.uniquePath(path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)));
+      } catch (err) { log('warn', `Inbox archive (dup skip): ${err.message}`); }
     }
-    for (const [hash, count] of hashCounts) {
-      if (count / items.length > 0.8) {
-        log('info', `Skipped LLM consolidation: ${count}/${items.length} items are duplicates (hash: ${hash.slice(0, 8)})`);
-        // Archive duplicate files directly
-        if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
-        for (const f of files) {
-          try {
-            fs.renameSync(path.join(INBOX_DIR, f), shared.uniquePath(path.join(ARCHIVE_DIR, `${dateStamp()}-${f}`)));
-          } catch (err) { log('warn', `Inbox archive (dup skip): ${err.message}`); }
-        }
-        for (const f of files) _processingFiles.delete(f);
-        _consolidationInFlight = false;
-        return;
-      }
-    }
+    for (const f of files) _processingFiles.delete(f);
+    _consolidationInFlight = false;
+    _consolidationStartedAt = 0;
+    return;
   }
 
   const kbPaths = items.map(item => {
