@@ -1454,7 +1454,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const { callLLM, trackEngineUsage } = require('./engine/llm');
-      const BATCH_SIZE = 80; // ~80 entries per batch to stay within Haiku context
+      const BATCH_SIZE = 30; // ~30 entries per batch to stay within Haiku context
       const batches = [];
       for (let i = 0; i < manifest.length; i += BATCH_SIZE) {
         batches.push(manifest.slice(i, i + BATCH_SIZE));
@@ -1468,10 +1468,7 @@ const server = http.createServer(async (req, res) => {
 
 ## Entries
 
-${batch.map((m, i) => `<entry index="${offset + i}" category="${m.category}" file="${m.file}" date="${m.date}" agent="${m.agent || 'unknown'}">
-${m.title}
-${m.content.slice(0, 800)}
-</entry>`).join('\n\n')}
+${batch.map((m, i) => `[${offset + i}] ${m.category}/${m.file} | ${m.title} | ${m.date} | ${m.agent || '?'} | ${(m.content || '').slice(0, 200).replace(/\n/g, ' ')}`).join('\n')}
 
 ## Instructions
 
