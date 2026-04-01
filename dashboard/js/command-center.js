@@ -423,6 +423,17 @@ async function ccExecuteAction(action) {
         wakeEngine();
         break;
       }
+      case 'set-config': {
+        const payload = { engine: { [action.setting]: action.value } };
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Config update failed'); }
+        status.innerHTML = '&#10003; Set <strong>' + escHtml(action.setting) + '</strong> = ' + escHtml(String(action.value));
+        status.style.color = 'var(--green)';
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';
