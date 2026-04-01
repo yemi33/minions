@@ -3,6 +3,7 @@
  * Extracted from engine.js: ADO token management, PR status polling, human comment polling.
  */
 
+const path = require('path');
 const shared = require('./shared');
 const { exec, getAdoOrgBase, addPrLink } = shared;
 const { getPrs } = require('./queries');
@@ -26,6 +27,8 @@ function getAdoToken() {
   // If recent fetch failed, don't retry until backoff expires (avoids repeated browser popups)
   if (Date.now() < _adoTokenFailedUntil) return null;
   try {
+    // azureauth supports multiple --mode flags as an ordered fallback chain:
+    // tries IWA (Integrated Windows Auth) first, falls back to broker if unavailable.
     const token = exec('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
       timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
     if (token && token.startsWith('eyJ')) {
@@ -334,7 +337,7 @@ async function reconcilePrs(config) {
     // Load work items to match branches to work item IDs
     const wiPath = shared.projectWorkItemsPath(project);
     const workItems = shared.safeJson(wiPath) || [];
-    const centralWiPath = require('path').join(shared.MINIONS_DIR, 'work-items.json');
+    const centralWiPath = path.join(shared.MINIONS_DIR, 'work-items.json');
     const centralItems = shared.safeJson(centralWiPath) || [];
     const allItems = [...workItems, ...centralItems];
 
