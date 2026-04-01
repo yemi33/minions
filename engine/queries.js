@@ -540,8 +540,8 @@ function getPrdInfo(config) {
       const planFiles = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
       for (const pf of planFiles) {
         try {
-          const plan = JSON.parse(fs.readFileSync(path.join(dir, pf), 'utf8'));
-          if (!plan.missing_features) continue;
+          const plan = safeJson(path.join(dir, pf));
+          if (!plan || !plan.missing_features) continue;
           const stat = fs.statSync(path.join(dir, pf));
           if (!latestStat || stat.mtimeMs > latestStat.mtimeMs) latestStat = stat;
           // Staleness: compare source plan mtime to recorded sourcePlanModifiedAt
@@ -577,13 +577,13 @@ function getPrdInfo(config) {
   for (const project of projects) {
     try {
       const workItems = safeJson(projectWorkItemsPath(project)) || [];
-      for (const wi of workItems) { if (wi.sourcePlan) wiById[wi.id] = wi; }
+      for (const wi of workItems) { if (!wi.id) { console.warn(`[queries] Skipping work item without id in ${project.name}:`, JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan) wiById[wi.id] = wi; }
     } catch { /* optional */ }
   }
   // Also check central work-items.json
   try {
     const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-    for (const wi of centralWi) { if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
+    for (const wi of centralWi) { if (!wi.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
   } catch { /* optional */ }
 
   // PR-to-PRD linking — primary source is pr-links.json (single-writer, never clobbered by polling)
@@ -595,7 +595,7 @@ function getPrdInfo(config) {
   const prLinks = shared.getPrLinks(); // { "PR-xxxx": "P-xxxx" }
   for (const [prId, itemId] of Object.entries(prLinks)) {
     const pr = prById[prId];
-    const project = projects.find(p => p.name === pr?._project) || projects[0];
+    const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
     const url = pr?.url || (project?.prUrlBase ? project.prUrlBase + prId.replace('PR-', '') : '');
     if (!prdToPr[itemId]) prdToPr[itemId] = [];
     prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
