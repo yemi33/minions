@@ -480,7 +480,7 @@ function nukeMinions() {
   console.log('\n  Cleaning runtime state...');
   const runtimeDirs = ['projects', 'plans', 'prd', 'knowledge', 'skills', 'notes', 'identity'];
   const runtimeFiles = ['config.json', 'work-items.json', 'notes.md', 'routing.md'];
-  const engineRuntimeFiles = ['control.json', 'dispatch.json', 'log.json', 'metrics.json', 'cooldowns.json', 'pr-links.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json'];
+  const engineRuntimeFiles = ['control.json', 'dispatch.json', 'log.json', 'metrics.json', 'cooldowns.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json'];
 
   for (const dir of runtimeDirs) {
     const p = path.join(MINIONS_HOME, dir);

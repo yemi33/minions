@@ -787,8 +787,7 @@ function detectDependencyCycles(items) {
 // writeInboxAlert — now in engine/dispatch.js
 
 // Reconciles work items against known PRs.
-// Primary linkage comes from prdItems in pull-requests.json; fallback linkage
-// uses engine/pr-links.json so matching does not depend on branch/title parsing.
+// Primary linkage comes from prdItems in pull-requests.json (via getPrLinks()).
 // onlyIds: if provided, only items whose ID is in this Set are eligible.
 function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
   const prLinks = shared.getPrLinks();
