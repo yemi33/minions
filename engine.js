@@ -1185,8 +1185,10 @@ function materializePlansAsWorkItems(config) {
       // Pre-create shared feature branch if branch_strategy is shared-branch
       if (plan.branch_strategy === 'shared-branch' && plan.feature_branch) {
         try {
-          const root = path.resolve(project.localPath);
-          const mainBranch = project.mainBranch || 'main';
+          const firstProject = itemsByProject.values().next().value?.project;
+          if (!firstProject?.localPath) throw new Error('no project with localPath');
+          const root = path.resolve(firstProject.localPath);
+          const mainBranch = firstProject.mainBranch || 'main';
           const branch = sanitizeBranch(plan.feature_branch);
           // Create branch from main (idempotent — ignores if exists)
           exec(`git branch "${branch}" "${mainBranch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });

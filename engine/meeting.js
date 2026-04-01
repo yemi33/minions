@@ -179,6 +179,7 @@ function discoverMeetingWork(config) {
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
 function collectMeetingFindings(meetingId, agentId, roundName, output) {
+  const e = engine();
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
 
