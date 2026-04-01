@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.113 (2026-04-01)
+
+### Dashboard
+- dashboard/styles.css
+
 ## 0.1.112 (2026-04-01)
 
 ### Engine
