@@ -17,14 +17,7 @@ Branch: `{{pr_branch}}`
 
 ## How to Fix
 
-1. Create or enter the worktree (this checks out the existing PR branch, not creating a new one):
-   ```bash
-   cd {{team_root}}
-   git fetch origin {{pr_branch}}
-   git worktree add ../worktrees/{{pr_branch}} {{pr_branch}} 2>/dev/null || true
-   cd ../worktrees/{{pr_branch}}
-   git pull origin {{pr_branch}}
-   ```
+1. You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.
 
 2. Fix each issue listed above
 
@@ -35,11 +28,7 @@ Branch: `{{pr_branch}}`
    git push
    ```
 
-4. Clean up:
-   ```bash
-   cd {{team_root}}
-   git worktree remove ../worktrees/{{pr_branch}} --force
-   ```
+Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts (e.g., during `git pull` or when the PR shows conflicts):

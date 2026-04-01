@@ -34,15 +34,11 @@ If this feature spans multiple projects, you may need to:
 2. Follow existing patterns exactly — check `agents/create-agent/` or the closest comparable agent
 3. Follow the project's logging and coding conventions (check CLAUDE.md)
 
-## Git Workflow (WORKTREE — CRITICAL)
+## Git Workflow
 
-```bash
-cd {{team_root}}
-git worktree add ../worktrees/{{branch_name}} -b {{branch_name}} {{main_branch}}
-cd ../worktrees/{{branch_name}}
-```
+You are already running in a git worktree on branch `{{branch_name}}`. Do NOT create additional worktrees — the engine pre-created one for you.
 
-Do ALL work in the worktree. When done:
+When done:
 
 ```bash
 git add <specific files>
@@ -50,11 +46,7 @@ git commit -m "{{commit_message}}"
 git push -u origin {{branch_name}}
 ```
 
-Then return and clean up:
-```bash
-cd {{team_root}}
-git worktree remove ../worktrees/{{branch_name}} --force
-```
+Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## Create PR (MANDATORY)
 

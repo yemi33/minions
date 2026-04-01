@@ -87,12 +87,15 @@ function _toggleArchivedMeetings() {
   refresh();
 }
 
-function openMeetingDetail(id) {
-  fetch('/api/meetings/' + encodeURIComponent(id))
-    .then(r => r.json())
-    .then(data => {
-      if (!data.meeting) { alert('Meeting not found'); return; }
-      const m = data.meeting;
+let _meetingPollInterval = null;
+let _meetingPollId = null;
+
+function _stopMeetingPoll() {
+  if (_meetingPollInterval) { clearInterval(_meetingPollInterval); _meetingPollInterval = null; }
+  _meetingPollId = null;
+}
+
+function _renderMeetingDetail(m) {
       const statusColors = { investigating: 'var(--blue)', debating: 'var(--purple,#a855f7)', concluding: 'var(--yellow)', completed: 'var(--green)' };
       const statusLabels = { investigating: 'Round 1 — Investigating', debating: 'Round 2 — Debating', concluding: 'Round 3 — Concluding', completed: 'Completed' };
 
@@ -182,9 +185,12 @@ function openMeetingDetail(id) {
       html += '</div>';
 
       document.getElementById('modal-title').textContent = 'Meeting: ' + m.title;
-      document.getElementById('modal-body').innerHTML = html;
-      document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-      document.getElementById('modal-body').style.whiteSpace = 'normal';
+      var body = document.getElementById('modal-body');
+      var scrollTop = body.scrollTop;
+      body.innerHTML = html;
+      body.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+      body.style.whiteSpace = 'normal';
+      body.scrollTop = scrollTop;
 
       // Wire up doc-chat Q&A panel for the meeting transcript
       const transcript = (m.transcript || []).map(t =>
@@ -192,11 +198,33 @@ function openMeetingDetail(id) {
       ).join('\n\n---\n\n');
       const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
       _modalDocContext = { title: 'Meeting: ' + m.title, content: meetingDoc, selection: '' };
-      // Completed/archived meetings: read-only Q&A (no file editing to avoid corrupting JSON)
-      _modalFilePath = (m.status === 'completed' || m.status === 'archived') ? null : 'meetings/' + m.id + '.json';
+      // Always set filePath so doc-chat detects this as a meeting (uses Sonnet with tools).
+      // Server-side handleDocChat prevents writes to completed meeting JSON.
+      _modalFilePath = 'meetings/' + m.id + '.json';
       try { showModalQa(); } catch { /* expected if QA not loaded */ }
 
       document.getElementById('modal').classList.add('open');
+}
+
+function openMeetingDetail(id) {
+  _stopMeetingPoll();
+  fetch('/api/meetings/' + encodeURIComponent(id))
+    .then(r => r.json())
+    .then(data => {
+      if (!data.meeting) { alert('Meeting not found'); return; }
+      _renderMeetingDetail(data.meeting);
+
+      // Live-poll while modal is open
+      _meetingPollId = id;
+      _meetingPollInterval = setInterval(function() {
+        if (!document.getElementById('modal')?.classList?.contains('open') || _meetingPollId !== id) {
+          _stopMeetingPoll(); return;
+        }
+        fetch('/api/meetings/' + encodeURIComponent(id))
+          .then(r => r.json())
+          .then(d => { if (d.meeting && _meetingPollId === id) _renderMeetingDetail(d.meeting); })
+          .catch(function() {});
+      }, 3000);
     })
     .catch(e => alert('Error: ' + e.message));
 }
@@ -310,6 +338,7 @@ async function _unarchiveMeeting(id) {
 }
 
 function _viewPlanWithBack(file, meetingId) {
+  _stopMeetingPoll();
   planView(file);
   // After modal opens, prepend a back button to return to meeting
   setTimeout(function() {

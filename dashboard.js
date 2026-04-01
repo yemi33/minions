@@ -644,6 +644,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   });
 
   if (result.code !== 0 || !result.text) {
+    console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, model=${isRich ? 'sonnet' : 'haiku'}, stderr=${(result.stderr || '').slice(0, 200)}`);
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
   }
 
@@ -2525,6 +2526,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
       }
       if (canEdit && fullPath) {
+        // Block writes to completed/archived meeting JSON files
+        if (body.filePath && /^meetings\//.test(body.filePath) && isJson) {
+          try {
+            const mtg = safeJson(fullPath);
+            if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
+              return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
+            }
+          } catch { /* proceed with write if can't read */ }
+        }
+
         safeWrite(fullPath, content);
 
         // If editing a plan .md that has an active PRD, auto-pause execution

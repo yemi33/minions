@@ -24,19 +24,14 @@ Keep branch names lowercase, use hyphens, max 60 chars.
 
 1. **Understand the task** — read the description carefully, explore relevant code
 2. **Navigate** to the correct project directory: `{{project_path}}`
-3. **Create a worktree** for your changes:
-   ```bash
-   cd {{project_path}}
-   git worktree add ../worktrees/feat-{{item_id}} -b feat/{{item_id}}-<short-desc> {{main_branch}}
-   cd ../worktrees/feat-{{item_id}}
-   ```
+3. You are already in a worktree on branch `{{branch_name}}`. Do NOT create additional worktrees.
 4. **Implement** the changes
 5. **Build and verify** — ensure the build passes. If it fails, fix and retry (up to 3 times)
 6. **Commit and push**:
    ```bash
-   git add -A
+   git add <specific files>
    git commit -m "feat({{item_id}}): <description>"
-   git push -u origin feat/{{item_id}}-<short-desc>
+   git push -u origin {{branch_name}}
    ```
 7. **Create a PR:**
    {{pr_create_instructions}}
@@ -49,11 +44,7 @@ Keep branch names lowercase, use hyphens, max 60 chars.
    ```json
    { "id": "PR-<number>", "title": "...", "agent": "{{agent_name}}", "branch": "...", "reviewStatus": "pending", "status": "active", "created": "<date>", "url": "<pr-url>", "prdItems": ["{{item_id}}"] }
    ```
-10. **Clean up worktree**:
-    ```bash
-    cd {{project_path}}
-    git worktree remove ../worktrees/feat-{{item_id}} --force
-    ```
+10. Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## After Completion
 

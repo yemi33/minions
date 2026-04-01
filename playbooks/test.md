@@ -20,12 +20,7 @@ Team root: {{team_root}}
 This is a **test/build/run task**. Your goal is to build, run, test, or verify something — NOT to create new features or PRs.
 
 1. **Navigate** to the correct project directory
-2. **If the task references a branch or PR**, check it out in a worktree:
-   ```bash
-   cd {{project_path}}
-   git worktree add ../worktrees/test-{{item_id}} <branch-name>
-   cd ../worktrees/test-{{item_id}}
-   ```
+2. You are already in the correct working directory. If you need a specific branch, use `git checkout` — do NOT create additional worktrees.
 3. **Build** the project — follow the repo's build instructions (check CLAUDE.md, package.json, README)
 4. **Run** if the task asks for it (e.g., `yarn start`, `yarn dev`, docker-compose, etc.)
 5. **Test** if the task asks for it (e.g., `yarn test`, `pytest`, etc.)
@@ -66,10 +61,4 @@ Include:
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
-## Cleanup
-
-If you created a worktree, clean it up when done:
-```bash
-cd {{project_path}}
-git worktree remove ../worktrees/test-{{item_id}} --force
-```
+Do NOT remove worktrees — the engine handles cleanup automatically.

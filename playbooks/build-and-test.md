@@ -19,12 +19,7 @@ Your job is to **check out the branch, build it, run tests, and if it's a webapp
 
 ### 1. Set up a worktree for the PR branch
 
-```bash
-cd {{project_path}}
-git fetch origin {{pr_branch}}
-git worktree add ../worktrees/bt-{{pr_number}} origin/{{pr_branch}}
-cd ../worktrees/bt-{{pr_number}}
-```
+You are already in the correct working directory on branch `{{pr_branch}}`. Do NOT create additional worktrees.
 
 ### 2. Install dependencies
 

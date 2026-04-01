@@ -42,12 +42,11 @@ Write your findings to `{{team_root}}/notes/inbox/{{agent_id}}-explore-{{task_id
 
 ### 5. Create Deliverable (if the task asks for one)
 If the task asks you to write a design doc, architecture doc, or any durable artifact:
-1. Create a git worktree: `git worktree add ../worktrees/explore-{{task_id}} -b feat/{{task_id}}-<short-desc> {{main_branch}}`
-2. Write the document (e.g., `docs/design-<topic>.md`)
-3. Commit, push, and create a PR:
+1. Write the document in the current working directory (e.g., `docs/design-<topic>.md`)
+2. Commit, push, and create a PR:
    {{pr_create_instructions}}
-4. Clean up worktree when done
 
+Do NOT create additional worktrees — the engine handles worktree management.
 If the task is purely exploratory (no deliverable requested), skip this step.
 
 ### 6. Status

@@ -79,8 +79,14 @@ function runCleanup(config, verbose = false) {
     const root = project.localPath ? path.resolve(project.localPath) : null;
     if (!root || !fs.existsSync(root)) continue;
 
-    const worktreeRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
-    if (!fs.existsSync(worktreeRoot)) continue;
+    // Scan all potential worktree locations: configured root + common project-local dirs
+    const worktreeRoots = new Set();
+    const configuredRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
+    if (fs.existsSync(configuredRoot)) worktreeRoots.add(configuredRoot);
+    const localDirs = ['worktrees', '.claude/worktrees'].map(d => path.join(root, d));
+    for (const d of localDirs) { if (fs.existsSync(d)) worktreeRoots.add(d); }
+
+    for (const worktreeRoot of worktreeRoots) {
 
     // Get PRs for this project
     const prs = safeJson(projectPrPath(project)) || [];
@@ -94,13 +100,30 @@ function runCleanup(config, verbose = false) {
     // List worktrees — collect info for age-based + cap-based cleanup
     const MAX_WORKTREES = 10;
     try {
-      const dirs = fs.readdirSync(worktreeRoot);
+      // Collect all worktree directories (including nested ones like minions-work/P-xxx)
+      const allDirs = [];
+      const topDirs = fs.readdirSync(worktreeRoot);
+      for (const dir of topDirs) {
+        const dirPath = path.join(worktreeRoot, dir);
+        try { if (!fs.statSync(dirPath).isDirectory()) continue; } catch { continue; }
+        // Check if this is a git worktree (has .git file) or a parent directory
+        if (fs.existsSync(path.join(dirPath, '.git'))) {
+          allDirs.push({ dir, wtPath: dirPath });
+        } else {
+          // Scan subdirectories for worktrees
+          try {
+            for (const sub of fs.readdirSync(dirPath)) {
+              const subPath = path.join(dirPath, sub);
+              try { if (fs.statSync(subPath).isDirectory()) allDirs.push({ dir: dir + '/' + sub, wtPath: subPath }); } catch { /* skip */ }
+            }
+          } catch { /* skip */ }
+        }
+      }
+
       const wtEntries = []; // { dir, wtPath, mtime, shouldClean, isProtected }
       const dispatch = getDispatch();
 
-      for (const dir of dirs) {
-        const wtPath = path.join(worktreeRoot, dir);
-        try { if (!fs.statSync(wtPath).isDirectory()) continue; } catch { continue; }
+      for (const { dir, wtPath } of allDirs) {
 
         let shouldClean = false;
         let isProtected = false;
@@ -189,6 +212,7 @@ function runCleanup(config, verbose = false) {
         }
       }
     } catch (e) { log('warn', 'cleanup worktrees: ' + e.message); }
+    } // end worktreeRoots loop
   }
 
   // 4. Kill zombie claude processes not tracked by the engine
