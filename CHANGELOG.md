@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.131 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/pipeline.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/js/render-pipelines.js
+- dashboard/layout.html
+- dashboard/pages/pipelines.html
+
 ## 0.1.130 (2026-04-01)
 
 ### Engine
