@@ -223,9 +223,9 @@ function _renderScheduleCalendar(schedules) {
   }
 
   // Build grid: header row + one row per hour
-  // Columns: Mon(1) Tue(2) Wed(3) Thu(4) Fri(5) Sat(6) Sun(0)
-  var dayOrder = [1, 2, 3, 4, 5, 6, 0];
-  var dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  // Columns: Sun(0) Mon(1) Tue(2) Wed(3) Thu(4) Fri(5) Sat(6)
+  var dayOrder = [0, 1, 2, 3, 4, 5, 6];
+  var dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   var html = '<div class="sched-cal">';
   // Header row
