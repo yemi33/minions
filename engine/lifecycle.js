@@ -931,6 +931,30 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   if (wrote) log('info', `Created review feedback for ${authorAgentId} from ${reviewerAgentId} on ${pr.id}`);
 }
 
+function recordContextPressureOnWorkItem(meta, turnCount, outputLogSizeBytes, hitTurnLimit) {
+  const itemId = meta.item?.id;
+  if (!itemId) return;
+
+  let wiPath;
+  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+    wiPath = path.join(MINIONS_DIR, 'work-items.json');
+  } else if (meta.source === 'work-item' && meta.project?.name) {
+    wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+  }
+  if (!wiPath) return;
+
+  const items = safeJson(wiPath);
+  if (!items || !Array.isArray(items)) return;
+
+  const target = items.find(i => i.id === itemId);
+  if (target) {
+    target._turnCount = turnCount;
+    target._outputLogSizeBytes = outputLogSizeBytes;
+    target._hitTurnLimit = hitTurnLimit;
+    shared.safeWrite(wiPath, items);
+  }
+}
+
 function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {
 
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
@@ -976,6 +1000,20 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   for (const day of Object.keys(metrics._daily)) {
     if (day < cutoffStr) delete metrics._daily[day];
   }
+
+  // Update contextPressure aggregate
+  if (taskUsage && taskUsage.numTurns > 0) {
+    if (!metrics._contextPressure) metrics._contextPressure = { totalTurns: 0, dispatches: 0, maxTurns: 0, turnLimitHits: 0 };
+    const cp = metrics._contextPressure;
+    cp.totalTurns += taskUsage.numTurns;
+    cp.dispatches++;
+    if (taskUsage.numTurns > cp.maxTurns) cp.maxTurns = taskUsage.numTurns;
+    // Check if this dispatch hit the turn limit
+    const engineConfig = require('./queries').getConfig()?.engine || {};
+    const turnLimit = engineConfig.maxTurns || 100;
+    if (taskUsage.numTurns >= turnLimit) cp.turnLimitHits++;
+  }
+
   shared.safeWrite(metricsPath, metrics);
 }
 
@@ -1086,6 +1124,23 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     const subCount = handleDecompositionResult(stdout, meta, config);
     if (subCount > 0) skipDoneStatus = true; // parent already marked 'decomposed' by handler
     // If decomposition produced nothing, fall through to mark parent as done
+  }
+
+  // Record context utilization metrics on the work item
+  if (meta?.item?.id) {
+    try {
+      const engineConfig = (config.engine || {});
+      const turnLimit = engineConfig.maxTurns || 100;
+      const turnCount = taskUsage?.numTurns || 0;
+      const hitTurnLimit = turnCount >= turnLimit;
+      let outputLogSizeBytes = 0;
+      try {
+        const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+        const stat = fs.statSync(liveLogPath);
+        outputLogSizeBytes = stat.size;
+      } catch { /* file may not exist */ }
+      recordContextPressureOnWorkItem(meta, turnCount, outputLogSizeBytes, hitTurnLimit);
+    } catch (err) { log('warn', `Context pressure record: ${err.message}`); }
   }
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
@@ -1328,6 +1383,7 @@ module.exports = {
   updateAgentHistory,
   createReviewFeedbackForAuthor,
   updateMetrics,
+  recordContextPressureOnWorkItem,
   parseAgentOutput,
   runPostCompletionHooks,
   syncPrdFromPrs,
