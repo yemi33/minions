@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.129 (2026-04-01)
+
+### Engine
+- engine/github.js
+- engine/preflight.js
+- engine/spawn-agent.js
+
+### Dashboard
+- dashboard/js/modal.js
+- dashboard/js/render-agents.js
+
 ## 0.1.128 (2026-04-01)
 
 ### Engine
