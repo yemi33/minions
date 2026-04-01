@@ -18,6 +18,8 @@ Implement PRD item **{{item_id}}: {{item_name}}**
 - Complexity: {{item_complexity}}
 - Description: {{item_description}}
 
+{{checkpoint_context}}
+
 ## Projects
 
 Primary repo: **{{repo_name}}** ({{ado_org}}/{{ado_project}}) at `{{project_path}}`
