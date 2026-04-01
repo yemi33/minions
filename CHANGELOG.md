@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.90 (2026-04-01)
+
+### Dashboard
+- dashboard/js/command-center.js
+
 ## 0.1.89 (2026-04-01)
 
 ### Dashboard
