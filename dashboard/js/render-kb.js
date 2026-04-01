@@ -169,7 +169,6 @@ async function kbOpenItem(category, file) {
     // Clear notification badge when opening this document
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
-    // steer btn removed — unified send
     document.getElementById('modal').classList.add('open');
   } catch (e) {
     console.error('Failed to load KB item:', e);

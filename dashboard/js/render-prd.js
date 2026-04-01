@@ -24,7 +24,7 @@ function renderPrd(prd, prog) {
   if (existing.length <= 1) {
     // Single PRD — show status + actions in header
     const implementItems = allWi.filter(w => prdItems.some(pi => pi.id === w.id));
-    const allDone = implementItems.length > 0 && implementItems.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+    const allDone = implementItems.length > 0 && implementItems.every(w => w.status === 'done');
     const hasActive = implementItems.some(w => w.status === 'pending' || w.status === 'dispatched');
     const prdFile = existing[0]?.file || '';
     const prdStatus = existing[0]?.status || '';
@@ -52,7 +52,7 @@ function renderPrd(prd, prog) {
     for (const p of existing) {
       const items = prdItems.filter(i => i.source === p.file);
       const wiForPrd = allWi.filter(w => items.some(pi => pi.id === w.id));
-      const allDone = wiForPrd.length > 0 && wiForPrd.every(w => w.status === 'done' || w.status === 'in-pr' || w.status === 'implemented' || w.status === 'complete');
+      const allDone = wiForPrd.length > 0 && wiForPrd.every(w => w.status === 'done');
       const hasActive = wiForPrd.some(w => w.status === 'pending' || w.status === 'dispatched');
       const s = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : p.status || 'active';
       counts[s] = (counts[s] || 0) + 1;
@@ -73,7 +73,7 @@ function renderPrdProgress(prog) {
   // Compute overall progress from active (non-archived) items
   const activeItems = (prog.items || []).filter(i => !i._archived);
   if (activeItems.length > 0) {
-    const activeDone = activeItems.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length;
+    const activeDone = activeItems.filter(i => i.status === 'done').length;
     countEl.textContent = Math.round((activeDone / activeItems.length) * 100) + '%';
   } else {
     countEl.textContent = '—';
@@ -82,7 +82,7 @@ function renderPrdProgress(prog) {
   function renderGroupStats(items) {
     const total = items.length;
     if (total === 0) return '';
-    const done = items.filter(i => i.status === 'done' || i.status === 'implemented' || i.status === 'in-pr').length; // in-pr counted as done for backward compat
+    const done = items.filter(i => i.status === 'done').length;
     const inProgress = items.filter(i => i.status === 'in-progress').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
@@ -112,13 +112,11 @@ function renderPrdProgress(prog) {
   const statusBadge = (s) => {
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
-      'implemented': 'background:rgba(63,185,80,0.15);color:var(--green)', /* legacy alias */
-      'in-pr':  'background:rgba(63,185,80,0.15);color:var(--green)', /* backward compat: displayed as done */
       'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
     };
-    const labels = { 'done': 'DONE', 'implemented': 'DONE', 'in-pr': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
+    const labels = { 'done': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '—' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -197,7 +195,7 @@ function renderPrdProgress(prog) {
   const timings = prog.planTimings || {};
 
   const renderGroupHeader = (g) => {
-    const done = g.items.filter(i => i.status === 'done' || i.status === 'complete' || i.status === 'implemented').length;
+    const done = g.items.filter(i => i.status === 'done').length;
     const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isAwaitingApproval = g.planStatus === 'awaiting-approval';
@@ -304,7 +302,7 @@ function renderPrdProgress(prog) {
     });
 
     const statusColor = (s) => {
-      if (s === 'done' || s === 'implemented' || s === 'in-pr') return 'var(--green)'; // in-pr treated as done
+      if (s === 'done') return 'var(--green)';
       if (s === 'in-progress') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
@@ -475,7 +473,7 @@ function openArchivedPrdModal() {
     // Picker: list archived plans, click to expand
     html = '<div style="margin-bottom:12px;font-size:12px;color:var(--muted)">Select an archived PRD to view:</div>';
     html += groups.map((g, i) => {
-      const done = g.items.filter(it => it.status === 'done' || it.status === 'implemented' || it.status === 'complete').length;
+      const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
       return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
@@ -538,7 +536,7 @@ async function prdItemEdit(source, itemId) {
 
   // Build completion summary section
   let completionHtml = '';
-  const isDone = item.status === 'done' || item.status === 'implemented' || item.status === 'complete' || item.status === 'in-pr'; // in-pr treated as done for backward compat
+  const isDone = item.status === 'done';
   const isFailed = item.status === 'failed';
   const isActive = item.status === 'in-progress' || item.status === 'dispatched';
 
@@ -711,7 +709,7 @@ function openArchive(i) {
       html += '<div class="archive-feature">' +
         '<span class="feat-id">' + escHtml(f.id) + '</span> ' +
         '<span class="prd-item-priority ' + pClass + '">' + escHtml(f.priority || '') + '</span>' +
-        (f.status ? ' <span class="pr-badge ' + (f.status === 'complete' || f.status === 'done' || f.status === 'in-pr' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status === 'in-pr' ? 'done' : f.status) + '</span>' : '') +
+        (f.status ? ' <span class="pr-badge ' + (f.status === 'done' ? 'approved' : 'draft') + '" style="font-size:9px">' + escHtml(f.status) + '</span>' : '') +
         '<div class="feat-name">' + escHtml(f.name) + '</div>' +
         '<div class="feat-desc">' + escHtml(f.description || '') + '</div>' +
         (f.rationale ? '<div class="feat-desc" style="margin-top:4px;color:var(--yellow)">Rationale: ' + escHtml(f.rationale) + '</div>' : '') +
