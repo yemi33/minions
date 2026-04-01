@@ -603,7 +603,14 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
     const entry = dirtyTargets.get(targetName);
-    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
+    const existing = entry.prs.find(p => p.id === fullId || String(p.id) === String(prId));
+    if (existing) {
+      // Backfill prdItems if the entry was added by the poller before syncPrsFromOutput ran
+      if (meta?.item?.id && !existing.prdItems?.includes(meta.item.id)) {
+        existing.prdItems = [...(existing.prdItems || []), meta.item.id];
+      }
+      continue;
+    }
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -637,10 +644,26 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
+/**
+ * Resolve which project's pull-requests.json contains a given PR ID.
+ * Returns the project object, or null if not found in any project file.
+ */
+function resolveProjectForPr(prId) {
+  const config = getConfig();
+  for (const p of shared.getProjects(config)) {
+    const prs = safeJson(projectPrPath(p)) || [];
+    if (prs.some(pr => pr.id === prId)) return p;
+  }
+  return null;
+}
+
 function updatePrAfterReview(agentId, pr, project) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
+  // Resolve actual project if not provided — avoids writing merged array to wrong path
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  if (!resolvedProject) { log('warn', `updatePrAfterReview: cannot resolve project for ${pr.id}`); return; }
+  const prs = getPrs(resolvedProject);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -674,7 +697,7 @@ function updatePrAfterReview(agentId, pr, project) {
     shared.safeWrite(metricsPath, metrics);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
   log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
@@ -682,7 +705,10 @@ function updatePrAfterReview(agentId, pr, project) {
 function updatePrAfterFix(pr, project, source) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
+  // Resolve actual project if not provided — avoids writing merged array to wrong path
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  if (!resolvedProject) { log('warn', `updatePrAfterFix: cannot resolve project for ${pr.id}`); return; }
+  const prs = getPrs(resolvedProject);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -697,7 +723,7 @@ function updatePrAfterFix(pr, project, source) {
     log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -1418,7 +1444,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
+  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
@@ -1511,6 +1537,7 @@ module.exports = {
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,
+  resolveProjectForPr,
   updatePrAfterReview,
   updatePrAfterFix,
   handlePostMerge,
