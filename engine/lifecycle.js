@@ -943,16 +943,16 @@ function recordContextPressureOnWorkItem(meta, turnCount, outputLogSizeBytes, hi
   }
   if (!wiPath) return;
 
-  const items = safeJson(wiPath);
-  if (!items || !Array.isArray(items)) return;
-
-  const target = items.find(i => i.id === itemId);
-  if (target) {
-    target._turnCount = turnCount;
-    target._outputLogSizeBytes = outputLogSizeBytes;
-    target._hitTurnLimit = hitTurnLimit;
-    shared.safeWrite(wiPath, items);
-  }
+  shared.mutateJsonFileLocked(wiPath, (items) => {
+    if (!Array.isArray(items)) return items;
+    const target = items.find(i => i.id === itemId);
+    if (target) {
+      target._turnCount = turnCount;
+      target._outputLogSizeBytes = outputLogSizeBytes;
+      target._hitTurnLimit = hitTurnLimit;
+    }
+    return items;
+  }, { defaultValue: [] });
 }
 
 function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {
