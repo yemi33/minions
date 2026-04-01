@@ -50,8 +50,9 @@ function safeJson(p) {
     const backupPath = p + '.backup';
     try {
       const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-      // Backup is valid — restore it to the primary file
-      try { fs.writeFileSync(p, JSON.stringify(backupData, null, 2)); } catch { /* best-effort restore */ }
+      // Backup is valid — restore it to the primary file (atomic via safeWrite)
+      console.log(`[safeJson] restored ${path.basename(p)} from .backup sidecar`);
+      try { safeWrite(p, backupData); } catch { /* best-effort restore */ }
       return backupData;
     } catch {
       return null;
