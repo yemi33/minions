@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.108 (2026-04-01)
+
+### Dashboard
+- dashboard/js/render-kb.js
+
 ## 0.1.107 (2026-04-01)
 
 ### Dashboard
