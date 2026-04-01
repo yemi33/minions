@@ -1662,7 +1662,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const file = body.file;
-      if (file.includes('..') || file.includes('\0')) return jsonReply(res, 400, { error: 'invalid' });
+      if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
 
       const isJson = file.endsWith('.json');
       const sourceDir = isJson ? PRD_DIR : PLANS_DIR;
@@ -1701,7 +1701,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const file = body.file;
-      if (file.includes('..') || file.includes('\0')) return jsonReply(res, 400, { error: 'invalid' });
+      if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
 
       const isJson = file.endsWith('.json');
       const targetDir = isJson ? PRD_DIR : PLANS_DIR;
@@ -2660,7 +2660,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { name, category } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
-      if (name.includes('..') || name.includes('\0')) return jsonReply(res, 400, { error: 'Invalid file name' });
+      if (name.includes('..') || name.includes('\0') || name.includes('/') || name.includes('\\')) return jsonReply(res, 400, { error: 'Invalid file name' });
       if (!category || !shared.KB_CATEGORIES.includes(category)) {
         return jsonReply(res, 400, { error: 'category required: ' + shared.KB_CATEGORIES.join(', ') });
       }
@@ -2737,13 +2737,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const params = new URL(req.url, 'http://localhost').searchParams;
     const file = params.get('file');
     const dir = params.get('dir');
-    if (!file || file.includes('..') || file.includes('\0')) { res.statusCode = 400; res.end('Invalid file'); return; }
+    if (!file || file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) { res.statusCode = 400; res.end('Invalid file'); return; }
 
     let content = '';
     if (dir) {
-      // Direct path from collectSkillFiles
-      const fullPath = path.join(dir.replace(/\//g, path.sep), file);
-      if (!fullPath.includes('..')) content = safeRead(fullPath) || '';
+      // Direct path from collectSkillFiles — validate resolved path stays within expected dir
+      const resolvedDir = path.resolve(dir.replace(/\//g, path.sep));
+      const fullPath = path.join(resolvedDir, file);
+      if (fullPath.startsWith(resolvedDir)) content = safeRead(fullPath) || '';
     }
     if (!content) {
       // Fallback: search Claude Code skills, then project skills

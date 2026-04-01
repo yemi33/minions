@@ -248,6 +248,8 @@ function checkTimeouts(config) {
       const isActive = possibleKeys.some(k => activeKeys.has(k)) ||
         (dispatchData.active || []).some(d => d.meta?.item?.id === item.id);
       if (!isActive) {
+        // Don't revive items that were explicitly failed for non-retryable reasons
+        if (item.status === 'failed' && item.failReason && !item.failReason.includes('Agent died')) continue;
         const retries = (item._retryCount || 0);
         if (retries < 3) {
           log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/3`);

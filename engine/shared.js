@@ -22,11 +22,14 @@ function log(level, msg, meta = {}) {
   const entry = { timestamp: ts(), level, message: msg, ...meta };
   console.log(`[${logTs()}] [${level}] ${msg}`);
 
-  let logData = safeJson(LOG_PATH) || [];
-  if (!Array.isArray(logData)) logData = logData.entries || [];
-  logData.push(entry);
-  if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
-  safeWrite(LOG_PATH, logData);
+  try {
+    mutateJsonFileLocked(LOG_PATH, (logData) => {
+      if (!Array.isArray(logData)) logData = logData?.entries || [];
+      logData.push(entry);
+      if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
+      return logData;
+    }, { defaultValue: [] });
+  } catch { /* logging should never crash the caller */ }
 }
 
 // ── File I/O ─────────────────────────────────────────────────────────────────

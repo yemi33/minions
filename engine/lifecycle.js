@@ -500,14 +500,18 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      mutateJsonFileLocked(fpath, (plan) => {
+        if (!plan?.missing_features) return plan;
+        const feature = plan.missing_features.find(f => f.id === itemId);
+        if (feature && feature.status !== status) {
+          feature.status = status;
+        }
+        return plan;
+      });
+      // Check if we found it (read back to verify)
       const plan = safeJson(fpath);
-      if (!plan?.missing_features) continue;
-      const feature = plan.missing_features.find(f => f.id === itemId);
-      if (feature && feature.status !== status) {
-        feature.status = status;
-        shared.safeWrite(fpath, plan);
-        return;
-      }
+      const feature = plan?.missing_features?.find(f => f.id === itemId);
+      if (feature && feature.status === status) return;
     }
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
 }
