@@ -724,8 +724,15 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   if (newStatus !== 'merged') return;
 
-  const mergedItemId = getPrLinks()[pr.id];
+  // Resolve linked work item from pr-links or PR branch name
+  let mergedItemId = getPrLinks()[pr.id];
+  if (!mergedItemId && pr.branch) {
+    const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]+)/i);
+    if (branchMatch) mergedItemId = branchMatch[1];
+  }
+
   if (mergedItemId) {
+    // Mark PRD feature as implemented
     const prdDir = path.join(MINIONS_DIR, 'prd');
     try {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
@@ -742,6 +749,25 @@ async function handlePostMerge(pr, project, config, newStatus) {
       }
       if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
+
+    // Mark work item as done
+    const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+    for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
+    for (const wiPath of wiPaths) {
+      try {
+        const items = safeJson(wiPath);
+        if (!items) continue;
+        const item = items.find(i => i.id === mergedItemId);
+        if (item && item.status !== 'done') {
+          log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
+          item.status = 'done';
+          item.completedAt = e.ts();
+          item._mergedVia = pr.id;
+          shared.safeWrite(wiPath, items);
+          break;
+        }
+      } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
+    }
   }
 
   const agentId = (pr.agent || '').toLowerCase();
