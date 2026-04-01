@@ -1496,9 +1496,9 @@ function discoverFromWorkItems(config, project) {
           '',
           'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
           '',
-          cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-          cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-          cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+          Array.isArray(cpData.completed) && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
+          Array.isArray(cpData.remaining) && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+          Array.isArray(cpData.blockers) && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
           cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
         ].filter(Boolean).join('\n');
         vars.checkpoint_context = cpSummary;
@@ -1914,9 +1914,9 @@ function discoverCentralWorkItems(config) {
             '',
             'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
             '',
-            cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-            cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-            cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+            Array.isArray(cpData.completed) && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
+            Array.isArray(cpData.remaining) && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+            Array.isArray(cpData.blockers) && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
             cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
           ].filter(Boolean).join('\n');
           vars.checkpoint_context = cpSummary;
@@ -2125,7 +2125,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
     }
   }
 

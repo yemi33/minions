@@ -88,11 +88,11 @@ function discoverMeetingWork(config) {
       const key = `meeting-${meeting.id}-r${round}-${concluder}`;
       if (activeKeys.has(key)) continue;
 
-      const humanNotes = (meeting.humanNotes || []).map(n => '- ' + n).join('\n');
-      const allFindings = Object.entries(meeting.findings || {}).map(([agent, f]) =>
+      const humanNotes = (Array.isArray(meeting.humanNotes) ? meeting.humanNotes : []).map(n => '- ' + n).join('\n');
+      const allFindings = Object.entries(typeof meeting.findings === 'object' && meeting.findings ? meeting.findings : {}).map(([agent, f]) =>
         `### ${agents[agent]?.name || agent}\n\n${f.content || '(no findings)'}`
       ).join('\n\n---\n\n');
-      const allDebate = Object.entries(meeting.debate || {}).map(([agent, d]) =>
+      const allDebate = Object.entries(typeof meeting.debate === 'object' && meeting.debate ? meeting.debate : {}).map(([agent, d]) =>
         `### ${agents[agent]?.name || agent}\n\n${d.content || '(no response)'}`
       ).join('\n\n---\n\n');
 
@@ -184,6 +184,10 @@ function discoverMeetingWork(config) {
 function collectMeetingFindings(meetingId, agentId, roundName, output) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
+  if (meeting.status === 'completed' || meeting.status === 'archived') {
+    log('info', `Ignoring late findings from ${agentId} for completed meeting ${meetingId}`);
+    return;
+  }
 
   const { text } = shared.parseStreamJsonOutput(output, { maxTextLength: 50000 });
   const rawContent = (text || '').trim();
@@ -256,11 +260,35 @@ function addMeetingNote(meetingId, note) {
   return meeting;
 }
 
+function _killMeetingDispatches(meetingId) {
+  try {
+    const DISPATCH_PATH = path.join(__dirname, '..', 'engine', 'dispatch.json');
+    const dispatch = safeJson(DISPATCH_PATH) || {};
+    const toKill = (dispatch.active || []).filter(d => d.meta?.meetingId === meetingId);
+    if (toKill.length === 0) return 0;
+    // Remove from active and move to completed
+    shared.mutateJsonFileLocked(DISPATCH_PATH, (dp) => {
+      dp.active = (dp.active || []).filter(d => d.meta?.meetingId !== meetingId);
+      dp.completed = dp.completed || [];
+      for (const d of toKill) {
+        dp.completed.push({ ...d, result: 'error', reason: 'Meeting ended/advanced by human', completed_at: new Date().toISOString() });
+      }
+      if (dp.completed.length > 100) dp.completed = dp.completed.slice(-100);
+      return dp;
+    }, { defaultValue: { pending: [], active: [], completed: [] } });
+    log('info', `Killed ${toKill.length} active meeting dispatch(es) for ${meetingId}`);
+    return toKill.length;
+  } catch (e) { log('warn', 'kill meeting dispatches: ' + e.message); return 0; }
+}
+
 function advanceMeetingRound(meetingId) {
   const meeting = getMeeting(meetingId);
-  if (!meeting || meeting.status === 'completed') return null;
+  if (!meeting || meeting.status === 'completed' || meeting.status === 'archived') return null;
+  _killMeetingDispatches(meetingId);
   if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
   else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
+  else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = new Date().toISOString(); }
+  else return meeting; // no change
   meeting.roundStartedAt = new Date().toISOString();
   saveMeeting(meeting);
   return meeting;
@@ -269,6 +297,7 @@ function advanceMeetingRound(meetingId) {
 function endMeeting(meetingId) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return null;
+  _killMeetingDispatches(meetingId);
   meeting.status = 'completed';
   meeting.completedAt = new Date().toISOString();
   saveMeeting(meeting);
@@ -294,6 +323,7 @@ function unarchiveMeeting(id) {
 }
 
 function deleteMeeting(id) {
+  _killMeetingDispatches(id);
   const filePath = path.join(MEETINGS_DIR, id + '.json');
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);

@@ -2537,7 +2537,7 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(!src.includes('pr.humanFeedback.pendingFix = false'),
       'discoverFromPrs should not clear pendingFix during discovery');
-    assert.ok(src.includes('clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id)'),
+    assert.ok(src.includes('clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id)'),
       'pendingFix should be cleared after addToDispatch in discoverWork');
   });
 

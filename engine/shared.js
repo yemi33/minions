@@ -258,6 +258,7 @@ function gitEnv() {
  * Single source of truth — used by llm.js, consolidation.js, and lifecycle.js.
  */
 function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
+  if (typeof raw !== 'string') raw = '';
   let text = '';
   let usage = null;
   let sessionId = null;
