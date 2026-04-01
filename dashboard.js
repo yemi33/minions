@@ -244,6 +244,7 @@ function getStatus() {
       approvePlans: !!CONFIG.engine?.autoApprovePlans,
       decompose: CONFIG.engine?.autoDecompose !== false,
       tempAgents: !!CONFIG.engine?.allowTempAgents,
+      inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
     },
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
