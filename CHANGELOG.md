@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.112 (2026-04-01)
+
+### Engine
+- engine/ado.js
+- engine/github.js
+- engine/lifecycle.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/live-stream.js
+- dashboard/js/modal-qa.js
+- dashboard/js/utils.js
+
 ## 0.1.110 (2026-04-01)
 
 ### Dashboard
