@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.119 (2026-04-01)
+
+### Dashboard
+- dashboard.js
+- dashboard/js/settings.js
+
 ## 0.1.118 (2026-04-01)
 
 ### Playbooks
