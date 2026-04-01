@@ -1161,7 +1161,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           return d.includes(branchSlug) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
         });
         // Only remove if no other active dispatch uses this branch
-        const dispatch = e.getDispatch();
+        const dispatch = getDispatch();
         const otherActive = ((dispatch.active || []).concat(dispatch.pending || [])).some(d =>
           d.id !== dispatchItem.id && d.meta?.branch && shared.sanitizeBranch && shared.sanitizeBranch(d.meta.branch) === branchSlug
         );
@@ -1208,10 +1208,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            e.log('info', `Auto-retry ${retries + 1}/3 for ${meta.item.id} (no PR created)`);
+            log('info', `Auto-retry ${retries + 1}/3 for ${meta.item.id} (no PR created)`);
           } else {
             wi.status = 'failed';
-            e.log('warn', `${meta.item.id} failed after 3 retries — no PR created`);
+            log('warn', `${meta.item.id} failed after 3 retries — no PR created`);
           }
           shared.safeWrite(wiPath, items);
         }

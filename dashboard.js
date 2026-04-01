@@ -3057,7 +3057,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       const configPath = path.join(MINIONS_DIR, 'config.json');
-      const config = safeJson(configPath);
+      const config = safeJson(configPath) || {};
+      if (!config.engine) config.engine = {};
+      if (!config.claude) config.claude = {};
+      if (!config.agents) config.agents = {};
 
       if (body.engine) {
         // Validate and apply engine settings

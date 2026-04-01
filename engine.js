@@ -1036,7 +1036,7 @@ function materializePlansAsWorkItems(config) {
         plan.status = 'approved';
         plan.approvedAt = new Date().toISOString();
         plan.approvedBy = 'auto-mode';
-        safeWrite(prdPath, plan);
+        safeWrite(path.join(PRD_DIR, file), plan);
         log('info', `Auto-approved plan: ${file}`);
       } else {
         continue; // Skip — waiting for human approval

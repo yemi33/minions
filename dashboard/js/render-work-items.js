@@ -94,7 +94,7 @@ function editWorkItem(id, source) {
   if (!item) return;
   const types = ['implement', 'fix', 'review', 'plan', 'verify', 'investigate', 'refactor', 'test', 'docs'];
   const priorities = ['critical', 'high', 'medium', 'low'];
-  const agentOpts = cmdAgents.map(a => '<option value="' + escHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>').join('');
+  const agentOpts = (cmdAgents || []).map(a => '<option value="' + escHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>').join('');
   const typeOpts = types.map(t => '<option value="' + t + '"' + ((item.type || 'implement') === t ? ' selected' : '') + '>' + t + '</option>').join('');
   const priOpts = priorities.map(p => '<option value="' + p + '"' + ((item.priority || 'medium') === p ? ' selected' : '') + '>' + p + '</option>').join('');
 
