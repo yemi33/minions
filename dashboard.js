@@ -373,7 +373,7 @@ Available action types:
 - **file-edit**: Edit any minions file via LLM. Fields: file (path relative to minions dir), instruction (what to change).
 - **schedule**: Create or update a scheduled task. Fields: id (unique slug), title, cron (3-field: minute hour dayOfWeek), workType (implement/test/explore/ask/review/fix), project (optional), agent (optional), description (optional), priority (optional), enabled (default true). Example cron: "0 9 2" = every Tuesday at 9am.
 - **delete-schedule**: Delete a scheduled task. Fields: id.
-- **create-meeting**: Start a team meeting. Fields: topic, agents (array of agent IDs), rounds (optional, default 3), project (optional).
+- **create-meeting**: Start a team meeting. Fields: title (short meeting name), agenda (detailed text — what agents should investigate/debate, numbered items work best), agents (array of agent IDs), rounds (optional, default 3), project (optional).
 
 ## Rules
 

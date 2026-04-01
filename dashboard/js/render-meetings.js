@@ -83,9 +83,9 @@ function openMeetingDetail(id) {
         '<span style="font-size:10px;color:var(--muted)">' + escHtml(m.createdAt?.slice(0, 16).replace('T', ' ') || '') + '</span>' +
       '</div>';
 
-      // Agenda
-      html += '<div style="background:var(--surface2);padding:8px 12px;border-radius:6px;font-size:12px">' +
-        '<strong>Agenda:</strong> ' + escHtml(m.agenda) + '</div>';
+      // Agenda — render markdown-like formatting
+      html += '<div style="background:var(--surface2);padding:8px 12px;border-radius:6px;font-size:12px;white-space:pre-wrap;line-height:1.6">' +
+        '<strong>Agenda:</strong>\n' + renderMd(m.agenda || '') + '</div>';
 
       // Per-agent panels
       for (const agent of (m.participants || [])) {
@@ -96,14 +96,14 @@ function openMeetingDetail(id) {
         if (m.findings?.[agent]) {
           html += '<div style="padding:8px 12px;font-size:11px;border-bottom:1px solid var(--border)">' +
             '<div style="color:var(--muted);font-size:10px;margin-bottom:4px">Round 1 — Findings</div>' +
-            '<div style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto">' + escHtml(m.findings[agent].content || '') + '</div></div>';
+            '<div style="word-break:break-word;max-height:300px;overflow-y:auto">' + renderMd(m.findings[agent].content || '') + '</div></div>';
         }
 
         // Debate
         if (m.debate?.[agent]) {
           html += '<div style="padding:8px 12px;font-size:11px;border-bottom:1px solid var(--border)">' +
             '<div style="color:var(--muted);font-size:10px;margin-bottom:4px">Round 2 — Debate</div>' +
-            '<div style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto">' + escHtml(m.debate[agent].content || '') + '</div></div>';
+            '<div style="word-break:break-word;max-height:300px;overflow-y:auto">' + renderMd(m.debate[agent].content || '') + '</div></div>';
         }
 
         // Status
@@ -118,7 +118,7 @@ function openMeetingDetail(id) {
       if (m.conclusion) {
         html += '<div style="background:rgba(63,185,80,0.08);border:1px solid var(--green);border-radius:6px;padding:10px 14px">' +
           '<div style="color:var(--green);font-weight:600;font-size:12px;margin-bottom:6px">Conclusion (by ' + escHtml(m.conclusion.agent || '?') + ')</div>' +
-          '<div style="font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto">' + escHtml(m.conclusion.content || '') + '</div></div>';
+          '<div style="font-size:12px;word-break:break-word;max-height:400px;overflow-y:auto">' + renderMd(m.conclusion.content || '') + '</div></div>';
       }
 
       // Human notes

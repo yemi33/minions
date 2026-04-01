@@ -347,7 +347,7 @@ async function ccExecuteAction(action) {
           status.innerHTML = '&#10003; Plan edited: <strong>' + escHtml(action.file) + '</strong>';
           status.style.color = 'var(--green)';
         } else {
-          status.innerHTML = data.answer ? escHtml(data.answer) : '&#10007; Could not edit plan';
+          status.innerHTML = data.answer ? renderMd(data.answer) : '&#10007; Could not edit plan';
           status.style.color = data.answer ? 'var(--muted)' : 'var(--red)';
         }
         break;
@@ -379,7 +379,7 @@ async function ccExecuteAction(action) {
           status.innerHTML = '&#10003; Edited: <strong>' + escHtml(action.file) + '</strong>';
           status.style.color = 'var(--green)';
         } else {
-          status.innerHTML = data.answer ? escHtml(data.answer) : '&#10007; Could not edit file';
+          status.innerHTML = data.answer ? renderMd(data.answer) : '&#10007; Could not edit file';
           status.style.color = data.answer ? 'var(--muted)' : 'var(--red)';
         }
         break;
@@ -414,7 +414,7 @@ async function ccExecuteAction(action) {
       case 'create-meeting': {
         const res = await fetch('/api/meetings', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ topic: action.topic, agents: action.agents, rounds: action.rounds, project: action.project })
+          body: JSON.stringify({ title: action.title || action.topic, agenda: action.agenda || action.topic, participants: action.agents, rounds: action.rounds, project: action.project })
         });
         if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Meeting create failed'); }
         const d = await res.json();
