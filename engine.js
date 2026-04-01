@@ -1985,6 +1985,12 @@ function discoverWork(config) {
     allWorkItems.push(...meetingWork);
   } catch (e) { log('warn', 'discover meeting work: ' + e.message); }
 
+  // Pipeline orchestration — check stage completions and start ready stages
+  try {
+    const { discoverPipelineWork } = require('./engine/pipeline');
+    discoverPipelineWork(config);
+  } catch (e) { log('warn', 'discover pipeline work: ' + e.message); }
+
   // Periodic plan completion sweep — catch PRDs that completed while engine was down
   // or where checkPlanCompletion missed the completion event
   // Throttled to every 10 ticks (~5 min) to reduce call volume (P3 decision)

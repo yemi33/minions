@@ -68,7 +68,7 @@ function buildDashboardHtml() {
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
   // Assemble page fragments
-  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'meetings', 'engine'];
+  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'pipelines', 'meetings', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
@@ -81,7 +81,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-meetings', 'render-pinned',
+    'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
@@ -237,6 +237,7 @@ function getStatus() {
       return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
     })(),
     meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
+    pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
     pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
     projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
     autoMode: {
@@ -3420,6 +3421,69 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'cron, title, id?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
     { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
     { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
+
+    // Pipelines
+    { method: 'GET', path: '/api/pipelines', desc: 'List all pipelines with runs', handler: async (req, res) => {
+      const { getPipelines, getPipelineRuns } = require('./engine/pipeline');
+      const pipelines = getPipelines();
+      const runs = getPipelineRuns();
+      const result = pipelines.map(p => ({ ...p, runs: (runs[p.id] || []).slice(-5) }));
+      return jsonReply(res, 200, result);
+    }},
+    { method: 'POST', path: '/api/pipelines', desc: 'Create a pipeline', params: 'id, title, stages[], trigger?', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id || !body.title || !body.stages) return jsonReply(res, 400, { error: 'id, title, and stages required' });
+      const { savePipeline, getPipeline } = require('./engine/pipeline');
+      if (getPipeline(body.id)) return jsonReply(res, 409, { error: 'Pipeline already exists' });
+      const pipeline = { id: body.id, title: body.title, stages: body.stages, trigger: body.trigger || {}, enabled: body.enabled !== false };
+      savePipeline(pipeline);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, id: pipeline.id });
+    }},
+    { method: 'POST', path: '/api/pipelines/update', desc: 'Update a pipeline', params: 'id, title?, stages?, trigger?, enabled?', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { getPipeline, savePipeline } = require('./engine/pipeline');
+      const pipeline = getPipeline(body.id);
+      if (!pipeline) return jsonReply(res, 404, { error: 'Pipeline not found' });
+      if (body.title !== undefined) pipeline.title = body.title;
+      if (body.stages !== undefined) pipeline.stages = body.stages;
+      if (body.trigger !== undefined) pipeline.trigger = body.trigger;
+      if (body.enabled !== undefined) pipeline.enabled = body.enabled;
+      savePipeline(pipeline);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/pipelines/delete', desc: 'Delete a pipeline', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { deletePipeline } = require('./engine/pipeline');
+      if (!deletePipeline(body.id)) return jsonReply(res, 404, { error: 'Pipeline not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/pipelines/trigger', desc: 'Manually trigger a pipeline run', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { getPipeline, getActiveRun, startRun } = require('./engine/pipeline');
+      const pipeline = getPipeline(body.id);
+      if (!pipeline) return jsonReply(res, 404, { error: 'Pipeline not found' });
+      if (getActiveRun(body.id)) return jsonReply(res, 409, { error: 'Pipeline already has an active run' });
+      const run = startRun(body.id, pipeline);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, runId: run.runId });
+    }},
+    { method: 'POST', path: '/api/pipelines/continue', desc: 'Continue a pipeline past a wait stage', params: 'id, stageId', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id || !body.stageId) return jsonReply(res, 400, { error: 'id and stageId required' });
+      const { updateRunStage, getActiveRun } = require('./engine/pipeline');
+      const run = getActiveRun(body.id);
+      if (!run) return jsonReply(res, 404, { error: 'No active run' });
+      if (run.stages[body.stageId]?.status !== 'waiting-human') return jsonReply(res, 400, { error: 'Stage is not waiting for human' });
+      updateRunStage(body.id, run.runId, body.stageId, { status: 'completed', completedAt: new Date().toISOString() });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
+    }},
 
     // Meetings
     { method: 'POST', path: '/api/meetings', desc: 'Create a team meeting', params: 'title, agenda, participants[]', handler: async (req, res) => {
