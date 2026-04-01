@@ -14,8 +14,7 @@ const { renderPlaybook } = require('./playbook');
 /** Patterns that indicate an agent returned no meaningful output */
 const EMPTY_OUTPUT_PATTERNS = ['(no output)', '(no findings)', '(no response)'];
 
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
+// No lazy require needed — log comes from shared.js, no engine-specific APIs used
 
 const MEETINGS_DIR = path.join(__dirname, '..', 'meetings');
 
@@ -179,7 +178,6 @@ function discoverMeetingWork(config) {
  * Called from runPostCompletionHooks when type === 'meeting'.
  */
 function collectMeetingFindings(meetingId, agentId, roundName, output) {
-  const e = engine();
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
 
@@ -188,7 +186,7 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
 
   // Validate output — reject empty or placeholder responses
   if (!rawContent || EMPTY_OUTPUT_PATTERNS.includes(rawContent)) {
-    e.log('warn', `Meeting ${meetingId}: agent ${agentId} returned empty output for ${roundName} — rejecting`);
+    log('warn', `Meeting ${meetingId}: agent ${agentId} returned empty output for ${roundName} — rejecting`);
     // Don't record it — agent will be re-dispatched on next tick
     saveMeeting(meeting);
     return;
@@ -304,7 +302,6 @@ function deleteMeeting(id) {
  * Called from engine.js tick cycle.
  */
 function checkMeetingTimeouts(config) {
-  const e = engine();
   const meetings = getMeetings();
   const timeout = (config.engine || {}).meetingRoundTimeout
     || ENGINE_DEFAULTS.meetingRoundTimeout;
@@ -324,21 +321,21 @@ function checkMeetingTimeouts(config) {
     const totalCount = meeting.participants.length;
 
     if (meeting.status === 'investigating') {
-      e.log('warn', `Meeting ${meeting.id}: round 1 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to debate`);
+      log('warn', `Meeting ${meeting.id}: round 1 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to debate`);
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 1 timed out — ${respondedCount}/${totalCount} findings received`, at: new Date().toISOString() });
       meeting.status = 'debating';
       meeting.round = 2;
       meeting.roundStartedAt = new Date().toISOString();
       saveMeeting(meeting);
     } else if (meeting.status === 'debating') {
-      e.log('warn', `Meeting ${meeting.id}: round 2 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to conclusion`);
+      log('warn', `Meeting ${meeting.id}: round 2 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to conclusion`);
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 2 timed out — ${respondedCount}/${totalCount} debate responses received`, at: new Date().toISOString() });
       meeting.status = 'concluding';
       meeting.round = 3;
       meeting.roundStartedAt = new Date().toISOString();
       saveMeeting(meeting);
     } else if (meeting.status === 'concluding') {
-      e.log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — ending meeting without conclusion`);
+      log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — ending meeting without conclusion`);
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: 'Conclusion round timed out — meeting ended without conclusion', at: new Date().toISOString() });
       meeting.status = 'completed';
       meeting.completedAt = new Date().toISOString();

@@ -4960,6 +4960,9 @@ async function main() {
     // Scheduler tests
     await testSchedulerCronParsing();
 
+    // P-b8c7d6e5: shared imports refactor (no circular requires)
+    await testSharedImportsNoCircular();
+
     // Session 2026-03-31 features
     await testSessionFeatures();
   } finally {
@@ -5257,6 +5260,60 @@ async function testKbSweepBatching() {
     assert.ok(src.includes('BATCH_SIZE'), 'sweep should use BATCH_SIZE');
     assert.ok(src.includes('batches.length'), 'sweep should iterate batches');
     assert.ok(src.includes('batch ${b + 1}'), 'sweep should log batch progress');
+  });
+}
+
+async function testSharedImportsNoCircular() {
+  // P-b8c7d6e5: Verify refactored modules import log/ts from shared, not engine
+  await test('cooldown.js has no lazy require of engine.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'cooldown.js'), 'utf8');
+    assert.ok(!src.includes("require('../engine')"), 'cooldown.js should not require engine.js');
+    assert.ok(src.includes("log } = shared") || src.includes("log,") || src.includes("log }"), 'cooldown.js should import log from shared');
+  });
+
+  await test('routing.js has no lazy require of engine.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'routing.js'), 'utf8');
+    assert.ok(!src.includes("require('../engine')"), 'routing.js should not require engine.js');
+  });
+
+  await test('meeting.js has no lazy require of engine.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'meeting.js'), 'utf8');
+    assert.ok(!src.includes("require('../engine')"), 'meeting.js should not require engine.js');
+  });
+
+  await test('playbook.js has no lazy require of engine.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'playbook.js'), 'utf8');
+    assert.ok(!src.includes("require('../engine')"), 'playbook.js should not require engine.js');
+  });
+
+  await test('cleanup.js retains lazy require for activeProcesses only', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes("require('../engine')"), 'cleanup.js should still require engine for activeProcesses');
+    assert.ok(!src.includes("engine().log("), 'cleanup.js should not call engine().log()');
+    assert.ok(!src.includes("engine().ts("), 'cleanup.js should not call engine().ts()');
+  });
+
+  await test('timeout.js retains lazy require for activeProcesses only', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes("require('../engine')"), 'timeout.js should still require engine for activeProcesses');
+    assert.ok(!src.includes("engine().log("), 'timeout.js should not call engine().log()');
+    assert.ok(!src.includes("engine().ts("), 'timeout.js should not call engine().ts()');
+  });
+
+  await test('ado.js retains lazy require for handlePostMerge only', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes("require('../engine')"), 'ado.js should still require engine for handlePostMerge');
+    assert.ok(!src.includes("engine().log("), 'ado.js should not call engine().log()');
+    assert.ok(!src.includes("engine().ts("), 'ado.js should not call engine().ts()');
+    assert.ok(!src.includes("engine().dateStamp("), 'ado.js should not call engine().dateStamp()');
+  });
+
+  await test('github.js retains lazy require for handlePostMerge only', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes("require('../engine')"), 'github.js should still require engine for handlePostMerge');
+    assert.ok(!src.includes("engine().log("), 'github.js should not call engine().log()');
+    assert.ok(!src.includes("engine().ts("), 'github.js should not call engine().ts()');
+    assert.ok(!src.includes("engine().dateStamp("), 'github.js should not call engine().dateStamp()');
   });
 }
 

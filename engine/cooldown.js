@@ -7,12 +7,8 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeWrite } = shared;
+const { safeJson, safeWrite, log } = shared;
 const { ENGINE_DIR } = queries;
-
-// Lazy require to avoid circular dependency with engine.js
-let _engine = null;
-function engine() { if (!_engine) _engine = require('../engine'); return _engine; }
 
 const COOLDOWN_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
 const dispatchCooldowns = new Map(); // key → { timestamp, failures }
@@ -27,7 +23,7 @@ function loadCooldowns() {
       dispatchCooldowns.set(k, v);
     }
   }
-  engine().log('info', `Loaded ${dispatchCooldowns.size} cooldowns from disk`);
+  log('info', `Loaded ${dispatchCooldowns.size} cooldowns from disk`);
 }
 
 let _cooldownWriteTimer = null;
@@ -85,7 +81,7 @@ function setCooldownFailure(key) {
   const failures = (existing?.failures || 0) + 1;
   dispatchCooldowns.set(key, { timestamp: Date.now(), failures });
   if (failures >= 3) {
-    engine().log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 8)}x`);
+    log('warn', `${key} has failed ${failures} times — cooldown is now ${Math.min(Math.pow(2, failures), 8)}x`);
   }
   saveCooldowns();
 }

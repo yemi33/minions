@@ -5,10 +5,10 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink } = shared;
+const { exec, getAdoOrgBase, addPrLink, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 
-// Lazy require to avoid circular dependency
+// Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
 let _engine = null;
 function engine() {
   if (!_engine) _engine = require('../engine');
@@ -37,7 +37,7 @@ function getAdoToken() {
       return token;
     }
   } catch (e) {
-    engine().log('warn', `Failed to get ADO token: ${e.message}`);
+    log('warn', `Failed to get ADO token: ${e.message}`);
   }
   // Back off for 10 minutes to avoid spamming browser auth popups
   _adoTokenFailedUntil = Date.now() + 10 * 60 * 1000;
@@ -57,7 +57,7 @@ async function adoFetch(url, token, _retryCount = 0) {
     if (_retryCount < MAX_RETRIES) {
       const freshToken = getAdoToken();
       if (freshToken) {
-        engine().log('info', 'ADO token expired mid-session — refreshed and retrying');
+        log('info', 'ADO token expired mid-session — refreshed and retrying');
         return adoFetch(url, freshToken, _retryCount + 1);
       }
     }
@@ -94,7 +94,7 @@ async function forEachActivePr(config, token, callback) {
         const updated = await callback(project, pr, prNum, orgBase);
         if (updated) projectUpdated++;
       } catch (err) {
-        try { engine().log('warn', `Failed to poll status for ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
+        log('warn', `Failed to poll status for ${pr.id}: ${err.message}`);
       }
     }
 
@@ -110,10 +110,9 @@ async function forEachActivePr(config, token, callback) {
 // ─── PR Status Polling ───────────────────────────────────────────────────────
 
 async function pollPrStatus(config) {
-  const e = engine();
   const token = getAdoToken();
   if (!token) {
-    e.log('warn', 'Skipping PR status poll — no ADO token available');
+    log('warn', 'Skipping PR status poll — no ADO token available');
     return;
   }
 
@@ -129,14 +128,14 @@ async function pollPrStatus(config) {
     else if (prData.status === 'active') newStatus = 'active';
 
     if (pr.status !== newStatus) {
-      e.log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
+      log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
       pr.status = newStatus;
       updated = true;
 
       if (newStatus === 'merged' || newStatus === 'abandoned') {
         if (pr.reviewStatus === 'waiting') {
           pr.reviewStatus = newStatus === 'merged' ? 'approved' : 'pending';
-          e.log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
+          log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
@@ -153,7 +152,7 @@ async function pollPrStatus(config) {
     }
 
     if (pr.reviewStatus !== newReviewStatus) {
-      e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
+      log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
       pr.reviewStatus = newReviewStatus;
       updated = true;
       // Update author metrics when verdict changes to approved/rejected
@@ -167,7 +166,7 @@ async function pollPrStatus(config) {
             if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
             else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
             shared.safeWrite(metricsPath, metrics);
-          } catch (err) { try { engine().log('warn', `Metrics update: ${err.message}`); } catch { /* engine not available */ } }
+          } catch (err) { log('warn', `Metrics update: ${err.message}`); }
         }
       }
     }
@@ -209,7 +208,7 @@ async function pollPrStatus(config) {
     }
 
     if (pr.buildStatus !== buildStatus) {
-      e.log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+      log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
@@ -221,14 +220,13 @@ async function pollPrStatus(config) {
   });
 
   if (totalUpdated > 0) {
-    e.log('info', `PR status poll: updated ${totalUpdated} PR(s)`);
+    log('info', `PR status poll: updated ${totalUpdated} PR(s)`);
   }
 }
 
 // ─── Poll Human Comments on PRs ──────────────────────────────────────────────
 
 async function pollPrHumanComments(config) {
-  const e = engine();
   const token = getAdoToken();
   if (!token) return;
 
@@ -285,12 +283,12 @@ async function pollPrHumanComments(config) {
       feedbackContent
     };
 
-    e.log('info', `PR ${pr.id}: ${newHumanComments.length} new comment(s), ${allHumanComments.length} total — full thread context provided`);
+    log('info', `PR ${pr.id}: ${newHumanComments.length} new comment(s), ${allHumanComments.length} total — full thread context provided`);
     return true;
   });
 
   if (totalUpdated > 0) {
-    e.log('info', `PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
+    log('info', `PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
   }
 }
 
@@ -301,10 +299,9 @@ async function pollPrHumanComments(config) {
  * in pull-requests.json, and add them. Matches PRs to work items by branch name.
  */
 async function reconcilePrs(config) {
-  const e = engine();
   const token = getAdoToken();
   if (!token) {
-    e.log('warn', 'Skipping PR reconciliation — no ADO token available');
+    log('warn', 'Skipping PR reconciliation — no ADO token available');
     return;
   }
 
@@ -322,7 +319,7 @@ async function reconcilePrs(config) {
     try {
       prData = await adoFetch(url, token);
     } catch (err) {
-      e.log('warn', `PR reconciliation failed for ${project.name}: ${err.message}`);
+      log('warn', `PR reconciliation failed for ${project.name}: ${err.message}`);
       continue;
     }
 
@@ -379,14 +376,14 @@ async function reconcilePrs(config) {
         branch,
         reviewStatus: 'pending',
         status: 'active',
-        created: (adoPr.creationDate || '').slice(0, 10) || e.dateStamp(),
+        created: (adoPr.creationDate || '').slice(0, 10) || dateStamp(),
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
       if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
-      e.log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
+      log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
@@ -404,12 +401,12 @@ async function reconcilePrs(config) {
     if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
       shared.safeWrite(prPath, existingPrs);
       totalAdded += projectAdded;
-      if (projectUpdated > 0) e.log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);
+      if (projectUpdated > 0) log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);
     }
   }
 
   if (totalAdded > 0) {
-    e.log('info', `PR reconciliation: added ${totalAdded} missing PR(s) across projects`);
+    log('info', `PR reconciliation: added ${totalAdded} missing PR(s) across projects`);
   }
 }
 

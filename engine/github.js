@@ -5,11 +5,11 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
-// Lazy require to avoid circular dependency
+// Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
 let _engine = null;
 function engine() {
   if (!_engine) _engine = require('../engine');
@@ -37,7 +37,7 @@ function ghApi(endpoint, slug) {
     const result = exec(cmd, { timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
     return JSON.parse(result);
   } catch (e) {
-    engine().log('warn', `GitHub API error (${endpoint}): ${e.message}`);
+    log('warn', `GitHub API error (${endpoint}): ${e.message}`);
     return null;
   }
 }
@@ -66,7 +66,7 @@ async function forEachActiveGhPr(config, callback) {
         const updated = await callback(project, pr, prNum, slug);
         if (updated) projectUpdated++;
       } catch (err) {
-        try { engine().log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
+        log('warn', `GitHub: failed to poll PR ${pr.id}: ${err.message}`);
       }
     }
 
@@ -101,7 +101,7 @@ async function forEachActiveGhPr(config, callback) {
         centralUpdated++;
       }
     } catch (err) {
-      try { engine().log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`); } catch { /* engine not available */ }
+      log('warn', `GitHub: failed to poll central PR ${pr.id}: ${err.message}`);
     }
   }
   if (centralUpdated > 0) {
@@ -115,8 +115,6 @@ async function forEachActiveGhPr(config, callback) {
 // ─── PR Status Polling ──────────────────────────────────────────────────────
 
 async function pollPrStatus(config) {
-  const e = engine();
-
   const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
     const prData = ghApi(`/pulls/${prNum}`, slug);
     if (!prData) return false;
@@ -130,7 +128,7 @@ async function pollPrStatus(config) {
     else if (prData.state === 'open') newStatus = 'active';
 
     if (pr.status !== newStatus) {
-      e.log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
+      log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
       pr.status = newStatus;
       updated = true;
 
@@ -138,7 +136,7 @@ async function pollPrStatus(config) {
         // Resolve stale 'waiting' review status — won't be polled again after this
         if (pr.reviewStatus === 'waiting') {
           pr.reviewStatus = newStatus === 'merged' ? 'approved' : 'pending';
-          e.log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
+          log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
@@ -162,7 +160,7 @@ async function pollPrStatus(config) {
       else if (states.length > 0) newReviewStatus = 'pending';
 
       if (pr.reviewStatus !== newReviewStatus) {
-        e.log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
+        log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
         pr.reviewStatus = newReviewStatus;
         updated = true;
         // Update author metrics when verdict changes to approved/rejected
@@ -176,7 +174,7 @@ async function pollPrStatus(config) {
               if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
               else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
               shared.safeWrite(metricsPath, metrics);
-            } catch (err) { try { engine().log('warn', `Metrics update: ${err.message}`); } catch { /* engine not available */ } }
+            } catch (err) { log('warn', `Metrics update: ${err.message}`); }
           }
         }
       }
@@ -207,7 +205,7 @@ async function pollPrStatus(config) {
         }
 
         if (pr.buildStatus !== buildStatus) {
-          e.log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
+          log('info', `PR ${pr.id} build: ${pr.buildStatus || 'none'} → ${buildStatus}${buildFailReason ? ' (' + buildFailReason + ')' : ''}`);
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
@@ -221,15 +219,13 @@ async function pollPrStatus(config) {
   });
 
   if (totalUpdated > 0) {
-    e.log('info', `GitHub PR status poll: updated ${totalUpdated} PR(s)`);
+    log('info', `GitHub PR status poll: updated ${totalUpdated} PR(s)`);
   }
 }
 
 // ─── Poll Human Comments on PRs ─────────────────────────────────────────────
 
 async function pollPrHumanComments(config) {
-  const e = engine();
-
   const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
     // Get issue comments (general PR comments)
     const comments = ghApi(`/issues/${prNum}/comments`, slug);
@@ -292,19 +288,18 @@ async function pollPrHumanComments(config) {
       feedbackContent
     };
 
-    e.log('info', `PR ${pr.id}: ${newComments.length} new comment(s), ${allCommentEntries.length} total — full thread context provided`);
+    log('info', `PR ${pr.id}: ${newComments.length} new comment(s), ${allCommentEntries.length} total — full thread context provided`);
     return true;
   });
 
   if (totalUpdated > 0) {
-    e.log('info', `GitHub PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
+    log('info', `GitHub PR comment poll: found human feedback on ${totalUpdated} PR(s)`);
   }
 }
 
 // ─── PR Reconciliation ──────────────────────────────────────────────────────
 
 async function reconcilePrs(config) {
-  const e = engine();
   const projects = getProjects(config).filter(isGitHub);
   const branchPatterns = [/^work\//i, /^feat\//i, /^user\/yemishin\//i];
   let totalAdded = 0;
@@ -365,7 +360,7 @@ async function reconcilePrs(config) {
         branch,
         reviewStatus: 'pending',
         status: 'active',
-        created: (ghPr.created_at || '').slice(0, 10) || e.dateStamp(),
+        created: (ghPr.created_at || '').slice(0, 10) || dateStamp(),
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
@@ -373,7 +368,7 @@ async function reconcilePrs(config) {
       existingIds.add(prId);
       projectAdded++;
 
-      e.log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
+      log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
@@ -395,7 +390,7 @@ async function reconcilePrs(config) {
   }
 
   if (totalAdded > 0) {
-    e.log('info', `GitHub PR reconciliation: added ${totalAdded} missing PR(s)`);
+    log('info', `GitHub PR reconciliation: added ${totalAdded} missing PR(s)`);
   }
 }
 
