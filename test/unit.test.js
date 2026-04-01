@@ -4796,9 +4796,14 @@ async function testMeetings() {
       'Should create work items for each participant in investigate round');
   });
 
-  await test('discoverMeetingWork dispatches only concluder for conclude round', () => {
-    assert.ok(meetingSrc.includes('participants[0]') && meetingSrc.includes('meeting-conclude'),
-      'Should dispatch only first participant for conclusion');
+  await test('discoverMeetingWork picks first non-busy participant as concluder', () => {
+    assert.ok(meetingSrc.includes('busyAgents') && meetingSrc.includes('participants.find') && meetingSrc.includes('meeting-conclude'),
+      'Should pick first non-busy participant for conclusion, falling back to participants[0]');
+  });
+
+  await test('concluder fallback: if all participants busy, falls back to first participant', () => {
+    assert.ok(meetingSrc.includes("|| meeting.participants[0]"),
+      'Should fall back to participants[0] when all are busy');
   });
 
   await test('debate round includes all findings from round 1', () => {
