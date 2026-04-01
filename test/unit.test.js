@@ -2690,6 +2690,89 @@ async function testMutateJsonFileLocked() {
   });
 }
 
+// ─── shared.js — safeWrite / backup / restore Tests ─────────────────────────
+
+async function testSafeWriteBackupRestore() {
+  console.log('\n── shared.js — safeWrite atomic + backup + restore ──');
+
+  await test('safeWrite throws after rename failures (no writeFileSync fallback)', () => {
+    // Verify the source code has no writeFileSync fallback in safeWrite
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // Extract safeWrite function body
+    const match = src.match(/function safeWrite\(p, data\)\s*\{[\s\S]*?^}/m);
+    assert.ok(match, 'safeWrite function should exist');
+    const body = match[0];
+    // Should NOT contain a direct writeFileSync to the target path as fallback
+    // The only writeFileSync should be to the tmp file
+    const writeFileCalls = body.match(/fs\.writeFileSync\(/g) || [];
+    assert.strictEqual(writeFileCalls.length, 1,
+      'safeWrite should have exactly 1 writeFileSync (to tmp file), no fallback');
+    // Should throw after exhausting retries
+    assert.ok(body.includes('throw'), 'safeWrite should throw on rename exhaustion');
+  });
+
+  await test('mutateJsonFileLocked creates .backup before mutation', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'data.json');
+    shared.safeWrite(fp, { version: 1 });
+    shared.mutateJsonFileLocked(fp, (data) => { data.version = 2; });
+    // .backup should exist with the pre-mutation data
+    const backup = shared.safeJson(fp + '.backup');
+    assert.ok(backup, '.backup file should exist');
+    assert.strictEqual(backup.version, 1, '.backup should contain pre-mutation state');
+    // primary should have the mutation
+    assert.strictEqual(shared.safeJson(fp).version, 2);
+  });
+
+  await test('safeJson auto-restores from .backup when primary is corrupted', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupted.json');
+    // Write corrupted primary
+    fs.writeFileSync(fp, 'NOT VALID JSON{{{');
+    // Write valid backup
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ restored: true }));
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { restored: true }, 'should restore from .backup');
+    // Primary should now be restored too
+    const primaryAfter = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    assert.deepStrictEqual(primaryAfter, { restored: true }, 'primary file should be restored');
+  });
+
+  await test('safeJson returns null when both primary and .backup are missing', () => {
+    const result = shared.safeJson('/nonexistent/path/data.json');
+    assert.strictEqual(result, null);
+  });
+
+  await test('safeJson returns null when primary is corrupted and no .backup exists', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'no-backup.json');
+    fs.writeFileSync(fp, 'CORRUPTED');
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result, null, 'should return null with no backup available');
+  });
+
+  await test('safeJson returns null when both primary and .backup are corrupted', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'both-bad.json');
+    fs.writeFileSync(fp, 'BAD PRIMARY');
+    fs.writeFileSync(fp + '.backup', 'BAD BACKUP');
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result, null, 'should return null when both files are corrupted');
+  });
+
+  await test('mutateJsonFileLocked backup updated on each mutation', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'multi.json');
+    shared.safeWrite(fp, { step: 0 });
+    shared.mutateJsonFileLocked(fp, (data) => { data.step = 1; });
+    assert.strictEqual(shared.safeJson(fp + '.backup').step, 0);
+    shared.mutateJsonFileLocked(fp, (data) => { data.step = 2; });
+    assert.strictEqual(shared.safeJson(fp + '.backup').step, 1,
+      '.backup should reflect state before latest mutation');
+    assert.strictEqual(shared.safeJson(fp).step, 2);
+  });
+}
+
 // ─── engine.js — isRetryableFailureReason Tests ─────────────────────────────
 
 async function testIsRetryableFailureReason() {
@@ -4992,6 +5075,7 @@ async function main() {
     await testGitEnv();
     await testProjectPathHelpers();
     await testMutateJsonFileLocked();
+    await testSafeWriteBackupRestore();
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();

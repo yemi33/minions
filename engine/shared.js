@@ -43,7 +43,20 @@ function safeReadDir(dir) {
 }
 
 function safeJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    // Primary file missing or corrupted — try restoring from .backup sidecar
+    const backupPath = p + '.backup';
+    try {
+      const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+      // Backup is valid — restore it to the primary file
+      try { fs.writeFileSync(p, JSON.stringify(backupData, null, 2)); } catch { /* best-effort restore */ }
+      return backupData;
+    } catch {
+      return null;
+    }
+  }
 }
 
 let _tmpCounter = 0;
@@ -140,7 +153,7 @@ function mutateJsonFileLocked(filePath, mutateFn, {
     let data = safeJson(filePath);
     if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
     // Back up last-known-good state before mutation (best-effort)
-    const backupPath = filePath + '.bak';
+    const backupPath = filePath + '.backup';
     try { if (fs.existsSync(filePath)) fs.copyFileSync(filePath, backupPath); } catch { /* backup is best-effort */ }
     const next = mutateFn(data);
     const finalData = next === undefined ? data : next;
