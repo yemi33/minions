@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.148 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/shared.js
+
+### Dashboard
+- dashboard/js/command-center.js
+- dashboard/js/render-work-items.js
+- dashboard/layout.html
+- dashboard/styles.css
+
+### Other
+- .github/workflows/pr-tests.yml
+- test/unit.test.js
+
 ## 0.1.146 (2026-04-01)
 
 ### Engine
