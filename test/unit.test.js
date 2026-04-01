@@ -184,6 +184,70 @@ async function testBranchSanitization() {
   });
 }
 
+async function testSanitizePath() {
+  console.log('\n── shared.js — Path Sanitization ──');
+
+  await test('sanitizePath accepts valid filenames', () => {
+    const tmp = createTmpDir();
+    const result = shared.sanitizePath('test.json', tmp);
+    assert.strictEqual(result, path.resolve(tmp, 'test.json'));
+  });
+
+  await test('sanitizePath rejects directory traversal with ../', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('../etc/passwd', tmp), /directory traversal/);
+  });
+
+  await test('sanitizePath rejects encoded directory traversal', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('..%2F..%2Fetc%2Fpasswd', tmp), /directory traversal/);
+  });
+
+  await test('sanitizePath rejects null bytes', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('test\0.json', tmp), /null byte/);
+  });
+
+  await test('sanitizePath rejects absolute paths', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('/etc/passwd', tmp), /absolute path/);
+    assert.throws(() => shared.sanitizePath('C:\\Windows\\System32', tmp), /absolute path/);
+  });
+
+  await test('sanitizePath rejects empty file parameter', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('', tmp), /required/);
+    assert.throws(() => shared.sanitizePath(null, tmp), /required/);
+  });
+
+  await test('sanitizePath allows subdirectory paths within base', () => {
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, 'sub'), { recursive: true });
+    const result = shared.sanitizePath('sub/file.txt', tmp);
+    assert.ok(result.startsWith(path.resolve(tmp)));
+  });
+}
+
+async function testValidatePid() {
+  console.log('\n── shared.js — PID Validation ──');
+
+  await test('validatePid accepts valid numeric PIDs', () => {
+    assert.strictEqual(shared.validatePid(1234), 1234);
+    assert.strictEqual(shared.validatePid('5678'), 5678);
+  });
+
+  await test('validatePid rejects non-numeric strings', () => {
+    assert.throws(() => shared.validatePid('abc'), /numeric/);
+    assert.throws(() => shared.validatePid('12; rm -rf /'), /numeric/);
+    assert.throws(() => shared.validatePid('123 & echo pwned'), /numeric/);
+  });
+
+  await test('validatePid rejects zero and negative PIDs', () => {
+    assert.throws(() => shared.validatePid(0), /positive/);
+    assert.throws(() => shared.validatePid(-1), /numeric/);
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -4116,11 +4180,12 @@ async function testDispatchCycleIntegration() {
   // ── Security (2 tests) ──
 
   await test('Dashboard validates paths against directory traversal (..)', () => {
-    const dotDotChecks = (dashSrc.match(/includes\(['"]\.\.['"]|indexOf\(['"]\.\.['"]|startsWith/g) || []).length;
-    assert.ok(dotDotChecks >= 3,
-      `Dashboard must check for '..' in paths on multiple API endpoints (found ${dotDotChecks} checks, need >= 3)`);
-    assert.ok(dashSrc.includes("'..'") || dashSrc.includes('"..'),
-      'Dashboard must explicitly check for .. in user-supplied paths');
+    // Dashboard uses shared.sanitizePath() for path validation across all file-accepting endpoints
+    const sanitizePathCalls = (dashSrc.match(/sanitizePath\(/g) || []).length;
+    assert.ok(sanitizePathCalls >= 5,
+      `Dashboard must use sanitizePath() on multiple API endpoints (found ${sanitizePathCalls} calls, need >= 5)`);
+    assert.ok(dashSrc.includes('sanitizePath'),
+      'Dashboard must use sanitizePath for path traversal prevention');
   });
 
   await test('Dashboard command-center endpoint exists with session management', () => {
@@ -4293,6 +4358,8 @@ async function main() {
     await testSharedUtilities();
     await testIdGeneration();
     await testBranchSanitization();
+    await testSanitizePath();
+    await testValidatePid();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
@@ -4505,49 +4572,30 @@ async function testSharedJsFixes() {
 
   await test('sanitizePath allows valid subpaths', () => {
     const base = createTmpDir();
-    const result = shared.sanitizePath(base, 'sub/dir/file.txt');
+    const result = shared.sanitizePath('sub/dir/file.txt', base);
     assert.strictEqual(result, path.join(base, 'sub', 'dir', 'file.txt'));
   });
 
   await test('sanitizePath blocks path traversal with ../', () => {
     const base = createTmpDir();
-    let threw = false;
-    try {
-      shared.sanitizePath(base, '../../../etc/passwd');
-    } catch (e) {
-      threw = true;
-      assert.ok(e.message.includes('Path traversal blocked'));
-    }
-    assert.ok(threw, 'sanitizePath should throw on path traversal');
+    assert.throws(() => shared.sanitizePath('../../../etc/passwd', base), /directory traversal/);
   });
 
   await test('sanitizePath blocks absolute paths outside base', () => {
     const base = createTmpDir();
-    let threw = false;
-    try {
-      shared.sanitizePath(base, '/etc/passwd');
-    } catch (e) {
-      threw = true;
-      assert.ok(e.message.includes('Path traversal blocked'));
-    }
-    // On Windows, /etc/passwd resolves relative to current drive — may or may not escape
-    // The real test is ../ traversal above. This test is platform-dependent.
-    // Just verify no crash either way.
+    assert.throws(() => shared.sanitizePath('/etc/passwd', base), /absolute path/);
   });
 
   await test('sanitizePath allows base directory itself', () => {
     const base = createTmpDir();
-    const result = shared.sanitizePath(base, '.');
+    const result = shared.sanitizePath('.', base);
     assert.strictEqual(result, path.resolve(base));
   });
 
   await test('sanitizePath blocks encoded traversal via ..%2f', () => {
-    // path.resolve handles this as literal characters, not URL-encoded
-    // The resolved path should still be under base since %2f is not a separator
     const base = createTmpDir();
-    // This should work — %2f is literal, not a path separator
-    const result = shared.sanitizePath(base, 'foo%2f..%2fbar');
-    assert.ok(result.startsWith(path.resolve(base)));
+    // URL-encoded .. should be caught by decodeURIComponent check
+    assert.throws(() => shared.sanitizePath('foo%2f..%2fbar', base), /directory traversal/);
   });
 
   await test('LOCK_STALE_MS is exported and equals 60000', () => {
