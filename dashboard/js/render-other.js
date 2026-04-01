@@ -44,6 +44,7 @@ function renderMetrics(metrics) {
   if (agents.length === 0) {
     el.innerHTML = '<p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p>';
     renderTokenUsage(metrics);
+    renderContextPressure(metrics);
     return;
   }
   let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th></tr></thead><tbody>';
@@ -64,6 +65,7 @@ function renderMetrics(metrics) {
   html += '</tbody></table>';
   el.innerHTML = html;
   renderTokenUsage(metrics);
+  renderContextPressure(metrics);
 }
 
 function renderTokenUsage(metrics) {
@@ -183,4 +185,25 @@ function renderTokenUsage(metrics) {
   el.innerHTML = html;
 }
 
-window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage };
+function renderContextPressure(metrics) {
+  const el = document.getElementById('context-pressure-content');
+  if (!el) return;
+  const cp = metrics._contextPressure;
+  if (!cp || !cp.dispatches) {
+    el.innerHTML = '<p class="empty">No context pressure data yet. Data appears after agents complete tasks.</p>';
+    return;
+  }
+  const avgTurns = (cp.totalTurns / cp.dispatches).toFixed(1);
+  const turnLimitPct = ((cp.turnLimitHits / cp.dispatches) * 100).toFixed(1);
+  const pctColor = parseFloat(turnLimitPct) > 20 ? 'var(--red)' : parseFloat(turnLimitPct) > 5 ? 'var(--yellow, orange)' : 'var(--green)';
+
+  let html = '<div class="token-tiles">';
+  html += '<div class="token-tile"><div class="token-tile-label">Avg Turns</div><div class="token-tile-value">' + avgTurns + '</div><div class="token-tile-sub">per dispatch</div></div>';
+  html += '<div class="token-tile"><div class="token-tile-label">Max Turns</div><div class="token-tile-value">' + cp.maxTurns + '</div></div>';
+  html += '<div class="token-tile"><div class="token-tile-label">Hit Turn Limit</div><div class="token-tile-value" style="color:' + pctColor + '">' + turnLimitPct + '%</div><div class="token-tile-sub">' + cp.turnLimitHits + ' of ' + cp.dispatches + ' dispatches</div></div>';
+  html += '<div class="token-tile"><div class="token-tile-label">Total Dispatches</div><div class="token-tile-value">' + cp.dispatches + '</div></div>';
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage, renderContextPressure };
