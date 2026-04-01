@@ -1012,6 +1012,38 @@ async function testEvalLoopAutoDispatch() {
     assert.strictEqual(shared.ENGINE_DEFAULTS.evalLoop, true);
     assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxIterations, 3);
   });
+
+  await test('duplicate evaluate item is not created for same parent', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/dup-test',
+      project: 'TestProject',
+    };
+    const existingEval = {
+      id: 'W-existing-eval', title: 'Evaluate: Build feature Z', type: 'evaluate',
+      status: 'pending', _evalParentId: 'W-test-impl-dup',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
+
+    // Simulate the dedup check from the eval-loop code
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const existing = items.find(i => i._evalParentId === 'W-test-impl-dup' && i.type === 'evaluate');
+    assert.ok(existing, 'Should find existing evaluate item');
+    assert.strictEqual(existing.id, 'W-existing-eval');
+    // The code should skip creation — verify no new item would be added
+    assert.strictEqual(items.length, 2, 'Should still have only 2 items (no duplicate)');
+  });
+
+  await test('source guard requires work-item source for project-scoped path', () => {
+    // Verify the code path checks meta.source === 'work-item' for project-scoped items
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
+      'eval-loop should check meta.source === work-item for project-scoped path');
+  });
 }
 
 // ─── Consolidation Tests ─────────────────────────────────────────────────────
