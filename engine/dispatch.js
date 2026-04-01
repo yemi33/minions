@@ -38,6 +38,7 @@ function addToDispatch(item) {
   item.created_at = ts();
   mutateDispatch((dispatch) => {
     dispatch.pending.push(item);
+    return dispatch;
   });
   log('info', `Queued dispatch: ${item.id} (${item.type} → ${item.agent})`);
   return item.id;
@@ -79,7 +80,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
       if (idx >= 0) item = dispatch.pending.splice(idx, 1)[0];
     }
 
-    if (!item) return;
+    if (!item) return dispatch;
     item.completed_at = ts();
     item.result = result;
     if (reason) item.reason = reason;
@@ -89,6 +90,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
       dispatch.completed = dispatch.completed.slice(-99);
     }
     dispatch.completed.push(item);
+    return dispatch;
   });
 
   if (item) {

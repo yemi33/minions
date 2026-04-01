@@ -25,7 +25,7 @@ function log(level, msg, meta = {}) {
   let logData = safeJson(LOG_PATH) || [];
   if (!Array.isArray(logData)) logData = logData.entries || [];
   logData.push(entry);
-  if (logData.length > 2000) logData.splice(0, logData.length - 2000);
+  if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
   safeWrite(LOG_PATH, logData);
 }
 
