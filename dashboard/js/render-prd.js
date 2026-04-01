@@ -36,11 +36,12 @@ function renderPrd(prd, prog) {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
       } else if (effectiveStatus === 'completed') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
-          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--muted);border-color:var(--border);margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\')">Archive</button>';
+          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\',this)">Archive</button>';
       } else if (effectiveStatus === 'in-progress') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
       } else if (effectiveStatus === 'paused') {
-        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>';
+        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>' +
+          ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\',this)">Archive</button>';
       }
     }
     badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + (statusLabels[effectiveStatus] || effectiveStatus) + '</span>' +
@@ -238,7 +239,7 @@ function renderPrdProgress(prog) {
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
           : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
     const archiveBtn = isCompleted
-      ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
+      ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:var(--surface);border:1px solid var(--border);border-radius:3px">Archive</span>'
       : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
@@ -398,7 +399,7 @@ function renderPrdProgress(prog) {
   }
 
   function renderE2eSection(planFile) {
-    const prs = e2eByPlan[planFile] || e2eByPlan['_unlinked'] || [];
+    const prs = e2eByPlan[planFile] || [];
     const guide = guideByPlan[planFile];
     if (prs.length === 0 && !guide) return '';
     let html = '<div style="margin:6px 0 10px;padding:6px 10px;background:rgba(56,139,253,0.08);border:1px solid rgba(56,139,253,0.25);border-radius:4px">';
