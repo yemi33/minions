@@ -724,6 +724,9 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   if (newStatus !== 'merged') return;
 
+  // Mark review as approved since it was merged
+  pr.reviewStatus = 'approved';
+
   // Resolve linked work item from pr-links or PR branch name
   let mergedItemId = getPrLinks()[pr.id];
   if (!mergedItemId && pr.branch) {
@@ -761,7 +764,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (item && item.status !== 'done') {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
           item.status = 'done';
-          item.completedAt = e.ts();
+          item.completedAt = ts();
           item._mergedVia = pr.id;
           shared.safeWrite(wiPath, items);
           break;

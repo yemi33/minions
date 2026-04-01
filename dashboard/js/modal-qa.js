@@ -227,8 +227,8 @@ async function _processQaMessage(message, selection) {
         _modalDocContext.content = display;
       }
 
-      // If editing paused an active PRD, show re-execute actions
-      if (data.pausedPrd && capturedFilePath) {
+      // If editing paused an active PRD, show re-execute actions (only for plan .md files)
+      if (data.pausedPrd && capturedFilePath && /^plans\/.*\.md$/.test(capturedFilePath)) {
         const planFile = capturedFilePath.replace(/^plans\//, '');
         const esc = planFile.replace(/'/g, "\\'");
         const actionDiv = document.createElement('div');

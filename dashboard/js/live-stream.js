@@ -19,7 +19,7 @@ function renderLiveChatMessage(raw) {
         if (block.type === 'tool_use') {
           el.innerHTML += '<div style="background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:10px;color:var(--muted);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">' +
             '\u{1F527} ' + escHtml(block.name || 'tool') + '</div>' +
-            '<div style="display:none;background:var(--bg);padding:4px 8px;border-radius:4px;margin:0 0 4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;color:var(--muted)">' + escHtml(JSON.stringify(block.input, null, 2).slice(0, 500)) + '</div>';
+            '<div style="display:none;background:var(--bg);padding:4px 8px;border-radius:4px;margin:0 0 4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;color:var(--muted)">' + escHtml(JSON.stringify(block.input || {}, null, 2).slice(0, 500)) + '</div>';
         }
       }
     }

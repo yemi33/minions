@@ -376,7 +376,19 @@ async function reconcilePrs(config) {
       e.log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
-    if (projectAdded > 0) {
+    // Backfill prdItems from pr-links for any PR with empty array
+    const prLinks = getPrLinks();
+    let backfilled = 0;
+    for (const pr of existingPrs) {
+      const linked = prLinks[pr.id];
+      if (linked && !(pr.prdItems || []).includes(linked)) {
+        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
+        pr.prdItems.push(linked);
+        backfilled++;
+      }
+    }
+
+    if (projectAdded > 0 || backfilled > 0) {
       safeWrite(prPath, existingPrs);
       totalAdded += projectAdded;
     }

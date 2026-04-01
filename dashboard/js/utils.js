@@ -67,7 +67,10 @@ function renderMd(s) {
   html = html.replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '<em>$1</em>');
   html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em>$1</em>');
   html = html.replace(/~~(.+?)~~/g, '<s>$1</s>');
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--blue)">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, href) {
+    if (/^(javascript|data|vbscript):/i.test(href)) return text;
+    return '<a href="' + href + '" target="_blank" rel="noopener" style="color:var(--blue)">' + text + '</a>';
+  });
 
   // 3. Block-level processing (line by line)
   var lines = html.split('\n');
