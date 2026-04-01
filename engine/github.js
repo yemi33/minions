@@ -239,7 +239,7 @@ async function pollPrHumanComments(config) {
     const reviewComments = ghApi(`/pulls/${prNum}/comments`, slug);
     const allComments = [
       ...(comments || []).map(c => ({ ...c, _type: 'issue' })),
-      ...((reviewComments || []).map(c => ({ ...c, _type: 'review' })))
+      ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
     // Filter out bot comments and minions's own comments
