@@ -56,16 +56,17 @@ function renderNotes(notes) {
 
   if (!content || !content.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
   el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + renderMd(content) + '</div>';
+  el.querySelector('.notes-preview')._rawContent = content;
 }
 
 function openNotesModal() {
   const preview = document.querySelector('.notes-preview');
   if (!preview) return;
-  const content = preview.textContent;
+  const content = preview._rawContent || preview.textContent;
   document.getElementById('modal-title').textContent = 'Team Notes';
-  document.getElementById('modal-body').textContent = content;
-  document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal-body').innerHTML = '<div style="font-size:12px;line-height:1.6">' + renderMd(content) + '</div>';
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
   _modalDocContext = { title: 'Team Notes', content, selection: '' };
   _modalEditable = 'notes.md';
   _modalFilePath = 'notes.md'; showModalQa();

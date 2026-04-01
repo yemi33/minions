@@ -3280,20 +3280,20 @@ async function testRunPostCompletionHooks() {
   });
 
   await test('checkPlanCompletion does not use uniquePath for inbox summary', () => {
-    // uniquePath at the inbox summary line was replaced with slug+date dedup
+    // uniquePath at the inbox summary line was replaced with slug+date dedup (via writeToInbox helper or inline)
     const inboxSummarySection = lifecycleSrc.split('Write summary to notes/inbox')[1]?.split('Resolve the primary project')[0] || '';
     assert.ok(!inboxSummarySection.includes('uniquePath'),
       'Should not use uniquePath for plan completion inbox summary');
-    assert.ok(inboxSummarySection.includes('safeReadDir') || inboxSummarySection.includes('summarySlug'),
-      'Should use slug+date dedup pattern for inbox summary');
+    assert.ok(inboxSummarySection.includes('writeToInbox') || inboxSummarySection.includes('safeReadDir') || inboxSummarySection.includes('summarySlug'),
+      'Should use slug+date dedup pattern for inbox summary (via writeToInbox helper or inline)');
   });
 
   await test('checkPlanCompletion guards inbox write with slug+date dedup (not uniquePath)', () => {
-    // The inbox summary section should use safeReadDir + startsWith for dedup
+    // The inbox write uses writeToInbox helper (which internally uses safeReadDir + dateStamp + startsWith)
+    // or inlines the same pattern. Either approach is valid.
     const inboxSection = lifecycleSrc.split('Write summary to notes/inbox')[1]?.split('Resolve the primary project')[0] || '';
-    assert.ok(inboxSection.includes('safeReadDir'), 'Should use safeReadDir for inbox dedup check');
-    assert.ok(inboxSection.includes('dateStamp()'), 'Should include dateStamp in dedup slug');
-    assert.ok(inboxSection.includes('.startsWith('), 'Should use startsWith to check existing files');
+    assert.ok(inboxSection.includes('writeToInbox') || inboxSection.includes('safeReadDir'),
+      'Should use writeToInbox helper or safeReadDir for inbox dedup check');
     assert.ok(!inboxSection.includes('uniquePath'), 'Should NOT use uniquePath for inbox summary');
   });
 
@@ -5055,49 +5055,29 @@ async function testSharedJsFixes() {
 
   await test('sanitizePath allows valid subpaths', () => {
     const base = createTmpDir();
-    const result = shared.sanitizePath(base, 'sub/dir/file.txt');
+    const result = shared.sanitizePath('sub/dir/file.txt', base);
     assert.strictEqual(result, path.join(base, 'sub', 'dir', 'file.txt'));
   });
 
   await test('sanitizePath blocks path traversal with ../', () => {
     const base = createTmpDir();
-    let threw = false;
-    try {
-      shared.sanitizePath(base, '../../../etc/passwd');
-    } catch (e) {
-      threw = true;
-      assert.ok(e.message.includes('Path traversal blocked'));
-    }
-    assert.ok(threw, 'sanitizePath should throw on path traversal');
+    assert.throws(() => shared.sanitizePath('../../../etc/passwd', base), /directory traversal/);
   });
 
   await test('sanitizePath blocks absolute paths outside base', () => {
     const base = createTmpDir();
-    let threw = false;
-    try {
-      shared.sanitizePath(base, '/etc/passwd');
-    } catch (e) {
-      threw = true;
-      assert.ok(e.message.includes('Path traversal blocked'));
-    }
-    // On Windows, /etc/passwd resolves relative to current drive — may or may not escape
-    // The real test is ../ traversal above. This test is platform-dependent.
-    // Just verify no crash either way.
+    assert.throws(() => shared.sanitizePath('/etc/passwd', base), /absolute path/);
   });
 
   await test('sanitizePath allows base directory itself', () => {
     const base = createTmpDir();
-    const result = shared.sanitizePath(base, '.');
+    const result = shared.sanitizePath('.', base);
     assert.strictEqual(result, path.resolve(base));
   });
 
   await test('sanitizePath blocks encoded traversal via ..%2f', () => {
-    // path.resolve handles this as literal characters, not URL-encoded
-    // The resolved path should still be under base since %2f is not a separator
     const base = createTmpDir();
-    // This should work — %2f is literal, not a path separator
-    const result = shared.sanitizePath(base, 'foo%2f..%2fbar');
-    assert.ok(result.startsWith(path.resolve(base)));
+    assert.throws(() => shared.sanitizePath('..%2f..%2fetc%2fpasswd', base), /directory traversal/);
   });
 
   await test('LOCK_STALE_MS is exported and equals 60000', () => {
