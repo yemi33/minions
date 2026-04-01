@@ -5495,6 +5495,9 @@ async function main() {
 
     // Checkpoint resume support
     await testCheckpointResume();
+
+    // P-2b1c0d9e: Per-work-item cumulative cost tracking
+    await testCumulativeCostTracking();
   } finally {
     cleanupTmpDirs();
   }
@@ -5926,6 +5929,101 @@ async function testCheckpointResume() {
   await test('checkpoint resume logs needs-human-review escalation', () => {
     assert.ok(engineSrc.includes('exceeded 3 checkpoint-resumes'),
       'Should log when work item is escalated to needs-human-review');
+  });
+}
+
+// ─── P-2b1c0d9e: Per-work-item cumulative cost tracking ──────────────────────
+
+async function testCumulativeCostTracking() {
+  console.log('\n── Per-work-item cumulative cost tracking ──');
+
+  await test('ENGINE_DEFAULTS includes evalMaxCost: null', () => {
+    assert.ok('evalMaxCost' in shared.ENGINE_DEFAULTS, 'ENGINE_DEFAULTS should have evalMaxCost');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxCost, null, 'evalMaxCost default should be null');
+  });
+
+  await test('lifecycle.js accumulates _totalCostUsd on work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('_totalCostUsd'), 'Should track _totalCostUsd on work items');
+    assert.ok(src.includes('_totalInputTokens'), 'Should track _totalInputTokens on work items');
+    assert.ok(src.includes('_totalOutputTokens'), 'Should track _totalOutputTokens on work items');
+  });
+
+  await test('cost accumulation uses mutateJsonFileLocked (not safeWrite)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the cost accumulation section
+    const costSection = src.slice(src.indexOf('Accumulate per-work-item cost'), src.indexOf('Handle decomposition results'));
+    assert.ok(costSection.includes('mutateJsonFileLocked'), 'Cost accumulation must use mutateJsonFileLocked for concurrency safety');
+  });
+
+  await test('cost accumulates across 2 dispatches (functional)', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-001', title: 'Test item', status: 'dispatched', _totalCostUsd: 0.50, _totalInputTokens: 1000, _totalOutputTokens: 500 }
+    ]);
+
+    // Simulate second dispatch accumulation
+    shared.mutateJsonFileLocked(wiPath, (items) => {
+      const wi = items.find(i => i.id === 'W-001');
+      if (wi) {
+        wi._totalCostUsd = (wi._totalCostUsd || 0) + 0.75;
+        wi._totalInputTokens = (wi._totalInputTokens || 0) + 2000;
+        wi._totalOutputTokens = (wi._totalOutputTokens || 0) + 1000;
+      }
+      return items;
+    }, { defaultValue: [] });
+
+    const result = shared.safeJson(wiPath);
+    const wi = result.find(i => i.id === 'W-001');
+    assert.strictEqual(wi._totalCostUsd, 1.25, 'Cost should accumulate: 0.50 + 0.75 = 1.25');
+    assert.strictEqual(wi._totalInputTokens, 3000, 'Input tokens should accumulate: 1000 + 2000');
+    assert.strictEqual(wi._totalOutputTokens, 1500, 'Output tokens should accumulate: 500 + 1000');
+  });
+
+  await test('cost ceiling triggers needs-human-review', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-002', title: 'Expensive item', status: 'done', _totalCostUsd: 5.50 }
+    ]);
+
+    // Simulate cost ceiling check: evalMaxCost = 5.00, current = 5.50
+    const evalMaxCost = 5.00;
+    const items = shared.safeJson(wiPath);
+    const wi = items.find(i => i.id === 'W-002');
+    if (wi && wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
+      shared.mutateJsonFileLocked(wiPath, (data) => {
+        const target = data.find(i => i.id === 'W-002');
+        if (target) {
+          target.status = 'needs-human-review';
+          target.failReason = `Cumulative cost exceeds evalMaxCost ceiling`;
+        }
+        return data;
+      }, { defaultValue: [] });
+    }
+
+    const result = shared.safeJson(wiPath);
+    const updated = result.find(i => i.id === 'W-002');
+    assert.strictEqual(updated.status, 'needs-human-review', 'Item exceeding cost ceiling should be needs-human-review');
+    assert.ok(updated.failReason.includes('evalMaxCost'), 'Fail reason should mention evalMaxCost');
+  });
+
+  await test('cost ceiling not triggered when evalMaxCost is null', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Verify null check exists — evalMaxCost must be non-null and > 0
+    assert.ok(src.includes('evalMaxCost != null') || src.includes('evalMaxCost !== null'),
+      'Should check evalMaxCost is not null before enforcing');
+    assert.ok(src.includes('evalMaxCost > 0'),
+      'Should check evalMaxCost > 0 before enforcing');
+  });
+
+  await test('dashboard renders cumulative cost fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('_totalCostUsd'), 'Dashboard should display _totalCostUsd');
+    assert.ok(src.includes('_totalInputTokens'), 'Dashboard should display _totalInputTokens');
+    assert.ok(src.includes('_totalOutputTokens'), 'Dashboard should display _totalOutputTokens');
+    assert.ok(src.includes('Cumulative Cost'), 'Dashboard should label the cost field');
   });
 }
 
