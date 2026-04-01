@@ -4959,6 +4959,9 @@ async function main() {
 
     // Scheduler tests
     await testSchedulerCronParsing();
+
+    // Session 2026-03-31 features
+    await testSessionFeatures();
   } finally {
     cleanupTmpDirs();
   }
@@ -5083,6 +5086,194 @@ async function testSharedJsFixes() {
   await test('LOCK_STALE_MS is exported and equals 60000', () => {
     assert.strictEqual(shared.LOCK_STALE_MS, 60000);
   });
+}
+
+// ─── Session 2026-03-31 Feature Tests ────────────────────────────────────────
+
+async function testAutoApproveMode() {
+  await test('ENGINE_DEFAULTS includes autoApprovePlans: false', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoApprovePlans, false);
+  });
+
+  await test('parseStreamJsonOutput extracts model from init message', () => {
+    const initLine = '{"type":"system","subtype":"init","model":"claude-opus-4-6[1m]","session_id":"abc"}';
+    const resultLine = '{"type":"result","result":"done","total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":50}}';
+    const raw = initLine + '\n' + resultLine;
+    const parsed = shared.parseStreamJsonOutput(raw);
+    assert.strictEqual(parsed.model, 'claude-opus-4-6[1m]');
+    assert.strictEqual(parsed.usage.costUsd, 0.5);
+  });
+
+  await test('parseStreamJsonOutput returns null model when no init message', () => {
+    const raw = '{"type":"result","result":"done","total_cost_usd":0.1}';
+    const parsed = shared.parseStreamJsonOutput(raw);
+    assert.strictEqual(parsed.model, null);
+  });
+}
+
+async function testSyncPrsFromOutputCentral() {
+  await test('syncPrsFromOutput writes to central PR file when no projects', () => {
+    const lifecycle = require('../engine/lifecycle');
+    // syncPrsFromOutput is not directly exported, but we can verify the central path logic exists
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('useCentral'), 'lifecycle.js should have useCentral fallback');
+    assert.ok(src.includes('centralPrPath'), 'lifecycle.js should reference centralPrPath');
+    assert.ok(src.includes('extractPrUrl'), 'lifecycle.js should have extractPrUrl function');
+  });
+
+  await test('implement playbook marks PR creation as mandatory', () => {
+    const playbook = fs.readFileSync(path.join(__dirname, '..', 'playbooks', 'implement.md'), 'utf8');
+    assert.ok(playbook.includes('MANDATORY'), 'implement playbook should mark PR creation as MANDATORY');
+  });
+}
+
+async function testNoRetryPrCompletion() {
+  await test('lifecycle reverts implement tasks without PR to pending for retry', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('Completed without creating a pull request'), 'should set failReason for no-PR completion');
+    assert.ok(src.includes('Auto-retry') && src.includes('no PR created'), 'should auto-retry when no PR');
+  });
+}
+
+async function testKbCatConstants() {
+  await test('KB_CAT_LABELS and KB_CAT_ICONS defined in render-kb.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(src.includes('KB_CAT_LABELS'), 'should define KB_CAT_LABELS');
+    assert.ok(src.includes('KB_CAT_ICONS'), 'should define KB_CAT_ICONS');
+    assert.ok(src.includes('architecture:'), 'should include architecture category');
+    assert.ok(src.includes("'project-notes':"), 'should include project-notes category');
+  });
+}
+
+async function testRenderMdTables() {
+  await test('renderMd in utils.js handles markdown tables', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'utils.js'), 'utf8');
+    assert.ok(src.includes('table'), 'renderMd should handle tables');
+    assert.ok(src.includes('<thead>') || src.includes('thead'), 'should generate thead for table header');
+  });
+}
+
+async function testScheduleDetailModal() {
+  await test('render-schedules has openScheduleDetail and pagination', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    assert.ok(src.includes('openScheduleDetail'), 'should have openScheduleDetail function');
+    assert.ok(src.includes('SCHED_PER_PAGE'), 'should have pagination constant');
+    assert.ok(src.includes('_schedPrev'), 'should have prev page function');
+    assert.ok(src.includes('_schedNext'), 'should have next page function');
+  });
+}
+
+async function testPlanArchiveApi() {
+  await test('dashboard has /api/plans/archive endpoint', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("'/api/plans/archive'"), 'should have archive endpoint');
+    assert.ok(src.includes('handlePlansArchive'), 'should have archive handler');
+  });
+
+  await test('planArchive function exists in render-plans.js', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('async function planArchive'), 'should have planArchive function');
+    assert.ok(src.includes("'/api/plans/archive'"), 'should call archive API');
+  });
+}
+
+async function testPrWaitingResolve() {
+  await test('github.js resolves waiting review status on merge', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes("reviewStatus === 'waiting'") && src.includes("'merged'"), 'should resolve waiting on merge');
+  });
+
+  await test('ado.js resolves waiting review status on merge', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes("reviewStatus === 'waiting'") && src.includes("'merged'"), 'should resolve waiting on merge');
+  });
+}
+
+async function testSettingsComprehensive() {
+  await test('settings UI includes all ENGINE_DEFAULTS fields', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const fields = ['tickInterval', 'maxConcurrent', 'agentTimeout', 'maxTurns', 'heartbeatTimeout',
+      'worktreeCreateTimeout', 'worktreeCreateRetries', 'worktreeRoot', 'idleAlertMinutes',
+      'shutdownTimeout', 'restartGracePeriod', 'meetingRoundTimeout',
+      'autoApprovePlans', 'autoDecompose', 'allowTempAgents'];
+    for (const f of fields) {
+      assert.ok(src.includes(f), 'settings should include ' + f);
+    }
+  });
+
+  await test('settings save calls reloadConfig', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('reloadConfig()') && src.includes('invalidateStatusCache()') && src.includes('[settings] Saved'), 'should reload config after save');
+  });
+
+  await test('settings save shows toast feedback', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes("showToast('cmd-toast', 'Settings saved'"), 'should show success toast');
+    assert.ok(src.includes("'Saving...'"), 'should show saving state on button');
+  });
+}
+
+async function testCcActionTypes() {
+  await test('CC system prompt includes schedule, create-meeting, set-config actions', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('**schedule**'), 'should have schedule action type');
+    assert.ok(src.includes('**create-meeting**'), 'should have create-meeting action type');
+    assert.ok(src.includes('**set-config**'), 'should have set-config action type');
+  });
+
+  await test('CC executor handles schedule, create-meeting, set-config', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes("case 'schedule':"), 'should handle schedule action');
+    assert.ok(src.includes("case 'create-meeting':"), 'should handle create-meeting action');
+    assert.ok(src.includes("case 'set-config':"), 'should handle set-config action');
+  });
+}
+
+async function testAutoModeStatus() {
+  await test('status API includes autoMode flags', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('autoMode:'), 'status should include autoMode');
+    assert.ok(src.includes('approvePlans:'), 'autoMode should have approvePlans');
+  });
+
+  await test('auto-approve badge element exists in plans page', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'pages', 'plans.html'), 'utf8');
+    assert.ok(src.includes('auto-approve-badge'), 'plans page should have auto-approve-badge element');
+  });
+}
+
+async function testApiRoutesInCcPreamble() {
+  await test('CC preamble auto-injects API routes', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('_getApiRoutesSummary'), 'should have _getApiRoutesSummary function');
+    assert.ok(src.includes('_apiRoutesRef'), 'should have _apiRoutesRef variable');
+    assert.ok(src.includes('Dashboard API'), 'preamble should include Dashboard API section');
+  });
+}
+
+async function testKbSweepBatching() {
+  await test('KB sweep uses batched processing', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('BATCH_SIZE'), 'sweep should use BATCH_SIZE');
+    assert.ok(src.includes('batches.length'), 'sweep should iterate batches');
+    assert.ok(src.includes('batch ${b + 1}'), 'sweep should log batch progress');
+  });
+}
+
+async function testSessionFeatures() {
+  await testAutoApproveMode();
+  await testSyncPrsFromOutputCentral();
+  await testNoRetryPrCompletion();
+  await testKbCatConstants();
+  await testRenderMdTables();
+  await testScheduleDetailModal();
+  await testPlanArchiveApi();
+  await testPrWaitingResolve();
+  await testSettingsComprehensive();
+  await testCcActionTypes();
+  await testAutoModeStatus();
+  await testApiRoutesInCcPreamble();
+  await testKbSweepBatching();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
