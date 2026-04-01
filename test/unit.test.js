@@ -1857,6 +1857,61 @@ async function testStateIntegrity() {
       'engine dispatch writes should use lock-backed mutation');
   });
 
+  await test('All mutateDispatch callbacks return dispatch object on every path', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+
+    // Extract all mutateDispatch callback bodies from each file
+    for (const [name, src] of [['engine.js', engineSrc], ['dispatch.js', dispatchSrc], ['cleanup.js', cleanupSrc]]) {
+      // Find all mutateDispatch( occurrences (skip the definition itself)
+      const pattern = /mutateDispatch\(\((\w+)\)\s*=>\s*\{/g;
+      let match;
+      while ((match = pattern.exec(src)) !== null) {
+        const paramName = match[1];
+        // Walk forward from the match to find the closing brace of the callback
+        let depth = 1;
+        let i = match.index + match[0].length;
+        while (i < src.length && depth > 0) {
+          if (src[i] === '{') depth++;
+          else if (src[i] === '}') depth--;
+          i++;
+        }
+        const body = src.slice(match.index + match[0].length, i - 1);
+        // Every return statement should return the dispatch param, not undefined
+        const returnStatements = body.match(/return\b[^;]*/g) || [];
+        for (const ret of returnStatements) {
+          const trimmed = ret.replace(/^return\s*/, '').trim();
+          // Allow: return dp, return dispatch, return dp; — but not bare 'return' or 'return undefined'
+          assert.ok(
+            trimmed.length > 0 && trimmed !== 'undefined',
+            `${name}: mutateDispatch callback has bare/undefined return: "${ret.trim()}". Must return ${paramName}.`
+          );
+        }
+      }
+    }
+  });
+
+  await test('spawnAgent null return is handled in dispatch loop', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('const proc = spawnAgent(item, config)'),
+      'dispatch loop must capture spawnAgent return value');
+    assert.ok(src.includes('proc === null'),
+      'dispatch loop must check for null return from spawnAgent');
+    assert.ok(src.includes('_retryCount') && src.includes("'pending'"),
+      'dispatch loop must re-queue work item with retry metadata on spawn failure');
+  });
+
+  await test('Log rotation uses batch threshold (>= 2500 → 2000)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('logData.length >= 2500'),
+      'log rotation should trigger at >= 2500 for batch efficiency');
+    assert.ok(src.includes('logData.length - 2000'),
+      'log rotation should splice down to 2000 entries');
+    assert.ok(!src.includes('logData.length > 2000'),
+      'log rotation should NOT use tight > 2000 threshold');
+  });
+
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('mutateJsonFileLocked'),

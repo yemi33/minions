@@ -272,6 +272,7 @@ function runCleanup(config, verbose = false) {
             return allWiIds.has(itemId);
           });
         }
+        return dp;
       });
     }
   } catch (e) { log('warn', 'prune orphaned dispatches: ' + e.message); }
