@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.142 (2026-04-01)
+
+### Engine
+- engine/cleanup.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-meetings.js
+- dashboard/js/render-plans.js
+
+### Playbooks
+- build-and-test.md
+- explore.md
+- fix.md
+- implement.md
+- test.md
+- work-item.md
+
 ## 0.1.141 (2026-04-01)
 
 ### Dashboard
