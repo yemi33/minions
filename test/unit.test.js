@@ -2927,6 +2927,37 @@ async function testSyncPrsFromOutput() {
     assert.ok(src.includes('addPrLink'),
       'Should record PR-to-work-item links via addPrLink');
   });
+
+  await test('PR dedup uses strict equality, not substring includes', () => {
+    assert.ok(!src.includes("String(p.id).includes(prId)"),
+      'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
+    assert.ok(src.includes("String(p.id) === String(prId)"),
+      'Should use strict equality for PR ID comparison');
+  });
+}
+
+// ─── lifecycle.js — Silent Data Loss & Undefined Variable Tests ──────────────
+
+async function testLifecycleDataSafety() {
+  console.log('\n── lifecycle.js — Data Safety & Variable Fixes ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('Work-items.json parse failure is logged, not silently swallowed', () => {
+    // The old code had: try { items = JSON.parse(...); } catch {}
+    // The fix adds logging in the catch block
+    assert.ok(!src.match(/JSON\.parse\(fs\.readFileSync\(wiPath[^)]*\)\);\s*\}\s*catch\s*\{\s*\}/),
+      'Should not have empty catch block when parsing work-items.json');
+    assert.ok(src.includes('.bak'),
+      'Should create a backup before falling back to empty array');
+  });
+
+  await test('updatePrAfterReview logs defined variable, not minionsVerdict', () => {
+    assert.ok(!src.includes('minionsVerdict'),
+      'Should not reference undefined minionsVerdict variable');
+    assert.ok(src.includes('target.reviewStatus') && src.includes('by ${reviewerName}'),
+      'Should log target.reviewStatus and reviewerName');
+  });
 }
 
 // ─── lifecycle.js — runPostCompletionHooks Tests ────────────────────────────
@@ -4268,6 +4299,7 @@ async function main() {
     await testExtractSkills();
     await testUpdateWorkItemStatus();
     await testSyncPrsFromOutput();
+    await testLifecycleDataSafety();
     await testRunPostCompletionHooks();
     await testSpawnAgentScript();
     await testExitCode78Handling();
