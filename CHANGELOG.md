@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.149 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/meeting.js
+- engine/shared.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.148 (2026-04-01)
 
 ### Engine
