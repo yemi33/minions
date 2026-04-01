@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.127 (2026-04-01)
+
+### Engine
+- engine.js
+- engine/meeting.js
+
+### Dashboard
+- dashboard/js/render-kb.js
+- dashboard/js/render-schedules.js
+
 ## 0.1.126 (2026-04-01)
 
 ### Engine
