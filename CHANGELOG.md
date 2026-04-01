@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.114 (2026-04-01)
+
+### Dashboard
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-meetings.js
+- dashboard/js/render-pinned.js
+- dashboard/js/render-prs.js
+- dashboard/js/render-schedules.js
+- dashboard/js/render-work-items.js
+- dashboard/js/utils.js
+
 ## 0.1.113 (2026-04-01)
 
 ### Dashboard
