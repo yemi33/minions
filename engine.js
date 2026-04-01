@@ -1245,7 +1245,8 @@ function discoverFromPrs(config, project) {
     const reviewStatus = pr.reviewStatus || 'pending';
 
     // PRs needing review: pending or waiting (review dispatched but no verdict yet)
-    const needsReview = reviewStatus === 'pending' || reviewStatus === 'waiting';
+    const autoReview = config.engine?.autoReview !== false;
+    const needsReview = autoReview && (reviewStatus === 'pending' || reviewStatus === 'waiting');
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;

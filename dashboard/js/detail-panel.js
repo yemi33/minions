@@ -135,6 +135,7 @@ function _cancelCharterEdit() {
 }
 
 async function _saveCharter() {
+  if (!currentAgentId) { alert('No agent selected'); return; }
   const content = document.getElementById('charter-editor').value;
   const btn = document.getElementById('charter-save-btn');
   btn.textContent = 'Saving...'; btn.style.pointerEvents = 'none';

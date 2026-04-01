@@ -39,6 +39,7 @@ async function openSettings() {
     '</div>' +
     '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
       settingsToggle('Auto-approve Plans', 'set-autoApprovePlans', !!e.autoApprovePlans, 'PRDs are approved automatically without human review') +
+      settingsToggle('Auto-review PRs', 'set-autoReview', e.autoReview !== false, 'Automatically dispatch review agents for new PRs') +
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
     '</div>' +
@@ -121,6 +122,7 @@ async function saveSettings() {
       restartGracePeriod: document.getElementById('set-restartGracePeriod').value,
       meetingRoundTimeout: document.getElementById('set-meetingRoundTimeout').value,
       autoApprovePlans: document.getElementById('set-autoApprovePlans').checked,
+      autoReview: document.getElementById('set-autoReview').checked,
       autoDecompose: document.getElementById('set-autoDecompose').checked,
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
     };

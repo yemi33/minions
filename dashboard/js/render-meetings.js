@@ -305,7 +305,7 @@ async function _unarchiveMeeting(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Unarchive failed: ' + (d.error || 'unknown')); refresh(); }
   } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 

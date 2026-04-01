@@ -161,7 +161,8 @@ async function submitWorkItemEdit(id, source) {
 async function deleteWorkItem(id, source) {
   if (!confirm('Delete work item ' + id + '? This will kill any running agent and remove all dispatch history.')) return;
   markDeleted('wi:' + id);
-  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  var wiTable = document.getElementById('work-items-content');
+  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -173,7 +174,8 @@ async function deleteWorkItem(id, source) {
 
 async function archiveWorkItem(id, source) {
   markDeleted('wi:' + id);
-  document.querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  var wiTable = document.getElementById('work-items-content');
+  (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
   showToast('cmd-toast', 'Archived ' + id, true);
   try {
     const res = await fetch('/api/work-items/archive', {
