@@ -356,6 +356,8 @@ const ENGINE_DEFAULTS = {
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
   autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
+  evalLoop: true, // enable evaluate→fix loop after implementation completes
+  evalMaxIterations: 3, // max evaluate→fix cycles before escalating to human
 };
 
 const DEFAULT_AGENTS = {
