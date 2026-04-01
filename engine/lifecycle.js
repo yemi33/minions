@@ -68,7 +68,7 @@ function checkPlanCompletion(meta, config) {
   // Check 2: every feature's work item must be done (or PRD item marked done externally)
   const notDone = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
+    if (w && w.status === 'done') return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
     return !(prdItem && prdItem.status === 'done');
   });
@@ -77,7 +77,7 @@ function checkPlanCompletion(meta, config) {
     return;
   }
 
-  const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
+  const doneItems = planItems.filter(w => w.status === 'done');
   const failedItems = planItems.filter(w => w.status === 'failed');
 
   // 1. Mark plan as completed
