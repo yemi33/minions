@@ -177,23 +177,33 @@ async function _parseNaturalCron() {
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
+let _schedPage = 0;
+const SCHED_PER_PAGE = 15;
+
 function renderSchedules(schedules) {
   const el = document.getElementById('scheduled-content');
   const countEl = document.getElementById('scheduled-count');
   countEl.textContent = schedules.length;
+  window._lastSchedules = schedules;
   if (!schedules.length) {
     el.innerHTML = '<p class="empty">No scheduled tasks. Add one to automate recurring work.</p>';
     return;
   }
+
+  const totalPages = Math.ceil(schedules.length / SCHED_PER_PAGE);
+  if (_schedPage >= totalPages) _schedPage = totalPages - 1;
+  const start = _schedPage * SCHED_PER_PAGE;
+  const pageItems = schedules.slice(start, start + SCHED_PER_PAGE);
+
   let html = '<div class="pr-table-wrap"><table class="pr-table"><thead><tr><th>ID</th><th>Title</th><th>Schedule</th><th>Type</th><th>Project</th><th>Agent</th><th>Enabled</th><th>Last Run</th><th></th></tr></thead><tbody>';
-  for (const s of schedules) {
+  for (const s of pageItems) {
     const enabledBadge = s.enabled
       ? '<span class="pr-badge approved">enabled</span>'
       : '<span class="pr-badge rejected">disabled</span>';
     const lastRun = s._lastRun ? timeAgo(s._lastRun) : 'never';
     const typeBadge = '<span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span>';
     const humanCron = _cronToHuman(s.cron || '');
-    html += '<tr>' +
+    html += '<tr style="cursor:pointer" onclick="openScheduleDetail(\'' + escHtml(s.id) + '\')">' +
       '<td><span class="pr-id">' + escHtml(s.id || '') + '</span></td>' +
       '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(s.title || '') + '">' + escHtml(s.title || '') + '</td>' +
       '<td><span title="' + escHtml(s.cron || '') + '" style="font-size:11px;color:var(--blue)">' + escHtml(humanCron) + '</span></td>' +
@@ -210,8 +220,53 @@ function renderSchedules(schedules) {
     '</tr>';
   }
   html += '</tbody></table></div>';
+
+  if (schedules.length > SCHED_PER_PAGE) {
+    html += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (start+1) + ' to ' + Math.min(start+SCHED_PER_PAGE, schedules.length) + ' of ' + schedules.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_schedPage === 0 ? 'disabled' : '') + '" onclick="_schedPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_schedPage >= totalPages-1 ? 'disabled' : '') + '" onclick="_schedNext()">Next</button>' +
+      '</div>' +
+    '</div>';
+  }
+
   el.innerHTML = html;
-  window._lastSchedules = schedules;
+}
+
+function _schedPrev() { if (_schedPage > 0) { _schedPage--; renderSchedules(window._lastSchedules || []); } }
+function _schedNext() { var tp = Math.ceil((window._lastSchedules || []).length / SCHED_PER_PAGE); if (_schedPage < tp-1) { _schedPage++; renderSchedules(window._lastSchedules || []); } }
+
+function openScheduleDetail(id) {
+  const s = (window._lastSchedules || []).find(x => x.id === id);
+  if (!s) return;
+  const humanCron = _cronToHuman(s.cron || '');
+  const lastRun = s._lastRun ? new Date(s._lastRun).toLocaleString() : 'never';
+  const enabledLabel = s.enabled ? '<span class="pr-badge approved">enabled</span>' : '<span class="pr-badge rejected">disabled</span>';
+
+  document.getElementById('modal-title').innerHTML = escHtml(s.title || s.id) +
+    ' <div style="display:flex;gap:4px;margin-top:4px">' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--blue)" onclick="closeModal();openEditScheduleModal(\'' + escHtml(s.id) + '\')">Edit</button>' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:' + (s.enabled ? 'var(--yellow)' : 'var(--green)') + '" onclick="toggleScheduleEnabled(\'' + escHtml(s.id) + '\',' + !s.enabled + ');closeModal()">' + (s.enabled ? 'Disable' : 'Enable') + '</button>' +
+      '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" onclick="deleteSchedule(\'' + escHtml(s.id) + '\');closeModal()">Delete</button>' +
+    '</div>';
+
+  var body = '<div style="display:flex;flex-direction:column;gap:10px;font-size:12px;line-height:1.6">' +
+    '<div><strong style="color:var(--muted)">ID:</strong> ' + escHtml(s.id) + '</div>' +
+    '<div><strong style="color:var(--muted)">Schedule:</strong> <span style="color:var(--blue)">' + escHtml(humanCron) + '</span> <code style="background:var(--bg);padding:1px 4px;border-radius:3px;font-size:10px">' + escHtml(s.cron || '') + '</code></div>' +
+    '<div><strong style="color:var(--muted)">Type:</strong> <span class="dispatch-type ' + escHtml(s.type || 'implement') + '">' + escHtml(s.type || 'implement') + '</span></div>' +
+    '<div><strong style="color:var(--muted)">Priority:</strong> ' + escHtml(s.priority || 'medium') + '</div>' +
+    '<div><strong style="color:var(--muted)">Project:</strong> ' + escHtml(s.project || 'any') + '</div>' +
+    '<div><strong style="color:var(--muted)">Agent:</strong> ' + escHtml(s.agent || 'auto') + '</div>' +
+    '<div><strong style="color:var(--muted)">Status:</strong> ' + enabledLabel + '</div>' +
+    '<div><strong style="color:var(--muted)">Last Run:</strong> ' + escHtml(lastRun) + '</div>' +
+    (s.description ? '<div><strong style="color:var(--muted)">Description:</strong><div style="margin-top:4px;padding:8px;background:var(--surface2);border-radius:4px">' + renderMd(s.description) + '</div></div>' : '') +
+  '</div>';
+
+  document.getElementById('modal-body').innerHTML = body;
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal').classList.add('open');
 }
 
 // ─── Form ───────────────────────────────────────────────────────────────────
@@ -405,4 +460,4 @@ async function deleteSchedule(id) {
 // Expose _generateScheduleId globally for the inline oninput handler
 window._generateScheduleId = _generateScheduleId;
 
-window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview };
+window.MinionsSchedules = { renderSchedules, openCreateScheduleModal, openEditScheduleModal, openScheduleDetail, submitSchedule, toggleScheduleEnabled, deleteSchedule, _cronToHuman, _parseNaturalCron, _toggleCronMode, _quickSelectDays, _toggleDayPill, _updateCronPreview, _schedPrev, _schedNext };
