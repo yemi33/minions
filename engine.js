@@ -1474,6 +1474,38 @@ function discoverFromWorkItems(config, project) {
     const ac = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
     vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
 
+    // Inject checkpoint context if agent left a checkpoint.json from a prior run
+    vars.checkpoint_context = '';
+    try {
+      const wtPath = vars.worktree_path || root;
+      const cpPath = path.join(wtPath, 'checkpoint.json');
+      if (fs.existsSync(cpPath)) {
+        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+        const cpCount = (item._checkpointCount || 0) + 1;
+        if (cpCount > 3) {
+          log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
+          item.status = 'needs-human-review';
+          item._checkpointCount = cpCount;
+          needsWrite = true;
+          continue;
+        }
+        item._checkpointCount = cpCount;
+        needsWrite = true;
+        const cpSummary = [
+          `## Checkpoint (Resume #${cpCount}/3)`,
+          '',
+          'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
+          '',
+          cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
+          cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+          cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+          cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
+        ].filter(Boolean).join('\n');
+        vars.checkpoint_context = cpSummary;
+        log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+      }
+    } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
+
     // Inject ask-specific variables for the ask playbook
     if (workType === 'ask') {
       vars.question = item.title + (item.description ? '\n\n' + item.description : '');
@@ -1843,6 +1875,39 @@ function discoverCentralWorkItems(config) {
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
       const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
       vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
+
+      // Inject checkpoint context if agent left a checkpoint.json from a prior run
+      vars.checkpoint_context = '';
+      try {
+        const centralBranch = item.branch || `work/${item.id}`;
+        const centralWtPath = firstProject?.localPath
+          ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
+          : '';
+        const cpPath = centralWtPath ? path.join(centralWtPath, 'checkpoint.json') : '';
+        if (cpPath && fs.existsSync(cpPath)) {
+          const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+          const cpCount = (item._checkpointCount || 0) + 1;
+          if (cpCount > 3) {
+            log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
+            item.status = 'needs-human-review';
+            item._checkpointCount = cpCount;
+            continue;
+          }
+          item._checkpointCount = cpCount;
+          const cpSummary = [
+            `## Checkpoint (Resume #${cpCount}/3)`,
+            '',
+            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
+            '',
+            cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
+            cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+            cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+            cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
+          ].filter(Boolean).join('\n');
+          vars.checkpoint_context = cpSummary;
+          log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+        }
+      } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {

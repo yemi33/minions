@@ -11,6 +11,8 @@ Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 Fix issues found by {{reviewer}} on **{{pr_id}}**: {{pr_title}}
 Branch: `{{pr_branch}}`
 
+{{checkpoint_context}}
+
 ## Review Findings to Address
 
 {{review_note}}

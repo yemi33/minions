@@ -4962,6 +4962,9 @@ async function main() {
 
     // Session 2026-03-31 features
     await testSessionFeatures();
+
+    // Checkpoint resume support
+    await testCheckpointResume();
   } finally {
     cleanupTmpDirs();
   }
@@ -5274,6 +5277,72 @@ async function testSessionFeatures() {
   await testAutoModeStatus();
   await testApiRoutesInCcPreamble();
   await testKbSweepBatching();
+}
+
+// ─── Checkpoint Resume Tests ────────────────────────────────────────────────
+
+async function testCheckpointResume() {
+  console.log('\n── Checkpoint Resume ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const implementPb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
+  const fixPb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
+
+  await test('engine.js detects checkpoint.json in worktree', () => {
+    assert.ok(engineSrc.includes("checkpoint.json") && engineSrc.includes("fs.existsSync(cpPath)"),
+      'Should look for checkpoint.json in the agent worktree directory');
+  });
+
+  await test('engine.js injects checkpoint_context variable from checkpoint.json', () => {
+    assert.ok(engineSrc.includes("vars.checkpoint_context") && engineSrc.includes("cpSummary"),
+      'Should build checkpoint_context variable from checkpoint.json contents');
+  });
+
+  await test('checkpoint_context includes completed/remaining/blockers/branch_state', () => {
+    assert.ok(engineSrc.includes('cpData.completed') && engineSrc.includes('cpData.remaining') &&
+      engineSrc.includes('cpData.blockers') && engineSrc.includes('cpData.branch_state'),
+      'Should read all four checkpoint fields');
+  });
+
+  await test('engine.js tracks _checkpointCount on work items', () => {
+    assert.ok(engineSrc.includes('_checkpointCount'),
+      'Must track _checkpointCount on work items');
+    assert.ok(engineSrc.includes("(item._checkpointCount || 0) + 1"),
+      'Should increment _checkpointCount from current value');
+  });
+
+  await test('engine.js caps checkpoint-resumes at 3', () => {
+    assert.ok(engineSrc.includes('cpCount > 3'),
+      'Should check if checkpoint count exceeds 3');
+    assert.ok(engineSrc.includes("'needs-human-review'"),
+      'Should set status to needs-human-review after 3 checkpoint-resumes');
+  });
+
+  await test('checkpoint_context defaults to empty string when no checkpoint', () => {
+    const matches = engineSrc.match(/vars\.checkpoint_context\s*=\s*''/g);
+    assert.ok(matches && matches.length >= 2,
+      'Should default checkpoint_context to empty string in both project and central dispatch paths');
+  });
+
+  await test('implement.md playbook includes checkpoint_context', () => {
+    assert.ok(implementPb.includes('{{checkpoint_context}}'),
+      'implement.md must include {{checkpoint_context}} template variable');
+  });
+
+  await test('fix.md playbook includes checkpoint_context', () => {
+    assert.ok(fixPb.includes('{{checkpoint_context}}'),
+      'fix.md must include {{checkpoint_context}} template variable');
+  });
+
+  await test('checkpoint resume logs injection info', () => {
+    assert.ok(engineSrc.includes('Injecting checkpoint context for'),
+      'Should log when checkpoint context is injected');
+  });
+
+  await test('checkpoint resume logs needs-human-review escalation', () => {
+    assert.ok(engineSrc.includes('exceeded 3 checkpoint-resumes'),
+      'Should log when work item is escalated to needs-human-review');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
