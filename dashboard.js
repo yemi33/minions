@@ -34,14 +34,19 @@ function reloadConfig() {
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 
 // Resolve a plan/PRD file path: .json files live in prd/, .md files in plans/
+// Validates that the file stays within the expected directory to prevent path traversal.
 function resolvePlanPath(file) {
   if (file.endsWith('.json')) {
+    // Validate against both prd/ and prd/archive/
+    shared.sanitizePath(file, PRD_DIR);
     const active = path.join(PRD_DIR, file);
     if (fs.existsSync(active)) return active;
     const archived = path.join(PRD_DIR, 'archive', file);
     if (fs.existsSync(archived)) return archived;
     return active;
   }
+  // Validate against both plans/ and plans/archive/
+  shared.sanitizePath(file, PLANS_DIR);
   const active = path.join(PLANS_DIR, file);
   if (fs.existsSync(active)) return active;
   const archived = path.join(PLANS_DIR, 'archive', file);
@@ -743,12 +748,13 @@ function spawnEngine() {
 }
 
 function killEnginePid(pid) {
-  const { execSync } = require('child_process');
+  const { execFileSync } = require('child_process');
   try {
+    const safePid = shared.validatePid(pid);
     if (process.platform === 'win32') {
-      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'pipe', timeout: 5000 });
+      execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
     } else {
-      process.kill(pid, 'SIGKILL');
+      process.kill(safePid, 'SIGKILL');
     }
   } catch { /* process may be dead */ }
 }
@@ -783,6 +789,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
+      shared.sanitizePath(body.file, PRD_DIR);
 
       // Find the PRD — check active and archive
       const prdDir = path.join(MINIONS_DIR, 'prd');
@@ -1255,11 +1262,14 @@ const server = http.createServer(async (req, res) => {
         try {
           const status = JSON.parse(safeRead(statusPath) || '{}');
           if (status.pid) {
-            if (process.platform === 'win32') {
-              try { require('child_process').execSync('taskkill /PID ' + status.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
-            } else {
-              try { process.kill(status.pid, 'SIGTERM'); } catch { /* process may be dead */ }
-            }
+            try {
+              const safePid = shared.validatePid(status.pid);
+              if (process.platform === 'win32') {
+                require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+              } else {
+                process.kill(safePid, 'SIGTERM');
+              }
+            } catch { /* process may be dead or invalid PID */ }
           }
           status.status = 'idle';
           delete status.currentTask;
@@ -1418,10 +1428,9 @@ const server = http.createServer(async (req, res) => {
     const cat = match[1];
     const file = decodeURIComponent(match[2]);
     // Prevent path traversal
-    if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) {
-      return jsonReply(res, 400, { error: 'invalid file name' });
-    }
-    const content = safeRead(path.join(MINIONS_DIR, 'knowledge', cat, file));
+    const kbCatDir = path.join(MINIONS_DIR, 'knowledge', cat);
+    try { shared.sanitizePath(file, kbCatDir); } catch { return jsonReply(res, 400, { error: 'invalid file name' }); }
+    const content = safeRead(path.join(kbCatDir, file));
     if (content === null) return jsonReply(res, 404, { error: 'not found' });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1779,11 +1788,14 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
                 try {
                   const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
                   if (agentStatus.pid) {
-                    if (process.platform === 'win32') {
-                      try { require('child_process').execSync('taskkill /PID ' + agentStatus.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
-                    } else {
-                      try { process.kill(agentStatus.pid, 'SIGTERM'); } catch { /* process may be dead */ }
-                    }
+                    try {
+                      const safePid = shared.validatePid(agentStatus.pid);
+                      if (process.platform === 'win32') {
+                        require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+                      } else {
+                        process.kill(safePid, 'SIGTERM');
+                      }
+                    } catch { /* process may be dead or invalid PID */ }
                   }
                   agentStatus.status = 'idle';
                   delete agentStatus.currentTask;
@@ -1832,7 +1844,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file is required' });
-      if (body.file.includes('..') || body.file.includes('\0')) return jsonReply(res, 400, { error: 'invalid file path' });
+      shared.sanitizePath(body.file, PRD_DIR);
 
       const prdPath = path.join(PRD_DIR, body.file);
       const plan = safeJson(prdPath);
@@ -1901,6 +1913,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       if (!body.file.endsWith('.md')) return jsonReply(res, 400, { error: 'only .md plans can be executed' });
+      shared.sanitizePath(body.file, PLANS_DIR);
       const planPath = path.join(MINIONS_DIR, 'plans', body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
 
@@ -2007,9 +2020,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
-        return jsonReply(res, 400, { error: 'invalid filename' });
-      }
+      shared.sanitizePath(body.file, body.file.endsWith('.json') ? PRD_DIR : PLANS_DIR);
       const planPath = resolvePlanPath(body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
       // Read PRD content before deleting to get source_plan for cleanup
@@ -2069,9 +2080,7 @@ If nothing to do, return: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
-        return jsonReply(res, 400, { error: 'invalid filename' });
-      }
+      shared.sanitizePath(body.file, body.file.endsWith('.json') ? PRD_DIR : PLANS_DIR);
       const planPath = resolvePlanPath(body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
 
@@ -2375,8 +2384,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       let currentContent = body.document;
       let fullPath = null;
       if (canEdit) {
+        try { shared.sanitizePath(body.filePath, MINIONS_DIR); } catch { return jsonReply(res, 400, { error: 'path must be under minions directory' }); }
         fullPath = path.resolve(MINIONS_DIR, body.filePath);
-        if (!fullPath.startsWith(path.resolve(MINIONS_DIR))) return jsonReply(res, 400, { error: 'path must be under minions directory' });
         const diskContent = safeRead(fullPath);
         if (diskContent !== null) currentContent = diskContent;
       }
@@ -2436,11 +2445,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                           try {
                             const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
                             if (agentStatus.pid) {
-                              if (process.platform === 'win32') {
-                                try { require('child_process').execSync('taskkill /PID ' + agentStatus.pid + ' /F /T', { stdio: 'pipe', timeout: 5000 }); } catch { /* process may be dead */ }
-                              } else {
-                                try { process.kill(agentStatus.pid, 'SIGTERM'); } catch { /* process may be dead */ }
-                              }
+                              try {
+                                const safePid = shared.validatePid(agentStatus.pid);
+                                if (process.platform === 'win32') {
+                                  require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000 });
+                                } else {
+                                  process.kill(safePid, 'SIGTERM');
+                                }
+                              } catch { /* process may be dead or invalid PID */ }
                             }
                             agentStatus.status = 'idle';
                             delete agentStatus.currentTask;
@@ -2489,7 +2501,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { name } = body;
       if (!name) return jsonReply(res, 400, { error: 'name required' });
-      if (name.includes('..') || name.includes('\0')) return jsonReply(res, 400, { error: 'Invalid file name' });
+      shared.sanitizePath(name, path.join(MINIONS_DIR, 'notes', 'inbox'));
 
       const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', name);
       const content = safeRead(inboxPath);

@@ -372,6 +372,42 @@ function getAdoOrgBase(project) {
     : `https://dev.azure.com/${project.adoOrg}`;
 }
 
+// ── Path Sanitization ───────────────────────────────────────────────────────
+
+/**
+ * Validate that a user-supplied filename stays within the given base directory.
+ * Rejects path traversal (../, encoded variants), null bytes, and absolute paths.
+ * Returns the resolved absolute path or throws with a descriptive message.
+ */
+function sanitizePath(file, baseDir) {
+  if (!file || typeof file !== 'string') throw new Error('file parameter is required');
+  // Reject null bytes
+  if (file.includes('\0')) throw new Error('invalid file path: null byte');
+  // Reject obvious traversal patterns (including URL-encoded variants)
+  const decoded = decodeURIComponent(file);
+  if (decoded.includes('..') || file.includes('..')) throw new Error('invalid file path: directory traversal');
+  // Reject absolute paths (Unix and Windows)
+  if (path.isAbsolute(file) || /^[a-zA-Z]:/.test(file)) throw new Error('invalid file path: absolute path not allowed');
+  const resolved = path.resolve(baseDir, file);
+  const normalizedBase = path.resolve(baseDir);
+  if (!resolved.startsWith(normalizedBase + path.sep) && resolved !== normalizedBase) {
+    throw new Error('invalid file path: outside allowed directory');
+  }
+  return resolved;
+}
+
+/**
+ * Validate that a PID value is a positive integer. Returns the numeric PID.
+ * Throws if the value could be used for command injection.
+ */
+function validatePid(pid) {
+  const s = String(pid);
+  if (!/^\d+$/.test(s)) throw new Error('Invalid PID: must be numeric');
+  const n = parseInt(s, 10);
+  if (n <= 0 || !Number.isFinite(n)) throw new Error('Invalid PID: must be a positive integer');
+  return n;
+}
+
 // ── Branch Sanitization ──────────────────────────────────────────────────────
 
 function sanitizeBranch(name) {
@@ -453,6 +489,8 @@ module.exports = {
   nextWorkItemId,
   getAdoOrgBase,
   sanitizeBranch,
+  sanitizePath,
+  validatePid,
   parseSkillFrontmatter,
 };
 
