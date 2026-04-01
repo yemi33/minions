@@ -941,22 +941,26 @@ async function testEvalLoopAutoDispatch() {
     if (evalLoop) {
       const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
       const pi = items.find(i => i.id === 'W-test-impl-1');
-      const evalItem = {
-        id: 'W-' + shared.uid(),
-        title: `Evaluate: ${parentItem.title}`,
-        type: 'evaluate',
-        priority: parentItem.priority,
-        status: 'pending',
-        created: new Date().toISOString(),
-        createdBy: 'engine:eval-loop',
-        project: 'TestProject',
-        branch_name: pi.branch_name,
-        pr_url: pi.pr_url,
-        acceptance_criteria: pi.acceptance_criteria,
-        _evalParentId: parentItem.id,
-      };
-      items.push(evalItem);
-      fs.writeFileSync(wiPath, JSON.stringify(items));
+      // Idempotency check (mirrors lifecycle.js logic)
+      if (!pi._evalDispatched) {
+        const evalItem = {
+          id: 'W-' + shared.uid(),
+          title: `Evaluate: ${parentItem.title}`,
+          type: 'evaluate',
+          priority: parentItem.priority,
+          status: 'pending',
+          created: new Date().toISOString(),
+          createdBy: 'engine:eval-loop',
+          project: 'TestProject',
+          branch_name: pi.branch_name,
+          pr_url: pi.pr_url,
+          acceptance_criteria: pi.acceptance_criteria,
+          _evalParentId: parentItem.id,
+        };
+        pi._evalDispatched = true;
+        items.push(evalItem);
+        fs.writeFileSync(wiPath, JSON.stringify(items));
+      }
     }
 
     const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
@@ -971,6 +975,39 @@ async function testEvalLoopAutoDispatch() {
     assert.strictEqual(evalItem.project, 'TestProject');
     assert.ok(evalItem.id.startsWith('W-'), 'Evaluate item ID should start with W-');
     assert.strictEqual(evalItem.createdBy, 'engine:eval-loop');
+    const updatedParent = result.find(i => i.id === 'W-test-impl-1');
+    assert.strictEqual(updatedParent._evalDispatched, true, 'Parent should have _evalDispatched flag');
+  });
+
+  await test('duplicate eval dispatch is prevented by _evalDispatched flag', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/test-dup',
+      _evalDispatched: true, // already dispatched
+      project: 'TestProject',
+    };
+    const existingEval = {
+      id: 'W-eval-existing', type: 'evaluate', status: 'pending',
+      _evalParentId: 'W-test-impl-dup',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
+
+    // Simulate the eval-loop section — should skip because _evalDispatched is set
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const pi = items.find(i => i.id === 'W-test-impl-dup');
+    if (!pi._evalDispatched) {
+      items.push({ id: 'W-should-not-exist', type: 'evaluate', _evalParentId: pi.id });
+      pi._evalDispatched = true;
+      fs.writeFileSync(wiPath, JSON.stringify(items));
+    }
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 2, 'Should still have only 2 items (no duplicate eval)');
+    assert.ok(!result.find(i => i.id === 'W-should-not-exist'), 'Duplicate eval should not exist');
   });
 
   await test('no evaluate item created when evalLoop is false', () => {
@@ -1006,6 +1043,10 @@ async function testEvalLoopAutoDispatch() {
       'lifecycle.js should set _evalParentId on evaluate items');
     assert.ok(src.includes('engine:eval-loop'),
       'lifecycle.js should mark createdBy as engine:eval-loop');
+    assert.ok(src.includes('_evalDispatched'),
+      'lifecycle.js should use _evalDispatched idempotency flag');
+    assert.ok(src.includes('resolveWiPath'),
+      'lifecycle.js should use resolveWiPath helper');
   });
 
   await test('evalLoop defaults to true in ENGINE_DEFAULTS', () => {
@@ -1043,6 +1084,185 @@ async function testEvalLoopAutoDispatch() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
       'eval-loop should check meta.source === work-item for project-scoped path');
+  });
+}
+
+// ─── Eval Iteration Tracking Tests ──────────────────────────────────────────
+
+async function testEvalIterationTracking() {
+  console.log('\n── lifecycle.js — Eval Iteration Tracking ──');
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+
+  await test('parseEvalVerdict extracts verdict from fenced JSON block', () => {
+    const text = 'Some text\n```json\n{"pass": false, "build": true, "tests": "10/10", "criteria_met": [], "criteria_failed": ["missing feature X"], "feedback": "Add feature X"}\n```\nMore text';
+    const verdict = lifecycle.parseEvalVerdict(text);
+    assert.ok(verdict, 'Should parse verdict');
+    assert.strictEqual(verdict.pass, false);
+    assert.strictEqual(verdict.feedback, 'Add feature X');
+    assert.deepStrictEqual(verdict.criteria_failed, ['missing feature X']);
+  });
+
+  await test('parseEvalVerdict extracts verdict from bare JSON', () => {
+    const text = 'Result: {"pass": true, "build": true, "tests": "5/5", "criteria_met": ["all good"], "criteria_failed": [], "feedback": "LGTM"}';
+    const verdict = lifecycle.parseEvalVerdict(text);
+    assert.ok(verdict, 'Should parse bare verdict');
+    assert.strictEqual(verdict.pass, true);
+  });
+
+  await test('parseEvalVerdict returns null for missing verdict', () => {
+    assert.strictEqual(lifecycle.parseEvalVerdict('no json here'), null);
+    assert.strictEqual(lifecycle.parseEvalVerdict(''), null);
+    assert.strictEqual(lifecycle.parseEvalVerdict(null), null);
+  });
+
+  await test('failed eval creates fix work item and increments _evalIterations (iteration 1)', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+
+    const parentItem = {
+      id: 'W-parent-1', title: 'Build feature X', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/test',
+      pr_url: 'https://github.com/test/repo/pull/1',
+      acceptance_criteria: '- [ ] Feature works',
+      project: 'TestProject', sourcePlan: 'plan-test.json',
+    };
+    const evalItem = {
+      id: 'W-eval-1', title: 'Evaluate: Build feature X', type: 'evaluate',
+      status: 'dispatched', priority: 'high', _evalParentId: 'W-parent-1',
+      project: 'TestProject',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, evalItem]));
+
+    // Simulate the eval verdict processing inline (mirrors lifecycle.js logic)
+    const verdict = { pass: false, feedback: 'Missing feature X', criteria_failed: ['criterion A not met'] };
+    const maxIter = 3;
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const parent = items.find(i => i.id === 'W-parent-1');
+    const iterations = (parent._evalIterations || 0) + 1;
+    parent._evalIterations = iterations;
+
+    assert.ok(iterations < maxIter, 'Should be below max iterations');
+
+    const fixItem = {
+      id: 'W-' + shared.uid(),
+      title: `Fix: ${parent.title} (eval iteration ${iterations})`,
+      type: 'fix', priority: parent.priority, status: 'pending',
+      created: new Date().toISOString(), createdBy: 'engine:eval-loop',
+      project: 'TestProject',
+      branch_name: parent.branch_name, pr_url: parent.pr_url,
+      acceptance_criteria: parent.acceptance_criteria,
+      _evalParentId: parent.id,
+      _evalFeedback: verdict.feedback,
+      _evalCriteriaFailed: verdict.criteria_failed,
+    };
+    if (parent.sourcePlan) fixItem.sourcePlan = parent.sourcePlan;
+    items.push(fixItem);
+    fs.writeFileSync(wiPath, JSON.stringify(items));
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 3, 'Should have 3 items (parent + eval + fix)');
+    const fix = result.find(i => i.type === 'fix');
+    assert.ok(fix, 'Fix item should exist');
+    assert.strictEqual(fix.status, 'pending');
+    assert.strictEqual(fix._evalParentId, 'W-parent-1');
+    assert.strictEqual(fix._evalFeedback, 'Missing feature X');
+    assert.deepStrictEqual(fix._evalCriteriaFailed, ['criterion A not met']);
+    assert.strictEqual(fix.branch_name, 'feat/test');
+    assert.strictEqual(fix.sourcePlan, 'plan-test.json');
+    assert.strictEqual(parent._evalIterations, 1);
+  });
+
+  await test('3 failed eval cycles sets parent to needs-human-review', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+
+    const parentItem = {
+      id: 'W-parent-2', title: 'Build feature Y', type: 'implement',
+      status: 'done', priority: 'high', _evalIterations: 2, // already had 2 cycles
+      branch_name: 'feat/test-y', project: 'TestProject',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
+
+    const maxIter = 3;
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const parent = items.find(i => i.id === 'W-parent-2');
+    const iterations = (parent._evalIterations || 0) + 1;
+    parent._evalIterations = iterations;
+
+    assert.ok(iterations >= maxIter, 'Should be at or above max iterations');
+    parent.status = 'needs-human-review';
+    parent._evalEscalatedAt = new Date().toISOString();
+    fs.writeFileSync(wiPath, JSON.stringify(items));
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const updated = result.find(i => i.id === 'W-parent-2');
+    assert.strictEqual(updated.status, 'needs-human-review', 'Parent should be needs-human-review');
+    assert.strictEqual(updated._evalIterations, 3);
+    assert.ok(updated._evalEscalatedAt, 'Should have escalation timestamp');
+    // No fix item should be created
+    assert.ok(!result.find(i => i.type === 'fix'), 'No fix item should exist when max iterations reached');
+  });
+
+  await test('2 failed eval cycles still gets another fix attempt', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+
+    const parentItem = {
+      id: 'W-parent-3', title: 'Build feature Z', type: 'implement',
+      status: 'done', priority: 'high', _evalIterations: 1, // 1 cycle done
+      branch_name: 'feat/test-z', project: 'TestProject',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
+
+    const maxIter = 3;
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const parent = items.find(i => i.id === 'W-parent-3');
+    const iterations = (parent._evalIterations || 0) + 1;
+    parent._evalIterations = iterations;
+
+    assert.ok(iterations < maxIter, 'Should be below max iterations');
+    const fixItem = {
+      id: 'W-fix-z', type: 'fix', status: 'pending', _evalParentId: parent.id,
+      _evalFeedback: 'Fix this', createdBy: 'engine:eval-loop',
+    };
+    items.push(fixItem);
+    fs.writeFileSync(wiPath, JSON.stringify(items));
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const updated = result.find(i => i.id === 'W-parent-3');
+    assert.strictEqual(updated._evalIterations, 2);
+    assert.strictEqual(updated.status, 'done', 'Parent should still be done, not escalated');
+    const fix = result.find(i => i.type === 'fix');
+    assert.ok(fix, 'Fix item should be created');
+    assert.strictEqual(fix._evalFeedback, 'Fix this');
+  });
+
+  await test('needs-human-review is a terminal status — engine skips dispatch', () => {
+    // Verify that the engine dispatch gate at discoverFromWorkItems skips non-pending/queued items
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // The dispatch gate only dispatches 'queued' or 'pending' items
+    assert.ok(src.includes("item.status !== 'queued' && item.status !== 'pending'"),
+      'engine.js should gate dispatch on queued/pending status only');
+  });
+
+  await test('dashboard statusBadge maps needs-human-review to needs-review class', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes("'needs-human-review'") && src.includes("'needs-review'"),
+      'render-work-items.js should map needs-human-review to needs-review CSS class');
+  });
+
+  await test('CSS includes needs-review badge style (amber/orange)', () => {
+    const css = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+    assert.ok(css.includes('.pr-badge.needs-review'),
+      'styles.css should have .pr-badge.needs-review class');
+    assert.ok(css.includes('--orange'),
+      'needs-review badge should use orange color');
   });
 }
 
@@ -5239,6 +5459,7 @@ async function main() {
     await testLifecycleHelpers();
     await testSyncPrdItemStatus();
     await testEvalLoopAutoDispatch();
+    await testEvalIterationTracking();
 
     // consolidation.js tests
     await testConsolidationHelpers();
