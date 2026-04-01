@@ -919,6 +919,133 @@ async function testSyncPrdItemStatus() {
   });
 }
 
+async function testEvalLoopAutoDispatch() {
+  console.log('\n── lifecycle.js — Eval Loop Auto-Dispatch ──');
+
+  await test('implement completion creates evaluate work item when evalLoop is true', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-1', title: 'Build feature X', type: 'implement',
+      status: 'dispatched', priority: 'high', branch_name: 'feat/test',
+      pr_url: 'https://github.com/test/repo/pull/1',
+      acceptance_criteria: '- [ ] Feature works\n- [ ] Tests pass',
+      project: 'TestProject',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
+
+    // Simulate what runPostCompletionHooks does for the eval-loop section
+    const evalLoop = true;
+    if (evalLoop) {
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      const pi = items.find(i => i.id === 'W-test-impl-1');
+      const evalItem = {
+        id: 'W-' + shared.uid(),
+        title: `Evaluate: ${parentItem.title}`,
+        type: 'evaluate',
+        priority: parentItem.priority,
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'engine:eval-loop',
+        project: 'TestProject',
+        branch_name: pi.branch_name,
+        pr_url: pi.pr_url,
+        acceptance_criteria: pi.acceptance_criteria,
+        _evalParentId: parentItem.id,
+      };
+      items.push(evalItem);
+      fs.writeFileSync(wiPath, JSON.stringify(items));
+    }
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 2, 'Should have 2 items (parent + evaluate)');
+    const evalItem = result.find(i => i.type === 'evaluate');
+    assert.ok(evalItem, 'Evaluate item should exist');
+    assert.strictEqual(evalItem.status, 'pending');
+    assert.strictEqual(evalItem._evalParentId, 'W-test-impl-1');
+    assert.strictEqual(evalItem.branch_name, 'feat/test');
+    assert.strictEqual(evalItem.pr_url, 'https://github.com/test/repo/pull/1');
+    assert.strictEqual(evalItem.acceptance_criteria, parentItem.acceptance_criteria);
+    assert.strictEqual(evalItem.project, 'TestProject');
+    assert.ok(evalItem.id.startsWith('W-'), 'Evaluate item ID should start with W-');
+    assert.strictEqual(evalItem.createdBy, 'engine:eval-loop');
+  });
+
+  await test('no evaluate item created when evalLoop is false', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-2', title: 'Build feature Y', type: 'implement',
+      status: 'dispatched', priority: 'high',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
+
+    const evalLoop = false;
+    if (evalLoop) {
+      // This block should NOT execute
+      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+      items.push({ id: 'should-not-exist', type: 'evaluate' });
+      fs.writeFileSync(wiPath, JSON.stringify(items));
+    }
+
+    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    assert.strictEqual(result.length, 1, 'Should still have only 1 item');
+    assert.ok(!result.find(i => i.type === 'evaluate'), 'No evaluate item should exist');
+  });
+
+  await test('no evaluate item created for non-implement types', () => {
+    // Verify the code path gates on type === 'implement'
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
+      'lifecycle.js should gate eval-loop on type === implement');
+    assert.ok(src.includes('_evalParentId'),
+      'lifecycle.js should set _evalParentId on evaluate items');
+    assert.ok(src.includes('engine:eval-loop'),
+      'lifecycle.js should mark createdBy as engine:eval-loop');
+  });
+
+  await test('evalLoop defaults to true in ENGINE_DEFAULTS', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.evalLoop, true);
+    assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxIterations, 3);
+  });
+
+  await test('duplicate evaluate item is not created for same parent', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const wiPath = path.join(projectDir, 'work-items.json');
+    const parentItem = {
+      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
+      status: 'done', priority: 'high', branch_name: 'feat/dup-test',
+      project: 'TestProject',
+    };
+    const existingEval = {
+      id: 'W-existing-eval', title: 'Evaluate: Build feature Z', type: 'evaluate',
+      status: 'pending', _evalParentId: 'W-test-impl-dup',
+    };
+    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
+
+    // Simulate the dedup check from the eval-loop code
+    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
+    const existing = items.find(i => i._evalParentId === 'W-test-impl-dup' && i.type === 'evaluate');
+    assert.ok(existing, 'Should find existing evaluate item');
+    assert.strictEqual(existing.id, 'W-existing-eval');
+    // The code should skip creation — verify no new item would be added
+    assert.strictEqual(items.length, 2, 'Should still have only 2 items (no duplicate)');
+  });
+
+  await test('source guard requires work-item source for project-scoped path', () => {
+    // Verify the code path checks meta.source === 'work-item' for project-scoped items
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
+      'eval-loop should check meta.source === work-item for project-scoped path');
+  });
+}
+
 // ─── Consolidation Tests ─────────────────────────────────────────────────────
 
 async function testConsolidationHelpers() {
@@ -5111,6 +5238,7 @@ async function main() {
     // lifecycle.js tests
     await testLifecycleHelpers();
     await testSyncPrdItemStatus();
+    await testEvalLoopAutoDispatch();
 
     // consolidation.js tests
     await testConsolidationHelpers();

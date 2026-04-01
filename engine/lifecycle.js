@@ -1145,6 +1145,52 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
+
+  // Auto-dispatch evaluate work item after implement completes successfully
+  if (isSuccess && !skipDoneStatus && type === 'implement' && meta?.item?.id) {
+    const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
+    if (evalLoop) {
+      try {
+        let wiPath;
+        if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+          wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        } else if (meta.source === 'work-item' && meta.project?.name) {
+          wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+        }
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          // Dedup: skip if an evaluate item already exists for this parent
+          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'evaluate');
+          if (existing) {
+            log('info', `Eval loop: evaluate item ${existing.id} already exists for ${meta.item.id}, skipping`);
+          } else {
+            const parentItem = items.find(i => i.id === meta.item.id);
+            const evalItem = {
+              id: 'W-' + shared.uid(),
+              title: `Evaluate: ${meta.item.title || meta.item.id}`,
+              type: 'evaluate',
+              priority: meta.item.priority || 'high',
+              status: 'pending',
+              created: ts(),
+              createdBy: 'engine:eval-loop',
+              project: meta.project?.name || meta.item.project,
+              branch_name: parentItem?.branch_name || meta.branch || null,
+              pr_url: parentItem?.pr_url || null,
+              acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
+              _evalParentId: meta.item.id,
+            };
+            if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
+            items.push(evalItem);
+            shared.safeWrite(wiPath, items);
+            log('info', `Eval loop: created ${evalItem.id} for completed implement ${meta.item.id}`);
+          }
+        }
+      } catch (err) {
+        log('warn', `Eval loop dispatch error: ${err.message}`);
+      }
+    }
+  }
+
   if (!isSuccess && meta?.item?.id) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
