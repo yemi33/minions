@@ -134,6 +134,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
     return;
   }
 
+
   const kbPaths = items.map(item => {
     const cat = classifyInboxItem(item.name, item.content);
     const agentMatch = item.name.match(/^(\w+)-/);
