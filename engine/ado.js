@@ -131,6 +131,10 @@ async function pollPrStatus(config) {
       updated = true;
 
       if (newStatus === 'merged' || newStatus === 'abandoned') {
+        if (pr.reviewStatus === 'waiting') {
+          pr.reviewStatus = newStatus === 'merged' ? 'approved' : 'pending';
+          e.log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
+        }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
     }

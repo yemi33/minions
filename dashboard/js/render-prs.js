@@ -7,9 +7,11 @@ const PR_PER_PAGE = 25;
 function prRow(pr) {
   // Minions review (agent) state — separate from ADO human review
   const sq = pr.minionsReview || {};
-  const reviewSource = sq.status || pr.reviewStatus || 'pending';
+  // If PR is merged/abandoned, treat 'waiting' review as resolved
+  const effectiveReviewStatus = (pr.status === 'merged' || pr.status === 'abandoned') && pr.reviewStatus === 'waiting' ? (pr.status === 'merged' ? 'approved' : 'pending') : pr.reviewStatus;
+  const reviewSource = sq.status || effectiveReviewStatus || 'pending';
   const reviewClass = reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'building' : 'draft';
-  const reviewLabel = sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (pr.reviewStatus || 'pending');
+  const reviewLabel = sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (effectiveReviewStatus || 'pending');
   const buildClass = pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
   const buildLabel = pr.buildStatus || 'none';
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
