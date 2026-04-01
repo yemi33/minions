@@ -184,6 +184,70 @@ async function testBranchSanitization() {
   });
 }
 
+async function testSanitizePath() {
+  console.log('\n── shared.js — Path Sanitization ──');
+
+  await test('sanitizePath accepts valid filenames', () => {
+    const tmp = createTmpDir();
+    const result = shared.sanitizePath('test.json', tmp);
+    assert.strictEqual(result, path.resolve(tmp, 'test.json'));
+  });
+
+  await test('sanitizePath rejects directory traversal with ../', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('../etc/passwd', tmp), /directory traversal/);
+  });
+
+  await test('sanitizePath rejects encoded directory traversal', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('..%2F..%2Fetc%2Fpasswd', tmp), /directory traversal/);
+  });
+
+  await test('sanitizePath rejects null bytes', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('test\0.json', tmp), /null byte/);
+  });
+
+  await test('sanitizePath rejects absolute paths', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('/etc/passwd', tmp), /absolute path/);
+    assert.throws(() => shared.sanitizePath('C:\\Windows\\System32', tmp), /absolute path/);
+  });
+
+  await test('sanitizePath rejects empty file parameter', () => {
+    const tmp = createTmpDir();
+    assert.throws(() => shared.sanitizePath('', tmp), /required/);
+    assert.throws(() => shared.sanitizePath(null, tmp), /required/);
+  });
+
+  await test('sanitizePath allows subdirectory paths within base', () => {
+    const tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp, 'sub'), { recursive: true });
+    const result = shared.sanitizePath('sub/file.txt', tmp);
+    assert.ok(result.startsWith(path.resolve(tmp)));
+  });
+}
+
+async function testValidatePid() {
+  console.log('\n── shared.js — PID Validation ──');
+
+  await test('validatePid accepts valid numeric PIDs', () => {
+    assert.strictEqual(shared.validatePid(1234), 1234);
+    assert.strictEqual(shared.validatePid('5678'), 5678);
+  });
+
+  await test('validatePid rejects non-numeric strings', () => {
+    assert.throws(() => shared.validatePid('abc'), /numeric/);
+    assert.throws(() => shared.validatePid('12; rm -rf /'), /numeric/);
+    assert.throws(() => shared.validatePid('123 & echo pwned'), /numeric/);
+  });
+
+  await test('validatePid rejects zero and negative PIDs', () => {
+    assert.throws(() => shared.validatePid(0), /positive/);
+    assert.throws(() => shared.validatePid(-1), /numeric/);
+  });
+}
+
 async function testParseStreamJsonOutput() {
   console.log('\n── shared.js — Claude Output Parsing ──');
 
@@ -4482,11 +4546,12 @@ async function testDispatchCycleIntegration() {
   // ── Security (2 tests) ──
 
   await test('Dashboard validates paths against directory traversal (..)', () => {
-    const dotDotChecks = (dashSrc.match(/includes\(['"]\.\.['"]|indexOf\(['"]\.\.['"]|startsWith/g) || []).length;
-    assert.ok(dotDotChecks >= 3,
-      `Dashboard must check for '..' in paths on multiple API endpoints (found ${dotDotChecks} checks, need >= 3)`);
-    assert.ok(dashSrc.includes("'..'") || dashSrc.includes('"..'),
-      'Dashboard must explicitly check for .. in user-supplied paths');
+    // Dashboard uses shared.sanitizePath() for path validation across all file-accepting endpoints
+    const sanitizePathCalls = (dashSrc.match(/sanitizePath\(/g) || []).length;
+    assert.ok(sanitizePathCalls >= 5,
+      `Dashboard must use sanitizePath() on multiple API endpoints (found ${sanitizePathCalls} calls, need >= 5)`);
+    assert.ok(dashSrc.includes('sanitizePath'),
+      'Dashboard must use sanitizePath for path traversal prevention');
   });
 
   await test('Dashboard command-center endpoint exists with session management', () => {
@@ -4659,6 +4724,8 @@ async function main() {
     await testSharedUtilities();
     await testIdGeneration();
     await testBranchSanitization();
+    await testSanitizePath();
+    await testValidatePid();
     await testParseStreamJsonOutput();
     await testClassifyInboxItem();
     await testSkillFrontmatter();
