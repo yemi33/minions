@@ -1037,7 +1037,7 @@ async function testEvalLoopAutoDispatch() {
   await test('no evaluate item created for non-implement types', () => {
     // Verify the code path gates on type === 'implement'
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
+    assert.ok(src.includes("type === 'implement'") && src.includes('autoReview'),
       'lifecycle.js should gate eval-loop on type === implement');
     assert.ok(src.includes('_evalParentId'),
       'lifecycle.js should set _evalParentId on evaluate items');
@@ -1049,8 +1049,8 @@ async function testEvalLoopAutoDispatch() {
       'lifecycle.js should use resolveWiPath helper');
   });
 
-  await test('evalLoop defaults to true in ENGINE_DEFAULTS', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.evalLoop, true);
+  await test('autoReview defaults to true in ENGINE_DEFAULTS (gates both PR reviews and post-implement reviews)', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoReview, true);
     assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxIterations, 3);
   });
 
