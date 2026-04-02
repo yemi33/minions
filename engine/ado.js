@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink, log, dateStamp } = shared;
+const { exec, getAdoOrgBase, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
@@ -366,9 +366,8 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
-        // PR already tracked — write link to pr-links.json if we can extract an ID
+        // PR already tracked — update prdItems if we can extract an ID
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId);
           const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
@@ -391,7 +390,6 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
-      if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);

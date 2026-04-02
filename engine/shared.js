@@ -8,7 +8,6 @@ const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
-const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -502,7 +501,7 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  // Derive from PR.prdItems (single source of truth) + legacy pr-links.json as fallback
+  // Derive from PR.prdItems (single source of truth)
   const links = {};
   try {
     const projects = getProjects();
@@ -515,22 +514,7 @@ function getPrLinks() {
       }
     }
   } catch { /* optional */ }
-  // Merge legacy pr-links.json for items not yet in PR.prdItems
-  try {
-    const legacy = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
-    for (const [prId, itemId] of Object.entries(legacy)) {
-      if (!links[prId]) links[prId] = itemId;
-    }
-  } catch { /* optional */ }
   return links;
-}
-
-function addPrLink(prId, itemId) {
-  if (!prId || !itemId) return;
-  const links = getPrLinks();
-  if (links[prId] === itemId) return; // already correct, no write needed
-  links[prId] = itemId;
-  safeWrite(PR_LINKS_PATH, links);
 }
 
 /**
@@ -563,7 +547,6 @@ function linkPrToItem(project, prId, itemId) {
 module.exports = {
   MINIONS_DIR,
   CENTRAL_WI_PATH,
-  PR_LINKS_PATH,
   LOG_PATH,
   ts,
   logTs,
@@ -597,7 +580,6 @@ module.exports = {
   projectWorkItemsPath,
   projectPrPath,
   getPrLinks,
-  addPrLink,
   mutatePrs,
   linkPrToItem,
   nextWorkItemId,

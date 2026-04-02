@@ -582,7 +582,7 @@ function getPrdInfo(config) {
     for (const wi of centralWi) { if (!wi.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
   } catch { /* optional */ }
 
-  // PR-to-PRD linking — primary source is pr-links.json (single-writer, never clobbered by polling)
+  // PR-to-PRD linking — derived from PR.prdItems (single source of truth)
   const allPrs = getPullRequests(config);
   const prById = {};
   for (const pr of allPrs) prById[pr.id] = pr;

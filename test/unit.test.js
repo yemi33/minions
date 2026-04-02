@@ -505,19 +505,9 @@ async function testPrLinks() {
     assert.ok(typeof result === 'object');
   });
 
-  await test('addPrLink is idempotent', () => {
-    // This uses the real pr-links.json — just verify it doesn't crash
-    // The function short-circuits if the link already exists
+  await test('getPrLinks derives from PR.prdItems', () => {
     const links = shared.getPrLinks();
-    const existingId = Object.keys(links)[0];
-    if (existingId) {
-      shared.addPrLink(existingId, links[existingId]); // should be a no-op
-    }
-  });
-
-  await test('addPrLink rejects null inputs', () => {
-    shared.addPrLink(null, 'item-1'); // should not crash
-    shared.addPrLink('pr-1', null);   // should not crash
+    assert.ok(typeof links === 'object', 'getPrLinks should return an object');
   });
 }
 
@@ -3714,9 +3704,9 @@ async function testSyncPrsFromOutput() {
       'Should detect PR creation keywords in agent output');
   });
 
-  await test('syncPrsFromOutput adds PR links', () => {
-    assert.ok(src.includes('addPrLink'),
-      'Should record PR-to-work-item links via addPrLink');
+  await test('syncPrsFromOutput links PRs via prdItems', () => {
+    assert.ok(src.includes('prdItems'),
+      'Should record PR-to-work-item links via prdItems on PR object');
   });
 
   await test('PR dedup uses strict equality, not substring includes', () => {

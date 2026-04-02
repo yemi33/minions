@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, log, dateStamp } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -341,7 +341,6 @@ async function reconcilePrs(config) {
 
       if (existingIds.has(prId)) {
         if (confirmedItemId) {
-          addPrLink(prId, confirmedItemId);
           const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
@@ -364,7 +363,6 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
-      if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
 
