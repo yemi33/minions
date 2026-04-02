@@ -1037,7 +1037,7 @@ async function testEvalLoopAutoDispatch() {
   await test('no evaluate item created for non-implement types', () => {
     // Verify the code path gates on type === 'implement'
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
+    assert.ok(src.includes("type === 'implement'") && src.includes('autoReview'),
       'lifecycle.js should gate eval-loop on type === implement');
     assert.ok(src.includes('_evalParentId'),
       'lifecycle.js should set _evalParentId on evaluate items');
@@ -6189,6 +6189,105 @@ async function testCumulativeCostTracking() {
     // The final persistence gate should be consolidated — no separate if(needsWrite) and if(newWork.length>0) writes
     assert.ok(!fnBody.includes('if (newWork.length > 0) {\n    const workItemsPath'),
       'discoverFromWorkItems should not have the old separate newWork.length > 0 write block');
+  });
+
+  // ── TOCTOU Race Fix Tests ──────────────────────────────────────────────────
+
+  await test('cost ceiling check is inside same lock as cost accumulation (no TOCTOU)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const costSection = src.slice(src.indexOf('Accumulate per-work-item cost'), src.indexOf('Handle decomposition results'));
+    // Should have exactly ONE mutateJsonFileLocked call (accumulation + ceiling in one lock)
+    const lockCalls = (costSection.match(/mutateJsonFileLocked/g) || []);
+    assert.strictEqual(lockCalls.length, 1, 'Cost section should have exactly 1 mutateJsonFileLocked call (accumulation + ceiling atomic)');
+    // Should NOT have bare safeJson reads between locks
+    assert.ok(!costSection.includes('safeJson(wiPath)'), 'Cost section should not use bare safeJson reads (TOCTOU risk)');
+  });
+
+  await test('retry logic uses mutateJsonFileLocked instead of bare safeJson/safeWrite', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the retry/decompose block — between "Auto-retry" and the catch for Retry/decompose
+    const startIdx = src.indexOf('Auto-retry');
+    const endIdx = src.indexOf('Retry/decompose update');
+    assert.ok(startIdx > 0 && endIdx > startIdx, 'Should find retry section markers');
+    const retrySection = src.slice(startIdx, endIdx);
+    assert.ok(retrySection.includes('mutateJsonFileLocked'), 'Retry logic must use mutateJsonFileLocked');
+    assert.ok(retrySection.includes('resolveWiPath'), 'Retry logic should use resolveWiPath helper');
+    // The mutateJsonFileLocked callback handles retry count read + write atomically
+    assert.ok(retrySection.includes('_retryCount'), 'Retry section should update _retryCount inside lock');
+    // No bare safeJson/safeWrite within the lock-managed retry block
+    // (updateWorkItemStatus is called outside for exhausted retries — that's a separate concern)
+    const lockCallback = retrySection.slice(retrySection.indexOf('mutateJsonFileLocked'), retrySection.indexOf('}, { defaultValue'));
+    assert.ok(!lockCallback.includes('safeWrite('), 'Lock callback should not use bare safeWrite');
+    assert.ok(!lockCallback.includes('safeJson('), 'Lock callback should not use bare safeJson');
+  });
+
+  await test('decompose cleanup uses mutateJsonFileLocked instead of bare safeJson/safeWrite', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // The decompose cleanup is now inside the same mutateJsonFileLocked as retry
+    const retrySection = src.slice(src.indexOf('Auto-retry'), src.indexOf('Meeting post-completion'));
+    assert.ok(retrySection.includes('_decomposing'), 'Retry section should handle _decomposing flag cleanup');
+    assert.ok(retrySection.includes("type === 'decompose'"), 'Retry section should check for decompose type');
+  });
+
+  await test('concurrent completion does not corrupt work-items.json (functional)', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-race-1', title: 'Item A', status: 'dispatched', _retryCount: 0 },
+      { id: 'W-race-2', title: 'Item B', status: 'dispatched', _retryCount: 0 },
+    ]);
+
+    // Simulate two "concurrent" completions using mutateJsonFileLocked
+    // (sequential here but validates the atomic pattern preserves both items)
+    shared.mutateJsonFileLocked(wiPath, (items) => {
+      const wi = items.find(i => i.id === 'W-race-1');
+      if (wi) { wi._retryCount = 1; wi.status = 'pending'; }
+      return items;
+    }, { defaultValue: [] });
+
+    shared.mutateJsonFileLocked(wiPath, (items) => {
+      const wi = items.find(i => i.id === 'W-race-2');
+      if (wi) { wi._retryCount = 1; wi.status = 'pending'; }
+      return items;
+    }, { defaultValue: [] });
+
+    const result = shared.safeJson(wiPath);
+    assert.strictEqual(result.length, 2, 'Both items should survive concurrent updates');
+    const a = result.find(i => i.id === 'W-race-1');
+    const b = result.find(i => i.id === 'W-race-2');
+    assert.strictEqual(a._retryCount, 1, 'Item A retryCount updated');
+    assert.strictEqual(a.status, 'pending', 'Item A status updated');
+    assert.strictEqual(b._retryCount, 1, 'Item B retryCount updated');
+    assert.strictEqual(b.status, 'pending', 'Item B status updated');
+  });
+
+  await test('cost accumulation and ceiling check are atomic (functional)', () => {
+    const tmp = createTmpDir();
+    const wiPath = path.join(tmp, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-atomic', title: 'Cost test', status: 'done', _totalCostUsd: 4.50 }
+    ]);
+
+    const evalMaxCost = 5.00;
+    // Simulate the unified lock pattern: accumulate + check in one callback
+    shared.mutateJsonFileLocked(wiPath, (items) => {
+      const wi = items.find(i => i.id === 'W-atomic');
+      if (wi) {
+        wi._totalCostUsd = (wi._totalCostUsd || 0) + 1.00; // now 5.50
+        if (evalMaxCost != null && evalMaxCost > 0 &&
+            wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
+          wi.status = 'needs-human-review';
+          wi.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds ceiling`;
+        }
+      }
+      return items;
+    }, { defaultValue: [] });
+
+    const result = shared.safeJson(wiPath);
+    const wi = result.find(i => i.id === 'W-atomic');
+    assert.strictEqual(wi._totalCostUsd, 5.50, 'Cost accumulated');
+    assert.strictEqual(wi.status, 'needs-human-review', 'Ceiling triggered in same lock');
+    assert.ok(wi.failReason.includes('5.50'), 'Fail reason reflects accumulated cost');
   });
 }
 
