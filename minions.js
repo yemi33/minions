@@ -129,17 +129,20 @@ function buildPrUrlBase({ repoHost, org, project, repoName }) {
   if (repoHost === 'github') {
     return org && repoName ? `https://github.com/${org}/${repoName}/pull/` : '';
   }
-  return org && project && repoName
-    ? `https://${org}.visualstudio.com/DefaultCollection/${project}/_git/${repoName}/pullrequest/`
-    : '';
+  if (repoHost === 'ado' && org && project && repoName) {
+    return `https://dev.azure.com/${org}/${project}/_git/${repoName}/pullrequest/`;
+  }
+  return '';
 }
 
 function buildProjectEntry({ name, description, localPath, repoHost, repositoryId, org, project, repoName, mainBranch }) {
+  // Sanitize name for use as directory name in projects/<name>/
+  const safeName = (name || 'project').replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'project';
   return {
-    name,
+    name: safeName,
     description: description || '',
     localPath: (localPath || '').replace(/\\/g, '/'),
-    repoHost: repoHost || 'ado',
+    repoHost: repoHost || 'github',
     repositoryId: repositoryId || '',
     adoOrg: org || '',
     adoProject: project || '',
@@ -149,10 +152,6 @@ function buildProjectEntry({ name, description, localPath, repoHost, repositoryI
   };
 }
 
-function ensureProjectStateFiles() {
-  // Project state is stored centrally at ~/.minions/projects/<name>/
-  // No files created inside user repos.
-}
 
 // ─── Commands ────────────────────────────────────────────────────────────────
 
@@ -187,7 +186,7 @@ async function addProject(targetDir) {
 
   const name = await ask('Project name', detected.name || path.basename(target));
   const description = await ask('Description (what this repo contains/does)', detected.description || '');
-  const repoHost = await ask('Repo host (ado/github)', detected.repoHost || 'ado');
+  const repoHost = await ask('Repo host (github/ado)', detected.repoHost || 'github');
   const org = await ask('Organization', detected.org || '');
   const project = await ask('Project', detected.project || '');
   const repoName = await ask('Repo name', detected.repoName || name);
@@ -198,7 +197,6 @@ async function addProject(targetDir) {
 
   config.projects.push(buildProjectEntry({ name, description, localPath: target, repoHost, repositoryId, org, project, repoName, mainBranch }));
   saveConfig(config);
-  ensureProjectStateFiles(target);
 
   console.log(`\n  Linked "${name}" (${target})`);
   console.log(`  Total projects: ${config.projects.length}`);
@@ -259,7 +257,9 @@ function findGitRepos(rootDir, maxDepth = 3) {
       // Skip common non-project dirs
       const base = path.basename(dir);
       if (['node_modules', '.git', '.hg', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files',
-           'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees'].includes(base)) return;
+           'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees', '.minions'].includes(base)) return;
+      // Skip minions home directory itself
+      if (path.resolve(dir) === path.resolve(MINIONS_HOME)) return;
 
       const gitDir = path.join(dir, '.git');
       if (fs.existsSync(gitDir)) {
@@ -377,14 +377,22 @@ async function scanAndAdd({ root, depth } = {}) {
 
   console.log(`\n  Adding ${toAdd.length} project(s)...\n`);
 
+  const existingNames = new Set((config.projects || []).map(p => p.name));
   for (const repo of toAdd) {
+    // Deduplicate names — append -2, -3 etc. if name already taken
+    let name = repo.name;
+    if (existingNames.has(name)) {
+      let i = 2;
+      while (existingNames.has(name + '-' + i)) i++;
+      name = name + '-' + i;
+    }
+    existingNames.add(name);
     config.projects.push(buildProjectEntry({
-      name: repo.name, description: repo.description, localPath: repo.path,
+      name, description: repo.description, localPath: repo.path,
       repoHost: repo.host, org: repo.org, project: repo.project,
       repoName: repo.repoName, mainBranch: repo.mainBranch,
     }));
-    ensureProjectStateFiles(repo.path);
-    console.log(`  + ${repo.name} (${repo.path})`);
+    console.log(`  + ${name} (${repo.path})`);
   }
 
   saveConfig(config);
@@ -416,19 +424,34 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   saveConfig(config);
   console.log(`\n  Minions initialized at ${MINIONS_HOME}`);
   console.log(`  Config, agents, and engine defaults created.\n`);
+
+  // Preflight checks
+  let preflightOk = true;
+  try { execSync('git --version', { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }); console.log('  ✓ Git found'); }
+  catch { console.log('  ✗ Git not found — agents need git for worktrees and PRs'); preflightOk = false; }
+  try {
+    const isWin = process.platform === 'win32';
+    const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
+    execSync(cmd, { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+    console.log('  ✓ Claude Code CLI found');
+  } catch { console.log('  ✗ Claude Code CLI not found — install: npm i -g @anthropic-ai/claude-code (or native installer)'); preflightOk = false; }
+  const nodeVer = parseInt(process.versions.node);
+  if (nodeVer >= 18) { console.log('  ✓ Node.js ' + process.versions.node); }
+  else { console.log('  ✗ Node.js ' + process.versions.node + ' — version 18+ required'); preflightOk = false; }
+  if (!preflightOk) console.log('\n  Some prerequisites missing — agents may fail until resolved.\n');
+  else console.log('');
   if (removedPlaceholders > 0) {
     console.log(`  Removed ${removedPlaceholders} placeholder project entr${removedPlaceholders === 1 ? 'y' : 'ies'} from config.\n`);
   }
 
   if (skipScan) {
     console.log('  Skipping repo scan (--skip-scan). Run "node minions.js scan" later to link projects.\n');
+    rl.close();
   } else {
-    // Auto-chain into scan
+    // Auto-chain into scan (scanAndAdd closes rl)
     console.log('  Now let\'s find your repos...\n');
     await scanAndAdd({ root: scanRoot, depth: scanDepth });
   }
-
-  rl.close();
 }
 
 function nukeMinions() {
