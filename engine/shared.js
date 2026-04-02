@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
-const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
+const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -258,7 +258,6 @@ function gitEnv() {
  * Single source of truth — used by llm.js, consolidation.js, and lifecycle.js.
  */
 function parseStreamJsonOutput(raw, { maxTextLength = 0 } = {}) {
-  if (typeof raw !== 'string') raw = '';
   let text = '';
   let usage = null;
   let sessionId = null;
@@ -501,52 +500,45 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  // Derive from PR.prdItems (single source of truth)
   const links = {};
+  // Primary source: derive from all projects/*/pull-requests.json prdItems
+  const projectsDir = path.join(MINIONS_DIR, 'projects');
   try {
-    const projects = getProjects();
-    for (const project of projects) {
-      const prs = safeJson(projectPrPath(project)) || [];
-      for (const pr of prs) {
-        for (const itemId of (pr.prdItems || [])) {
-          if (!links[pr.id]) links[pr.id] = itemId;
+    const fs = require('fs');
+    for (const d of fs.readdirSync(projectsDir, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      try {
+        const prs = JSON.parse(fs.readFileSync(path.join(projectsDir, d.name, 'pull-requests.json'), 'utf8'));
+        for (const pr of prs) {
+          if (!pr.id) continue;
+          for (const itemId of (pr.prdItems || [])) {
+            if (itemId) links[pr.id] = itemId;
+          }
         }
-      }
+      } catch { /* missing or invalid */ }
     }
-  } catch { /* optional */ }
+  } catch { /* projects dir missing */ }
+  // Fallback: static pr-links.json for entries not covered above
+  try {
+    const static_ = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
+    for (const [k, v] of Object.entries(static_)) {
+      if (!links[k]) links[k] = v;
+    }
+  } catch { /* missing */ }
   return links;
 }
 
-/**
- * Locked mutation of a project's pull-requests.json.
- * Single source of truth for PR data including prdItems links.
- */
-function mutatePrs(project, mutateFn) {
-  const prPath = projectPrPath(project);
-  return mutateJsonFileLocked(prPath, (prs) => {
-    return mutateFn(Array.isArray(prs) ? prs : []);
-  }, { defaultValue: [] });
-}
-
-/**
- * Link a PR to a work item via PR.prdItems (single source of truth).
- * Uses file-locked mutation to prevent race conditions.
- */
-function linkPrToItem(project, prId, itemId) {
+function addPrLink(prId, itemId) {
   if (!prId || !itemId) return;
-  mutatePrs(project, (prs) => {
-    const pr = prs.find(p => p.id === prId);
-    if (pr) {
-      pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
-      if (!pr.prdItems.includes(itemId)) pr.prdItems.push(itemId);
-    }
-    return prs;
-  });
+  const links = getPrLinks();
+  if (links[prId] === itemId) return; // already correct, no write needed
+  links[prId] = itemId;
+  safeWrite(PR_LINKS_PATH, links);
 }
 
 module.exports = {
   MINIONS_DIR,
-  CENTRAL_WI_PATH,
+  PR_LINKS_PATH,
   LOG_PATH,
   ts,
   logTs,
@@ -580,8 +572,7 @@ module.exports = {
   projectWorkItemsPath,
   projectPrPath,
   getPrLinks,
-  mutatePrs,
-  linkPrToItem,
+  addPrLink,
   nextWorkItemId,
   getAdoOrgBase,
   sanitizePath,

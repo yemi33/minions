@@ -223,7 +223,7 @@ function renderPlans(plans) {
       actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
     }
 
-    const executeBtn = isDraft && effectiveStatus === 'active' && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
+    const executeBtn = isDraft && (effectiveStatus === 'active' || effectiveStatus === 'draft') && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
     const showPause = effectiveStatus === 'in-progress' && prdFile && !isArchived;
     const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;

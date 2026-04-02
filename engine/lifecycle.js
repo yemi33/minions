@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks,
+const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks, addPrLink,
   mutateJsonFileLocked, log, ts, dateStamp } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
@@ -58,7 +58,7 @@ function checkPlanCompletion(meta, config) {
   const unmaterialized = [...planFeatureIds].filter(id => {
     if (workItemById[id]) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done'));
+    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
   });
   if (unmaterialized.length > 0) {
     log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
@@ -68,16 +68,16 @@ function checkPlanCompletion(meta, config) {
   // Check 2: every feature's work item must be done (or PRD item marked done externally)
   const notDone = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && (w.status === 'done')) return false; // in-pr accepted for backward compat
+    if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done'));
+    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
   });
   if (notDone.length > 0) {
     log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
     return;
   }
 
-  const doneItems = planItems.filter(w => w.status === 'done');
+  const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
   const failedItems = planItems.filter(w => w.status === 'failed');
 
   // 1. Mark plan as completed
@@ -475,6 +475,7 @@ function updateWorkItemStatus(meta, status, reason) {
       }
     } else {
       target.status = status;
+      delete target._pendingReason;
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
@@ -534,7 +535,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         for (const block of content) {
           if (block.type === 'tool_result' && block.content) {
             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            if (text.includes('pullRequestId') || text.includes('create_pull_request')) {
+            if (text.includes('pullRequestId') || text.includes('create_pull_request') || text.includes('/pull/') || text.includes('pullrequest/')) {
               while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
             }
           }
@@ -624,10 +625,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       sourcePlan: meta?.item?.sourcePlan || '',
       itemType: meta?.item?.itemType || ''
     });
-    if (meta?.item?.id) {
-      const project = config ? shared.getProjects(config)[0] : null;
-      if (project) shared.linkPrToItem(project, fullId, meta.item.id);
-    }
+    if (meta?.item?.id) addPrLink(fullId, meta.item.id);
     added++;
   }
 
@@ -735,7 +733,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   // Mark review as approved since it was merged
   pr.reviewStatus = 'approved';
 
-  // Resolve linked work item from PR.prdItems or PR branch name
+  // Resolve linked work item from pr-links or PR branch name
   let mergedItemId = getPrLinks()[pr.id];
   if (!mergedItemId && pr.branch) {
     const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]+)/i);
@@ -752,13 +750,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
-        if (feature && feature.status !== 'done') {
-          feature.status = 'done';
+        if (feature && feature.status !== 'implemented') {
+          feature.status = 'implemented';
           shared.safeWrite(path.join(prdDir, pf), plan);
           updated++;
         }
       }
-      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as done for ${pr.id}`);
+      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done
@@ -1224,40 +1222,42 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch review work item after implement completes successfully
-  if (isSuccess && !skipDoneStatus && type === 'implement' && meta?.item?.id) {
-    const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
-    if (autoReview) {
+  // Auto-dispatch evaluate work item after implement or fix completes successfully
+  if (isSuccess && !skipDoneStatus && (type === 'implement' || (type === 'fix' && meta?.item?._evalParentId)) && meta?.item?.id) {
+    const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
+    if (evalLoop) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
-          // Dedup: skip if a review item already exists for this parent
-          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'review');
+          // For fix items, target the original implement parent; for implement, target self
+          const evalTargetId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
+          // Dedup: skip if an evaluate item already exists for this parent
+          const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'evaluate' && i.status === 'pending');
           if (existing) {
-            log('info', `Eval loop: review item ${existing.id} already exists for ${meta.item.id}, skipping`);
+            log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
           } else {
-            const parentItem = items.find(i => i.id === meta.item.id);
+            const parentItem = items.find(i => i.id === evalTargetId);
             const evalItem = {
               id: 'W-' + shared.uid(),
-              title: `Review: ${meta.item.title || meta.item.id}`,
-              type: 'review',
+              title: `Evaluate: ${parentItem?.title || meta.item.title || evalTargetId}`,
+              type: 'evaluate',
               priority: meta.item.priority || 'high',
               status: 'pending',
               created: ts(),
               createdBy: 'engine:eval-loop',
               project: meta.project?.name || meta.item.project,
-              branch_name: parentItem?.branch_name || meta.branch || null,
-              pr_url: parentItem?.pr_url || null,
+              branch_name: parentItem?.branch_name || meta.item.branch_name || meta.branch || null,
+              pr_url: parentItem?.pr_url || meta.item.pr_url || null,
               acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
-              _evalParentId: meta.item.id,
+              _evalParentId: evalTargetId,
             };
             if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
             // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
             if (parentItem) parentItem._evalDispatched = true;
             items.push(evalItem);
             shared.safeWrite(wiPath, items);
-            log('info', `Eval loop: created ${evalItem.id} for completed implement ${meta.item.id}`);
+            log('info', `Eval loop: created ${evalItem.id} for completed ${type} ${meta.item.id} (parent: ${evalTargetId})`);
           }
         }
       } catch (err) {
@@ -1266,14 +1266,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  // Review completion: parse verdict and handle review→fix iteration loop
-  if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
+  // Evaluate completion: parse verdict and handle eval→fix iteration loop
+  if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
-      const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
+      const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
       const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
 
-      if (verdict && !verdict.pass && autoReview) {
+      if (verdict && !verdict.pass && evalLoop) {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
@@ -1420,8 +1420,9 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
+  // Detect implement tasks that completed without creating a PR.
+  // Exempt: tasks operating on an existing PR (meta.pr set) or human feedback fix tasks.
+  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id && !meta.pr && meta.source !== 'pr-human-feedback') {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);

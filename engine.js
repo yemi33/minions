@@ -396,6 +396,7 @@ function spawnAgent(dispatchItem, config) {
         } else {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
           completeDispatch(id, 'error', 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
+          try { updateMetrics(agentId, dispatchItem, 'error', null, 0, null); } catch { /* optional */ }
           return null;
         }
       }

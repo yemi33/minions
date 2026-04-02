@@ -256,11 +256,13 @@ function checkTimeouts(config) {
           item._retryCount = retries + 1;
           delete item.dispatched_at;
           delete item.dispatched_to;
+          delete item._pendingReason;
         } else {
           log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
           item.status = 'failed';
           item.failReason = 'Agent died or was killed (3 retries exhausted)';
           item.failedAt = ts();
+          delete item._pendingReason;
         }
         changed = true;
       }

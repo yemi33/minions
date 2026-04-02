@@ -339,15 +339,21 @@ function collectSkillFiles(config) {
       try { return fs.statSync(path.join(claudeSkillsDir, d)).isDirectory(); } catch { return false; }
     });
     for (const d of dirs) {
+      // Check both <name>/SKILL.md and <name>/skills/SKILL.md (Claude Code uses both)
       const skillFile = path.join(claudeSkillsDir, d, 'SKILL.md');
+      const nestedSkillFile = path.join(claudeSkillsDir, d, 'skills', 'SKILL.md');
       if (fs.existsSync(skillFile)) {
         skillFiles.push({ file: 'SKILL.md', dir: path.join(claudeSkillsDir, d), scope: 'claude-code', skillName: d });
+        seen.add(d);
+      } else if (fs.existsSync(nestedSkillFile)) {
+        skillFiles.push({ file: 'SKILL.md', dir: path.join(claudeSkillsDir, d, 'skills'), scope: 'claude-code', skillName: d });
         seen.add(d);
       }
     }
   } catch { /* optional */ }
 
-  // 1b. Installed plugin skills: ~/.claude/plugins/installed_plugins.json → cache/<marketplace>/<plugin>/<version>/commands/*.md
+  // 1b. Installed plugin skills: ~/.claude/plugins/installed_plugins.json
+  // Plugins use commands/*.md and/or skills/<name>/SKILL.md and/or skills/SKILL.md
   try {
     const pluginsFile = path.join(homeDir, '.claude', 'plugins', 'installed_plugins.json');
     const registry = JSON.parse(safeRead(pluginsFile) || '{}');
@@ -355,14 +361,47 @@ function collectSkillFiles(config) {
       if (!Array.isArray(installs) || installs.length === 0) continue;
       const install = installs[0];
       if (!install.installPath) continue;
+      const pluginName = pluginKey.split('@')[0];
+
+      // commands/*.md (older style)
       const commandsDir = path.join(install.installPath, 'commands');
       try {
         const commands = fs.readdirSync(commandsDir).filter(f => f.endsWith('.md'));
         for (const cmd of commands) {
-          const name = pluginKey.split('@')[0] + ':' + cmd.replace('.md', '');
+          const name = pluginName + ':' + cmd.replace('.md', '');
           if (seen.has(name)) continue;
           skillFiles.push({ file: cmd, dir: commandsDir, scope: 'plugin', skillName: name });
           seen.add(name);
+        }
+      } catch { /* optional */ }
+
+      // skills/<name>/SKILL.md or skills/SKILL.md (newer style)
+      const skillsDir = path.join(install.installPath, 'skills');
+      try {
+        const entries = fs.readdirSync(skillsDir);
+        for (const entry of entries) {
+          const entryPath = path.join(skillsDir, entry);
+          if (entry === 'SKILL.md') {
+            // Flat: skills/SKILL.md
+            const name = pluginName;
+            if (!seen.has(name)) {
+              skillFiles.push({ file: 'SKILL.md', dir: skillsDir, scope: 'plugin', skillName: name });
+              seen.add(name);
+            }
+          } else {
+            try {
+              if (!fs.statSync(entryPath).isDirectory()) continue;
+            } catch { continue; }
+            // Nested: skills/<name>/SKILL.md
+            const nestedSkill = path.join(entryPath, 'SKILL.md');
+            if (fs.existsSync(nestedSkill)) {
+              const name = pluginName + ':' + entry;
+              if (!seen.has(name)) {
+                skillFiles.push({ file: 'SKILL.md', dir: entryPath, scope: 'plugin', skillName: name });
+                seen.add(name);
+              }
+            }
+          }
         }
       } catch { /* optional */ }
     }

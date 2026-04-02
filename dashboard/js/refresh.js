@@ -1,88 +1,28 @@
 // refresh.js — Main refresh loop and initialization extracted from dashboard.html
 
 // Sidebar activity indicators — detect changes between refreshes
+// Registry: add one line per page. Counter returns a value; badge shows when value increases.
+const _pageCounters = {
+  home:      function(d) { return (d.dispatch?.completed || []).length; },
+  work:      function(d) { return (d.workItems || []).length + '|' + (d.workItems || []).filter(function(w) { return w.status === 'done' || w.status === 'failed'; }).length; },
+  plans:     function(d) { return (d.prdProgress?.complete || 0) + '|' + (d.plans || []).length; },
+  prs:       function(d) { return (d.pullRequests || []).filter(function(p) { return p.status === 'merged'; }).length; },
+  inbox:     function(d) { return (d.inbox?.items || []).length; },
+  meetings:  function(d) { return (d.meetings || []).reduce(function(s, m) { return s + (m.round || 0); }, 0); },
+  pipelines: function(d) { return (d.pipelines || []).reduce(function(s, p) { return s + (p.runs || []).length; }, 0); },
+  schedule:  function(d) { return (d.schedules || []).length; },
+  engine:    function(d) { return (d.dispatch?.active || []).length; },
+};
 let _prevCounts = {};
-let _prevEngineAlert = false;
 function _detectPageChanges(data) {
-  const counts = {
-    completions: (data.dispatch?.completed || []).length,
-    activeDispatches: (data.dispatch?.active || []).length,
-    workDone: (data.workItems || []).filter(w => w.status === 'done' || w.status === 'failed').length,
-    workTotal: (data.workItems || []).length,
-    workDispatched: (data.workItems || []).filter(w => w.status === 'dispatched').length,
-    prdComplete: data.prdProgress?.complete || 0,
-    prdInProgress: data.prdProgress?.inProgress || 0,
-    plansTotal: (data.plans || []).length,
-    prsTotal: (data.pullRequests || []).length,
-    prsMerged: (data.pullRequests || []).filter(p => p.status === 'merged').length,
-    prsReviewed: (data.pullRequests || []).filter(p => p.reviewStatus === 'approved' || p.reviewStatus === 'changes-requested').length,
-    inbox: (data.inbox?.items || []).length,
-    kbTotal: Object.values(data.knowledgeBase || {}).reduce((s, v) => s + (Array.isArray(v) ? v.length : 0), 0),
-    skillsTotal: (data.skills || []).length,
-    mcpTotal: (data.mcpServers || []).length,
-    scheduleTotal: (data.schedules || []).length,
-    pipelineRuns: (data.pipelines || []).reduce((s, p) => s + (p.runs || []).length, 0),
-    pipelineActive: (data.pipelines || []).filter(p => (p.runs || []).some(r => r.status === 'running')).length,
-    meetingRounds: (data.meetings || []).reduce((s, m) => s + (m.round || 0), 0),
-    meetingTotal: (data.meetings || []).length,
-  };
-  const changes = {};
-  if (_prevCounts.completions !== undefined) {
-    if (counts.completions > _prevCounts.completions || counts.activeDispatches > _prevCounts.activeDispatches) changes.home = true;
-    if (counts.workDone > _prevCounts.workDone || counts.workTotal > _prevCounts.workTotal || counts.workDispatched !== _prevCounts.workDispatched) changes.work = true;
-    if (counts.prdComplete > _prevCounts.prdComplete || counts.prdInProgress > _prevCounts.prdInProgress || counts.plansTotal > _prevCounts.plansTotal) changes.plans = true;
-    if (counts.prsTotal > _prevCounts.prsTotal || counts.prsMerged > _prevCounts.prsMerged || counts.prsReviewed > _prevCounts.prsReviewed) changes.prs = true;
-    if (counts.inbox > _prevCounts.inbox || counts.kbTotal > _prevCounts.kbTotal) changes.inbox = true;
-    if (counts.skillsTotal > _prevCounts.skillsTotal || counts.mcpTotal > _prevCounts.mcpTotal) changes.tools = true;
-    if (counts.scheduleTotal > _prevCounts.scheduleTotal) changes.schedule = true;
-    if (counts.pipelineRuns > _prevCounts.pipelineRuns || counts.pipelineActive > _prevCounts.pipelineActive) changes.pipelines = true;
-    if (counts.meetingRounds > _prevCounts.meetingRounds || counts.meetingTotal > _prevCounts.meetingTotal) changes.meetings = true;
+  var changes = {};
+  var counts = {};
+  for (var page in _pageCounters) {
+    counts[page] = String(_pageCounters[page](data));
+    if (_prevCounts[page] !== undefined && counts[page] !== _prevCounts[page]) changes[page] = true;
   }
   _prevCounts = counts;
-
-  // Engine page — only badge for genuine problems, not routine activity
-  const engineAlert = _isEngineAlertWorthy(data);
-  if (engineAlert && !_prevEngineAlert) changes.engine = true;
-  // Clear the engine badge when alert condition resolves
-  if (!engineAlert && _prevEngineAlert) {
-    const engineLink = document.querySelector('.sidebar-link[data-page="engine"]');
-    if (engineLink) clearNotifBadge(engineLink);
-  }
-  _prevEngineAlert = engineAlert;
-
   return changes;
-}
-
-/**
- * Determine if the engine state warrants a notification dot.
- * Returns true only for genuine problems:
- * - Engine stopped, stale, or in error state
- * - 3+ failed work items in the last hour
- * - Agent timeout/crash detected (error results in recent completions)
- */
-function _isEngineAlertWorthy(data) {
-  // 1. Engine not running (stopped, stale, or error)
-  const engineState = data.engine?.state || 'stopped';
-  if (engineState === 'stopped' || engineState === 'error') return true;
-  // Stale heartbeat (>2 min old while claiming running)
-  if (engineState === 'running' && data.engine?.heartbeat) {
-    if (Date.now() - data.engine.heartbeat > 120000) return true;
-  }
-
-  // 2. 3+ failed work items in the last hour
-  const oneHourAgo = Date.now() - 3600000;
-  const recentFailures = (data.workItems || []).filter(w =>
-    w.status === 'failed' && w.updated_at && new Date(w.updated_at).getTime() > oneHourAgo
-  );
-  if (recentFailures.length >= 3) return true;
-
-  // 3. Agent timeout/crash — 3+ error results in recent completed dispatches
-  const recentErrors = (data.dispatch?.completed || []).filter(d =>
-    d.result === 'error' && d.completed_at && new Date(d.completed_at).getTime() > oneHourAgo
-  );
-  if (recentErrors.length >= 3) return true;
-
-  return false;
 }
 
 function _processStatusUpdate(data) {
@@ -97,24 +37,15 @@ function _processStatusUpdate(data) {
   }
   document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
   const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
-
-  // Engine status FIRST — most critical indicator, must not be blocked by other render failures
-  renderEngineStatus(data.engine);
-
-  // Show setup banner if no projects linked (the key onboarding step)
-  const noProjects = !data.projects || data.projects.length === 0;
-  document.getElementById('setup-banner').style.display = (noProjects && engineState !== 'stopped') ? 'block' : 'none';
-
-  // Each render call wrapped so one failure doesn't block the rest
-  const _r = (fn) => { try { fn(); } catch (e) { console.error('render error:', e.message); } };
-  _r(() => renderAgents(data.agents));
-  _r(() => renderPrdProgress(data.prdProgress));
-  _r(() => _cachePrdItems(data.prdProgress));
-  _r(() => renderInbox(data.inbox));
-  _r(() => cmdUpdateAgentList(data.agents));
-  _r(() => cmdUpdateProjectList(data.projects || []));
-  _r(() => renderNotes(data.notes));
-  _r(() => renderPrd(data.prd, data.prdProgress));
+  document.getElementById('setup-banner').style.display = (!data.initialized && engineState !== 'stopped') ? 'block' : 'none';
+  renderAgents(data.agents);
+  renderPrdProgress(data.prdProgress);
+  _cachePrdItems(data.prdProgress);
+  renderInbox(data.inbox);
+  cmdUpdateAgentList(data.agents);
+  cmdUpdateProjectList(data.projects || []);
+  renderNotes(data.notes);
+  renderPrd(data.prd, data.prdProgress);
   // Auto-approve badge
   const autoEl = document.getElementById('auto-approve-badge');
   if (autoEl) autoEl.innerHTML = data.autoMode?.approvePlans
@@ -123,23 +54,24 @@ function _processStatusUpdate(data) {
   // Inbox consolidation threshold from config
   const threshEl = document.getElementById('inbox-threshold');
   if (threshEl && data.autoMode?.inboxThreshold) threshEl.textContent = data.autoMode.inboxThreshold;
-  _r(() => renderPrs(data.pullRequests || []));
-  _r(() => renderArchiveButtons(data.archivedPrds || []));
-  _r(() => renderDispatch(data.dispatch));
+  renderPrs(data.pullRequests || []);
+  renderArchiveButtons(data.archivedPrds || []);
+  renderEngineStatus(data.engine);
+  renderDispatch(data.dispatch);
   window._lastDispatch = data.dispatch;
   window._lastWorkItems = data.workItems || [];
   window._lastStatus = data;
-  _r(() => prunePrdRequeueState(window._lastWorkItems));
-  _r(() => renderEngineLog(data.engineLog || []));
-  _r(() => renderProjects(data.projects || []));
-  _r(() => renderMetrics(data.metrics || {}));
-  _r(() => renderWorkItems(data.workItems || []));
-  _r(() => renderSkills(data.skills || []));
-  _r(() => renderMcpServers(data.mcpServers || []));
-  _r(() => renderSchedules(data.schedules || []));
-  _r(() => renderMeetings(data.meetings || []));
-  _r(() => { if (typeof renderPipelines === 'function') renderPipelines(data.pipelines || []); });
-  _r(() => renderPinned(data.pinned || []));
+  prunePrdRequeueState(window._lastWorkItems);
+  renderEngineLog(data.engineLog || []);
+  renderProjects(data.projects || []);
+  renderMetrics(data.metrics || {});
+  renderWorkItems(data.workItems || []);
+  renderSkills(data.skills || []);
+  renderMcpServers(data.mcpServers || []);
+  renderSchedules(data.schedules || []);
+  renderMeetings(data.meetings || []);
+  if (typeof renderPipelines === 'function') renderPipelines(data.pipelines || []);
+  renderPinned(data.pinned || []);
   // Update sidebar counts
   const swi = document.getElementById('sidebar-wi');
   if (swi) swi.textContent = (data.workItems || []).length || '';
@@ -170,16 +102,7 @@ async function refresh() {
 refresh();
 
 // Poll for status updates (SSE caused HTTP/1.1 connection exhaustion — CC fetch would fail)
-var _refreshTimer = setInterval(refresh, 4000);
-document.addEventListener('visibilitychange', function() {
-  if (document.hidden) {
-    clearInterval(_refreshTimer);
-    _refreshTimer = null;
-  } else if (!_refreshTimer) {
-    refresh();
-    _refreshTimer = setInterval(refresh, 4000);
-  }
-});
+setInterval(refresh, 4000);
 
 // Wire sidebar navigation
 document.querySelectorAll('.sidebar-link').forEach(link => {
