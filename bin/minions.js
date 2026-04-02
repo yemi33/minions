@@ -439,7 +439,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   Setup:
     minions init                     Bootstrap ~/.minions/ (first time)
-    minions init --force             Upgrade engine code + add new files
+    minions update                   Update to latest version (npm update + init --force)
     minions version                  Show installed vs package version
     minions doctor                   Check prerequisites and runtime health
     minions add <project-dir>        Link a project (interactive)
@@ -466,6 +466,17 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   Runtime root: ${MINIONS_HOME}
 `);
 } else if (cmd === 'init') {
+  init();
+} else if (cmd === 'update') {
+  console.log('\n  Updating Minions...\n');
+  try {
+    execSync('npm update -g @yemi33/minions', { stdio: 'inherit', timeout: 120000 });
+  } catch (e) {
+    console.error('  npm update failed:', e.message);
+    process.exit(1);
+  }
+  // Re-run init --force to apply the update
+  rest.push('--force');
   init();
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
