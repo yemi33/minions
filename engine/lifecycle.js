@@ -479,6 +479,7 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAt = ts();
       } else if (status === 'failed') {
         if (reason) target.failReason = reason;
@@ -498,9 +499,10 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
   if (!itemId) return;
   try {
     const prdDir = path.join(MINIONS_DIR, 'prd');
-    const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
+    const files = sourcePlan ? [sourcePlan] : fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      if (!fs.existsSync(fpath)) continue; // skip archived/deleted PRDs
       mutateJsonFileLocked(fpath, (plan) => {
         if (!plan?.missing_features) return plan;
         const feature = plan.missing_features.find(f => f.id === itemId);
@@ -604,7 +606,14 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
     const entry = dirtyTargets.get(targetName);
-    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
+    const existing = entry.prs.find(p => p.id === fullId || String(p.id) === String(prId));
+    if (existing) {
+      // Backfill prdItems if the entry was added by the poller before syncPrsFromOutput ran
+      if (meta?.item?.id && !existing.prdItems?.includes(meta.item.id)) {
+        existing.prdItems = [...(existing.prdItems || []), meta.item.id];
+      }
+      continue;
+    }
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -638,10 +647,26 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
+/**
+ * Resolve which project's pull-requests.json contains a given PR ID.
+ * Returns the project object, or null if not found in any project file.
+ */
+function resolveProjectForPr(prId) {
+  const config = getConfig();
+  for (const p of shared.getProjects(config)) {
+    const prs = safeJson(shared.projectPrPath(p)) || [];
+    if (prs.some(pr => pr.id === prId)) return p;
+  }
+  return null;
+}
+
 function updatePrAfterReview(agentId, pr, project) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
+  // Resolve actual project if not provided — avoids writing merged array to wrong path
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  if (!resolvedProject) { log('warn', `updatePrAfterReview: cannot resolve project for ${pr.id}`); return; }
+  const prs = getPrs(resolvedProject);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -675,7 +700,7 @@ function updatePrAfterReview(agentId, pr, project) {
     shared.safeWrite(metricsPath, metrics);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
   log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
@@ -683,7 +708,10 @@ function updatePrAfterReview(agentId, pr, project) {
 function updatePrAfterFix(pr, project, source) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
+  // Resolve actual project if not provided — avoids writing merged array to wrong path
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  if (!resolvedProject) { log('warn', `updatePrAfterFix: cannot resolve project for ${pr.id}`); return; }
+  const prs = getPrs(resolvedProject);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -698,7 +726,7 @@ function updatePrAfterFix(pr, project, source) {
     log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
