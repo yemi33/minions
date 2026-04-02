@@ -404,8 +404,24 @@ function projectStateDir(project) {
   return dir;
 }
 
+const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
+
 function projectWorkItemsPath(project) {
   return path.join(projectStateDir(project), 'work-items.json');
+}
+
+/**
+ * Resolve work-items.json path from dispatch meta.
+ * Central items → CENTRAL_WI_PATH; project items → projects/<name>/work-items.json.
+ */
+function resolveWiPath(meta) {
+  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+    return CENTRAL_WI_PATH;
+  }
+  if (meta.project?.name) {
+    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+  }
+  return null;
 }
 
 function projectPrPath(project) {
@@ -501,7 +517,7 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  // Derive from PR.prdItems (single source of truth) + legacy pr-links.json as fallback
+  // Derive from PR.prdItems (single source of truth)
   const links = {};
   try {
     const projects = getProjects();
@@ -514,22 +530,15 @@ function getPrLinks() {
       }
     }
   } catch { /* optional */ }
-  // Merge legacy pr-links.json for items not yet in PR.prdItems
-  try {
-    const legacy = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
-    for (const [prId, itemId] of Object.entries(legacy)) {
-      if (!links[prId]) links[prId] = itemId;
-    }
-  } catch { /* optional */ }
   return links;
 }
 
 function addPrLink(prId, itemId) {
   if (!prId || !itemId) return;
-  const links = getPrLinks();
-  if (links[prId] === itemId) return; // already correct, no write needed
-  links[prId] = itemId;
-  safeWrite(PR_LINKS_PATH, links);
+  try {
+    const projects = getProjects();
+    for (const project of projects) { linkPrToItem(project, prId, itemId); }
+  } catch { /* optional */ }
 }
 
 /**
@@ -592,7 +601,9 @@ module.exports = {
   getProjects,
   projectRoot,
   projectStateDir,
+  CENTRAL_WI_PATH,
   projectWorkItemsPath,
+  resolveWiPath,
   projectPrPath,
   getPrLinks,
   addPrLink,

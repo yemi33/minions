@@ -386,19 +386,7 @@ async function reconcilePrs(config) {
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
-    // Backfill prdItems from pr-links for any PR with empty array
-    const prLinks = shared.getPrLinks();
-    let backfilled = 0;
-    for (const pr of existingPrs) {
-      const linked = prLinks[pr.id];
-      if (linked && !(pr.prdItems || []).includes(linked)) {
-        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
-        pr.prdItems.push(linked);
-        backfilled++;
-      }
-    }
-
-    if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
+    if (projectAdded > 0 || projectUpdated > 0) {
       shared.safeWrite(prPath, existingPrs);
       totalAdded += projectAdded;
       if (projectUpdated > 0) log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);

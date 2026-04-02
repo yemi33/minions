@@ -1,0 +1,19 @@
+{
+  "id": "daily-standup",
+  "title": "Daily Squad Stand-up",
+  "stages": [
+    {
+      "id": "standup",
+      "type": "meeting",
+      "title": "Daily Squad Stand-up � 2026-04-01",
+      "agenda": "Daily weekday meeting for all agents to review squad setup improvements and discuss progress on agentic harness engineering.\n\n1. What shipped since yesterday's meeting (Track A/B/C progress)?\n2. Any blockers on current work items?\n3. Review recent agentic harness engineering best practices � are there new Anthropic articles or model improvements that change our assumptions?\n4. Propose 1 concrete improvement each agent wants to make to the squad harness this week.\n5. Agree on today's priorities and any re-sequencing needed.\n\nOutput: a bulleted list of decisions made, action items with owners, and any updated priorities.",
+      "participants": [
+        "all"
+      ]
+    }
+  ],
+  "trigger": {
+    "cron": "0 9 1,2,3,4,5"
+  },
+  "enabled": true
+}

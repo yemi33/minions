@@ -1080,10 +1080,14 @@ async function testEvalLoopAutoDispatch() {
   });
 
   await test('source guard requires work-item source for project-scoped path', () => {
-    // Verify the code path checks meta.source === 'work-item' for project-scoped items
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
-      'eval-loop should check meta.source === work-item for project-scoped path');
+    // resolveWiPath in shared.js guards project-scoped paths via meta.project?.name
+    // lifecycle.js delegates to resolveWiPath instead of inline checks
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes("meta.project?.name"),
+      'resolveWiPath in shared.js should check meta.project?.name for project-scoped path');
+    const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(lifecycleSrc.includes('resolveWiPath(meta)'),
+      'lifecycle.js should use shared resolveWiPath instead of inline path resolution');
   });
 }
 
@@ -2987,6 +2991,33 @@ async function testProjectPathHelpers() {
     const wi = shared.projectWorkItemsPath({ name: 'test' });
     const pr = shared.projectPrPath({ name: 'test' });
     assert.notStrictEqual(wi, pr);
+  });
+
+  await test('CENTRAL_WI_PATH is exported and ends with work-items.json', () => {
+    assert.ok(shared.CENTRAL_WI_PATH, 'CENTRAL_WI_PATH should be defined');
+    assert.ok(shared.CENTRAL_WI_PATH.endsWith('work-items.json'), 'Should end with work-items.json');
+    assert.ok(!shared.CENTRAL_WI_PATH.includes('projects'), 'Central path should not include projects dir');
+  });
+
+  await test('resolveWiPath returns central path for central-work-item source', () => {
+    const result = shared.resolveWiPath({ source: 'central-work-item' });
+    assert.strictEqual(result, shared.CENTRAL_WI_PATH);
+  });
+
+  await test('resolveWiPath returns central path for central-work-item-fanout source', () => {
+    const result = shared.resolveWiPath({ source: 'central-work-item-fanout' });
+    assert.strictEqual(result, shared.CENTRAL_WI_PATH);
+  });
+
+  await test('resolveWiPath returns project path when project.name is set', () => {
+    const result = shared.resolveWiPath({ source: 'work-item', project: { name: 'myproj' } });
+    assert.ok(result.includes('myproj'), 'Should include project name');
+    assert.ok(result.endsWith('work-items.json'), 'Should end with work-items.json');
+  });
+
+  await test('resolveWiPath returns null when no source or project', () => {
+    const result = shared.resolveWiPath({ source: 'unknown' });
+    assert.strictEqual(result, null);
   });
 }
 
