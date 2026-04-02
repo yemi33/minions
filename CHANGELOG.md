@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.167 (2026-04-02)
+
+### Engine
+- engine.js
+
+### Other
+- CLAUDE.md
+- minions.js
+
 ## 0.1.166 (2026-04-02)
 
 ### Engine
