@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.170 (2026-04-02)
+
+### Engine
+- engine/pipeline.js
+
+### Dashboard
+- dashboard/js/command-center.js
+- dashboard/js/render-pipelines.js
+- dashboard/layout.html
+- dashboard/styles.css
+
 ## 0.1.169 (2026-04-02)
 
 ### Engine
