@@ -370,7 +370,17 @@ I'll save that as a note and dispatch dallas to fix the bug.
 If no actions are needed (just answering a question, or you handled it directly), do NOT include the ===ACTIONS=== line.
 
 Available action types:
-- **dispatch**: Create a work item for an agent. Fields: title, workType (ask/explore/fix/review/test/implement/verify), priority (low/medium/high), agents (array of IDs, optional), project, description. Use \`verify\` when the user wants to build PRs locally, merge branches together, start a dev server, and get a localhost URL to test.
+- **dispatch**: Create a work item for an agent. Fields: title, workType, priority (low/medium/high), agents (array of IDs, optional), project, description.
+  workType values — choose carefully, this determines the playbook and whether a PR is expected:
+  - \`explore\` — research, investigate, read code, gather information, write findings (NO PR expected)
+  - \`ask\` — answer a question, analyze something, produce a report (NO PR expected)
+  - \`implement\` — write new code, add a feature, create something (PR expected)
+  - \`fix\` — fix a bug, address review feedback on an existing PR (PR expected)
+  - \`review\` — code review an existing PR
+  - \`test\` — run tests, write test cases (PR expected if new tests written)
+  - \`verify\` — build PRs locally, merge branches, start dev server, get localhost URL to test
+  - \`evaluate\` — assess quality of completed work, verify acceptance criteria
+  If unsure, prefer \`explore\` for read-only tasks and \`implement\` for write tasks.
 - **note**: Save a note/decision. Fields: title, content
 - **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: Cancel a running agent. Fields: agent (agent ID), reason
