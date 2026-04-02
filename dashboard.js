@@ -2988,6 +2988,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           if (!config.agents[id]) continue;
           if (updates.role !== undefined) config.agents[id].role = String(updates.role);
           if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
+          if (updates.monthlyBudgetUsd !== undefined) {
+            const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
+            if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
+            else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+          }
         }
       }
 

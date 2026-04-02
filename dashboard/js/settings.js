@@ -16,6 +16,7 @@ async function openSettings() {
       '<td style="font-weight:600">' + escHtml(a.emoji || '') + ' ' + escHtml(a.name || id) + '</td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="role" value="' + escHtml(a.role || '') + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
       '<td><input data-agent="' + escHtml(id) + '" data-field="skills" value="' + escHtml((a.skills || []).join(', ')) + '" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px"></td>' +
+      '<td><input data-agent="' + escHtml(id) + '" data-field="monthlyBudgetUsd" value="' + escHtml(a.monthlyBudgetUsd != null ? String(a.monthlyBudgetUsd) : '') + '" placeholder="unlimited" style="width:70px;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px;text-align:right"></td>' +
     '</tr>';
   }).join('');
 
@@ -56,7 +57,7 @@ async function openSettings() {
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
     '<table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11px">' +
-      '<tr style="text-align:left;color:var(--muted)"><th style="padding:4px">Agent</th><th style="padding:4px">Role</th><th style="padding:4px">Skills</th></tr>' +
+      '<tr style="text-align:left;color:var(--muted)"><th style="padding:4px">Agent</th><th style="padding:4px">Role</th><th style="padding:4px">Skills</th><th style="padding:4px">Budget $/mo</th></tr>' +
       agentRows +
     '</table>' +
 
