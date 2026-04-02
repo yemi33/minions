@@ -2711,7 +2711,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { execSync: ex } = require('child_process');
       const detected = { name: path.basename(target), _found: [] };
       try {
-        const head = ex('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        let head = '';
+        try {
+          head = ex('git symbolic-ref refs/remotes/origin/HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        } catch {
+          head = ex('git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
+        }
         detected.mainBranch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
       } catch { detected.mainBranch = 'main'; }
       try {
@@ -2981,6 +2986,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (body.claude) {
         for (const key of ['allowedTools', 'outputFormat']) {
           if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
+        }
+        if (body.claude.permissionMode !== undefined) {
+          const valid = ['bypassPermissions', 'auto', 'default'];
+          config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
         }
       }
 

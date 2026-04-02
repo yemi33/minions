@@ -54,6 +54,15 @@ async function openSettings() {
       settingsField('Output Format', 'set-outputFormat', c.outputFormat || 'stream-json', '', '') +
       settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Comma-separated (empty = all)') +
     '</div>' +
+    '<div style="margin-bottom:16px">' +
+      '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Permission Mode <span style="opacity:0.6">(how agents handle tool approvals)</span></label>' +
+      '<select id="set-permissionMode" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+        '<option value="bypassPermissions"' + ((c.permissionMode || 'bypassPermissions') === 'bypassPermissions' ? ' selected' : '') + '>Bypass (recommended) — agents run without permission prompts</option>' +
+        '<option value="auto"' + ((c.permissionMode) === 'auto' ? ' selected' : '') + '>Auto — agents auto-approve safe tools, prompt for risky ones</option>' +
+        '<option value="default"' + ((c.permissionMode) === 'default' ? ' selected' : '') + '>Default — agents prompt for every tool (will hang without a human)</option>' +
+      '</select>' +
+      '<div style="font-size:9px;color:var(--muted);margin-top:2px">Non-bypass modes require a human watching the agent terminal to approve tool calls</div>' +
+    '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
     '<table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:11px">' +
@@ -138,6 +147,7 @@ async function saveSettings() {
     const claudePayload = {
       outputFormat: document.getElementById('set-outputFormat').value,
       allowedTools: document.getElementById('set-allowedTools').value,
+      permissionMode: document.getElementById('set-permissionMode').value,
     };
 
     const agentsPayload = {};
