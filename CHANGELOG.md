@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.169 (2026-04-02)
+
+### Engine
+- engine/lifecycle.js
+
 ## 0.1.168 (2026-04-02)
 
 ### Engine
