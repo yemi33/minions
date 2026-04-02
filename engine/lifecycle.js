@@ -478,6 +478,7 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAt = ts();
       } else if (status === 'failed') {
         if (reason) target.failReason = reason;
