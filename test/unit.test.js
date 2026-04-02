@@ -659,10 +659,14 @@ async function testQueriesPullRequests() {
   await test('getPullRequests returns sorted array', () => {
     const prs = queries.getPullRequests();
     assert.ok(Array.isArray(prs));
-    // Should be sorted by created date descending
+    // Should be sorted by date (YYYY-MM-DD) descending, then PR number descending
     for (let i = 1; i < prs.length; i++) {
-      assert.ok((prs[i - 1].created || '') >= (prs[i].created || ''),
-        `PR sort violation: ${prs[i - 1].created} before ${prs[i].created}`);
+      const prevDate = (prs[i - 1].created || '').slice(0, 10);
+      const currDate = (prs[i].created || '').slice(0, 10);
+      const prevNum = parseInt((prs[i - 1].id || '').replace(/\D/g, '')) || 0;
+      const currNum = parseInt((prs[i].id || '').replace(/\D/g, '')) || 0;
+      assert.ok(prevDate > currDate || (prevDate === currDate && prevNum >= currNum),
+        `PR sort violation: ${prs[i - 1].id} (${prevDate}) before ${prs[i].id} (${currDate})`);
     }
   });
 
