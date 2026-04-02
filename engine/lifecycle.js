@@ -785,6 +785,8 @@ async function handlePostMerge(pr, project, config, newStatus) {
     for (const wiPath of wiPaths) {
       try {
         let found = false;
+        // NOTE: `found` is set inside the callback and read after — this works because
+        // mutateJsonFileLocked is synchronous. If it ever becomes async, this pattern breaks.
         mutateJsonFileLocked(wiPath, (items) => {
           const item = items.find(i => i.id === mergedItemId);
           if (item && item.status !== 'done') {
