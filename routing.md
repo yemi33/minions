@@ -17,7 +17,6 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 | test | dallas | ralph |
 | ask | ripley | rebecca |
 | verify | dallas | ralph |
-| evaluate | ripley | lambert |
 | decompose | ripley | rebecca |
 | meeting | ripley | rebecca |
 

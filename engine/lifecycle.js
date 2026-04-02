@@ -1068,7 +1068,7 @@ function resolveWiPath(meta) {
 }
 
 /**
- * Parse structured eval verdict from evaluate agent output.
+ * Parse structured eval verdict from review agent output.
  * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
  * Returns parsed object or null if not found.
  */
@@ -1247,8 +1247,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // For 'fix' items, only trigger when they were created by the eval loop (_evalParentId set)
   const isEvalEligible = type === 'implement' || (type === 'fix' && meta?.item?._evalParentId);
   if (isSuccess && !skipDoneStatus && isEvalEligible && meta?.item?.id) {
-    const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
-    if (autoReview) {
+    const evalLoop = config.engine?.evalLoop !== false;
+    if (evalLoop) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
@@ -1297,10 +1297,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
-      const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
+      const evalLoop = config.engine?.evalLoop !== false;
       const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
 
-      if (verdict && !verdict.pass && autoReview) {
+      if (verdict && !verdict.pass && evalLoop) {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];

@@ -2956,7 +2956,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
         }
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        for (const key of ['autoApprovePlans', 'autoReview', 'autoDecompose', 'allowTempAgents']) {
+        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
       }
