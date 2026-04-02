@@ -97,7 +97,9 @@ function _processStatusUpdate(data) {
   }
   document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
   const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
-  document.getElementById('setup-banner').style.display = (!data.initialized && engineState !== 'stopped') ? 'block' : 'none';
+  // Show setup banner if no projects linked (the key onboarding step)
+  const noProjects = !data.projects || data.projects.length === 0;
+  document.getElementById('setup-banner').style.display = (noProjects && engineState !== 'stopped') ? 'block' : 'none';
   renderAgents(data.agents);
   renderPrdProgress(data.prdProgress);
   _cachePrdItems(data.prdProgress);
@@ -162,7 +164,16 @@ async function refresh() {
 refresh();
 
 // Poll for status updates (SSE caused HTTP/1.1 connection exhaustion — CC fetch would fail)
-setInterval(refresh, 4000);
+var _refreshTimer = setInterval(refresh, 4000);
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    clearInterval(_refreshTimer);
+    _refreshTimer = null;
+  } else if (!_refreshTimer) {
+    refresh();
+    _refreshTimer = setInterval(refresh, 4000);
+  }
+});
 
 // Wire sidebar navigation
 document.querySelectorAll('.sidebar-link').forEach(link => {

@@ -92,6 +92,10 @@ const commands = {
 
     const { getProjects } = require('./shared');
     const projects = getProjects(config);
+    if (projects.length === 0) {
+      console.log('  \x1b[33mNo projects configured.\x1b[0m Link one with: minions add <path-to-repo>');
+      console.log('  Agents can still work on tasks via the Command Center without a project.');
+    }
     for (const p of projects) {
       const root = p.localPath ? path.resolve(p.localPath) : null;
       if (!root || !fs.existsSync(root)) {
@@ -322,6 +326,7 @@ const commands = {
 
     // File-change-driven work discovery — trigger tick when work-items or PRDs change
     const _watchedFiles = new Set();
+    let _globalDebounce = null;
     function watchForWorkChanges() {
       const filesToWatch = [
         path.join(MINIONS_DIR, 'work-items.json'),
@@ -344,13 +349,12 @@ const commands = {
         if (_watchedFiles.has(filePath)) continue;
         _watchedFiles.add(filePath);
         try {
-          let _debounce = null;
           fs.watchFile(filePath, { interval: 2000 }, () => {
-            // Debounce — multiple rapid writes should only trigger one tick
-            if (_debounce) return;
-            _debounce = setTimeout(() => {
-              _debounce = null;
-              e.log('info', `File change detected: ${path.basename(filePath)} — triggering tick`);
+            // Global debounce — coalesce rapid multi-file changes into one tick
+            if (_globalDebounce) clearTimeout(_globalDebounce);
+            _globalDebounce = setTimeout(() => {
+              _globalDebounce = null;
+              e.log('info', `File change detected — triggering tick`);
               e.tick();
             }, 1000);
           });

@@ -393,8 +393,15 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   const config = loadConfig();
   if (!config.projects) config.projects = [];
   const removedPlaceholders = cleanupPlaceholderProjects(config);
-  if (!config.engine) config.engine = { ...ENGINE_DEFAULTS };
-  if (!config.claude) config.claude = { ...DEFAULT_CLAUDE };
+  // Merge defaults — fills in new fields from upgrades while preserving user customizations
+  if (!config.engine) config.engine = {};
+  for (const [k, v] of Object.entries(ENGINE_DEFAULTS)) {
+    if (config.engine[k] === undefined) config.engine[k] = v;
+  }
+  if (!config.claude) config.claude = {};
+  for (const [k, v] of Object.entries(DEFAULT_CLAUDE)) {
+    if (config.claude[k] === undefined) config.claude[k] = v;
+  }
   if (!config.agents || Object.keys(config.agents).length === 0) {
     config.agents = { ...DEFAULT_AGENTS };
   }

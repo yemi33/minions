@@ -21,7 +21,7 @@
 <div class="engine-alert" id="engine-alert"></div>
 
 <!-- Command Center Drawer -->
-<div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:300;flex-direction:column;overscroll-behavior:contain">
+<div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:350;flex-direction:column;overscroll-behavior:contain">
   <div id="cc-resize-handle" class="cc-resize-handle"></div>
   <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
     <div style="display:flex;align-items:center;gap:8px">
@@ -48,10 +48,13 @@
   <div id="projects-list" style="display:flex;gap:8px;flex-wrap:wrap;">—</div>
 </div>
 
-<div id="setup-banner" style="display:none;margin:16px 24px;padding:16px 20px;background:var(--surface2);border:1px dashed var(--blue);border-radius:8px;text-align:center;color:var(--text)">
-  <div style="font-size:18px;margin-bottom:6px">Welcome to Minions</div>
-  <div style="color:var(--muted);font-size:13px;margin-bottom:10px">Your minions hasn't been initialized yet. Run the following command to get started:</div>
-  <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:14px;color:var(--blue);border:1px solid var(--border)">minions init</code>
+<div id="setup-banner" style="display:none;margin:16px 24px;padding:16px 20px;background:var(--surface2);border:1px dashed var(--blue);border-radius:8px;color:var(--text)">
+  <div style="font-size:18px;margin-bottom:6px;text-align:center">Getting Started</div>
+  <div style="color:var(--muted);font-size:13px;margin-bottom:12px;text-align:center">No projects linked yet. Link a project so agents know what code to work on.</div>
+  <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+    <code style="background:var(--bg);padding:6px 16px;border-radius:4px;font-size:13px;color:var(--blue);border:1px solid var(--border)">minions add &lt;path-to-your-repo&gt;</code>
+    <div style="font-size:11px;color:var(--muted)">Then try: <code style="background:var(--bg);padding:2px 6px;border-radius:3px;font-size:11px">minions work "Explore the codebase"</code> or use the Command Center above</div>
+  </div>
 </div>
 
 <!-- Layout replaced by page-layout sidebar navigation -->
