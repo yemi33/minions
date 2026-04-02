@@ -425,21 +425,23 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   console.log(`\n  Minions initialized at ${MINIONS_HOME}`);
   console.log(`  Config, agents, and engine defaults created.\n`);
 
-  // Preflight checks
-  let preflightOk = true;
-  try { execSync('git --version', { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }); console.log('  ✓ Git found'); }
-  catch { console.log('  ✗ Git not found — agents need git for worktrees and PRs'); preflightOk = false; }
-  try {
-    const isWin = process.platform === 'win32';
-    const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
-    execSync(cmd, { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
-    console.log('  ✓ Claude Code CLI found');
-  } catch { console.log('  ✗ Claude Code CLI not found — install: npm i -g @anthropic-ai/claude-code (or native installer)'); preflightOk = false; }
-  const nodeVer = parseInt(process.versions.node);
-  if (nodeVer >= 18) { console.log('  ✓ Node.js ' + process.versions.node); }
-  else { console.log('  ✗ Node.js ' + process.versions.node + ' — version 18+ required'); preflightOk = false; }
-  if (!preflightOk) console.log('\n  Some prerequisites missing — agents may fail until resolved.\n');
-  else console.log('');
+  // Preflight checks (skip if called from bin/minions.js which runs its own)
+  if (!skipScan) {
+    let preflightOk = true;
+    try { execSync('git --version', { encoding: 'utf8', timeout: 5000, stdio: 'pipe' }); console.log('  ✓ Git found'); }
+    catch { console.log('  ✗ Git not found — agents need git for worktrees and PRs'); preflightOk = false; }
+    try {
+      const isWin = process.platform === 'win32';
+      const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
+      execSync(cmd, { encoding: 'utf8', timeout: 5000, stdio: 'pipe' });
+      console.log('  ✓ Claude Code CLI found');
+    } catch { console.log('  ✗ Claude Code CLI not found — install: npm i -g @anthropic-ai/claude-code (or native installer)'); preflightOk = false; }
+    const nodeVer = parseInt(process.versions.node);
+    if (nodeVer >= 18) { console.log('  ✓ Node.js ' + process.versions.node); }
+    else { console.log('  ✗ Node.js ' + process.versions.node + ' — version 18+ required'); preflightOk = false; }
+    if (!preflightOk) console.log('\n  Some prerequisites missing — agents may fail until resolved.\n');
+    else console.log('');
+  }
   if (removedPlaceholders > 0) {
     console.log(`  Removed ${removedPlaceholders} placeholder project entr${removedPlaceholders === 1 ? 'y' : 'ies'} from config.\n`);
   }
