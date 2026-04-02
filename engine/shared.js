@@ -520,7 +520,8 @@ function getPrLinks() {
   // Derive from PR.prdItems (single source of truth)
   const links = {};
   try {
-    const projects = getProjects();
+    const config = safeJson(path.join(MINIONS_DIR, 'config.json')) || {};
+    const projects = getProjects(config);
     for (const project of projects) {
       const prs = safeJson(projectPrPath(project)) || [];
       for (const pr of prs) {
@@ -536,7 +537,8 @@ function getPrLinks() {
 function addPrLink(prId, itemId) {
   if (!prId || !itemId) return;
   try {
-    const projects = getProjects();
+    const config = safeJson(path.join(MINIONS_DIR, 'config.json')) || {};
+    const projects = getProjects(config);
     for (const project of projects) { linkPrToItem(project, prId, itemId); }
   } catch { /* optional */ }
 }
