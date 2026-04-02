@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.157 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/ado.js
+- engine/github.js
+- engine/shared.js
+
+### Other
+- pipelines/daily-standup.json
+- test/unit.test.js
+
 ## 0.1.156 (2026-04-02)
 
 ### Engine
