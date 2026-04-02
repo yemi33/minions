@@ -284,9 +284,20 @@ function findGitRepos(rootDir, maxDepth = 3) {
 }
 
 async function scanAndAdd({ root, depth } = {}) {
-  const homeDir = process.env.USERPROFILE || process.env.HOME || '';
-  const scanRoot = root ? path.resolve(root) : homeDir;
-  const maxDepth = depth !== undefined ? (parseInt(depth, 10) || 3) : 3;
+  let scanRoot;
+  if (root) {
+    scanRoot = path.resolve(root);
+  } else {
+    const homeDir = process.env.USERPROFILE || process.env.HOME || '';
+    const answer = await ask('Where are your projects?', homeDir);
+    scanRoot = path.resolve(answer);
+  }
+  if (!fs.existsSync(scanRoot)) {
+    console.log(`  Directory not found: ${scanRoot}\n`);
+    rl.close();
+    return;
+  }
+  const maxDepth = depth !== undefined ? (parseInt(depth, 10) || 4) : 4;
 
   console.log(`\n  Scanning for git repos in: ${scanRoot}`);
   console.log(`  Max depth: ${maxDepth}\n`);
