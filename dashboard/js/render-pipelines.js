@@ -2,6 +2,68 @@
 
 let _pipelinesData = [];
 
+/**
+ * Render clickable artifact links for a pipeline stage.
+ * Each artifact type gets an icon and navigates to the relevant detail view.
+ */
+function _renderArtifactLinks(artifacts) {
+  if (!artifacts) return '';
+  var links = [];
+  var linkStyle = 'display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;font-size:10px;cursor:pointer;text-decoration:none;color:var(--blue);background:color-mix(in srgb, var(--blue) 10%, transparent);border:1px solid color-mix(in srgb, var(--blue) 20%, transparent)';
+
+  // Work items → navigate to work page & open detail
+  (artifacts.workItems || []).forEach(function(id) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'work\');setTimeout(function(){openWorkItemDetail(\'' + escHtml(id) + '\')},200)" title="Open work item ' + escHtml(id) + '">⚙ ' + escHtml(id) + '</span>');
+  });
+
+  // Meetings → navigate to meetings page & open detail
+  (artifacts.meetings || []).forEach(function(id) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'meetings\');setTimeout(function(){openMeetingDetail(\'' + escHtml(id) + '\')},200)" title="Open meeting ' + escHtml(id) + '">💬 ' + escHtml(id) + '</span>');
+  });
+
+  // Plans → navigate to plans page
+  (artifacts.plans || []).forEach(function(name) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'plans\')" title="Plan: ' + escHtml(name) + '">📋 ' + escHtml(name.replace(/\.md$/, '').slice(0, 30)) + '</span>');
+  });
+
+  // PRDs → navigate to PRD page
+  (artifacts.prds || []).forEach(function(name) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'prd\')" title="PRD: ' + escHtml(name) + '">📄 ' + escHtml(name.replace(/\.json$/, '').slice(0, 30)) + '</span>');
+  });
+
+  // PRs → navigate to PRs page
+  (artifacts.prs || []).forEach(function(id) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'prs\')" title="Pull request ' + escHtml(id) + '">🔀 PR-' + escHtml(id) + '</span>');
+  });
+
+  // Sub-stages (parallel) — just label them, no nav needed
+  (artifacts.subStages || []).forEach(function(id) {
+    links.push('<span style="' + linkStyle + ';cursor:default;color:var(--muted);background:color-mix(in srgb, var(--muted) 8%, transparent);border-color:color-mix(in srgb, var(--muted) 15%, transparent)" title="Sub-stage ' + escHtml(id) + '">⚓ ' + escHtml(id) + '</span>');
+  });
+
+  if (links.length === 0) return '';
+  return '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">' + links.join('') + '</div>';
+}
+
+/**
+ * Collect and deduplicate artifacts from all stages in a run.
+ * Returns { merged: { workItems, meetings, plans, prds, prs, subStages }, total }.
+ */
+function _collectRunArtifacts(run) {
+  var merged = { workItems: [], meetings: [], plans: [], prds: [], prs: [], subStages: [] };
+  var stages = run.stages || {};
+  for (var stageId in stages) {
+    var a = stages[stageId].artifacts || {};
+    ['workItems', 'meetings', 'plans', 'prds', 'prs', 'subStages'].forEach(function(key) {
+      (a[key] || []).forEach(function(v) {
+        if (merged[key].indexOf(v) === -1) merged[key].push(v);
+      });
+    });
+  }
+  var total = merged.workItems.length + merged.meetings.length + merged.plans.length + merged.prds.length + merged.prs.length;
+  return { merged: merged, total: total };
+}
+
 function renderPipelines(pipelines) {
   _pipelinesData = pipelines || [];
   const el = document.getElementById('pipelines-content');
@@ -29,6 +91,45 @@ function renderPipelines(pipelines) {
       return '<span style="color:' + color + ';font-size:11px" title="' + escHtml(s.id) + ': ' + escHtml(s.title || s.type) + ' (' + stageStatus + ')">' + icon + ' ' + escHtml(s.id) + '</span>';
     }).join(' <span style="color:var(--border)">\u2192</span> ');
 
+    // Build step-progress indicator for pipelines with a run
+    var progressHtml = '';
+    var displayRun = activeRun || lastRun;
+    if (displayRun && (p.stages || []).length > 0) {
+      var totalStages = (p.stages || []).length;
+      var completedCount = 0;
+      var runningCount = 0;
+      var failedCount = 0;
+      (p.stages || []).forEach(function(s) {
+        var st = displayRun.stages?.[s.id]?.status;
+        if (st === 'completed') completedCount++;
+        else if (st === 'running') runningCount++;
+        else if (st === 'failed') failedCount++;
+      });
+      var pct = Math.round((completedCount / totalStages) * 100);
+
+      // Segmented progress bar — one segment per stage
+      var segments = (p.stages || []).map(function(s) {
+        var st = displayRun.stages?.[s.id]?.status || 'pending';
+        var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
+        return '<div class="pl-prog-seg ' + cls + '" style="width:' + (100 / totalStages) + '%" title="' + escHtml(s.id) + ': ' + st + '"></div>';
+      }).join('');
+
+      var statusParts = [];
+      if (completedCount) statusParts.push(completedCount + ' done');
+      if (runningCount) statusParts.push(runningCount + ' running');
+      if (failedCount) statusParts.push(failedCount + ' failed');
+      var remaining = totalStages - completedCount - runningCount - failedCount;
+      if (remaining > 0) statusParts.push(remaining + ' pending');
+
+      progressHtml = '<div class="pl-progress-wrap">' +
+        '<div class="pl-progress-bar">' + segments + '</div>' +
+        '<div class="pl-progress-label">' +
+          '<span style="font-weight:600;color:' + (pct === 100 ? 'var(--green)' : failedCount ? 'var(--red)' : 'var(--blue)') + '">' + pct + '%</span>' +
+          '<span style="color:var(--muted)">' + statusParts.join(' \u00b7 ') + '</span>' +
+        '</div>' +
+      '</div>';
+    }
+
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:13px">' + escHtml(p.title) + '</strong>' +
@@ -39,6 +140,7 @@ function renderPipelines(pipelines) {
         '</div>' +
       '</div>' +
       '<div style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + stageFlow + '</div>' +
+      progressHtml +
     '</div>';
   }).join('');
 }
@@ -61,7 +163,28 @@ function openPipelineDetail(id) {
     '</div>' +
   '</div>';
 
-  // Stage detail
+  // Stage detail with progress bar
+  var detailRun = activeRun || (p.runs || []).slice(-1)[0];
+  if (detailRun && (p.stages || []).length > 0) {
+    var dtotal = (p.stages || []).length;
+    var ddone = 0, drun = 0, dfail = 0;
+    (p.stages || []).forEach(function(s) {
+      var st = detailRun.stages?.[s.id]?.status;
+      if (st === 'completed') ddone++;
+      else if (st === 'running') drun++;
+      else if (st === 'failed') dfail++;
+    });
+    var dpct = Math.round((ddone / dtotal) * 100);
+    var dsegs = (p.stages || []).map(function(s) {
+      var st = detailRun.stages?.[s.id]?.status || 'pending';
+      var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
+      return '<div class="pl-prog-seg ' + cls + '" style="width:' + (100 / dtotal) + '%" title="' + escHtml(s.id) + ': ' + st + '"></div>';
+    }).join('');
+    html += '<div class="pl-progress-wrap">' +
+      '<div class="pl-progress-bar" style="height:8px">' + dsegs + '</div>' +
+      '<div class="pl-progress-label"><span style="font-weight:600;color:' + (dpct === 100 ? 'var(--green)' : dfail ? 'var(--red)' : 'var(--blue)') + '">' + dpct + '% complete</span> <span style="color:var(--muted)">(' + ddone + '/' + dtotal + ' stages)</span></div>' +
+    '</div>';
+  }
   html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Stages</h4>';
   (p.stages || []).forEach(function(s, i) {
     var stageRun = activeRun?.stages?.[s.id] || {};
@@ -75,6 +198,7 @@ function openPipelineDetail(id) {
         '<span style="color:' + statusColor + ';font-size:10px;font-weight:600">' + stageStatus.toUpperCase() + '</span>' +
       '</div>' +
       '<div style="font-size:10px;color:var(--muted);margin-top:4px">Type: ' + escHtml(s.type) + ' | Depends on: ' + escHtml(deps) + (s.agent ? ' | Agent: ' + escHtml(s.agent) : '') + '</div>' +
+      _renderArtifactLinks(stageRun.artifacts) +
       (stageRun.output ? '<div style="margin-top:6px;font-size:11px;max-height:150px;overflow-y:auto">' + renderMd(stageRun.output.slice(0, 500)) + '</div>' : '') +
       (stageStatus === 'waiting-human' ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green);margin-top:6px" onclick="_continuePipeline(\'' + escHtml(id) + '\',\'' + escHtml(s.id) + '\',this)">Continue</button>' : '') +
     '</div>';
@@ -84,12 +208,20 @@ function openPipelineDetail(id) {
   var runs = (p.runs || []).slice(-5).reverse();
   if (runs.length > 0) {
     html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Recent Runs</h4>';
-    runs.forEach(function(r) {
+    runs.forEach(function(r, ri) {
       var color = r.status === 'completed' ? 'var(--green)' : r.status === 'failed' ? 'var(--red)' : r.status === 'running' ? 'var(--blue)' : 'var(--muted)';
-      html += '<div style="font-size:10px;display:flex;gap:8px;align-items:center">' +
-        '<span style="color:' + color + ';font-weight:600">' + r.status + '</span>' +
-        '<span style="color:var(--muted)">' + (r.startedAt ? new Date(r.startedAt).toLocaleString() : '') + '</span>' +
-        (r.completedAt ? '<span style="color:var(--muted)">\u2192 ' + new Date(r.completedAt).toLocaleString() + '</span>' : '') +
+      // Collect all artifacts across stages for this run
+      var runArtifacts = _collectRunArtifacts(r);
+      var artifactCount = runArtifacts.total;
+      var toggleId = 'run-artifacts-' + ri;
+      html += '<div style="font-size:10px">' +
+        '<div style="display:flex;gap:8px;align-items:center">' +
+          '<span style="color:' + color + ';font-weight:600">' + r.status + '</span>' +
+          '<span style="color:var(--muted)">' + (r.startedAt ? new Date(r.startedAt).toLocaleString() : '') + '</span>' +
+          (r.completedAt ? '<span style="color:var(--muted)">\u2192 ' + new Date(r.completedAt).toLocaleString() + '</span>' : '') +
+          (artifactCount > 0 ? '<span style="color:var(--blue);cursor:pointer;user-select:none" onclick="var el=document.getElementById(\'' + toggleId + '\');el.style.display=el.style.display===\'none\'?\'flex\':\'none\'" title="Toggle artifacts">' + artifactCount + ' artifact' + (artifactCount !== 1 ? 's' : '') + ' ▾</span>' : '') +
+        '</div>' +
+        (artifactCount > 0 ? '<div id="' + toggleId + '" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;margin-left:12px">' + _renderArtifactLinks(runArtifacts.merged) + '</div>' : '') +
       '</div>';
     });
   }
