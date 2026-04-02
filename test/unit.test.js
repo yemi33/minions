@@ -4179,6 +4179,49 @@ async function testSpawnAgentScript() {
     assert.ok(src.includes('_sysPromptFileSupported') && src.includes('--system-prompt-file'),
       'Should probe claude CLI for --system-prompt-file flag support');
   });
+
+  // ── try-catch coverage for file I/O ──
+
+  await test('spawn-agent.js wraps all writeFileSync/appendFileSync in try-catch', () => {
+    // Every fs.writeFileSync and fs.appendFileSync call should be inside a try block
+    // Split source by lines and check each occurrence
+    const lines = src.split('\n');
+    const unprotected = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/(fs\.writeFileSync|fs\.appendFileSync)/.test(line)) {
+        // Check if the line itself contains try, or if the enclosing block does
+        const hasTryOnLine = line.includes('try');
+        // Check surrounding 3 lines above for try {
+        const above = lines.slice(Math.max(0, i - 3), i).join('\n');
+        const hasTryAbove = /try\s*\{/.test(above);
+        if (!hasTryOnLine && !hasTryAbove) {
+          unprotected.push(`line ${i + 1}: ${line.trim().slice(0, 80)}`);
+        }
+      }
+    }
+    assert.strictEqual(unprotected.length, 0,
+      `Unprotected fs write calls found:\n${unprotected.join('\n')}`);
+  });
+
+  await test('spawn-agent.js PID file write exits with non-zero on failure', () => {
+    // PID file write should catch error, write to stderr, and exit(1)
+    assert.ok(src.includes('FATAL: failed to write PID file') && src.includes('process.exit(1)'),
+      'PID file write failure should be fatal with stderr message and exit(1)');
+  });
+
+  await test('spawn-agent.js system prompt temp file write exits with non-zero on failure', () => {
+    assert.ok(src.includes('FATAL: failed to write system prompt temp file') && src.includes('process.exit(1)'),
+      'System prompt temp file write failure should be fatal with stderr message and exit(1)');
+  });
+
+  await test('spawn-agent.js debug log writes catch and continue', () => {
+    // Debug log writes should have catch blocks that don't call process.exit
+    // Count debug-related try-catch blocks (non-critical ones)
+    const debugCatchCount = (src.match(/catch\s*(\([^)]*\)\s*)?\{\s*\/\*\s*debug log/g) || []).length;
+    assert.ok(debugCatchCount >= 4,
+      `Expected at least 4 non-critical debug log try-catch blocks, found ${debugCatchCount}`);
+  });
 }
 
 // ─── engine.js — Exit Code 78 Handling Tests ────────────────────────────────
