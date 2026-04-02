@@ -1565,14 +1565,12 @@ function discoverFromWorkItems(config, project) {
     setCooldown(key);
   }
 
-  // Write back updated statuses (always, since we mark items dispatched before newWork check)
-  if (newWork.length > 0) {
+  // Write back updated statuses — needsWrite covers mutation-only ticks, newWork covers dispatches
+  if (needsWrite || newWork.length > 0) {
     const workItemsPath = projectWorkItemsPath(project);
     safeWrite(workItemsPath, items);
     for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
   }
-
-  if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
 
   const skipTotal = skipped.gated + skipped.noAgent;
   if (skipTotal > 0) {
@@ -1761,6 +1759,7 @@ function discoverCentralWorkItems(config) {
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
+  let needsWrite = false;
 
   for (const item of items) {
     if (item.status === 'needs-human-review') continue; // Explicit skip — flagged for human attention
@@ -1841,7 +1840,7 @@ function discoverCentralWorkItems(config) {
         if (!prompt) {
           if (renderError) {
             log('warn', `Fan-out: ${item.id} → ${agent.id}: ${renderError.message}`);
-            if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; }
+            if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; needsWrite = true; }
           } else {
             log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
           }
@@ -1867,6 +1866,7 @@ function discoverCentralWorkItems(config) {
       item.dispatched_to = idleAgents.map(a => a.id).join(', ');
       item.scope = 'fan-out';
       item.fanOutAgents = idleAgents.map(a => a.id);
+      needsWrite = true;
       setCooldown(key);
       log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
 
@@ -1994,10 +1994,12 @@ function discoverCentralWorkItems(config) {
         if (renderError) {
           log('warn', `Dispatch: ${item.id}: ${renderError.message}`);
           item._pendingReason = 'critical_vars_missing';
+          needsWrite = true;
         } else {
           log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
         }
         item.status = 'pending';
+        needsWrite = true;
         continue;
       }
 
@@ -2014,11 +2016,12 @@ function discoverCentralWorkItems(config) {
       item.status = 'dispatched';
       item.dispatched_at = ts();
       item.dispatched_to = agentId;
+      needsWrite = true;
       setCooldown(key);
     }
   }
 
-  if (newWork.length > 0) safeWrite(centralPath, items);
+  if (needsWrite || newWork.length > 0) safeWrite(centralPath, items);
   return newWork;
 }
 
