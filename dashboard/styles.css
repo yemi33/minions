@@ -31,7 +31,7 @@
     padding: var(--space-6) var(--space-9); display: flex; align-items: center; justify-content: space-between;
     position: sticky; top: 0; z-index: 100;
   }
-  header h1 { font-size: var(--text-2xl); font-weight: 600; color: var(--blue); letter-spacing: 0.5px; }
+  header h1 { font-size: var(--text-2xl); font-weight: 600; color: var(--blue); letter-spacing: 0.5px; margin-left: 150px; }
   header h1 span { color: var(--muted); font-weight: 400; font-size: var(--text-lg); margin-left: var(--space-4); }
   .pulse { width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--green); display: inline-block; margin-right: var(--space-3); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
