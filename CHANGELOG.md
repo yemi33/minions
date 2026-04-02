@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.183 (2026-04-02)
+
+### Dashboard
+- dashboard.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.182 (2026-04-02)
 
 ### Engine
