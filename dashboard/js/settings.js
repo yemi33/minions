@@ -57,11 +57,13 @@ async function openSettings() {
     '<div style="margin-bottom:16px">' +
       '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Permission Mode <span style="opacity:0.6">(how agents handle tool approvals)</span></label>' +
       '<select id="set-permissionMode" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
-        '<option value="bypassPermissions"' + ((c.permissionMode || 'bypassPermissions') === 'bypassPermissions' ? ' selected' : '') + '>Bypass (recommended) — agents run without permission prompts</option>' +
-        '<option value="auto"' + ((c.permissionMode) === 'auto' ? ' selected' : '') + '>Auto — agents auto-approve safe tools, prompt for risky ones</option>' +
-        '<option value="default"' + ((c.permissionMode) === 'default' ? ' selected' : '') + '>Default — agents prompt for every tool (will hang without a human)</option>' +
+        '<option value="bypassPermissions"' + ((c.permissionMode || 'bypassPermissions') === 'bypassPermissions' ? ' selected' : '') + '>Bypass (recommended) — agents run autonomously without permission prompts</option>' +
+        '<option value="auto"' + ((c.permissionMode) === 'auto' ? ' selected' : '') + '>Auto — auto-approve safe tools, prompt for risky ones (agents may hang on risky tools)</option>' +
+        '<option value="default"' + ((c.permissionMode) === 'default' ? ' selected' : '') + '>Default — prompt for every tool (agents WILL hang — not recommended)</option>' +
       '</select>' +
-      '<div style="font-size:9px;color:var(--muted);margin-top:2px">Non-bypass modes require a human watching the agent terminal to approve tool calls</div>' +
+      '<div id="set-permissionMode-warn" style="font-size:9px;margin-top:4px;padding:4px 8px;border-radius:4px;' + ((c.permissionMode && c.permissionMode !== 'bypassPermissions') ? 'display:block;background:rgba(248,81,73,0.1);color:var(--red)' : 'display:none') + '">' +
+        '\u26A0 Agents run as background processes with no terminal. Non-bypass modes will cause agents to hang waiting for approval that can never arrive. Use Allowed Tools to restrict what agents can do instead.' +
+      '</div>' +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Agents</h3>' +
@@ -96,6 +98,20 @@ async function openSettings() {
   document.getElementById('modal-body').style.fontFamily = '';
   document.getElementById('modal-body').style.whiteSpace = '';
   document.getElementById('modal').classList.add('open');
+
+  // Wire permission mode warning toggle
+  var pmSelect = document.getElementById('set-permissionMode');
+  if (pmSelect) pmSelect.addEventListener('change', function() {
+    var warn = document.getElementById('set-permissionMode-warn');
+    if (!warn) return;
+    if (this.value !== 'bypassPermissions') {
+      warn.style.display = 'block';
+      warn.style.background = 'rgba(248,81,73,0.1)';
+      warn.style.color = 'var(--red)';
+    } else {
+      warn.style.display = 'none';
+    }
+  });
 }
 
 function settingsToggle(label, id, checked, hint) {

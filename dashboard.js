@@ -370,16 +370,7 @@ I'll save that as a note and dispatch dallas to fix the bug.
 If no actions are needed (just answering a question, or you handled it directly), do NOT include the ===ACTIONS=== line.
 
 Available action types:
-- **dispatch**: Create a work item for an agent. Fields: title, workType, priority (low/medium/high), agents (array of IDs, optional), project, description.
-  workType values — choose carefully, this determines the playbook and whether a PR is expected:
-  - \`explore\` — research, investigate, read code, gather information, write findings (NO PR expected)
-  - \`ask\` — answer a question, analyze something, produce a report (NO PR expected)
-  - \`implement\` — write new code, add a feature, create something (PR expected)
-  - \`fix\` — fix a bug, address review feedback on an existing PR (PR expected)
-  - \`review\` — code review, quality assessment, evaluate completed work, verify acceptance criteria (NO PR expected)
-  - \`test\` — run tests, write test cases (PR expected if new tests written)
-  - \`verify\` — build PRs locally, merge branches, start dev server, get localhost URL to test (NO PR expected)
-  If unsure, prefer \`explore\` for read-only tasks and \`implement\` for write tasks.
+- **dispatch**: Create a work item for an agent. Fields: title, workType (ask/explore/fix/review/test/implement/verify), priority (low/medium/high), agents (array of IDs, optional), project, description. Use \`verify\` when the user wants to build PRs locally, merge branches together, start a dev server, and get a localhost URL to test.
 - **note**: Save a note/decision. Fields: title, content
 - **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: Cancel a running agent. Fields: agent (agent ID), reason
@@ -676,7 +667,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', chunk => { body += chunk; if (body.length > 1e6) reject(new Error('Too large')); });
-    req.on('end', () => { try { resolve(body ? JSON.parse(body) : {}); } catch(e) { reject(e); } });
+    req.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
   });
 }
 
@@ -823,7 +814,7 @@ const server = http.createServer(async (req, res) => {
       // If archived, temporarily restore to active so checkPlanCompletion can find it
       const activePath = path.join(prdDir, body.file);
       if (fromArchive) {
-        const plan = JSON.parse(safeRead(prdPath) || '{}');
+        const plan = JSON.parse(safeRead(prdPath));
         plan.status = 'approved';
         delete plan.completedAt;
         safeWrite(activePath, plan);
@@ -869,22 +860,18 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      let found = false;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        const item = items.find(i => i.id === id);
-        if (!item) return items;
-        found = true;
-        item.status = 'pending';
-        item._retryCount = 0;
-        delete item.dispatched_at;
-        delete item.dispatched_to;
-        delete item.failReason;
-        delete item.failedAt;
-        delete item.fanOutAgents;
-        return items;
-      }, { defaultValue: [] });
-      if (!found) return jsonReply(res, 404, { error: 'item not found' });
+      const items = JSON.parse(safeRead(wiPath) || '[]');
+      const item = items.find(i => i.id === id);
+      if (!item) return jsonReply(res, 404, { error: 'item not found' });
+
+      item.status = 'pending';
+      item._retryCount = 0; // Reset retry counter on manual retry
+      delete item.dispatched_at;
+      delete item.dispatched_to;
+      delete item.failReason;
+      delete item.failedAt;
+      delete item.fanOutAgents;
+      safeWrite(wiPath, items);
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
@@ -902,10 +889,11 @@ const server = http.createServer(async (req, res) => {
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
-          if (cooldowns[dispatchKey]) delete cooldowns[dispatchKey];
-          return cooldowns;
-        });
+        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        if (cooldowns[dispatchKey]) {
+          delete cooldowns[dispatchKey];
+          safeWrite(cooldownPath, cooldowns);
+        }
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       return jsonReply(res, 200, { ok: true, id });
@@ -930,16 +918,15 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      let found = false;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        const idx = items.findIndex(i => i.id === id);
-        if (idx === -1) return items;
-        found = true;
-        items.splice(idx, 1);
-        return items;
-      }, { defaultValue: [] });
-      if (!found) return jsonReply(res, 404, { error: 'item not found' });
+      const items = JSON.parse(safeRead(wiPath) || '[]');
+      const idx = items.findIndex(i => i.id === id);
+      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
+
+      const item = items[idx];
+
+      // Remove item from work-items file
+      items.splice(idx, 1);
+      safeWrite(wiPath, items);
 
       // Clean dispatch entries + kill running agent
       const dispatchRemoved = cleanDispatchEntries(d =>
@@ -950,12 +937,12 @@ const server = http.createServer(async (req, res) => {
       // Clean cooldown entries so item can be re-created immediately
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
-          for (const key of Object.keys(cooldowns)) {
-            if (key.includes(id)) delete cooldowns[key];
-          }
-          return cooldowns;
-        });
+        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        let cleaned = false;
+        for (const key of Object.keys(cooldowns)) {
+          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
+        }
+        if (cleaned) safeWrite(cooldownPath, cooldowns);
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       invalidateStatusCache();
@@ -1037,6 +1024,9 @@ const server = http.createServer(async (req, res) => {
         // Write to central queue — agent decides which project
         wiPath = path.join(MINIONS_DIR, 'work-items.json');
       }
+      let items = [];
+      const existing = safeRead(wiPath);
+      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title, type: body.type || 'implement',
@@ -1048,12 +1038,8 @@ const server = http.createServer(async (req, res) => {
       if (body.agents) item.agents = body.agents;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
-      if (body.skipPr === true) item.skipPr = true;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        items.push(item);
-        return items;
-      }, { defaultValue: [] });
+      items.push(item);
+      safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1075,27 +1061,29 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      let result = null;
-      let error = null;
-      mutateJsonFileLocked(wiPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        const item = items.find(i => i.id === id);
-        if (!item) { error = 'item not found'; return items; }
-        if (item.status === 'dispatched') { error = 'Cannot edit dispatched items'; return items; }
-        if (title !== undefined) item.title = title;
-        if (description !== undefined) item.description = description;
-        if (type !== undefined) item.type = type;
-        if (priority !== undefined) item.priority = priority;
-        if (agent !== undefined) item.agent = agent || null;
-        if (body.references !== undefined) item.references = body.references;
-        if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
-        if (body.skipPr !== undefined) item.skipPr = body.skipPr === true;
-        item.updatedAt = new Date().toISOString();
-        result = { ...item };
-        return items;
-      }, { defaultValue: [] });
-      if (error) return jsonReply(res, error === 'item not found' ? 404 : 400, { error });
-      return jsonReply(res, 200, { ok: true, item: result });
+      const items = JSON.parse(safeRead(wiPath) || '[]');
+      const item = items.find(i => i.id === id);
+      if (!item) return jsonReply(res, 404, { error: 'item not found' });
+
+      if (item.status === 'dispatched') {
+        return jsonReply(res, 400, { error: 'Cannot edit dispatched items' });
+      }
+
+      if (title !== undefined) item.title = title;
+      if (description !== undefined) item.description = description;
+      if (type !== undefined) item.type = type;
+      if (priority !== undefined) item.priority = priority;
+      if (agent !== undefined) {
+        item.agent = agent || null;
+        // Clear stale pending dispatch entries so the engine re-queues with the new agent
+        cleanDispatchEntries(d => d.meta?.item?.id === id);
+      }
+      if (body.references !== undefined) item.references = body.references;
+      if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
+      item.updatedAt = new Date().toISOString();
+
+      safeWrite(wiPath, items);
+      return jsonReply(res, 200, { ok: true, item });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -1179,18 +1167,24 @@ const server = http.createServer(async (req, res) => {
       const item = (plan.missing_features || []).find(f => f.id === body.itemId);
       if (!item) return jsonReply(res, 404, { error: 'item not found in plan' });
 
-      // Update plan item under lock
-      mutateJsonFileLocked(planPath, (freshPlan) => {
-        const freshItem = (freshPlan.missing_features || []).find(f => f.id === body.itemId);
-        if (freshItem) {
-          if (body.name !== undefined) freshItem.name = body.name;
-          if (body.description !== undefined) freshItem.description = body.description;
-          if (body.priority !== undefined) freshItem.priority = body.priority;
-          if (body.estimated_complexity !== undefined) freshItem.estimated_complexity = body.estimated_complexity;
-          if (body.status !== undefined) freshItem.status = body.status;
-        }
-        return freshPlan;
-      });
+      // Update allowed fields
+      if (body.name !== undefined) item.name = body.name;
+      if (body.description !== undefined) item.description = body.description;
+      if (body.priority !== undefined) item.priority = body.priority;
+      if (body.estimated_complexity !== undefined) item.estimated_complexity = body.estimated_complexity;
+      if (body.status !== undefined) item.status = body.status;
+
+      // Re-read plan before writing to minimize race window with engine
+      const freshPlan = safeJson(planPath) || plan;
+      const freshItem = (freshPlan.missing_features || []).find(f => f.id === body.itemId);
+      if (freshItem) {
+        if (body.name !== undefined) freshItem.name = body.name;
+        if (body.description !== undefined) freshItem.description = body.description;
+        if (body.priority !== undefined) freshItem.priority = body.priority;
+        if (body.estimated_complexity !== undefined) freshItem.estimated_complexity = body.estimated_complexity;
+        if (body.status !== undefined) freshItem.status = body.status;
+      }
+      safeWrite(planPath, freshPlan);
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
@@ -1200,20 +1194,18 @@ const server = http.createServer(async (req, res) => {
       }
       for (const wiPath of wiSyncPaths) {
         try {
-          mutateJsonFileLocked(wiPath, (items) => {
-            if (!Array.isArray(items)) return items;
-            const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-            if (wi && wi.status === 'pending') {
-              if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
-              if (body.description !== undefined) wi.description = body.description;
-              if (body.priority !== undefined) wi.priority = body.priority;
-              if (body.estimated_complexity !== undefined) {
-                wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
-              }
-              workItemSynced = true;
+          const items = safeJson(wiPath);
+          const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
+          if (wi && wi.status === 'pending') {
+            if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
+            if (body.description !== undefined) wi.description = body.description;
+            if (body.priority !== undefined) wi.priority = body.priority;
+            if (body.estimated_complexity !== undefined) {
+              wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
             }
-            return items;
-          }, { defaultValue: [] });
+            safeWrite(wiPath, items);
+            workItemSynced = true;
+          }
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -1348,7 +1340,6 @@ const server = http.createServer(async (req, res) => {
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
-      if (res.writableEnded) return;
       try {
         const stat = fs.statSync(liveLogPath);
         if (stat.size > offset) {
@@ -1367,17 +1358,14 @@ const server = http.createServer(async (req, res) => {
 
     // Check if agent is still active (poll every 5s)
     const doneCheck = setInterval(() => {
-      if (res.writableEnded) { clearInterval(doneCheck); return; }
       const dispatch = getDispatchQueue();
       const isActive = (dispatch.active || []).some(d => d.agent === agentId);
       if (!isActive) {
         watcher(); // flush final content
+        res.write(`event: done\ndata: complete\n\n`);
         clearInterval(doneCheck);
         fs.unwatchFile(liveLogPath, watcher);
-        if (!res.writableEnded) {
-          res.write(`event: done\ndata: complete\n\n`);
-          res.end();
-        }
+        res.end();
       }
     }, 5000);
 
@@ -1401,7 +1389,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       // Return last N bytes via ?tail=N param (default last 8KB)
       const params = new URL(req.url, 'http://localhost').searchParams;
-      const tailBytes = Math.min(parseInt(params.get('tail')) || 8192, 1024 * 1024);
+      const tailBytes = parseInt(params.get('tail')) || 8192;
       res.end(content.length > tailBytes ? content.slice(-tailBytes) : content);
     }
     return;
@@ -1659,13 +1647,12 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             file: f, format: 'draft', archived,
             project: projectMatch ? projectMatch[1].trim() : '',
             summary: titleMatch ? titleMatch[1].trim() : f.replace('.md', ''),
-            status: archived ? 'completed' : completedPrdFiles.has(f) ? 'approved' : 'active',
+            status: archived ? 'completed' : completedPrdFiles.has(f) ? 'converted' : 'draft',
             branchStrategy: '',
             featureBranch: '',
             itemCount: (content.match(/^\d+\.\s+\*\*/gm) || []).length,
             generatedBy: authorMatch ? authorMatch[1].trim() : '',
             generatedAt: dateMatch ? dateMatch[1].trim() : '',
-            completedAt: archived ? updatedAt : '',
             updatedAt,
             requiresApproval: false,
             revisionFeedback: null,
@@ -1874,7 +1861,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           for (const w of items) {
             if (w.sourcePlan !== body.file) continue;
             // Keep completed items as-is, reset everything else to pending.
-            if (w.status === 'done') continue;
+            if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
 
             if (w.status === 'dispatched') {
               // Kill the agent working on this item, if any.
@@ -2276,6 +2263,148 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  // POST /api/plans/revise-and-regenerate — REMOVED: plan versioning now handled by /api/doc-chat
+  // The "Replace old PRD" flow uses qaReplacePrd (frontend) which calls /api/plans/pause + /api/plans/regenerate + planExecute
+  async function handlePlansReviseAndRegenerate(req, res) {
+    try {
+      const body = await readBody(req);
+      if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
+
+      // Find the source plan .md file for this PRD
+      // Convention: PRD JSON references plan via plan_summary containing the work item ID,
+      // or the .md file has a matching name prefix
+      const prdPath = path.join(PRD_DIR, body.source);
+      if (!fs.existsSync(prdPath)) return jsonReply(res, 404, { error: 'PRD file not found' });
+
+      // Look for corresponding .md plan file
+      let sourcePlanFile = null;
+      const planFiles = safeReadDir(PLANS_DIR).filter(f => f.endsWith('.md'));
+      if (body.sourcePlan) {
+        // Explicit source plan provided
+        sourcePlanFile = body.sourcePlan;
+      } else {
+        // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
+        const prd = JSON.parse(safeRead(prdPath) || '{}');
+        if (prd.source_plan) {
+          sourcePlanFile = prd.source_plan;
+        } else {
+          // Match by prefix: officeagent-2026-03-15.json → plan-*officeagent* or plan-w025*.md
+          const prdBase = body.source.replace('.json', '');
+          for (const f of planFiles) {
+            // Check if plan file mentions the same project or was created around same time
+            const content = safeRead(path.join(PLANS_DIR, f)) || '';
+            if (content.includes(prd.project || '___nomatch___') || content.includes(prd.plan_summary?.slice(0, 40) || '___nomatch___')) {
+              sourcePlanFile = f;
+              break;
+            }
+          }
+          // Last resort: most recent .md plan
+          if (!sourcePlanFile && planFiles.length > 0) {
+            sourcePlanFile = planFiles.sort((a, b) => {
+              try { return fs.statSync(path.join(PLANS_DIR, b)).mtimeMs - fs.statSync(path.join(PLANS_DIR, a)).mtimeMs; } catch { return 0; }
+            })[0];
+          }
+        }
+      }
+
+      if (!sourcePlanFile) {
+        return jsonReply(res, 404, { error: 'No source plan (.md) found for this PRD. You can edit the PRD JSON directly using "Edit Plan".' });
+      }
+
+      const sourcePlanPath = path.join(PLANS_DIR, sourcePlanFile);
+      const planContent = safeRead(sourcePlanPath);
+      if (!planContent) return jsonReply(res, 404, { error: 'Source plan file not readable: ' + sourcePlanFile });
+
+      // Step 1: Steer the source plan with the user's instruction via CC
+      const result = await ccDocCall({
+        message: body.instruction,
+        document: planContent,
+        title: sourcePlanFile,
+        filePath: 'plans/' + sourcePlanFile,
+        selection: body.selection || '',
+        canEdit: true,
+        isJson: false,
+      });
+
+      if (!result.content) {
+        return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false });
+      }
+
+      // Save the revised plan
+      safeWrite(sourcePlanPath, result.content);
+
+      // Step 2: Pause the old PRD so it stops materializing items
+      const prd = JSON.parse(safeRead(prdPath) || '{}');
+      prd.status = 'revision-requested';
+      prd.revision_feedback = body.instruction;
+      prd.revisionRequestedAt = new Date().toISOString();
+      safeWrite(prdPath, prd);
+
+      // Step 3: Clean up pending/failed work items from old PRD
+      let reset = 0, kept = 0;
+      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
+      for (const proj of PROJECTS) {
+        wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
+      }
+      const deletedItemIds = [];
+      for (const wiInfo of wiPaths) {
+        try {
+          const items = safeJson(wiInfo.path);
+          const filtered = [];
+          for (const w of items) {
+            if (w.sourcePlan === body.source) {
+              if (w.status === 'pending' || w.status === 'failed') {
+                reset++;
+                deletedItemIds.push(w.id);
+              } else {
+                kept++;
+                filtered.push(w);
+              }
+            } else {
+              filtered.push(w);
+            }
+          }
+          if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
+        } catch (e) { console.error('work item deletion:', e.message); }
+      }
+      for (const itemId of deletedItemIds) {
+        cleanDispatchEntries(d =>
+          d.meta?.item?.sourcePlan === body.source && d.meta?.item?.id === itemId
+        );
+      }
+
+      // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
+      const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
+      let centralItems = [];
+      try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
+      const wiId = 'W-' + shared.uid();
+      centralItems.push({
+        id: wiId,
+        title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
+        type: 'plan-to-prd',
+        priority: 'high',
+        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
+        status: 'pending',
+        created: new Date().toISOString(),
+        createdBy: 'dashboard:revise-and-regenerate',
+        project: prd.project || '',
+        planFile: sourcePlanFile,
+      });
+      safeWrite(centralWiPath, centralItems);
+
+      return jsonReply(res, 200, {
+        ok: true,
+        answer: result.answer,
+        updated: true,
+        sourcePlan: sourcePlanFile,
+        prdPaused: true,
+        reset,
+        kept,
+        workItemId: wiId,
+      });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   async function handlePlansDiscuss(req, res) {
     try {
       const body = await readBody(req);
@@ -2445,7 +2574,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                     let changed = false;
                     for (const w of items) {
                       if (w.sourcePlan !== f) continue;
-                      if (w.status === 'done') continue;
+                      if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
                       if (w.status === 'dispatched') {
                         const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
                         if (activeEntry) {
@@ -2711,12 +2840,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { execSync: ex } = require('child_process');
       const detected = { name: path.basename(target), _found: [] };
       try {
-        let head = '';
-        try {
-          head = ex('git symbolic-ref refs/remotes/origin/HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
-        } catch {
-          head = ex('git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
-        }
+        const head = ex('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || git symbolic-ref HEAD', { cwd: target, encoding: 'utf8', timeout: 5000 }).trim();
         detected.mainBranch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
       } catch { detected.mainBranch = 'main'; }
       try {
@@ -2795,7 +2919,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       // Concurrency guard — only one CC call at a time, with auto-release for stuck requests
       if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
-        return jsonReply(res, 429, { error: 'Command Center is busy — wait for the current request to finish.' });
+        return jsonReply(res, 429, { error: 'Command Center is busy — wait for the current request to finish, or click "New Session" to reset.' });
       }
       if (ccInFlight) console.log('[CC] Auto-releasing stuck in-flight guard after timeout');
       ccInFlight = true;
@@ -2960,6 +3084,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (body.engine) {
         const e = body.engine;
         const D = shared.ENGINE_DEFAULTS;
+        // Numeric fields: { key: [min, max?] }
         const numericFields = {
           tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
           agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
@@ -2975,21 +3100,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             config.engine[key] = val;
           }
         }
+        // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
+        // Boolean fields
+        for (const key of ['autoApprovePlans', 'autoReview', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
-        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
-        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
       }
 
       if (body.claude) {
         for (const key of ['allowedTools', 'outputFormat']) {
           if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
-        }
-        if (body.claude.permissionMode !== undefined) {
-          const valid = ['bypassPermissions', 'auto', 'default'];
-          config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
         }
       }
 
@@ -2998,11 +3119,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           if (!config.agents[id]) continue;
           if (updates.role !== undefined) config.agents[id].role = String(updates.role);
           if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
-          if (updates.monthlyBudgetUsd !== undefined) {
-            const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
-            if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
-            else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
-          }
         }
       }
 
@@ -3090,7 +3206,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
 
     // Work items
-    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?, skipPr?', handler: handleWorkItemsCreate },
+    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?', handler: handleWorkItemsCreate },
     { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?, references?, acceptanceCriteria?', handler: handleWorkItemsUpdate },
     { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
@@ -3103,34 +3219,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const projects = shared.getProjects(CONFIG);
       const paths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
-      let found = false;
-      let feedbackAgent = 'unknown';
-      let feedbackTitle = id;
       for (const wiPath of paths) {
-        try {
-          mutateJsonFileLocked(wiPath, (items) => {
-            if (!Array.isArray(items)) return items;
-            const item = items.find(i => i.id === id);
-            if (!item) return items;
-            found = true;
-            item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
-            feedbackAgent = item.dispatched_to || item.agent || 'unknown';
-            feedbackTitle = item.title || id;
-            return items;
-          }, { defaultValue: [] });
-        } catch { /* optional */ }
-        if (found) break;
+        const items = JSON.parse(safeRead(wiPath) || '[]');
+        const item = items.find(i => i.id === id);
+        if (!item) continue;
+        item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
+        safeWrite(wiPath, items);
+        const agent = item.dispatched_to || item.agent || 'unknown';
+        const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
+          '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
+          '**Item:** ' + (item.title || id) + '\n' +
+          '**Agent:** ' + agent + '\n' +
+          (comment ? '**Feedback:** ' + comment + '\n' : '');
+        const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
+        safeWrite(inboxPath, feedbackNote);
+        invalidateStatusCache();
+        return jsonReply(res, 200, { ok: true });
       }
-      if (!found) return jsonReply(res, 404, { error: 'Work item not found' });
-      const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
-        '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
-        '**Item:** ' + feedbackTitle + '\n' +
-        '**Agent:** ' + feedbackAgent + '\n' +
-        (comment ? '**Feedback:** ' + comment + '\n' : '');
-      const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', feedbackAgent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
-      safeWrite(inboxPath, feedbackNote);
-      invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true });
+      return jsonReply(res, 404, { error: 'Work item not found' });
     }},
 
     // Pinned notes
@@ -3179,10 +3285,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/reject', desc: 'Reject a plan', params: 'file, rejectedBy?, reason?', handler: handlePlansReject },
     { method: 'POST', path: '/api/plans/regenerate', desc: 'Reset pending/failed work items for a plan so they re-materialize', params: 'source', handler: handlePlansRegenerate },
     { method: 'POST', path: '/api/plans/delete', desc: 'Delete a plan file and clean up work items', params: 'file', handler: handlePlansDelete },
-    { method: 'POST', path: '/api/plans/archive', desc: 'Archive a plan/PRD (move to archive folder, also archives source .md plan if PRD)', params: 'file', handler: handlePlansArchiveMove },
+    { method: 'POST', path: '/api/plans/archive', desc: 'Move a plan/PRD to archive (preserves work items)', params: 'file', handler: handlePlansArchive },
     { method: 'POST', path: '/api/plans/unarchive', desc: 'Restore a plan/PRD from archive', params: 'file', handler: handlePlansUnarchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
+    { method: 'POST', path: '/api/plans/archive', desc: 'Archive a plan/PRD (move to archive folder)', params: 'file', handler: handlePlansArchiveMove },
+    { method: 'POST', path: '/api/plans/unarchive', desc: 'Unarchive a plan/PRD (restore from archive folder)', params: 'file', handler: handlePlansUnarchive },
     { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
     { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
 
@@ -3502,7 +3610,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   const pathname = req.url.split('?')[0];
   const _reqStart = Date.now();
-  try {
   for (const route of ROUTES) {
     if (route.method !== req.method) continue;
     if (typeof route.path === 'string') {
@@ -3547,12 +3654,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     res.end(HTML_GZ);
   } else {
     res.end(HTML);
-  }
-  } catch (err) {
-    console.error(`[ERROR] ${req.method} ${req.url}: ${err.message}`);
-    if (!res.headersSent) {
-      try { jsonReply(res, 500, { error: 'Internal server error' }); } catch { res.end(); }
-    }
   }
 });
 
