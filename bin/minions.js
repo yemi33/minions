@@ -276,13 +276,7 @@ function init() {
     fs.writeFileSync(installIdPath, crypto.randomBytes(8).toString('hex'));
   }
 
-  // Print summary — counts only, not individual files
   console.log('');
-  const parts = [];
-  if (actions.updated.length > 0) parts.push(`${actions.updated.length} updated`);
-  if (actions.created.length > 0) parts.push(`${actions.created.length} added`);
-  if (actions.skipped.length > 0 && isUpgrade) parts.push(`${actions.skipped.length} preserved`);
-  if (parts.length > 0) console.log(`  Files: ${parts.join(', ')}`);
 
   // Show changelog for upgrades
   if (isUpgrade && installedVersion && installedVersion !== pkgVersion) {
