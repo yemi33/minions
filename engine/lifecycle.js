@@ -1250,40 +1250,48 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch review work item after implement completes successfully
-  if (isSuccess && !skipDoneStatus && type === 'implement' && meta?.item?.id) {
+  // Auto-dispatch review work item after implement or fix completes successfully
+  // For 'fix' items, only trigger when they were created by the eval loop (_evalParentId set)
+  const isEvalEligible = type === 'implement' || (type === 'fix' && meta?.item?._evalParentId);
+  if (isSuccess && !skipDoneStatus && isEvalEligible && meta?.item?.id) {
     const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
     if (autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
+          // For fix items, the eval parent is the original implement item
+          const evalParentId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
           // Dedup: skip if a review item already exists for this parent
-          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'review');
+          const existing = items.find(i => i._evalParentId === evalParentId && i.type === 'review' && i.status !== 'done' && i.status !== 'failed');
           if (existing) {
-            log('info', `Eval loop: review item ${existing.id} already exists for ${meta.item.id}, skipping`);
+            log('info', `Eval loop: review item ${existing.id} already exists for ${evalParentId}, skipping`);
           } else {
-            const parentItem = items.find(i => i.id === meta.item.id);
-            const evalItem = {
-              id: 'W-' + shared.uid(),
-              title: `Review: ${meta.item.title || meta.item.id}`,
-              type: 'review',
-              priority: meta.item.priority || 'high',
-              status: 'pending',
-              created: ts(),
-              createdBy: 'engine:eval-loop',
-              project: meta.project?.name || meta.item.project,
-              branch_name: parentItem?.branch_name || meta.branch || null,
-              pr_url: parentItem?.pr_url || null,
-              acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
-              _evalParentId: meta.item.id,
-            };
-            if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
-            // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
-            if (parentItem) parentItem._evalDispatched = true;
-            items.push(evalItem);
-            shared.safeWrite(wiPath, items);
-            log('info', `Eval loop: created ${evalItem.id} for completed implement ${meta.item.id}`);
+            const parentItem = items.find(i => i.id === evalParentId);
+            if (parentItem?._evalDispatched) {
+              log('info', `Eval loop: parent ${evalParentId} already has _evalDispatched set, skipping`);
+            } else {
+              const evalItem = {
+                id: 'W-' + shared.uid(),
+                title: `Review: ${parentItem?.title || meta.item.title || evalParentId}`,
+                type: 'review',
+                priority: parentItem?.priority || meta.item.priority || 'high',
+                status: 'pending',
+                created: ts(),
+                createdBy: 'engine:eval-loop',
+                project: meta.project?.name || meta.item.project,
+                branch_name: parentItem?.branch_name || meta.branch || null,
+                pr_url: parentItem?.pr_url || null,
+                acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
+                _evalParentId: evalParentId,
+              };
+              if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
+              // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
+              if (parentItem) parentItem._evalDispatched = true;
+              items.push(evalItem);
+              shared.safeWrite(wiPath, items);
+              log('info', `Eval loop: created ${evalItem.id} for completed ${type} ${meta.item.id} (parent: ${evalParentId})`);
+            }
           }
         }
       } catch (err) {
