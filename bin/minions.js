@@ -276,21 +276,13 @@ function init() {
     fs.writeFileSync(installIdPath, crypto.randomBytes(8).toString('hex'));
   }
 
-  // Print summary
+  // Print summary — counts only, not individual files
   console.log('');
-  if (actions.updated.length > 0) {
-    console.log(`  Updated (${actions.updated.length}):`);
-    for (const f of actions.updated) console.log(`    ↑ ${f}`);
-  }
-  if (actions.created.length > 0) {
-    console.log(`  Added (${actions.created.length}):`);
-    for (const f of actions.created) console.log(`    + ${f}`);
-  }
-  if (actions.skipped.length > 0 && !isUpgrade) {
-    // Only show skipped on fresh install if something unexpected happened
-  } else if (actions.skipped.length > 0) {
-    console.log(`  Preserved (${actions.skipped.length} user-customized files)`);
-  }
+  const parts = [];
+  if (actions.updated.length > 0) parts.push(`${actions.updated.length} updated`);
+  if (actions.created.length > 0) parts.push(`${actions.created.length} added`);
+  if (actions.skipped.length > 0 && isUpgrade) parts.push(`${actions.skipped.length} preserved`);
+  if (parts.length > 0) console.log(`  Files: ${parts.join(', ')}`);
 
   // Show changelog for upgrades
   if (isUpgrade && installedVersion && installedVersion !== pkgVersion) {
