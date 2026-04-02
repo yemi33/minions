@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS } = shared;
+const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS, CENTRAL_WI_PATH, resolveWiPath } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -874,7 +874,7 @@ const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
 // Auto-clean pending/failed work items for a PRD so they re-materialize with updated plan data
 function autoCleanPrdWorkItems(prdFile, config) {
   const allProjects = getProjects(config);
-  const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+  const wiPaths = [CENTRAL_WI_PATH];
   for (const proj of allProjects) wiPaths.push(projectWorkItemsPath(proj));
   const deletedIds = [];
   for (const wiPath of wiPaths) {
@@ -996,8 +996,7 @@ function materializePlansAsWorkItems(config) {
               const allProjects = getProjects(config);
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
-                const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-                const centralItems = safeJson(centralWiPath) || [];
+                const centralItems = safeJson(CENTRAL_WI_PATH) || [];
                 const alreadyQueued = centralItems.some(w =>
                   w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
                 );
@@ -1065,7 +1064,7 @@ function materializePlansAsWorkItems(config) {
       }
     }
     // Also check central work-items.json
-    for (const w of (safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [])) {
+    for (const w of (safeJson(CENTRAL_WI_PATH) || [])) {
       if (w.id) allExistingWiIds.add(w.id);
     }
     const items = plan.missing_features.filter(f =>
@@ -1110,7 +1109,7 @@ function materializePlansAsWorkItems(config) {
 
     let totalCreated = 0;
     for (const [projName, { project, items: projItems }] of itemsByProject) {
-      const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = project ? projectWorkItemsPath(project) : CENTRAL_WI_PATH;
       const existingItems = safeJson(wiPath) || [];
       let created = 0;
       const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
@@ -1749,7 +1748,7 @@ function extractSpecInfo(filePath, projectRoot_) {
  * Uses the shared work-item.md playbook with multi-project context injected.
  */
 function discoverCentralWorkItems(config) {
-  const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+  const centralPath = CENTRAL_WI_PATH;
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
@@ -2093,7 +2092,7 @@ function discoverWork(config) {
     const { discoverScheduledWork } = require('./engine/scheduler');
     const scheduledWork = discoverScheduledWork(config);
     if (scheduledWork.length > 0) {
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+      const centralPath = CENTRAL_WI_PATH;
       const items = safeJson(centralPath) || [];
       let added = 0;
       for (const item of scheduledWork) {
@@ -2424,9 +2423,7 @@ async function tickInner() {
         // Defensive: ensure the work item is re-queued if completeDispatch didn't fire
         if (item.meta?.item?.id) {
           try {
-            const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
-              ? path.join(ENGINE_DIR, '..', 'work-items.json')
-              : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
+            const wiPath = resolveWiPath(item.meta);
             if (wiPath) {
               const items = safeJson(wiPath) || [];
               const wi = items.find(i => i.id === item.meta.item.id);
