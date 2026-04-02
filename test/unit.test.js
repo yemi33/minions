@@ -3287,6 +3287,123 @@ async function testCooldownSystem() {
     assert.strictEqual(formula(3), 8);
     assert.strictEqual(formula(10), 8); // capped
   });
+
+  await test('setCooldownWithContext uses content-hash dedup', () => {
+    assert.ok(src.includes('_contentHash') && src.includes('isDuplicate'),
+      'Should hash content and check for duplicates before appending');
+  });
+
+  await test('pendingContexts has FIFO cap constant', () => {
+    assert.ok(src.includes('PENDING_CONTEXTS_CAP') && src.includes('= 10'),
+      'Should define PENDING_CONTEXTS_CAP = 10');
+  });
+
+  await test('purgeBloatedCooldowns runs on startup', () => {
+    assert.ok(src.includes('purgeBloatedCooldowns'),
+      'loadCooldowns should call purgeBloatedCooldowns for one-time cleanup');
+  });
+}
+
+// ─── Cooldown Context Dedup & Cap Tests ─────────────────────────────────────
+
+async function testCooldownContextDedup() {
+  console.log('\n── Cooldown Context Dedup & Cap ──');
+
+  const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown'));
+  const { dispatchCooldowns, setCooldownWithContext, purgeBloatedCooldowns, PENDING_CONTEXTS_CAP } = cooldown;
+
+  // Helper to reset state for each test
+  function resetCooldowns() {
+    dispatchCooldowns.clear();
+  }
+
+  await test('setCooldownWithContext deduplicates identical content — 100 calls = 1 entry', () => {
+    resetCooldowns();
+    const key = 'test-dedup-100';
+    const content = 'This is identical feedback content repeated many times';
+    for (let i = 0; i < 100; i++) {
+      setCooldownWithContext(key, content);
+    }
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.pendingContexts.length, 1,
+      `Expected 1 entry after 100 identical calls, got ${entry.pendingContexts.length}`);
+    assert.strictEqual(entry.pendingContexts[0], content);
+  });
+
+  await test('setCooldownWithContext caps at 10 entries with FIFO eviction', () => {
+    resetCooldowns();
+    const key = 'test-cap-15';
+    for (let i = 0; i < 15; i++) {
+      setCooldownWithContext(key, `unique content ${i}`);
+    }
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.pendingContexts.length, PENDING_CONTEXTS_CAP,
+      `Expected ${PENDING_CONTEXTS_CAP} entries after 15 unique calls, got ${entry.pendingContexts.length}`);
+    // FIFO: oldest (0-4) should be dropped, 5-14 should remain
+    assert.strictEqual(entry.pendingContexts[0], 'unique content 5',
+      'Oldest entries should be evicted (FIFO)');
+    assert.strictEqual(entry.pendingContexts[9], 'unique content 14',
+      'Newest entries should be kept');
+  });
+
+  await test('setCooldownWithContext deduplicates object content via JSON hash', () => {
+    resetCooldowns();
+    const key = 'test-dedup-obj';
+    const obj = { feedback: 'review needed', pr: 'PR-42' };
+    setCooldownWithContext(key, obj);
+    setCooldownWithContext(key, obj);
+    setCooldownWithContext(key, { feedback: 'review needed', pr: 'PR-42' }); // same content, new reference
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.pendingContexts.length, 1,
+      'Object content with same shape should be deduplicated');
+  });
+
+  await test('purgeBloatedCooldowns deduplicates existing entries in-place', () => {
+    resetCooldowns();
+    const key = 'test-purge';
+    // Simulate bloated state by directly setting the Map
+    dispatchCooldowns.set(key, {
+      timestamp: Date.now(),
+      failures: 0,
+      pendingContexts: Array(9098).fill('same feedback content 3KB')
+    });
+    purgeBloatedCooldowns();
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.pendingContexts.length, 1,
+      'Purge should deduplicate 9098 identical entries to 1');
+  });
+
+  await test('purgeBloatedCooldowns caps entries to PENDING_CONTEXTS_CAP', () => {
+    resetCooldowns();
+    const key = 'test-purge-cap';
+    // 20 unique entries — should be capped to 10 after purge
+    const contexts = [];
+    for (let i = 0; i < 20; i++) contexts.push(`unique ${i}`);
+    dispatchCooldowns.set(key, {
+      timestamp: Date.now(),
+      failures: 0,
+      pendingContexts: contexts
+    });
+    purgeBloatedCooldowns();
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.pendingContexts.length, PENDING_CONTEXTS_CAP,
+      `Purge should cap at ${PENDING_CONTEXTS_CAP} entries`);
+    // Should keep the most recent (last 10)
+    assert.strictEqual(entry.pendingContexts[0], 'unique 10');
+    assert.strictEqual(entry.pendingContexts[9], 'unique 19');
+  });
+
+  await test('setCooldownWithContext preserves failures count', () => {
+    resetCooldowns();
+    const key = 'test-preserve-failures';
+    dispatchCooldowns.set(key, { timestamp: Date.now(), failures: 5, pendingContexts: [] });
+    setCooldownWithContext(key, 'new context');
+    const entry = dispatchCooldowns.get(key);
+    assert.strictEqual(entry.failures, 5, 'Should preserve existing failure count');
+  });
+
+  // Clean up after tests
+  resetCooldowns();
 }
 
 // ─── engine.js — resolveAgent Tests ─────────────────────────────────────────
@@ -5510,6 +5627,7 @@ async function main() {
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
+    await testCooldownContextDedup();
     await testResolveAgent();
     await testRenderPlaybook();
     await testCompleteDispatch();
