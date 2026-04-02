@@ -1323,51 +1323,37 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   if (!isSuccess && meta?.item?.id) {
-    // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
-    let retries = (meta.item._retryCount || 0);
-    try {
-      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-        ? path.join(MINIONS_DIR, 'work-items.json')
-        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
-      if (wiPath) {
-        const items = safeJson(wiPath) || [];
-        const wi = items.find(i => i.id === meta.item.id);
-        if (wi) retries = (wi._retryCount || 0); // Use fresh value from file
-      }
-    } catch { /* optional */ }
+    const wiPath = resolveWiPath(meta);
+    if (wiPath) {
+      let finalStatus = null;
+      try {
+        mutateJsonFileLocked(wiPath, (items) => {
+          if (!Array.isArray(items)) return items;
+          const wi = items.find(i => i.id === meta.item.id);
+          if (!wi) return items;
 
-    if (retries < 3) {
-      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
-      updateWorkItemStatus(meta, 'pending', '');
-      try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
-        if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const wi = items.find(i => i.id === meta.item.id);
-          if (wi) {
-            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
-            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
-            shared.safeWrite(wiPath, items);
+          const retries = wi._retryCount || 0;
+          if (retries < 3) {
+            log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
+            wi._retryCount = retries + 1;
+            wi.status = 'pending';
+            delete wi.dispatched_at;
+            delete wi.dispatched_to;
+            finalStatus = 'pending';
+          } else {
+            wi.status = 'failed';
+            wi.failReason = 'Agent failed (3 retries exhausted)';
+            wi.failedAt = ts();
+            finalStatus = 'failed';
           }
-        }
+          if (type === 'decompose') delete wi._decomposing;
+          return items;
+        });
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
-    } else {
-      updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
-    }
-    // Clear _decomposing flag on failure so item doesn't get permanently stuck
-    if (type === 'decompose') {
-      try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
-        if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const wi = items.find(i => i.id === meta.item.id);
-          if (wi) { delete wi._decomposing; shared.safeWrite(wiPath, items); }
-        }
-      } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
+      // Sync status to PRD outside the work-items lock
+      if (finalStatus) {
+        syncPrdItemStatus(meta.item.id, finalStatus, meta.item?.sourcePlan);
+      }
     }
   }
   // Meeting post-completion: collect findings/debate/conclusion
