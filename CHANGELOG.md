@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.155 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/playbook.js
+- engine/queries.js
+
+### Dashboard
+- dashboard.html
+- dashboard.js
+- dashboard/js/command-center.js
+- dashboard/js/modal-qa.js
+- dashboard/js/modal.js
+- dashboard/js/refresh.js
+- dashboard/js/render-inbox.js
+- dashboard/js/render-kb.js
+- dashboard/js/render-pipelines.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+- dashboard/js/render-work-items.js
+- dashboard/styles.css
+
+### Playbooks
+- implement.md
+
+### Documentation
+- deprecated.json
+
+### Other
+- test/unit.test.js
+
 ## 0.1.152 (2026-04-02)
 
 ### Dashboard
