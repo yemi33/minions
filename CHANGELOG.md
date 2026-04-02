@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.182 (2026-04-02)
+
+### Engine
+- engine/lifecycle.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-pipelines.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.181 (2026-04-02)
 
 ### Engine
