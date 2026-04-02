@@ -155,30 +155,56 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 ## Architecture
 
 ```
-                    ┌───────────────────────────────┐
-                    │      ~/.minions/ (central)       │
-                    │                               │
-                    │  engine.js        ← tick 60s  │
-                    │  dashboard.js     ← :7331     │
-                    │  config.json      ← projects  │
-                    │  agents/          ← 5 agents  │
-                    │  playbooks/       ← templates │
-                    │  plans/           ← approved plans│
-                    │  knowledge/       ← KB store  │
-                    │  skills/          ← workflows │
-                    │  notes/       ← knowledge  │
-                    └──────┬────────────────────────┘
-                           │ discovers work + dispatches agents
-              ┌────────────┼────────────────┐
-              ▼            ▼                ▼
-     ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-     │  Project A   │ │  Project B   │ │  Project C   │
-     │ projects/A   │ │ projects/B   │ │ projects/C   │
-     │  work-items  │ │  work-items  │ │  work-items  │
-     │  pull-reqs   │ │  pull-reqs   │ │  pull-reqs   │
-     │  .claude/    │ │  .claude/    │ │  .claude/    │
-     │   skills/    │ │   skills/    │ │   skills/    │
-     └──────────────┘ └──────────────┘ └──────────────┘
+                 ┌──────────────────────────────────────┐
+                 │         ~/.minions/ (central)         │
+                 │                                      │
+                 │  engine.js            ← tick 60s     │
+                 │  dashboard.js         ← :7331        │
+                 │  config.json          ← projects,    │
+                 │                         agents,      │
+                 │                         schedules    │
+                 │  routing.md           ← dispatch map │
+                 │  pinned.md            ← global ctx   │
+                 │  work-items.json      ← central queue│
+                 │  pull-requests.json   ← central PRs  │
+                 │                                      │
+                 │  engine/                             │
+                 │    dispatch.json      ← pending/     │
+                 │                         active/      │
+                 │                         completed    │
+                 │    control.json       ← state/pid    │
+                 │    metrics.json       ← token usage  │
+                 │    cooldowns.json     ← backoff      │
+                 │    schedule-runs.json ← cron state   │
+                 │    pipeline-runs.json ← run history  │
+                 │                                      │
+                 │  agents/              ← 5 agents     │
+                 │    {id}/charter.md    ← role def     │
+                 │    {id}/output.log    ← last output  │
+                 │    {id}/live-output   ← streaming    │
+                 │                                      │
+                 │  playbooks/           ← templates    │
+                 │  plans/               ← .md drafts   │
+                 │  prd/                 ← .json PRDs   │
+                 │  pipelines/           ← workflows    │
+                 │  meetings/            ← discussions  │
+                 │  knowledge/           ← KB store     │
+                 │  skills/              ← workflows    │
+                 │  notes/               ← inbox +      │
+                 │                         notes.md     │
+                 └──────────┬───────────────────────────┘
+                            │ discovers work + dispatches
+              ┌─────────────┼─────────────────┐
+              ▼             ▼                  ▼
+     ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
+     │  Project A    │ │  Project B    │ │  Project C    │
+     │  projects/A/  │ │  projects/B/  │ │  projects/C/  │
+     │   work-items  │ │   work-items  │ │   work-items  │
+     │   pull-reqs   │ │   pull-reqs   │ │   pull-reqs   │
+     │  (repo)/      │ │  (repo)/      │ │  (repo)/      │
+     │   .claude/    │ │   .claude/    │ │   .claude/    │
+     │    skills/    │ │    skills/    │ │    skills/    │
+     └───────────────┘ └───────────────┘ └───────────────┘
 ```
 
 ## What It Does
