@@ -64,6 +64,54 @@ function _collectRunArtifacts(run) {
   return { merged: merged, total: total };
 }
 
+/**
+ * Build a segmented progress bar from pipeline stages and a run.
+ * @param {Array} stages - pipeline stage definitions
+ * @param {Object} run - the run object containing stages status map
+ * @param {Object} [options] - optional config: { height: '8px', detailLabel: true }
+ * @returns {string} HTML string for the progress bar
+ */
+function _buildProgressBar(stages, run, options) {
+  var totalStages = stages.length;
+  var completedCount = 0;
+  var runningCount = 0;
+  var failedCount = 0;
+  stages.forEach(function(s) {
+    var st = run.stages?.[s.id]?.status;
+    if (st === 'completed') completedCount++;
+    else if (st === 'running') runningCount++;
+    else if (st === 'failed') failedCount++;
+  });
+  var pct = Math.round((completedCount / totalStages) * 100);
+
+  var segments = stages.map(function(s) {
+    var st = run.stages?.[s.id]?.status || 'pending';
+    var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
+    return '<div class="pl-prog-seg ' + cls + '" style="width:' + (100 / totalStages) + '%" title="' + escHtml(s.id) + ': ' + st + '"></div>';
+  }).join('');
+
+  var barStyle = options && options.height ? ' style="height:' + options.height + '"' : '';
+
+  var label;
+  if (options && options.detailLabel) {
+    label = '<span style="font-weight:600;color:' + (pct === 100 ? 'var(--green)' : failedCount ? 'var(--red)' : 'var(--blue)') + '">' + pct + '% complete</span> <span style="color:var(--muted)">(' + completedCount + '/' + totalStages + ' stages)</span>';
+  } else {
+    var statusParts = [];
+    if (completedCount) statusParts.push(completedCount + ' done');
+    if (runningCount) statusParts.push(runningCount + ' running');
+    if (failedCount) statusParts.push(failedCount + ' failed');
+    var remaining = totalStages - completedCount - runningCount - failedCount;
+    if (remaining > 0) statusParts.push(remaining + ' pending');
+    label = '<span style="font-weight:600;color:' + (pct === 100 ? 'var(--green)' : failedCount ? 'var(--red)' : 'var(--blue)') + '">' + pct + '%</span>' +
+      '<span style="color:var(--muted)">' + statusParts.join(' \u00b7 ') + '</span>';
+  }
+
+  return '<div class="pl-progress-wrap">' +
+    '<div class="pl-progress-bar"' + barStyle + '>' + segments + '</div>' +
+    '<div class="pl-progress-label">' + label + '</div>' +
+  '</div>';
+}
+
 function renderPipelines(pipelines) {
   _pipelinesData = pipelines || [];
   const el = document.getElementById('pipelines-content');
@@ -95,39 +143,7 @@ function renderPipelines(pipelines) {
     var progressHtml = '';
     var displayRun = activeRun || lastRun;
     if (displayRun && (p.stages || []).length > 0) {
-      var totalStages = (p.stages || []).length;
-      var completedCount = 0;
-      var runningCount = 0;
-      var failedCount = 0;
-      (p.stages || []).forEach(function(s) {
-        var st = displayRun.stages?.[s.id]?.status;
-        if (st === 'completed') completedCount++;
-        else if (st === 'running') runningCount++;
-        else if (st === 'failed') failedCount++;
-      });
-      var pct = Math.round((completedCount / totalStages) * 100);
-
-      // Segmented progress bar — one segment per stage
-      var segments = (p.stages || []).map(function(s) {
-        var st = displayRun.stages?.[s.id]?.status || 'pending';
-        var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
-        return '<div class="pl-prog-seg ' + cls + '" style="width:' + (100 / totalStages) + '%" title="' + escHtml(s.id) + ': ' + st + '"></div>';
-      }).join('');
-
-      var statusParts = [];
-      if (completedCount) statusParts.push(completedCount + ' done');
-      if (runningCount) statusParts.push(runningCount + ' running');
-      if (failedCount) statusParts.push(failedCount + ' failed');
-      var remaining = totalStages - completedCount - runningCount - failedCount;
-      if (remaining > 0) statusParts.push(remaining + ' pending');
-
-      progressHtml = '<div class="pl-progress-wrap">' +
-        '<div class="pl-progress-bar">' + segments + '</div>' +
-        '<div class="pl-progress-label">' +
-          '<span style="font-weight:600;color:' + (pct === 100 ? 'var(--green)' : failedCount ? 'var(--red)' : 'var(--blue)') + '">' + pct + '%</span>' +
-          '<span style="color:var(--muted)">' + statusParts.join(' \u00b7 ') + '</span>' +
-        '</div>' +
-      '</div>';
+      progressHtml = _buildProgressBar(p.stages || [], displayRun);
     }
 
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
@@ -166,24 +182,7 @@ function openPipelineDetail(id) {
   // Stage detail with progress bar
   var detailRun = activeRun || (p.runs || []).slice(-1)[0];
   if (detailRun && (p.stages || []).length > 0) {
-    var dtotal = (p.stages || []).length;
-    var ddone = 0, drun = 0, dfail = 0;
-    (p.stages || []).forEach(function(s) {
-      var st = detailRun.stages?.[s.id]?.status;
-      if (st === 'completed') ddone++;
-      else if (st === 'running') drun++;
-      else if (st === 'failed') dfail++;
-    });
-    var dpct = Math.round((ddone / dtotal) * 100);
-    var dsegs = (p.stages || []).map(function(s) {
-      var st = detailRun.stages?.[s.id]?.status || 'pending';
-      var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
-      return '<div class="pl-prog-seg ' + cls + '" style="width:' + (100 / dtotal) + '%" title="' + escHtml(s.id) + ': ' + st + '"></div>';
-    }).join('');
-    html += '<div class="pl-progress-wrap">' +
-      '<div class="pl-progress-bar" style="height:8px">' + dsegs + '</div>' +
-      '<div class="pl-progress-label"><span style="font-weight:600;color:' + (dpct === 100 ? 'var(--green)' : dfail ? 'var(--red)' : 'var(--blue)') + '">' + dpct + '% complete</span> <span style="color:var(--muted)">(' + ddone + '/' + dtotal + ' stages)</span></div>' +
-    '</div>';
+    html += _buildProgressBar(p.stages || [], detailRun, { height: '8px', detailLabel: true });
   }
   html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Stages</h4>';
   (p.stages || []).forEach(function(s, i) {
