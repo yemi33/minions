@@ -6119,6 +6119,79 @@ async function testCumulativeCostTracking() {
     assert.ok(src.includes('Cumulative Cost'), 'Dashboard should label the cost field');
   });
 
+  // ── Fan-out checkpoint handling (P-a8f4c2d9) ──────────────────────────────
+  console.log('\n── Fan-out checkpoint handling ──');
+
+  await test('fan-out dispatch path reads checkpoint.json', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes('checkpoint.json'),
+      'Fan-out path must read checkpoint.json');
+    assert.ok(fanOutSection.includes('fs.existsSync'),
+      'Fan-out path must check if checkpoint.json exists');
+  });
+
+  await test('fan-out checkpoint injects checkpoint_context into vars', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes('vars.checkpoint_context'),
+      'Fan-out path must inject checkpoint_context into template vars');
+  });
+
+  await test('fan-out checkpoint increments _checkpointCount', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes('item._checkpointCount'),
+      'Fan-out path must track _checkpointCount on work items');
+    assert.ok(fanOutSection.includes('(item._checkpointCount || 0) + 1'),
+      'Fan-out path must increment _checkpointCount from current value');
+  });
+
+  await test('fan-out checkpoint escalates to needs-human-review after 3 resumes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes("'needs-human-review'"),
+      'Fan-out path must escalate to needs-human-review after exceeding 3 checkpoint resumes');
+    assert.ok(fanOutSection.includes('exceeded 3 checkpoint-resumes'),
+      'Fan-out path must log checkpoint escalation');
+  });
+
+  await test('fan-out checkpoint context includes completed/remaining/blockers/branch_state', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes('fanCpData.completed') || fanOutSection.includes('cpData.completed'),
+      'Fan-out checkpoint must read completed field');
+    assert.ok(fanOutSection.includes('fanCpData.remaining') || fanOutSection.includes('cpData.remaining'),
+      'Fan-out checkpoint must read remaining field');
+    assert.ok(fanOutSection.includes('fanCpData.blockers') || fanOutSection.includes('cpData.blockers'),
+      'Fan-out checkpoint must read blockers field');
+    assert.ok(fanOutSection.includes('branch_state'),
+      'Fan-out checkpoint must read branch_state field');
+  });
+
+  await test('fan-out checkpoint sets needsWrite on escalation', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    // Find the checkpoint escalation block and check needsWrite
+    const escIdx = fanOutSection.indexOf('exceeded 3 checkpoint-resumes');
+    assert.ok(escIdx > -1, 'Must have escalation log');
+    const nearEsc = fanOutSection.slice(escIdx, escIdx + 200);
+    assert.ok(nearEsc.includes('needsWrite = true'),
+      'Fan-out checkpoint escalation must set needsWrite for persistence');
+  });
+
   // ── Dispatch persistence gate (P-f7a2d8e1) ──────────────────────────────
   console.log('\n── Dispatch persistence gate ──');
 
