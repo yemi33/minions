@@ -222,12 +222,13 @@ function doctor(minionsHome) {
 
     // Check playbooks
     const playbooksDir = path.join(minionsHome, 'playbooks');
-    const required = ['implement.md', 'review.md', 'fix.md'];
-    const missing = required.filter(f => !fs.existsSync(path.join(playbooksDir, f)));
-    if (missing.length === 0) {
-      runtimeResults.push({ name: 'Playbooks', ok: true, message: `${required.length} required playbooks present` });
+    // Discover all .md playbooks in the directory — don't hardcode
+    let playbooks = [];
+    try { playbooks = fs.readdirSync(playbooksDir).filter(f => f.endsWith('.md')); } catch { /* dir may not exist */ }
+    if (playbooks.length > 0) {
+      runtimeResults.push({ name: 'Playbooks', ok: true, message: `${playbooks.length} playbooks found` });
     } else {
-      runtimeResults.push({ name: 'Playbooks', ok: false, message: `missing: ${missing.join(', ')} — run: minions init --force` });
+      runtimeResults.push({ name: 'Playbooks', ok: false, message: 'no playbooks found in playbooks/ — run: minions init --force' });
     }
 
     // Check port 7331 availability (only if dashboard isn't running)
