@@ -83,7 +83,7 @@ if (!claudeBin) {
 const tmpDir = path.join(__dirname, 'tmp');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const debugPath = path.join(tmpDir, 'spawn-debug.log');
-fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
+try { fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`); } catch (e) { process.stderr.write(`warn: spawn-agent debug log write failed: ${e.message}\n`); }
 
 // When resuming a session, skip system prompt (it's baked into the session)
 const isResume = extraArgs.includes('--resume');
@@ -93,13 +93,18 @@ if (isResume) {
   cliArgs = ['-p', ...extraArgs];
 } else {
   // Pass system prompt via file to avoid ENAMETOOLONG on Windows (32KB arg limit)
-  fs.writeFileSync(sysTmpPath, sysPrompt);
+  try {
+    fs.writeFileSync(sysTmpPath, sysPrompt);
+  } catch (e) {
+    process.stderr.write(`FATAL: failed to write system prompt temp file: ${e.message}\n`);
+    process.exit(1);
+  }
   cliArgs = ['-p', '--system-prompt-file', sysTmpPath, ...extraArgs];
 }
 
 if (!claudeBin) {
   const msg = 'FATAL: Cannot find claude-code cli.js — install with: npm install -g @anthropic-ai/claude-code';
-  fs.appendFileSync(debugPath, msg + '\n');
+  try { fs.appendFileSync(debugPath, msg + '\n'); } catch { /* debug log — non-critical */ }
   console.error(msg);
   process.exit(78); // 78 = configuration error (distinct from runtime failures)
 }
@@ -147,11 +152,16 @@ const proc = claudeIsNative
   ? runFile(claudeBin, actualArgs, { stdio: ['pipe', 'pipe', 'pipe'], env })
   : runFile(process.execPath, [claudeBin, ...actualArgs], { stdio: ['pipe', 'pipe', 'pipe'], env });
 
-fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`);
+try { fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`); } catch { /* debug log — non-critical */ }
 
 // Write PID file for parent engine to verify spawn
 const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
-fs.writeFileSync(pidFile, String(proc.pid || ''));
+try {
+  fs.writeFileSync(pidFile, String(proc.pid || ''));
+} catch (e) {
+  process.stderr.write(`FATAL: failed to write PID file ${pidFile}: ${e.message}\n`);
+  process.exit(1);
+}
 
 // Send prompt via stdin — if system prompt was truncated, prepend the full context
 if (!isResume && Buffer.byteLength(sysPrompt) >= 30000) {
@@ -176,10 +186,10 @@ proc.stderr.on('data', (chunk) => {
 proc.stdout.pipe(process.stdout);
 
 proc.on('close', (code) => {
-  fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
+  try { fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`); } catch { /* debug log — non-critical */ }
   process.exit(code || 0);
 });
 proc.on('error', (err) => {
-  fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`);
+  try { fs.appendFileSync(debugPath, `ERROR: ${err.message}\n`); } catch { /* debug log — non-critical */ }
   process.exit(1);
 });
