@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.221 (2026-04-02)
+
+### Other
+- bin/minions.js
+
 ## 0.1.220 (2026-04-02)
 
 ### Documentation
