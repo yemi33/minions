@@ -287,7 +287,14 @@ function getPullRequests(config) {
       }
     }
   }
-  allPrs.sort((a, b) => (b.created || '').localeCompare(a.created || ''));
+  allPrs.sort((a, b) => {
+    const dateComp = (b.created || '').localeCompare(a.created || '');
+    if (dateComp !== 0) return dateComp;
+    // Same date — sort by PR number descending (newest first)
+    const aNum = parseInt((a.id || '').replace(/\D/g, '')) || 0;
+    const bNum = parseInt((b.id || '').replace(/\D/g, '')) || 0;
+    return bNum - aNum;
+  });
   return allPrs;
 }
 
