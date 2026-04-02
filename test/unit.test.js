@@ -6221,7 +6221,9 @@ async function testPipelineStepProgress() {
 async function testOrphanedTempFileCleanup() {
   console.log('\n── Orphaned safeWrite .tmp.* file cleanup ──');
 
-  await test('cleanup deletes .tmp.* files older than 1 hour', () => {
+  const { cleanOrphanedTempFiles } = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+
+  await test('cleanOrphanedTempFiles deletes .tmp.* files older than 1 hour', () => {
     const tmp = createTmpDir();
     const staleFile = path.join(tmp, 'cooldowns.json.tmp.9736.6449');
     fs.writeFileSync(staleFile, '{"stale": true}');
@@ -6229,51 +6231,53 @@ async function testOrphanedTempFileCleanup() {
     const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
     fs.utimesSync(staleFile, twoHoursAgo, twoHoursAgo);
 
-    // Simulate the cleanup logic from runCleanup step 1
-    const oneHourAgo = Date.now() - 3600000;
-    let cleaned = 0;
-    for (const f of fs.readdirSync(tmp)) {
-      if (/\.tmp\.\d+\.\d+$/.test(f)) {
-        const fp = path.join(tmp, f);
-        const stat = fs.statSync(fp);
-        if (stat.mtimeMs < oneHourAgo) {
-          fs.unlinkSync(fp);
-          cleaned++;
-        }
-      }
-    }
+    const cleaned = cleanOrphanedTempFiles([tmp]);
 
     assert.strictEqual(cleaned, 1, 'Should clean exactly 1 stale temp file');
     assert.ok(!fs.existsSync(staleFile), 'Stale temp file should be deleted');
   });
 
-  await test('cleanup preserves .tmp.* files newer than 1 hour', () => {
+  await test('cleanOrphanedTempFiles preserves .tmp.* files newer than 1 hour', () => {
     const tmp = createTmpDir();
     const recentFile = path.join(tmp, 'dispatch.json.tmp.1234.1');
     fs.writeFileSync(recentFile, '{"recent": true}');
-    // mtime is now (just created), so it's less than 1 hour old
 
-    const oneHourAgo = Date.now() - 3600000;
-    let cleaned = 0;
-    for (const f of fs.readdirSync(tmp)) {
-      if (/\.tmp\.\d+\.\d+$/.test(f)) {
-        const fp = path.join(tmp, f);
-        const stat = fs.statSync(fp);
-        if (stat.mtimeMs < oneHourAgo) {
-          fs.unlinkSync(fp);
-          cleaned++;
-        }
-      }
-    }
+    const cleaned = cleanOrphanedTempFiles([tmp]);
 
     assert.strictEqual(cleaned, 0, 'Should not clean any recent temp files');
     assert.ok(fs.existsSync(recentFile), 'Recent temp file should be preserved');
   });
 
-  await test('cleanup.js contains .tmp. regex pattern for safeWrite orphans', () => {
+  await test('cleanOrphanedTempFiles scans multiple directories', () => {
+    const dir1 = createTmpDir();
+    const dir2 = createTmpDir();
+    const f1 = path.join(dir1, 'a.json.tmp.111.1');
+    const f2 = path.join(dir2, 'b.json.tmp.222.2');
+    fs.writeFileSync(f1, 'x');
+    fs.writeFileSync(f2, 'y');
+    const old = new Date(Date.now() - 2 * 3600000);
+    fs.utimesSync(f1, old, old);
+    fs.utimesSync(f2, old, old);
+
+    const cleaned = cleanOrphanedTempFiles([dir1, dir2]);
+
+    assert.strictEqual(cleaned, 2, 'Should clean files across both directories');
+    assert.ok(!fs.existsSync(f1), 'File in dir1 deleted');
+    assert.ok(!fs.existsSync(f2), 'File in dir2 deleted');
+  });
+
+  await test('cleanOrphanedTempFiles skips non-existent directories gracefully', () => {
+    const cleaned = cleanOrphanedTempFiles(['/nonexistent/path/12345']);
+    assert.strictEqual(cleaned, 0, 'Should return 0 for missing dirs');
+  });
+
+  await test('cleanup.js exports cleanOrphanedTempFiles and scans project/agent dirs', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    assert.ok(src.includes('\\.tmp\\.\\d+\\.\\d+'), 'Should have regex matching .tmp.{pid}.{counter} pattern');
-    assert.ok(src.includes('isSafeWriteTemp'), 'Should identify safeWrite temp files separately');
+    assert.ok(src.includes('cleanOrphanedTempFiles'), 'Should export cleanOrphanedTempFiles');
+    assert.ok(src.includes('PRD_DIR'), 'Should scan PRD directory');
+    assert.ok(src.includes('PLANS_DIR'), 'Should scan plans directory');
+    assert.ok(src.includes('AGENTS_DIR'), 'Should scan agent directories');
+    assert.ok(src.includes("'projects'"), 'Should scan project directories');
   });
 }
 

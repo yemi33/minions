@@ -28,6 +28,36 @@ function engine() { if (!_engine) _engine = require('../engine'); return _engine
 let _dispatch = null;
 function dispatchModule() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
 
+// ─── Orphaned safeWrite temp file cleanup ───────────────────────────────────
+
+/**
+ * Scan directories for orphaned .tmp.{pid}.{counter} files left by crashed safeWrite() calls.
+ * Deletes files matching the pattern older than maxAgeMs. Returns count of deleted files.
+ * Exported for direct testing.
+ */
+function cleanOrphanedTempFiles(dirs, maxAgeMs = 3600000) {
+  const cutoff = Date.now() - maxAgeMs;
+  let cleaned = 0;
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!/\.tmp\.\d+\.\d+$/.test(f)) continue;
+        const fp = path.join(dir, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (stat.mtimeMs < cutoff) {
+            fs.unlinkSync(fp);
+            cleaned++;
+            log('info', `Cleaned orphaned temp file: ${f}`);
+          }
+        } catch { /* file may have been removed concurrently */ }
+      }
+    } catch { /* dir may have been removed concurrently */ }
+  }
+  return cleaned;
+}
+
 // ─── Cleanup Orchestrator ────────────────────────────────────────────────────
 
 function runCleanup(config, verbose = false) {
@@ -35,29 +65,42 @@ function runCleanup(config, verbose = false) {
   const projects = getProjects(config);
   let cleaned = { tempFiles: 0, liveOutputs: 0, worktrees: 0, zombies: 0 };
 
-  // 1. Clean stale temp prompt/sysprompt files and orphaned safeWrite .tmp.* files (older than 1 hour)
+  // 1. Clean stale temp prompt/sysprompt files (older than 1 hour)
   const oneHourAgo = Date.now() - 3600000;
   try {
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
     const scanDirs = [ENGINE_DIR, ...(fs.existsSync(tmpDir) ? [tmpDir] : [])];
     for (const dir of scanDirs) {
       for (const f of fs.readdirSync(dir)) {
-        const isPromptTemp = f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-');
-        const isSafeWriteTemp = /\.tmp\.\d+\.\d+$/.test(f);
-        if (isPromptTemp || isSafeWriteTemp) {
+        if (f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-')) {
           const fp = path.join(dir, f);
           try {
             const stat = fs.statSync(fp);
             if (stat.mtimeMs < oneHourAgo) {
               fs.unlinkSync(fp);
               cleaned.tempFiles++;
-              if (isSafeWriteTemp) log('info', `Cleaned orphaned temp file: ${f}`);
             }
           } catch { /* cleanup */ }
         }
       }
     }
   } catch (e) { log('warn', 'cleanup temp files: ' + e.message); }
+
+  // 1b. Clean orphaned safeWrite .tmp.* files across all state directories
+  try {
+    const tmpDir = path.join(ENGINE_DIR, 'tmp');
+    const orphanScanDirs = [ENGINE_DIR, ...(fs.existsSync(tmpDir) ? [tmpDir] : []), PRD_DIR, PLANS_DIR];
+    // Add per-project and per-agent directories
+    for (const project of projects) {
+      const projDir = path.join(MINIONS_DIR, 'projects', project.name);
+      if (fs.existsSync(projDir)) orphanScanDirs.push(projDir);
+    }
+    for (const agentId of Object.keys(config.agents || {})) {
+      const agentDir = path.join(AGENTS_DIR, agentId);
+      if (fs.existsSync(agentDir)) orphanScanDirs.push(agentDir);
+    }
+    cleaned.tempFiles += cleanOrphanedTempFiles(orphanScanDirs);
+  } catch (e) { log('warn', 'cleanup orphaned temp files: ' + e.message); }
 
   // 2. Clean live-output.log for idle agents (not currently working)
   for (const [agentId] of Object.entries(config.agents || {})) {
@@ -417,4 +460,5 @@ function runCleanup(config, verbose = false) {
 
 module.exports = {
   runCleanup,
+  cleanOrphanedTempFiles,
 };
