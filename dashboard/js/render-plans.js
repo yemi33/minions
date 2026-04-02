@@ -66,9 +66,7 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
   const implementWi = wi.filter(w => w.type !== 'plan-to-prd' && w.type !== 'verify');
   const hasPendingPrd = wi.some(w => w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched'));
   const hasActiveWork = implementWi.some(w => w.status === 'pending' || w.status === 'dispatched');
-  const allDone = implementWi.length > 0 && implementWi.every(w =>
-    w.status === 'done'
-  );
+  const allDone = implementWi.length > 0 && implementWi.every(w => w.status === 'done');
   const hasFailed = implementWi.some(w => w.status === 'failed');
 
   // User-set statuses take priority when no work has started
@@ -302,6 +300,48 @@ function openArchivedPlansModal() {
   document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
   document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal').classList.add('open');
+}
+
+// Disable all PRD action buttons to prevent double-clicks
+function qaDisablePrdButtons() {
+  const container = document.getElementById('qa-generate-prd-btn');
+  if (container) container.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
+}
+
+// Show plan version action buttons (Run alongside / Replace / Just save)
+function showPlanVersionActions(thread, newFile, originalFile) {
+  const esc = newFile.replace(/'/g, "\\'");
+  // Look up existing PRD for the original plan's project
+  const allPlans = window._lastStatus?.plans || [];
+  const origPlan = allPlans.find(p => p.file === originalFile);
+  const project = origPlan?.project || '';
+  const existingPrd = allPlans.find(p => p.file.endsWith('.json') && p.project === project && p.status !== 'completed');
+
+  const btn = document.createElement('div');
+  btn.id = 'qa-generate-prd-btn';
+  btn.style.cssText = 'margin:8px 0;padding:8px 12px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:8px';
+
+  if (existingPrd) {
+    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created — existing PRD running</span>' +
+      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Execute this plan as a separate PRD alongside the current one">Run alongside</button>' +
+      '<button onclick="qaReplacePrd(\'' + esc + '\')" style="background:var(--orange);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer" title="Pause existing PRD, clean pending items, execute this plan instead">Replace old PRD</button>' +
+      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer" title="Keep the new version saved without dispatching any work">Just save</button>' +
+      '<span style="color:var(--muted);font-size:10px;width:100%">Run alongside keeps current work going. Replace pauses it and starts fresh.</span>';
+  } else {
+    btn.innerHTML = '<span style="color:var(--green);font-weight:600;font-size:12px;width:100%">New plan version created</span>' +
+      '<button onclick="qaNewPrd(\'' + esc + '\')" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Execute plan</button>' +
+      '<button onclick="qaJustSave(this)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Just save</button>' +
+      '<span style="color:var(--muted);font-size:10px">Execute dispatches an agent to create PRD items from this plan</span>';
+  }
+  // Remove any previous action buttons
+  const old = thread.querySelector('#qa-generate-prd-btn');
+  if (old) old.remove();
+  thread.appendChild(btn);
+}
+
+function qaJustSave(el) {
+  const container = el.closest('#qa-generate-prd-btn');
+  if (container) container.innerHTML = '<span style="color:var(--muted);font-size:11px">Saved. No work dispatched.</span>';
 }
 
 async function planExecute(file, project, btn) {
@@ -694,4 +734,4 @@ async function planUnarchive(file, btn) {
   } catch (e) { resetBtn(); alert('Error: ' + e.message); }
 }
 
-window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planUnarchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
+window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, qaDisablePrdButtons, showPlanVersionActions, qaJustSave, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planUnarchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };

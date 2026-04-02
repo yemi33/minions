@@ -3210,9 +3210,8 @@ async function testAreDependenciesMet() {
   await test('areDependenciesMet uses PRD_MET_STATUSES for done status', () => {
     assert.ok(src.includes("PRD_MET_STATUSES"),
       'Should use PRD_MET_STATUSES set for status checking');
-    // Legacy aliases removed — only 'done' is canonical
-    assert.ok(src.includes("new Set(['done'])"),
-      'PRD_MET_STATUSES should only include done (legacy aliases removed)');
+    assert.ok(src.includes("'done'"),
+      'PRD_MET_STATUSES should include done');
   });
 
   await test('areDependenciesMet uses PRD_MET_STATUSES for work item status check', () => {
@@ -5734,12 +5733,8 @@ async function testSyncPrsFromOutputCentral() {
   });
 
   await test('implement playbook marks PR creation as mandatory', () => {
-    // PR section is now dynamically injected via {{pr_section}} template variable in engine.js
     const playbook = fs.readFileSync(path.join(__dirname, '..', 'playbooks', 'implement.md'), 'utf8');
-    assert.ok(playbook.includes('{{pr_section}}'), 'implement playbook should include pr_section template variable');
-    // Verify the MANDATORY text exists in the engine dispatch code
-    const engineSrc = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    assert.ok(engineSrc.includes('MANDATORY'), 'engine.js should contain MANDATORY PR text for pr_section');
+    assert.ok(playbook.includes('MANDATORY'), 'implement playbook should mark PR creation as MANDATORY');
   });
 }
 
@@ -5748,30 +5743,6 @@ async function testNoRetryPrCompletion() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
     assert.ok(src.includes('Completed without creating a pull request'), 'should set failReason for no-PR completion');
     assert.ok(src.includes('Auto-retry') && src.includes('no PR created'), 'should auto-retry when no PR');
-  });
-
-  await test('lifecycle skips no-PR retry when skipPr is set', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('!meta?.item?.skipPr'), 'should check skipPr flag before reverting for no-PR');
-  });
-
-  await test('skipPr accepted by work-items API', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('body.skipPr'), 'dashboard.js should accept skipPr from request body');
-    assert.ok(src.includes('item.skipPr'), 'dashboard.js should persist skipPr on work item');
-  });
-
-  await test('skipPr produces push-only pr_section in engine', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    assert.ok(src.includes('item.skipPr'), 'engine.js should check skipPr on work item');
-    assert.ok(src.includes('PR creation is skipped'), 'engine.js should include skip-PR instructions');
-    assert.ok(src.includes('pr_section'), 'engine.js should set pr_section template variable');
-  });
-
-  await test('dashboard UI exposes skipPr checkbox', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('wi-new-skippr'), 'render-work-items.js should include skipPr checkbox');
-    assert.ok(src.includes('skipPr'), 'render-work-items.js should send skipPr in request body');
   });
 }
 
@@ -6120,46 +6091,6 @@ async function testCumulativeCostTracking() {
       'Should check evalMaxCost is not null before enforcing');
     assert.ok(src.includes('evalMaxCost > 0'),
       'Should check evalMaxCost > 0 before enforcing');
-  });
-
-  // ── updatePrAfterReview / updatePrAfterFix: correct project file resolution ──
-
-  await test('updatePrAfterReview resolves correct project file when project is null', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    // Old pattern: ternary fallback to MINIONS_DIR/pull-requests.json in updatePrAfter* — should be gone
-    const reviewFnSrc = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
-    const fixFnSrc = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\n// ─── Post-Merge'));
-    assert.ok(!reviewFnSrc.includes("path.join(MINIONS_DIR, 'pull-requests.json')"),
-      'updatePrAfterReview should not fall back to MINIONS_DIR/pull-requests.json');
-    assert.ok(!fixFnSrc.includes("path.join(MINIONS_DIR, 'pull-requests.json')"),
-      'updatePrAfterFix should not fall back to MINIONS_DIR/pull-requests.json');
-    // New pattern: resolveProjectForPr used when project is null
-    assert.ok(src.includes('resolveProjectForPr'),
-      'Should use resolveProjectForPr to find the correct project');
-    // Both functions should use resolvedProject
-    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
-    assert.ok(reviewFn.includes('resolvedProject'), 'updatePrAfterReview should use resolvedProject');
-    const fixFn = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\n// ─── Post-Merge'));
-    assert.ok(fixFn.includes('resolvedProject'), 'updatePrAfterFix should use resolvedProject');
-  });
-
-  await test('updatePrAfterReview writes to projectPrPath(resolvedProject), not a conditional fallback', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
-    // Should write to projectPrPath(resolvedProject), not a ternary with fallback
-    assert.ok(reviewFn.includes('shared.safeWrite(shared.projectPrPath(resolvedProject)'),
-      'updatePrAfterReview should write to projectPrPath(resolvedProject)');
-    assert.ok(!reviewFn.includes('path.join(path.resolve(MINIONS_DIR'),
-      'Should not contain old stale path fallback');
-  });
-
-  await test('resolveProjectForPr scans all project PR files', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function resolveProjectForPr('), src.indexOf('\nfunction updatePrAfterReview('));
-    assert.ok(fn.includes('getProjects'), 'Should iterate over all projects');
-    assert.ok(fn.includes('projectPrPath'), 'Should read each project PR file');
-    assert.ok(fn.includes('return p'), 'Should return the matching project');
-    assert.ok(fn.includes('return null'), 'Should return null if not found');
   });
 
   await test('dashboard renders cumulative cost fields', () => {

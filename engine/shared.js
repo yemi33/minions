@@ -501,7 +501,27 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  try { return JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8')); } catch { return {}; }
+  // Derive from PR.prdItems (single source of truth) + legacy pr-links.json as fallback
+  const links = {};
+  try {
+    const projects = getProjects();
+    for (const project of projects) {
+      const prs = safeJson(projectPrPath(project)) || [];
+      for (const pr of prs) {
+        for (const itemId of (pr.prdItems || [])) {
+          if (!links[pr.id]) links[pr.id] = itemId;
+        }
+      }
+    }
+  } catch { /* optional */ }
+  // Merge legacy pr-links.json for items not yet in PR.prdItems
+  try {
+    const legacy = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
+    for (const [prId, itemId] of Object.entries(legacy)) {
+      if (!links[prId]) links[prId] = itemId;
+    }
+  } catch { /* optional */ }
+  return links;
 }
 
 function addPrLink(prId, itemId) {
@@ -510,6 +530,33 @@ function addPrLink(prId, itemId) {
   if (links[prId] === itemId) return; // already correct, no write needed
   links[prId] = itemId;
   safeWrite(PR_LINKS_PATH, links);
+}
+
+/**
+ * Locked mutation of a project's pull-requests.json.
+ * Single source of truth for PR data including prdItems links.
+ */
+function mutatePrs(project, mutateFn) {
+  const prPath = projectPrPath(project);
+  return mutateJsonFileLocked(prPath, (prs) => {
+    return mutateFn(Array.isArray(prs) ? prs : []);
+  }, { defaultValue: [] });
+}
+
+/**
+ * Link a PR to a work item via PR.prdItems (single source of truth).
+ * Uses file-locked mutation to prevent race conditions.
+ */
+function linkPrToItem(project, prId, itemId) {
+  if (!prId || !itemId) return;
+  mutatePrs(project, (prs) => {
+    const pr = prs.find(p => p.id === prId);
+    if (pr) {
+      pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
+      if (!pr.prdItems.includes(itemId)) pr.prdItems.push(itemId);
+    }
+    return prs;
+  });
 }
 
 module.exports = {
@@ -549,6 +596,8 @@ module.exports = {
   projectPrPath,
   getPrLinks,
   addPrLink,
+  mutatePrs,
+  linkPrToItem,
   nextWorkItemId,
   getAdoOrgBase,
   sanitizePath,
