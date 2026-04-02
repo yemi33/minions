@@ -312,7 +312,7 @@ const commands = {
     const tickTimer = setInterval(() => e.tick(), interval);
 
     // Fast poll for immediate wakeup signals (checks control.json every 2s)
-    setInterval(() => {
+    const wakeupTimer = setInterval(() => {
       const ctrl = getControl();
       if (ctrl._wakeupAt && Date.now() - ctrl._wakeupAt < 5000) {
         delete ctrl._wakeupAt;
@@ -370,6 +370,7 @@ const commands = {
       shuttingDown = true;
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
+      clearInterval(wakeupTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);

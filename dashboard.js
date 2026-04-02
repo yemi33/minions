@@ -667,7 +667,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', chunk => { body += chunk; if (body.length > 1e6) reject(new Error('Too large')); });
-    req.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    req.on('end', () => { try { resolve(body ? JSON.parse(body) : {}); } catch(e) { reject(e); } });
   });
 }
 
@@ -814,7 +814,7 @@ const server = http.createServer(async (req, res) => {
       // If archived, temporarily restore to active so checkPlanCompletion can find it
       const activePath = path.join(prdDir, body.file);
       if (fromArchive) {
-        const plan = JSON.parse(safeRead(prdPath));
+        const plan = JSON.parse(safeRead(prdPath) || '{}');
         plan.status = 'approved';
         delete plan.completedAt;
         safeWrite(activePath, plan);
@@ -860,18 +860,22 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const item = items.find(i => i.id === id);
-      if (!item) return jsonReply(res, 404, { error: 'item not found' });
-
-      item.status = 'pending';
-      item._retryCount = 0; // Reset retry counter on manual retry
-      delete item.dispatched_at;
-      delete item.dispatched_to;
-      delete item.failReason;
-      delete item.failedAt;
-      delete item.fanOutAgents;
-      safeWrite(wiPath, items);
+      let found = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) return items;
+        found = true;
+        item.status = 'pending';
+        item._retryCount = 0;
+        delete item.dispatched_at;
+        delete item.dispatched_to;
+        delete item.failReason;
+        delete item.failedAt;
+        delete item.fanOutAgents;
+        return items;
+      }, { defaultValue: [] });
+      if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
@@ -889,11 +893,10 @@ const server = http.createServer(async (req, res) => {
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
-        if (cooldowns[dispatchKey]) {
-          delete cooldowns[dispatchKey];
-          safeWrite(cooldownPath, cooldowns);
-        }
+        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
+          if (cooldowns[dispatchKey]) delete cooldowns[dispatchKey];
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       return jsonReply(res, 200, { ok: true, id });
@@ -918,15 +921,16 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const idx = items.findIndex(i => i.id === id);
-      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
-
-      const item = items[idx];
-
-      // Remove item from work-items file
-      items.splice(idx, 1);
-      safeWrite(wiPath, items);
+      let found = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const idx = items.findIndex(i => i.id === id);
+        if (idx === -1) return items;
+        found = true;
+        items.splice(idx, 1);
+        return items;
+      }, { defaultValue: [] });
+      if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
       // Clean dispatch entries + kill running agent
       const dispatchRemoved = cleanDispatchEntries(d =>
@@ -937,12 +941,12 @@ const server = http.createServer(async (req, res) => {
       // Clean cooldown entries so item can be re-created immediately
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
-        let cleaned = false;
-        for (const key of Object.keys(cooldowns)) {
-          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
-        }
-        if (cleaned) safeWrite(cooldownPath, cooldowns);
+        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
+          for (const key of Object.keys(cooldowns)) {
+            if (key.includes(id)) delete cooldowns[key];
+          }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       invalidateStatusCache();
@@ -1024,9 +1028,6 @@ const server = http.createServer(async (req, res) => {
         // Write to central queue — agent decides which project
         wiPath = path.join(MINIONS_DIR, 'work-items.json');
       }
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title, type: body.type || 'implement',
@@ -1039,8 +1040,11 @@ const server = http.createServer(async (req, res) => {
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr === true) item.skipPr = true;
-      items.push(item);
-      safeWrite(wiPath, items);
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        items.push(item);
+        return items;
+      }, { defaultValue: [] });
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1062,26 +1066,27 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const item = items.find(i => i.id === id);
-      if (!item) return jsonReply(res, 404, { error: 'item not found' });
-
-      if (item.status === 'dispatched') {
-        return jsonReply(res, 400, { error: 'Cannot edit dispatched items' });
-      }
-
-      if (title !== undefined) item.title = title;
-      if (description !== undefined) item.description = description;
-      if (type !== undefined) item.type = type;
-      if (priority !== undefined) item.priority = priority;
-      if (agent !== undefined) item.agent = agent || null;
-      if (body.references !== undefined) item.references = body.references;
-      if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
-      if (body.skipPr !== undefined) item.skipPr = body.skipPr === true;
-      item.updatedAt = new Date().toISOString();
-
-      safeWrite(wiPath, items);
-      return jsonReply(res, 200, { ok: true, item });
+      let result = null;
+      let error = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) { error = 'item not found'; return items; }
+        if (item.status === 'dispatched') { error = 'Cannot edit dispatched items'; return items; }
+        if (title !== undefined) item.title = title;
+        if (description !== undefined) item.description = description;
+        if (type !== undefined) item.type = type;
+        if (priority !== undefined) item.priority = priority;
+        if (agent !== undefined) item.agent = agent || null;
+        if (body.references !== undefined) item.references = body.references;
+        if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
+        if (body.skipPr !== undefined) item.skipPr = body.skipPr === true;
+        item.updatedAt = new Date().toISOString();
+        result = { ...item };
+        return items;
+      }, { defaultValue: [] });
+      if (error) return jsonReply(res, error === 'item not found' ? 404 : 400, { error });
+      return jsonReply(res, 200, { ok: true, item: result });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -1165,24 +1170,18 @@ const server = http.createServer(async (req, res) => {
       const item = (plan.missing_features || []).find(f => f.id === body.itemId);
       if (!item) return jsonReply(res, 404, { error: 'item not found in plan' });
 
-      // Update allowed fields
-      if (body.name !== undefined) item.name = body.name;
-      if (body.description !== undefined) item.description = body.description;
-      if (body.priority !== undefined) item.priority = body.priority;
-      if (body.estimated_complexity !== undefined) item.estimated_complexity = body.estimated_complexity;
-      if (body.status !== undefined) item.status = body.status;
-
-      // Re-read plan before writing to minimize race window with engine
-      const freshPlan = safeJson(planPath) || plan;
-      const freshItem = (freshPlan.missing_features || []).find(f => f.id === body.itemId);
-      if (freshItem) {
-        if (body.name !== undefined) freshItem.name = body.name;
-        if (body.description !== undefined) freshItem.description = body.description;
-        if (body.priority !== undefined) freshItem.priority = body.priority;
-        if (body.estimated_complexity !== undefined) freshItem.estimated_complexity = body.estimated_complexity;
-        if (body.status !== undefined) freshItem.status = body.status;
-      }
-      safeWrite(planPath, freshPlan);
+      // Update plan item under lock
+      mutateJsonFileLocked(planPath, (freshPlan) => {
+        const freshItem = (freshPlan.missing_features || []).find(f => f.id === body.itemId);
+        if (freshItem) {
+          if (body.name !== undefined) freshItem.name = body.name;
+          if (body.description !== undefined) freshItem.description = body.description;
+          if (body.priority !== undefined) freshItem.priority = body.priority;
+          if (body.estimated_complexity !== undefined) freshItem.estimated_complexity = body.estimated_complexity;
+          if (body.status !== undefined) freshItem.status = body.status;
+        }
+        return freshPlan;
+      });
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
@@ -1192,18 +1191,20 @@ const server = http.createServer(async (req, res) => {
       }
       for (const wiPath of wiSyncPaths) {
         try {
-          const items = safeJson(wiPath);
-          const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-          if (wi && wi.status === 'pending') {
-            if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
-            if (body.description !== undefined) wi.description = body.description;
-            if (body.priority !== undefined) wi.priority = body.priority;
-            if (body.estimated_complexity !== undefined) {
-              wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+          mutateJsonFileLocked(wiPath, (items) => {
+            if (!Array.isArray(items)) return items;
+            const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
+            if (wi && wi.status === 'pending') {
+              if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
+              if (body.description !== undefined) wi.description = body.description;
+              if (body.priority !== undefined) wi.priority = body.priority;
+              if (body.estimated_complexity !== undefined) {
+                wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+              }
+              workItemSynced = true;
             }
-            safeWrite(wiPath, items);
-            workItemSynced = true;
-          }
+            return items;
+          }, { defaultValue: [] });
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -1338,6 +1339,7 @@ const server = http.createServer(async (req, res) => {
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
+      if (res.writableEnded) return;
       try {
         const stat = fs.statSync(liveLogPath);
         if (stat.size > offset) {
@@ -1356,14 +1358,17 @@ const server = http.createServer(async (req, res) => {
 
     // Check if agent is still active (poll every 5s)
     const doneCheck = setInterval(() => {
+      if (res.writableEnded) { clearInterval(doneCheck); return; }
       const dispatch = getDispatchQueue();
       const isActive = (dispatch.active || []).some(d => d.agent === agentId);
       if (!isActive) {
         watcher(); // flush final content
-        res.write(`event: done\ndata: complete\n\n`);
         clearInterval(doneCheck);
         fs.unwatchFile(liveLogPath, watcher);
-        res.end();
+        if (!res.writableEnded) {
+          res.write(`event: done\ndata: complete\n\n`);
+          res.end();
+        }
       }
     }, 5000);
 
@@ -1387,7 +1392,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       // Return last N bytes via ?tail=N param (default last 8KB)
       const params = new URL(req.url, 'http://localhost').searchParams;
-      const tailBytes = parseInt(params.get('tail')) || 8192;
+      const tailBytes = Math.min(parseInt(params.get('tail')) || 8192, 1024 * 1024);
       res.end(content.length > tailBytes ? content.slice(-tailBytes) : content);
     }
     return;
@@ -3072,24 +3077,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const projects = shared.getProjects(CONFIG);
       const paths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
+      let found = false;
+      let feedbackAgent = 'unknown';
+      let feedbackTitle = id;
       for (const wiPath of paths) {
-        const items = JSON.parse(safeRead(wiPath) || '[]');
-        const item = items.find(i => i.id === id);
-        if (!item) continue;
-        item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
-        safeWrite(wiPath, items);
-        const agent = item.dispatched_to || item.agent || 'unknown';
-        const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
-          '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
-          '**Item:** ' + (item.title || id) + '\n' +
-          '**Agent:** ' + agent + '\n' +
-          (comment ? '**Feedback:** ' + comment + '\n' : '');
-        const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
-        safeWrite(inboxPath, feedbackNote);
-        invalidateStatusCache();
-        return jsonReply(res, 200, { ok: true });
+        try {
+          mutateJsonFileLocked(wiPath, (items) => {
+            if (!Array.isArray(items)) return items;
+            const item = items.find(i => i.id === id);
+            if (!item) return items;
+            found = true;
+            item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
+            feedbackAgent = item.dispatched_to || item.agent || 'unknown';
+            feedbackTitle = item.title || id;
+            return items;
+          }, { defaultValue: [] });
+        } catch { /* optional */ }
+        if (found) break;
       }
-      return jsonReply(res, 404, { error: 'Work item not found' });
+      if (!found) return jsonReply(res, 404, { error: 'Work item not found' });
+      const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
+        '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
+        '**Item:** ' + feedbackTitle + '\n' +
+        '**Agent:** ' + feedbackAgent + '\n' +
+        (comment ? '**Feedback:** ' + comment + '\n' : '');
+      const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', feedbackAgent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
+      safeWrite(inboxPath, feedbackNote);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
     }},
 
     // Pinned notes
@@ -3461,6 +3476,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   const pathname = req.url.split('?')[0];
   const _reqStart = Date.now();
+  try {
   for (const route of ROUTES) {
     if (route.method !== req.method) continue;
     if (typeof route.path === 'string') {
@@ -3505,6 +3521,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     res.end(HTML_GZ);
   } else {
     res.end(HTML);
+  }
+  } catch (err) {
+    console.error(`[ERROR] ${req.method} ${req.url}: ${err.message}`);
+    if (!res.headersSent) {
+      try { jsonReply(res, 500, { error: 'Internal server error' }); } catch { res.end(); }
+    }
   }
 });
 
