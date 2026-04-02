@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.189 (2026-04-02)
+
+### Dashboard
+- dashboard/js/render-plans.js
+
+### Playbooks
+- meeting-conclude.md
+
 ## 0.1.188 (2026-04-02)
 
 ### Dashboard
