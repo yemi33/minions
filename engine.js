@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS, CENTRAL_WI_PATH, resolveWiPath } = shared;
+const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
-const { renderPlaybook, getLastRenderError, buildSystemPrompt, buildAgentContext, selectPlaybook,
+const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
   getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
@@ -307,7 +307,7 @@ function spawnAgent(dispatchItem, config) {
 
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
-            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git fetch: ' + e.message); }
+            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
             try {
               runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (eShared) {
@@ -317,11 +317,6 @@ function spawnAgent(dispatchItem, config) {
                   log('info', `Shared branch ${branchName} already checked out at ${existingWtPath} — reusing`);
                   worktreePath = existingWtPath;
                 } else { throw eShared; }
-              } else if (eShared.message?.includes('invalid reference') || eShared.message?.includes('not a valid branch')) {
-                // Branch doesn't exist yet — create it from main
-                log('info', `Shared branch ${branchName} not found — creating from ${project.mainBranch || 'main'}`);
-                const mainRef = sanitizeBranch(project.mainBranch || 'main');
-                runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
               } else { throw eShared; }
             }
           } else {
@@ -396,7 +391,6 @@ function spawnAgent(dispatchItem, config) {
         } else {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
           completeDispatch(id, 'error', 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
-          try { updateMetrics(agentId, dispatchItem, 'error', null, 0, null); } catch { /* optional */ }
           return null;
         }
       }
@@ -749,7 +743,7 @@ function areDependenciesMet(item, config) {
     } catch (e) { log('warn', 'read project work items for deps: ' + e.message); }
   }
   // PRD item statuses that count as "done" for dep resolution
-  const PRD_MET_STATUSES = new Set(['done']);
+  const PRD_MET_STATUSES = new Set(['done', 'in-pr', 'implemented', 'complete']);
 
   for (const depId of deps) {
     const depItem = allWorkItems.find(w => w.id === depId);
@@ -788,7 +782,8 @@ function detectDependencyCycles(items) {
 // writeInboxAlert — now in engine/dispatch.js
 
 // Reconciles work items against known PRs.
-// Primary linkage comes from prdItems in pull-requests.json (via getPrLinks()).
+// Primary linkage comes from prdItems in pull-requests.json; fallback linkage
+// uses engine/pr-links.json so matching does not depend on branch/title parsing.
 // onlyIds: if provided, only items whose ID is in this Set are eligible.
 function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
   const prLinks = shared.getPrLinks();
@@ -879,7 +874,7 @@ const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
 // Auto-clean pending/failed work items for a PRD so they re-materialize with updated plan data
 function autoCleanPrdWorkItems(prdFile, config) {
   const allProjects = getProjects(config);
-  const wiPaths = [CENTRAL_WI_PATH];
+  const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
   for (const proj of allProjects) wiPaths.push(projectWorkItemsPath(proj));
   const deletedIds = [];
   for (const wiPath of wiPaths) {
@@ -982,7 +977,7 @@ function materializePlansAsWorkItems(config) {
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
-            const completedStatuses = new Set(['done']);
+            const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
             const completedItems = (plan.missing_features || [])
               .filter(f => completedStatuses.has(f.status))
               .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -1001,7 +996,8 @@ function materializePlansAsWorkItems(config) {
               const allProjects = getProjects(config);
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
-                const centralItems = safeJson(CENTRAL_WI_PATH) || [];
+                const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
+                const centralItems = safeJson(centralWiPath) || [];
                 const alreadyQueued = centralItems.some(w =>
                   w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
                 );
@@ -1061,7 +1057,7 @@ function materializePlansAsWorkItems(config) {
     const useCentral = !defaultProject;
 
     const statusFilter = ['missing', 'planned'];
-    // Also materialize done items that never got a work item (race with PR status sync)
+    // Also materialize in-pr/done items that never got a work item (race with PR status sync)
     const allExistingWiIds = new Set();
     for (const p of allProjects) {
       for (const w of (safeJson(projectWorkItemsPath(p)) || [])) {
@@ -1069,12 +1065,12 @@ function materializePlansAsWorkItems(config) {
       }
     }
     // Also check central work-items.json
-    for (const w of (safeJson(CENTRAL_WI_PATH) || [])) {
+    for (const w of (safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [])) {
       if (w.id) allExistingWiIds.add(w.id);
     }
     const items = plan.missing_features.filter(f =>
       statusFilter.includes(f.status) ||
-      (f.status === 'done' && f.id && !allExistingWiIds.has(f.id))
+      ((f.status === 'in-pr' || f.status === 'done') && f.id && !allExistingWiIds.has(f.id))
     );
 
     // Group items by target project (per-item project field overrides plan-level project)
@@ -1114,7 +1110,7 @@ function materializePlansAsWorkItems(config) {
 
     let totalCreated = 0;
     for (const [projName, { project, items: projItems }] of itemsByProject) {
-      const wiPath = project ? projectWorkItemsPath(project) : CENTRAL_WI_PATH;
+      const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
       const existingItems = safeJson(wiPath) || [];
       let created = 0;
       const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
@@ -1135,7 +1131,7 @@ function materializePlansAsWorkItems(config) {
 
         const id = item.id; // Work item ID = PRD item ID — no indirection
         const complexity = item.estimated_complexity || 'medium';
-        const criteria = (Array.isArray(item.acceptance_criteria) ? item.acceptance_criteria : []).map(c => `- ${c}`).join('\n');
+        const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
 
         const newItem = {
           id,
@@ -1194,17 +1190,9 @@ function materializePlansAsWorkItems(config) {
           const root = path.resolve(firstProject.localPath);
           const mainBranch = firstProject.mainBranch || 'main';
           const branch = sanitizeBranch(plan.feature_branch);
-          // Create branch from main — verify it actually succeeded
-          try {
-            exec(`git branch "${branch}" "${mainBranch}"`, { cwd: root, stdio: 'pipe', windowsHide: true });
-          } catch (e) {
-            // Branch may already exist — that's fine
-            if (!e.message?.includes('already exists')) throw e;
-          }
-          // Push to remote (best-effort — may not have a remote)
-          try {
-            exec(`git push -u origin "${branch}"`, { cwd: root, stdio: 'pipe', windowsHide: true, timeout: 15000 });
-          } catch { /* no remote or push failed — branch still exists locally */ }
+          // Create branch from main (idempotent — ignores if exists)
+          exec(`git branch "${branch}" "${mainBranch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
+          exec(`git push -u origin "${branch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
           log('info', `Shared branch pre-created: ${branch} for plan ${file}`);
         } catch (err) {
           log('warn', `Failed to pre-create shared branch for ${file}: ${err.message}`);
@@ -1258,9 +1246,9 @@ function discoverFromPrs(config, project) {
     // minionsReview tracks metadata (reviewer, note) but not the authoritative status
     const reviewStatus = pr.reviewStatus || 'pending';
 
-    // PRs needing review: only dispatch if evalLoop is enabled
-    const evalLoop = config.engine?.evalLoop !== false;
-    const needsReview = evalLoop && reviewStatus === 'pending';
+    // PRs needing review: pending or waiting (review dispatched but no verdict yet)
+    const autoReview = config.engine?.autoReview !== false;
+    const needsReview = autoReview && reviewStatus === 'pending';
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1268,8 +1256,8 @@ function discoverFromPrs(config, project) {
       if (!agentId) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title ? ': ' + pr.title : '', pr_branch: pr.branch || '',
-        branch_name: pr.branch || '', pr_author: pr.agent || '', pr_url: pr.url || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }
@@ -1385,7 +1373,6 @@ function discoverFromWorkItems(config, project) {
       }
     }
 
-    if (item.status === 'needs-human-review') continue; // Explicit skip — flagged for human attention
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
@@ -1484,46 +1471,8 @@ function discoverFromWorkItems(config, project) {
       '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
     ).join('\n');
     vars.references = refs ? '## References\n\n' + refs : '';
-    const ac = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
+    const ac = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
     vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
-
-    // Inject PR section — conditional based on skipPr flag
-    vars.pr_section = item.skipPr
-      ? '## Push Branch\n\n**PR creation is skipped for this work item.** Push your branch and report the branch name.\n\n```bash\ngit push -u origin {{branch_name}}\n```\n\nInclude the branch name in your completion summary.'
-      : '## Create PR (MANDATORY)\n\n**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.\n\n{{pr_create_instructions}}\n- sourceRefName: `refs/heads/{{branch_name}}`\n- targetRefName: `refs/heads/{{main_branch}}`\n- title: `{{commit_message}}`\n- labels: `["minions:{{agent_id}}"]`\n\nInclude in the PR description:\n- What was built and why\n- Files changed\n- How to build and test, browser URL if applicable\n- Test plan\n\n## Post self-review on PR\n\n{{pr_comment_instructions}}\n- pullRequestId: `<from PR creation>`\n- Re-read your own diff critically before posting\n- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`';
-
-    // Inject checkpoint context if agent left a checkpoint.json from a prior run
-    vars.checkpoint_context = '';
-    try {
-      const wtPath = vars.worktree_path || root;
-      const cpPath = path.join(wtPath, 'checkpoint.json');
-      if (fs.existsSync(cpPath)) {
-        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
-        const cpCount = (item._checkpointCount || 0) + 1;
-        if (cpCount > 3) {
-          log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-          item.status = 'needs-human-review';
-          item._checkpointCount = cpCount;
-          needsWrite = true;
-          continue;
-        }
-        item._checkpointCount = cpCount;
-        needsWrite = true;
-        const cpSummary = [
-          `## Checkpoint (Resume #${cpCount}/3)`,
-          '',
-          'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
-          '',
-          Array.isArray(cpData.completed) && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-          Array.isArray(cpData.remaining) && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-          Array.isArray(cpData.blockers) && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
-          cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
-        ].filter(Boolean).join('\n');
-        vars.checkpoint_context = cpSummary;
-        log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
-        try { fs.unlinkSync(cpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
-      }
-    } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
     // Inject ask-specific variables for the ask playbook
     if (workType === 'ask') {
@@ -1544,17 +1493,9 @@ function discoverFromWorkItems(config, project) {
     if (playbookName === 'work-item' && workType === 'review') {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
     }
-    const rendered = renderPlaybook(playbookName, vars);
-    const renderError = getLastRenderError();
-    // If critical vars are missing, block dispatch entirely — don't fall through to work-item playbook
-    const prompt = item.prompt || rendered || (renderError ? null : (renderPlaybook('work-item', vars) || item.description));
+    const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
     if (!prompt) {
-      if (renderError) {
-        log('warn', `Skipping ${item.id}: ${renderError.message}`);
-        if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; needsWrite = true; }
-      } else {
-        log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
-      }
+      log('warn', `No playbook rendered for ${item.id} (type: ${workType}, playbook: ${playbookName}) — skipping`);
       continue;
     }
 
@@ -1578,12 +1519,14 @@ function discoverFromWorkItems(config, project) {
     setCooldown(key);
   }
 
-  // Write back updated statuses — needsWrite covers mutation-only ticks, newWork covers dispatches
-  if (needsWrite || newWork.length > 0) {
+  // Write back updated statuses (always, since we mark items dispatched before newWork check)
+  if (newWork.length > 0) {
     const workItemsPath = projectWorkItemsPath(project);
     safeWrite(workItemsPath, items);
     for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
   }
+
+  if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
 
   const skipTotal = skipped.gated + skipped.noAgent;
   if (skipTotal > 0) {
@@ -1768,14 +1711,12 @@ function extractSpecInfo(filePath, projectRoot_) {
  * Uses the shared work-item.md playbook with multi-project context injected.
  */
 function discoverCentralWorkItems(config) {
-  const centralPath = CENTRAL_WI_PATH;
+  const centralPath = path.join(MINIONS_DIR, 'work-items.json');
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
-  let needsWrite = false;
 
   for (const item of items) {
-    if (item.status === 'needs-human-review') continue; // Explicit skip — flagged for human attention
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     const key = `central-work-${item.id}`;
@@ -1803,42 +1744,6 @@ function discoverCentralWorkItems(config) {
         assignedProject: projects.length > 0 ? projects[i % projects.length] : null
       }));
 
-      // Inject checkpoint context if agent left a checkpoint.json from a prior run
-      let fanOutCheckpointContext = '';
-      try {
-        const fanFirstProject = projects[0];
-        const fanBranch = item.branch || `work/${item.id}`;
-        const fanWtPath = fanFirstProject?.localPath
-          ? path.resolve(fanFirstProject.localPath, config.engine?.worktreeRoot || '../worktrees', fanBranch)
-          : '';
-        const fanCpPath = fanWtPath ? path.join(fanWtPath, 'checkpoint.json') : '';
-        if (fanCpPath && fs.existsSync(fanCpPath)) {
-          const fanCpData = JSON.parse(fs.readFileSync(fanCpPath, 'utf8'));
-          const fanCpCount = (item._checkpointCount || 0) + 1;
-          if (fanCpCount > 3) {
-            log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-            item.status = 'needs-human-review';
-            item._checkpointCount = fanCpCount;
-            needsWrite = true;
-            continue;
-          }
-          item._checkpointCount = fanCpCount;
-          const fanCpSummary = [
-            `## Checkpoint (Resume #${fanCpCount}/3)`,
-            '',
-            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
-            '',
-            Array.isArray(fanCpData.completed) && fanCpData.completed.length > 0 ? `### Completed\n${fanCpData.completed.map(s => '- ' + s).join('\n')}` : '',
-            Array.isArray(fanCpData.remaining) && fanCpData.remaining.length > 0 ? `### Remaining\n${fanCpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-            Array.isArray(fanCpData.blockers) && fanCpData.blockers.length > 0 ? `### Blockers\n${fanCpData.blockers.map(s => '- ' + s).join('\n')}` : '',
-            fanCpData.branch_state ? `### Branch State\n${fanCpData.branch_state}` : '',
-          ].filter(Boolean).join('\n');
-          fanOutCheckpointContext = fanCpSummary;
-          log('info', `Injecting checkpoint context for ${item.id} (resume #${fanCpCount})`);
-          try { fs.unlinkSync(fanCpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
-        }
-      } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
-
       for (const { agent, assignedProject } of assignments) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
@@ -1861,18 +1766,8 @@ function discoverCentralWorkItems(config) {
           '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
         ).join('\n');
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
-        const fanAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
+        const fanAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
-
-        // Inject PR section — conditional based on skipPr flag
-        const fanBranch = '{{branch_name}}';
-        vars.pr_section = item.skipPr
-          ? '## Push Branch\n\n**PR creation is skipped for this work item.** Push your branch and report the branch name.\n\n```bash\ngit push -u origin ' + fanBranch + '\n```\n\nInclude the branch name in your completion summary.'
-          : '## Create PR (MANDATORY)\n\n**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.\n\n{{pr_create_instructions}}\n- sourceRefName: `refs/heads/' + fanBranch + '`\n- targetRefName: `refs/heads/{{main_branch}}`\n- title: `{{commit_message}}`\n- labels: `["minions:{{agent_id}}"]`\n\nInclude in the PR description:\n- What was built and why\n- Files changed\n- How to build and test, browser URL if applicable\n- Test plan\n\n## Post self-review on PR\n\n{{pr_comment_instructions}}\n- pullRequestId: `<from PR creation>`\n- Re-read your own diff critically before posting\n- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`';
-
-        // Inject checkpoint context (computed once above the loop)
-        vars.checkpoint_context = fanOutCheckpointContext;
-
 
         if (workType === 'ask') {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
@@ -1887,16 +1782,9 @@ function discoverCentralWorkItems(config) {
         }
 
         const playbookName = selectPlaybook(workType, item);
-        const rendered = renderPlaybook(playbookName, vars);
-        const renderError = getLastRenderError();
-        const prompt = rendered || (renderError ? null : renderPlaybook('work-item', vars));
+        const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) {
-          if (renderError) {
-            log('warn', `Fan-out: ${item.id} → ${agent.id}: ${renderError.message}`);
-            if (item._pendingReason !== 'critical_vars_missing') { item._pendingReason = 'critical_vars_missing'; needsWrite = true; }
-          } else {
-            log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
-          }
+          log('warn', `Fan-out: playbook '${playbookName}' failed to render for ${item.id} → ${agent.id}, skipping`);
           continue;
         }
 
@@ -1919,8 +1807,6 @@ function discoverCentralWorkItems(config) {
       item.dispatched_to = idleAgents.map(a => a.id).join(', ');
       item.scope = 'fan-out';
       item.fanOutAgents = idleAgents.map(a => a.id);
-      delete item._pendingReason;
-      needsWrite = true;
       setCooldown(key);
       log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
 
@@ -1955,42 +1841,8 @@ function discoverCentralWorkItems(config) {
         '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
       ).join('\n');
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
-      const normAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
+      const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
       vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
-
-      // Inject checkpoint context if agent left a checkpoint.json from a prior run
-      vars.checkpoint_context = '';
-      try {
-        const centralBranch = item.branch || `work/${item.id}`;
-        const centralWtPath = firstProject?.localPath
-          ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
-          : '';
-        const cpPath = centralWtPath ? path.join(centralWtPath, 'checkpoint.json') : '';
-        if (cpPath && fs.existsSync(cpPath)) {
-          const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
-          const cpCount = (item._checkpointCount || 0) + 1;
-          if (cpCount > 3) {
-            log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-            item.status = 'needs-human-review';
-            item._checkpointCount = cpCount;
-            continue;
-          }
-          item._checkpointCount = cpCount;
-          const cpSummary = [
-            `## Checkpoint (Resume #${cpCount}/3)`,
-            '',
-            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
-            '',
-            Array.isArray(cpData.completed) && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-            Array.isArray(cpData.remaining) && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-            Array.isArray(cpData.blockers) && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
-            cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
-          ].filter(Boolean).join('\n');
-          vars.checkpoint_context = cpSummary;
-          log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
-          try { fs.unlinkSync(cpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
-        }
-      } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {
@@ -2042,19 +1894,10 @@ function discoverCentralWorkItems(config) {
       }
 
       const playbookName = selectPlaybook(workType, item);
-      const rendered = renderPlaybook(playbookName, vars);
-      const renderError = getLastRenderError();
-      const prompt = rendered || (renderError ? null : renderPlaybook('work-item', vars));
+      const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) {
-        if (renderError) {
-          log('warn', `Dispatch: ${item.id}: ${renderError.message}`);
-          item._pendingReason = 'critical_vars_missing';
-          needsWrite = true;
-        } else {
-          log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
-        }
+        log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
         item.status = 'pending';
-        needsWrite = true;
         continue;
       }
 
@@ -2071,13 +1914,11 @@ function discoverCentralWorkItems(config) {
       item.status = 'dispatched';
       item.dispatched_at = ts();
       item.dispatched_to = agentId;
-      delete item._pendingReason;
-      needsWrite = true;
       setCooldown(key);
     }
   }
 
-  if (needsWrite || newWork.length > 0) safeWrite(centralPath, items);
+  if (newWork.length > 0) safeWrite(centralPath, items);
   return newWork;
 }
 
@@ -2123,14 +1964,23 @@ function discoverWork(config) {
     const { discoverScheduledWork } = require('./engine/scheduler');
     const scheduledWork = discoverScheduledWork(config);
     if (scheduledWork.length > 0) {
-      const centralPath = CENTRAL_WI_PATH;
+      const { createMeeting, getMeetings } = require('./engine/meeting');
+      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
       const items = safeJson(centralPath) || [];
       let added = 0;
       for (const item of scheduledWork) {
-        if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
-          items.push(item);
-          added++;
-          log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+        if (item.type === 'meeting') {
+          // Create a real multi-agent meeting instead of a single-agent work item
+          const sched = (config.schedules || []).find(s => s.id === item._scheduleId);
+          const participants = (sched && sched.participants) || [];
+          const meeting = createMeeting({ title: item.title, agenda: item.description, participants });
+          log('info', `Scheduled meeting created: ${item._scheduleId} → ${meeting.id} (${participants.length} participants)`);
+        } else {
+          if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
+            items.push(item);
+            added++;
+            log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+          }
         }
       }
       if (added > 0) safeWrite(centralPath, items);
@@ -2197,7 +2047,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
     }
   }
 
@@ -2221,15 +2071,12 @@ let tickRunning = false;
 async function tick() {
   if (tickRunning) return; // prevent overlapping ticks
   tickRunning = true;
-  const tickStart = Date.now();
   try {
     await tickInner();
   } catch (e) {
     log('error', `Tick error: ${e.message}`);
   } finally {
     tickRunning = false;
-    const elapsed = Date.now() - tickStart;
-    if (elapsed > 30000) log('warn', `Slow tick: ${(elapsed / 1000).toFixed(1)}s`);
   }
 }
 
@@ -2247,9 +2094,9 @@ async function tickInner() {
   tickCount++;
 
   // 1. Check for timed-out agents, steering messages, and idle threshold
-  try { checkTimeouts(config); } catch (e) { log('warn', `checkTimeouts: ${e.message}`); }
-  try { checkSteering(config); } catch (e) { log('warn', `checkSteering: ${e.message}`); }
-  try { checkIdleThreshold(config); } catch (e) { log('warn', `checkIdleThreshold: ${e.message}`); }
+  checkTimeouts(config);
+  checkSteering(config);
+  checkIdleThreshold(config);
 
   // 1b. Check for meeting round timeouts
   try {
@@ -2264,11 +2111,11 @@ async function tickInner() {
   }
 
   // 2. Consolidate inbox
-  try { consolidateInbox(config); } catch (e) { log('warn', `consolidateInbox: ${e.message}`); }
+  consolidateInbox(config);
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    try { runCleanup(config); } catch (e) { log('warn', `runCleanup: ${e.message}`); }
+    runCleanup(config);
   }
 
   // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
@@ -2278,7 +2125,7 @@ async function tickInner() {
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
-    // Check if any plans can be marked completed (all features done)
+    // Check if any plans can be marked completed (all features done/in-pr)
     try {
       const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
       for (const file of prdFiles) {
@@ -2399,15 +2246,14 @@ async function tickInner() {
   }
 
   // 3. Discover new work from sources
-  try { discoverWork(config); } catch (e) { log('warn', `discoverWork: ${e.message}`); }
+  discoverWork(config);
 
   // 4. Update snapshot
-  try { updateSnapshot(config); } catch (e) { log('warn', `updateSnapshot: ${e.message}`); }
+  updateSnapshot(config);
 
   // 5. Process pending dispatches — auto-spawn agents
-  let dispatch, activeCount;
-  try { dispatch = getDispatch(); } catch (e) { log('warn', `getDispatch: ${e.message}`); return; }
-  activeCount = (dispatch.active || []).length;
+  const dispatch = getDispatch();
+  const activeCount = (dispatch.active || []).length;
   const maxConcurrent = config.engine?.maxConcurrent || 5;
 
   if (activeCount >= maxConcurrent) {
@@ -2458,7 +2304,9 @@ async function tickInner() {
         // Defensive: ensure the work item is re-queued if completeDispatch didn't fire
         if (item.meta?.item?.id) {
           try {
-            const wiPath = resolveWiPath(item.meta);
+            const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
+              ? path.join(ENGINE_DIR, '..', 'work-items.json')
+              : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
             if (wiPath) {
               const items = safeJson(wiPath) || [];
               const wi = items.find(i => i.id === item.meta.item.id);
@@ -2539,7 +2387,6 @@ module.exports = {
 
   // Playbooks
   renderPlaybook,
-  getLastRenderError,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,
