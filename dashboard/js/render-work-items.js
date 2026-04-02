@@ -92,7 +92,7 @@ function renderWorkItems(items) {
 function editWorkItem(id, source) {
   const item = allWorkItems.find(i => i.id === id);
   if (!item) return;
-  const types = ['implement', 'fix', 'review', 'plan', 'verify', 'investigate', 'refactor', 'test', 'docs'];
+  const types = ['implement', 'fix', 'review', 'plan', 'verify', 'evaluate', 'decompose', 'meeting', 'investigate', 'refactor', 'test', 'explore', 'ask', 'docs'];
   const priorities = ['critical', 'high', 'medium', 'low'];
   const agentOpts = (cmdAgents || []).map(a => '<option value="' + escHtml(a.id) + '"' + (item.agent === a.id ? ' selected' : '') + '>' + escHtml(a.name) + '</option>').join('');
   const typeOpts = types.map(t => '<option value="' + t + '"' + ((item.type || 'implement') === t ? ' selected' : '') + '>' + t + '</option>').join('');
@@ -282,7 +282,7 @@ async function submitFeedback(id, source) {
 }
 
 function openCreateWorkItemModal() {
-  const typeOpts = ['implement', 'fix', 'explore', 'test', 'review', 'ask', 'plan'].map(t =>
+  const typeOpts = ['implement', 'fix', 'explore', 'test', 'review', 'ask', 'plan', 'verify', 'evaluate', 'decompose', 'meeting'].map(t =>
     '<option value="' + t + '"' + (t === 'implement' ? ' selected' : '') + '>' + t + '</option>'
   ).join('');
   const priOpts = ['high', 'medium', 'low'].map(p =>
