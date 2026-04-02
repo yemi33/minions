@@ -221,22 +221,31 @@ let _lastRenderError = null;
 
 function getLastRenderError() { return _lastRenderError; }
 
+// Module-level prompt size tracking — callers check via getLastPromptSizes() after renderPlaybook
+let _lastPromptSizes = null;
+
+function getLastPromptSizes() { return _lastPromptSizes; }
+
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
   _lastRenderError = null;
+  _lastPromptSizes = null;
+  const sizes = { total: 0, systemPrompt: 0, playbook: 0, pinned: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
   const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
     log('warn', `Playbook not found: ${type}`);
     return null;
   }
+  // Track raw playbook template size (before variable substitution — measured post-sub below)
 
   // Inject pinned context (always visible to agents) — capped at 4KB
   let pinnedContent = '';
   try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch { /* optional */ }
   if (pinnedContent) {
     if (pinnedContent.length > 4096) pinnedContent = pinnedContent.slice(0, 4096) + '\n\n_...pinned.md truncated (read full file if needed)_';
+    sizes.pinned = pinnedContent.length;
     content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
   }
 
@@ -296,6 +305,12 @@ function renderPlaybook(type, vars) {
   };
   const allVars = { ...projectVars, ...vars };
 
+  // Measure specific injected component sizes before variable substitution
+  sizes.references = String(allVars.references || '').length;
+  sizes.criteria = String(allVars.acceptance_criteria || '').length;
+  sizes.checkpoint = String(allVars.checkpoint_context || '').length;
+  sizes.pendingQueue = String(allVars.pending_queue || '').length;
+
   // Substitute variables
   for (const [key, val] of Object.entries(allVars)) {
     content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
@@ -328,6 +343,11 @@ function renderPlaybook(type, vars) {
       return null;
     }
   }
+
+  // Record prompt sizes (playbook = the rendered content; total computed by caller with systemPrompt + agentContext)
+  sizes.playbook = content.length;
+  sizes.total = content.length; // caller should add systemPrompt + agentContext
+  _lastPromptSizes = sizes;
 
   return content;
 }
@@ -501,6 +521,7 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 module.exports = {
   renderPlaybook,
   getLastRenderError,
+  getLastPromptSizes,
   CRITICAL_VARS,
   buildSystemPrompt,
   buildAgentContext,
