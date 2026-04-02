@@ -297,7 +297,9 @@ function renderPlans(plans) {
 }
 
 function openArchivedPlansModal() {
-  const plans = window._archivedPlans || [];
+  const plans = (window._archivedPlans || []).slice().sort((a, b) =>
+    (b.completedAt || b.updatedAt || '').localeCompare(a.completedAt || a.updatedAt || '')
+  );
   const render = window._archivedPlanRenderer;
   if (!plans.length || !render) return;
 

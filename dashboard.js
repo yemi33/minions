@@ -1665,6 +1665,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             itemCount: (content.match(/^\d+\.\s+\*\*/gm) || []).length,
             generatedBy: authorMatch ? authorMatch[1].trim() : '',
             generatedAt: dateMatch ? dateMatch[1].trim() : '',
+            completedAt: archived ? updatedAt : '',
             updatedAt,
             requiresApproval: false,
             revisionFeedback: null,

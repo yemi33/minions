@@ -132,7 +132,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
   }
 
@@ -459,7 +459,10 @@ let _prdItems = []; // cache for edit lookups
 function _cachePrdItems(prog) { _prdItems = prog?.items || []; }
 
 function openArchivedPrdModal() {
-  const groups = window._archivedPrdGroups || [];
+  const groups = (window._archivedPrdGroups || []).slice().sort((a, b) =>
+    (b.completedAt || b.prdUpdatedAt || '').localeCompare(a.completedAt || a.prdUpdatedAt || '')
+  );
+  window._archivedPrdGroups = groups;
   const renderGroup = window._archivedPrdRenderGroup;
   if (!groups.length || !renderGroup) return;
 
@@ -475,6 +478,7 @@ function openArchivedPrdModal() {
     html += groups.map((g, i) => {
       const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
+      const completed = g.completedAt ? new Date(g.completedAt).toLocaleDateString() : '';
       return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
         '<div class="plan-card-meta">' +
@@ -482,6 +486,7 @@ function openArchivedPrdModal() {
           '<span>' + g.items.length + ' items</span>' +
           '<span style="color:var(--green)">' + done + ' done</span>' +
           (failed ? '<span style="color:var(--red)">' + failed + ' failed</span>' : '') +
+          (completed ? '<span>Completed ' + completed + '</span>' : '') +
         '</div>' +
       '</div>';
     }).join('');
