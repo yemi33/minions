@@ -14,25 +14,49 @@ const { execSync } = require('child_process');
  */
 function findClaudeBinary() {
   const searchPaths = [
-    path.join(process.env.npm_config_prefix || '', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-    path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    // npm global (npm_config_prefix)
+    process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
+    // Windows: %APPDATA%\npm
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
+    // Unix global
     '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
     '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-  ];
+    // Homebrew (macOS)
+    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+    // nvm (current node version)
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    // fnm / volta — sibling to the node binary
+    path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+  ].filter(Boolean);
   for (const p of searchPaths) {
-    if (p && fs.existsSync(p)) return p;
+    try { if (fs.existsSync(p)) return p; } catch {}
   }
-  // Fallback: parse the shell wrapper
+  // Fallback: which/where → resolve wrapper to cli.js
   try {
-    const which = execSync('bash -c "which claude"', { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim();
-    const whichNative = which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
-    const wrapper = fs.readFileSync(whichNative, 'utf8');
-    const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);
-    if (m) {
-      const basedir = path.dirname(whichNative);
-      const resolved = path.join(basedir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-      if (fs.existsSync(resolved)) return resolved;
+    const isWin = process.platform === 'win32';
+    const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
+    const which = execSync(cmd, { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim().split('\n')[0].trim();
+    if (which) {
+      const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
+      try {
+        const resolved = fs.realpathSync(whichNative);
+        if (resolved.endsWith('cli.js') && fs.existsSync(resolved)) return resolved;
+      } catch {}
+      try {
+        const wrapper = fs.readFileSync(whichNative, 'utf8');
+        const m = wrapper.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js/);
+        if (m) {
+          const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+          if (fs.existsSync(candidate)) return candidate;
+        }
+      } catch {}
     }
+  } catch { /* optional */ }
+  // Last resort: npm root -g
+  try {
+    const globalRoot = execSync('npm root -g', { encoding: 'utf8', windowsHide: true, timeout: 5000 }).trim();
+    const candidate = path.join(globalRoot, '@anthropic-ai', 'claude-code', 'cli.js');
+    if (fs.existsSync(candidate)) return candidate;
   } catch { /* optional */ }
   return null;
 }
