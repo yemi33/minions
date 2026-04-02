@@ -136,7 +136,7 @@ function resolveAgent(workType, config, authorAgent = null) {
   if (config.engine?.allowTempAgents) {
     const tempId = `temp-${shared.uid()}`;
     _claimedAgents.add(tempId);
-    tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 9)}`, role: 'Temporary Agent', createdAt: ts() });
+    tempAgents.set(tempId, { name: `Temp-${tempId.slice(5, 13)}`, role: 'Temporary Agent', createdAt: ts() });
     log('info', `Spawning temp agent ${tempId} — all permanent agents busy`);
     return tempId;
   }

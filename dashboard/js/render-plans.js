@@ -1,5 +1,11 @@
 // render-plans.js — Plan rendering functions extracted from dashboard.html
 
+const PLANS_PER_PAGE = 10;
+let _plansPage = 0;
+
+function _plansPrev() { if (_plansPage > 0) { _plansPage--; refresh(); } }
+function _plansNext() { _plansPage++; refresh(); }
+
 function openCreatePlanModal() {
   const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
     '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
@@ -23,10 +29,11 @@ function openCreatePlanModal() {
 }
 
 async function _submitCreatePlan() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   const title = document.getElementById('plan-new-title')?.value?.trim();
   const content = document.getElementById('plan-new-content')?.value?.trim();
-  if (!title) { alert('Title is required'); return; }
-  if (!content) { alert('Plan content is required'); return; }
+  if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Create Plan'; } alert('Title is required'); return; }
+  if (!content) { if (btn) { btn.disabled = false; btn.textContent = 'Create Plan'; } alert('Plan content is required'); return; }
   const project = document.getElementById('plan-new-project')?.value || '';
 
   try {
@@ -90,6 +97,7 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
 }
 
 function renderPlans(plans) {
+  plans = plans.filter(function(p) { return !isDeleted('plan:' + p.file); });
   const el = document.getElementById('plans-list');
   const countEl = document.getElementById('plans-count');
   countEl.textContent = plans.length;
@@ -256,7 +264,23 @@ function renderPlans(plans) {
     '</div>';
   }
 
-  let html = activePlans.map(renderPlanCard).join('');
+  const totalPlanPages = Math.ceil(activePlans.length / PLANS_PER_PAGE);
+  if (_plansPage >= totalPlanPages) _plansPage = totalPlanPages - 1;
+  if (_plansPage < 0) _plansPage = 0;
+  const plansStart = _plansPage * PLANS_PER_PAGE;
+  const pagePlans = activePlans.slice(plansStart, plansStart + PLANS_PER_PAGE);
+
+  let html = pagePlans.map(renderPlanCard).join('');
+
+  if (activePlans.length > PLANS_PER_PAGE) {
+    html += '<div class="pr-pager">' +
+      '<span class="pr-page-info">' + (plansStart + 1) + '-' + Math.min(plansStart + PLANS_PER_PAGE, activePlans.length) + ' of ' + activePlans.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_plansPage === 0 ? 'disabled' : '') + '" onclick="_plansPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_plansPage >= totalPlanPages - 1 ? 'disabled' : '') + '" onclick="_plansNext()">Next</button>' +
+      '</div>' +
+    '</div>';
+  }
 
   if (archivedPlans.length > 0) {
     window._archivedPlans = archivedPlans;
@@ -493,21 +517,22 @@ async function planApprove(file, btn) {
 async function planDelete(file) {
   _stopPlanPoll();
   if (!confirm('Delete plan "' + file + '"? This cannot be undone.')) return;
+  markDeleted('plan:' + file);
+  closeModal();
+  showToast('cmd-toast', 'Plan deleted', true);
   try {
     const res = await fetch('/api/plans/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file })
     });
     if (res.ok) {
-      closeModal();
-      showToast('cmd-toast', 'Plan deleted', true);
-      refreshPlans();
       refresh();
     } else {
-      const d = await res.json();
-      alert('Failed: ' + (d.error || 'unknown'));
+      const d = await res.json().catch(() => ({}));
+      alert('Delete failed: ' + (d.error || 'unknown'));
+      refresh(); // revert optimistic
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 async function planArchive(file, btn) {
@@ -528,7 +553,6 @@ async function planArchive(file, btn) {
       if (d.archivedSource) msg += ' PRD + source plan (' + d.archivedSource + ')';
       if (d.cancelledItems) msg += ', cancelled ' + d.cancelledItems + ' pending item(s)';
       showToast('cmd-toast', msg, true);
-      refreshPlans();
       refresh();
     } else {
       resetBtn();

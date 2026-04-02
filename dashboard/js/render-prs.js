@@ -123,8 +123,9 @@ function openAddPrModal() {
 }
 
 async function _submitLinkPr() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Linking...'; }
   const url = document.getElementById('pr-link-url')?.value?.trim();
-  if (!url) { alert('PR URL is required'); return; }
+  if (!url) { if (btn) { btn.disabled = false; btn.textContent = 'Link PR'; } alert('PR URL is required'); return; }
   const title = document.getElementById('pr-link-title')?.value?.trim() || '';
   const project = document.getElementById('pr-link-project')?.value || '';
   const context = document.getElementById('pr-link-context')?.value || '';

@@ -250,12 +250,13 @@ function openCreateMeetingModal() {
 }
 
 async function _submitCreateMeeting() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
   const title = document.getElementById('mtg-title')?.value?.trim();
   const agenda = document.getElementById('mtg-agenda')?.value?.trim();
-  if (!title || !agenda) { alert('Title and agenda required'); return; }
+  if (!title || !agenda) { if (btn) { btn.disabled = false; btn.textContent = 'Start Meeting'; } alert('Title and agenda required'); return; }
   const checks = document.querySelectorAll('#mtg-participants input[type="checkbox"]:checked');
   const participants = [...checks].map(c => c.value);
-  if (participants.length < 2) { alert('Select at least 2 participants'); return; }
+  if (participants.length < 2) { if (btn) { btn.disabled = false; btn.textContent = 'Start Meeting'; } alert('Select at least 2 participants'); return; }
   try { closeModal(); } catch { /* expected */ }
   showToast('cmd-toast', 'Meeting started with ' + participants.length + ' agents', true);
   try {

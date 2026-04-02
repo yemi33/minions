@@ -1,5 +1,11 @@
 // render-inbox.js — Inbox and notes rendering functions extracted from dashboard.html
 
+const INBOX_PER_PAGE = 15;
+let _inboxPage = 0;
+
+function _inboxPrev() { if (_inboxPage > 0) { _inboxPage--; renderInbox(inboxData); } }
+function _inboxNext() { _inboxPage++; renderInbox(inboxData); }
+
 function renderInbox(inbox) {
   inbox = inbox.filter(function(item) { return !isDeleted('inbox:' + item.name); });
   inboxData = inbox;
@@ -7,19 +13,35 @@ function renderInbox(inbox) {
   const count = document.getElementById('inbox-count');
   count.textContent = inbox.length;
   if (!inbox.length) { list.innerHTML = '<p class="empty">No messages yet.</p>'; return; }
-  list.innerHTML = inbox.map((item, i) => `
-    <div class="inbox-item" data-file="notes/inbox/${escHtml(item.name)}">
-      <div class="inbox-name" onclick="openModal(${i})" style="cursor:pointer">
+
+  const totalInboxPages = Math.ceil(inbox.length / INBOX_PER_PAGE);
+  if (_inboxPage >= totalInboxPages) _inboxPage = totalInboxPages - 1;
+  if (_inboxPage < 0) _inboxPage = 0;
+  const inboxStart = _inboxPage * INBOX_PER_PAGE;
+  const pageInbox = inbox.slice(inboxStart, inboxStart + INBOX_PER_PAGE);
+
+  list.innerHTML = pageInbox.map((item, i) => {
+    const idx = inboxStart + i;
+    return `<div class="inbox-item" data-file="notes/inbox/${escHtml(item.name)}">
+      <div class="inbox-name" onclick="openModal(${idx})" style="cursor:pointer">
         <span>${escHtml(item.name)}</span><span>${item.age}</span>
       </div>
-      <div class="inbox-preview" onclick="openModal(${i})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
+      <div class="inbox-preview" onclick="openModal(${idx})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
       <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();promoteToKB('${escHtml(item.name)}')">Add to Knowledge Base</button>
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();openInboxInExplorer('${escHtml(item.name)}')">Open in Explorer</button>
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" onclick="event.stopPropagation();deleteInboxItem('${escHtml(item.name)}')">Delete</button>
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('');
+  if (inbox.length > INBOX_PER_PAGE) {
+    list.innerHTML += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (inboxStart + 1) + ' to ' + Math.min(inboxStart + INBOX_PER_PAGE, inbox.length) + ' of ' + inbox.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_inboxPage === 0 ? 'disabled' : '') + '" onclick="_inboxPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_inboxPage >= totalInboxPages - 1 ? 'disabled' : '') + '" onclick="_inboxNext()">Next</button>' +
+      '</div></div>';
+  }
   restoreNotifBadges();
 }
 

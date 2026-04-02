@@ -202,7 +202,7 @@ function runCleanup(config, verbose = false) {
       for (const entry of wtEntries) {
         if (entry.shouldClean) {
           try {
-            exec(`git worktree remove "${entry.wtPath}" --force`, { cwd: root, stdio: 'pipe' });
+            exec(`git worktree remove "${entry.wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 30000 });
             cleaned.worktrees++;
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
           } catch (e) {

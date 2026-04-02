@@ -34,10 +34,11 @@ function openPinNoteModal() {
 }
 
 async function submitPinnedNote() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Pinning...'; }
   const title = document.getElementById('pin-title').value;
   const content = document.getElementById('pin-content').value;
   const level = document.getElementById('pin-level').value;
-  if (!title || !content) { alert('Title and content required'); return; }
+  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Pin Note'; } alert('Title and content required'); return; }
   try { closeModal(); } catch { /* may not be open */ }
   showToast('cmd-toast', 'Note pinned', true);
   try {

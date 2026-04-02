@@ -38,7 +38,7 @@ for (const p of searchPaths) {
 // Fallback: parse the shell wrapper
 if (!claudeBin) {
   try {
-    const which = exec('bash -c "which claude"', { encoding: 'utf8', env }).trim();
+    const which = exec('bash -c "which claude"', { encoding: 'utf8', env, timeout: 10000 }).trim();
     const whichNative = which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
     const wrapper = fs.readFileSync(whichNative, 'utf8');
     const m = wrapper.match(/node_modules\/@anthropic-ai\/claude-code\/cli\.js/);

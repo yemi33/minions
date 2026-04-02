@@ -817,13 +817,17 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
   if (teamsUrl) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 5000);
     try {
       await fetch(teamsUrl, {
         method: 'POST',
+        signal: ac.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: `PR ${pr.id} merged: ${pr.title} (${project.name}) by ${pr.agent || 'unknown'}` })
       });
     } catch (err) { log('warn', `Teams post-merge notify failed: ${err.message}`); }
+    clearTimeout(t);
   }
 
   log('info', `Post-merge hooks completed for ${pr.id}`);

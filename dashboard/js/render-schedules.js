@@ -75,7 +75,7 @@ function _generateScheduleId(title) {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
     .slice(0, 40);
-  const suffix = Math.random().toString(36).slice(2, 6);
+  const suffix = Math.random().toString(36).slice(2, 10);
   return (slug || 'task') + '-' + suffix;
 }
 
@@ -487,6 +487,7 @@ function openEditScheduleModal(id) {
 }
 
 async function submitSchedule(isEdit) {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = isEdit ? 'Saving...' : 'Creating...'; }
   _showScheduleError('');
   const title = document.getElementById('sched-edit-title').value.trim();
   const cron = window._schedComputedCron || '';
@@ -503,8 +504,9 @@ async function submitSchedule(isEdit) {
     id = _generateScheduleId(title);
   }
 
-  if (!title) { _showScheduleError('Title is required'); return; }
-  if (!cron) { _showScheduleError('Schedule is required \u2014 select days and time, or use natural language'); return; }
+  function _resetSchedBtn() { if (btn) { btn.disabled = false; btn.textContent = isEdit ? 'Save Changes' : 'Create Schedule'; } }
+  if (!title) { _resetSchedBtn(); _showScheduleError('Title is required'); return; }
+  if (!cron) { _resetSchedBtn(); _showScheduleError('Schedule is required \u2014 select days and time, or use natural language'); return; }
 
   const payload = { id, title, cron, type, priority, project: project || undefined, agent: agent || undefined, description: description || undefined, enabled: true };
   const url = isEdit ? '/api/schedules/update' : '/api/schedules';
@@ -515,9 +517,9 @@ async function submitSchedule(isEdit) {
     });
     if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', isEdit ? 'Schedule updated' : 'Schedule created', true); } else {
       const d = await res.json().catch(() => ({}));
-      _showScheduleError((isEdit ? 'Update' : 'Create') + ' failed: ' + (d.error || 'unknown'));
+      _resetSchedBtn(); _showScheduleError((isEdit ? 'Update' : 'Create') + ' failed: ' + (d.error || 'unknown'));
     }
-  } catch (e) { _showScheduleError('Error: ' + e.message); }
+  } catch (e) { _resetSchedBtn(); _showScheduleError('Error: ' + e.message); }
 }
 
 async function toggleScheduleEnabled(id, enabled) {

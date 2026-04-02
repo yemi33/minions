@@ -13,6 +13,11 @@ const KB_CAT_ICONS = {
   incidents: '\u{1F6A8}', 'api-notes': '\u{1F517}',
 };
 let _kbActiveTab = 'all';
+const KB_PER_PAGE = 30;
+let _kbPage = 0;
+
+function _kbPrev() { if (_kbPage > 0) { _kbPage--; renderKnowledgeBase(); } }
+function _kbNext() { _kbPage++; renderKnowledgeBase(); }
 
 async function refreshKnowledgeBase() {
   try {
@@ -67,7 +72,13 @@ function renderKnowledgeBase() {
     return;
   }
 
-  listEl.innerHTML = items.slice(0, 50).map(item => {
+  const totalKbPages = Math.ceil(items.length / KB_PER_PAGE);
+  if (_kbPage >= totalKbPages) _kbPage = totalKbPages - 1;
+  if (_kbPage < 0) _kbPage = 0;
+  const kbStart = _kbPage * KB_PER_PAGE;
+  const pageItems = items.slice(kbStart, kbStart + KB_PER_PAGE);
+
+  listEl.innerHTML = pageItems.map(item => {
     const icon = KB_CAT_ICONS[item.category] || '\u{1F4C4}';
     const label = KB_CAT_LABELS[item.category] || item.category;
     return '<div class="kb-item" data-file="knowledge/' + escHtml(item.category) + '/' + escHtml(item.file) + '" onclick="kbOpenItem(\'' + escHtml(item.category) + '\', \'' + escHtml(item.file) + '\')">' +
@@ -83,11 +94,20 @@ function renderKnowledgeBase() {
       '</div>' +
     '</div>';
   }).join('');
+  if (items.length > KB_PER_PAGE) {
+    listEl.innerHTML += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (kbStart + 1) + ' to ' + Math.min(kbStart + KB_PER_PAGE, items.length) + ' of ' + items.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_kbPage === 0 ? 'disabled' : '') + '" onclick="_kbPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_kbPage >= totalKbPages - 1 ? 'disabled' : '') + '" onclick="_kbNext()">Next</button>' +
+      '</div></div>';
+  }
   restoreNotifBadges();
 }
 
 function kbSetTab(tab) {
   _kbActiveTab = tab;
+  _kbPage = 0;
   renderKnowledgeBase();
 }
 
@@ -143,10 +163,11 @@ function openCreateKbModal() {
 }
 
 async function submitKbEntry() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   const category = document.getElementById('kb-new-category').value;
   const title = document.getElementById('kb-new-title').value;
   const content = document.getElementById('kb-new-content').value;
-  if (!title || !content) { alert('Title and content are required'); return; }
+  if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } alert('Title and content are required'); return; }
   try {
     const res = await fetch('/api/knowledge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

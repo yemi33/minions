@@ -2220,12 +2220,15 @@ let tickRunning = false;
 async function tick() {
   if (tickRunning) return; // prevent overlapping ticks
   tickRunning = true;
+  const tickStart = Date.now();
   try {
     await tickInner();
   } catch (e) {
     log('error', `Tick error: ${e.message}`);
   } finally {
     tickRunning = false;
+    const elapsed = Date.now() - tickStart;
+    if (elapsed > 30000) log('warn', `Slow tick: ${(elapsed / 1000).toFixed(1)}s`);
   }
 }
 
@@ -2243,9 +2246,9 @@ async function tickInner() {
   tickCount++;
 
   // 1. Check for timed-out agents, steering messages, and idle threshold
-  checkTimeouts(config);
-  checkSteering(config);
-  checkIdleThreshold(config);
+  try { checkTimeouts(config); } catch (e) { log('warn', `checkTimeouts: ${e.message}`); }
+  try { checkSteering(config); } catch (e) { log('warn', `checkSteering: ${e.message}`); }
+  try { checkIdleThreshold(config); } catch (e) { log('warn', `checkIdleThreshold: ${e.message}`); }
 
   // 1b. Check for meeting round timeouts
   try {
@@ -2260,11 +2263,11 @@ async function tickInner() {
   }
 
   // 2. Consolidate inbox
-  consolidateInbox(config);
+  try { consolidateInbox(config); } catch (e) { log('warn', `consolidateInbox: ${e.message}`); }
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    runCleanup(config);
+    try { runCleanup(config); } catch (e) { log('warn', `runCleanup: ${e.message}`); }
   }
 
   // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
@@ -2395,14 +2398,15 @@ async function tickInner() {
   }
 
   // 3. Discover new work from sources
-  discoverWork(config);
+  try { discoverWork(config); } catch (e) { log('warn', `discoverWork: ${e.message}`); }
 
   // 4. Update snapshot
-  updateSnapshot(config);
+  try { updateSnapshot(config); } catch (e) { log('warn', `updateSnapshot: ${e.message}`); }
 
   // 5. Process pending dispatches — auto-spawn agents
-  const dispatch = getDispatch();
-  const activeCount = (dispatch.active || []).length;
+  let dispatch, activeCount;
+  try { dispatch = getDispatch(); } catch (e) { log('warn', `getDispatch: ${e.message}`); return; }
+  activeCount = (dispatch.active || []).length;
   const maxConcurrent = config.engine?.maxConcurrent || 5;
 
   if (activeCount >= maxConcurrent) {

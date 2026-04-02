@@ -68,7 +68,15 @@ function safeWrite(p, data) {
   const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
   const tmp = p + '.tmp.' + process.pid + '.' + (++_tmpCounter);
   try {
-    fs.writeFileSync(tmp, content);
+    try {
+      fs.writeFileSync(tmp, content);
+    } catch (writeErr) {
+      if (writeErr.code === 'ENOSPC') {
+        try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
+        throw new Error(`[ENOSPC] Disk full — cannot write ${path.basename(p)}`);
+      }
+      throw writeErr;
+    }
     // Atomic rename — retry on Windows EPERM (file locking)
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
@@ -168,7 +176,7 @@ function mutateJsonFileLocked(filePath, mutateFn, {
  * Use for filenames that could collide (dispatch IDs, temp files, etc.)
  */
 function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 
 /**

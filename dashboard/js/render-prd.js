@@ -598,6 +598,7 @@ async function prdItemEdit(source, itemId) {
 }
 
 async function prdItemSave(source, itemId) {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   try {
     const res = await fetch('/api/prd-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -610,20 +611,22 @@ async function prdItemSave(source, itemId) {
       })
     });
     if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item updated', true); }
-    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    else { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
+  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Error: ' + e.message); }
 }
 
 async function prdItemRemove(source, itemId) {
   if (!confirm('Remove item ' + itemId + '? This also cancels any pending work item.')) return;
+  closeModal();
+  showToast('cmd-toast', 'Item removed', true);
   try {
     const res = await fetch('/api/prd-items/remove', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, itemId })
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item removed', true); }
-    else { const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { const d = await res.json().catch(() => ({})); alert('Remove failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 async function prdItemRequeue(workItemId, source) {

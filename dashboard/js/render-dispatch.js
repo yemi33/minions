@@ -1,5 +1,15 @@
 // dashboard/js/render-dispatch.js — Engine status, dispatch, and log rendering extracted from dashboard.html
 
+const COMPLETED_PER_PAGE = 20;
+const LOG_PER_PAGE = 50;
+let _completedPage = 0;
+let _logPage = 0;
+
+function _completedPrev() { if (_completedPage > 0) { _completedPage--; refresh(); } }
+function _completedNext() { _completedPage++; refresh(); }
+function _logPrev() { if (_logPage > 0) { _logPage--; refresh(); } }
+function _logNext() { _logPage++; refresh(); }
+
 function renderEngineStatus(engine) {
   const badge = document.getElementById('engine-badge');
   let state = engine?.state || 'stopped';
@@ -106,8 +116,14 @@ function renderDispatch(dispatch) {
   completedCount.textContent = completed.length;
 
   if (completed.length > 0) {
+    const totalCompPages = Math.ceil(completed.length / COMPLETED_PER_PAGE);
+    if (_completedPage >= totalCompPages) _completedPage = totalCompPages - 1;
+    if (_completedPage < 0) _completedPage = 0;
+    const compStart = _completedPage * COMPLETED_PER_PAGE;
+    const pageCompleted = completed.slice(compStart, compStart + COMPLETED_PER_PAGE);
+
     completedEl.innerHTML = '<table class="pr-table"><thead><tr><th>ID</th><th>Type</th><th>Agent</th><th>Task</th><th>Result</th><th>Completed</th></tr></thead><tbody>' +
-      completed.map(d => {
+      pageCompleted.map(d => {
         const isError = d.result === 'error';
         const agentId = (d.agent || '').toLowerCase();
         const errorBtn = isError
@@ -122,6 +138,14 @@ function renderDispatch(dispatch) {
           '<td class="pr-date">' + shortTime(d.completed_at) + '</td>' +
         '</tr>';
       }).join('') + '</tbody></table>';
+    if (completed.length > COMPLETED_PER_PAGE) {
+      completedEl.innerHTML += '<div class="pr-pager">' +
+        '<span class="pr-page-info">Showing ' + (compStart + 1) + ' to ' + Math.min(compStart + COMPLETED_PER_PAGE, completed.length) + ' of ' + completed.length + '</span>' +
+        '<div class="pr-pager-btns">' +
+          '<button class="pr-pager-btn ' + (_completedPage === 0 ? 'disabled' : '') + '" onclick="_completedPrev()">Prev</button>' +
+          '<button class="pr-pager-btn ' + (_completedPage >= totalCompPages - 1 ? 'disabled' : '') + '" onclick="_completedNext()">Next</button>' +
+        '</div></div>';
+    }
   } else {
     completedEl.innerHTML = '<p class="empty">No completed dispatches yet.</p>';
   }
@@ -133,13 +157,28 @@ function renderEngineLog(log) {
     el.innerHTML = '<div class="empty">No log entries yet.</div>';
     return;
   }
-  el.innerHTML = log.slice().reverse().map(e =>
+  const reversed = log.slice().reverse();
+  const totalLogPages = Math.ceil(reversed.length / LOG_PER_PAGE);
+  if (_logPage >= totalLogPages) _logPage = totalLogPages - 1;
+  if (_logPage < 0) _logPage = 0;
+  const logStart = _logPage * LOG_PER_PAGE;
+  const pageLog = reversed.slice(logStart, logStart + LOG_PER_PAGE);
+
+  el.innerHTML = pageLog.map(e =>
     '<div class="log-entry">' +
       '<span class="log-ts">' + shortTime(e.timestamp) + '</span> ' +
       '<span class="log-level-' + (e.level || 'info') + '">[' + (e.level || 'info') + ']</span> ' +
       escHtml(e.message || '') +
     '</div>'
   ).join('');
+  if (reversed.length > LOG_PER_PAGE) {
+    el.innerHTML += '<div class="pr-pager">' +
+      '<span class="pr-page-info">Showing ' + (logStart + 1) + ' to ' + Math.min(logStart + LOG_PER_PAGE, reversed.length) + ' of ' + reversed.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_logPage === 0 ? 'disabled' : '') + '" onclick="_logPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_logPage >= totalLogPages - 1 ? 'disabled' : '') + '" onclick="_logNext()">Next</button>' +
+      '</div></div>';
+  }
 }
 
 function shortTime(t) {

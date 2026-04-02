@@ -158,6 +158,7 @@ function editWorkItem(id, source) {
 }
 
 async function submitWorkItemEdit(id, source) {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const title = document.getElementById('wi-edit-title').value.trim();
   const description = document.getElementById('wi-edit-desc').value;
   const type = document.getElementById('wi-edit-type').value;
@@ -170,7 +171,7 @@ async function submitWorkItemEdit(id, source) {
   });
   const acRaw = document.getElementById('wi-edit-ac')?.value || '';
   const acceptanceCriteria = acRaw.split('\n').filter(function(l) { return l.trim(); });
-  if (!title) { alert('Title is required'); return; }
+  if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Title is required'); return; }
   try { closeModal(); } catch { /* may not be open */ }
   showToast('cmd-toast', 'Work item updated', true);
   try {
@@ -365,8 +366,9 @@ function openCreateWorkItemModal() {
 }
 
 async function _submitCreateWorkItem() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   const title = document.getElementById('wi-new-title')?.value?.trim();
-  if (!title) { alert('Title is required'); return; }
+  if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } alert('Title is required'); return; }
   const desc = document.getElementById('wi-new-desc')?.value || '';
   const type = document.getElementById('wi-new-type')?.value || 'implement';
   const priority = document.getElementById('wi-new-priority')?.value || 'medium';

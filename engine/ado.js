@@ -46,9 +46,20 @@ function getAdoToken() {
 
 async function adoFetch(url, token, _retryCount = 0) {
   const MAX_RETRIES = 1;
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new Error(`ADO API timeout (30s) for ${url.split('?')[0]}`);
+    throw err;
+  }
+  clearTimeout(timer);
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {

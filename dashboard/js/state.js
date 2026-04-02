@@ -15,6 +15,11 @@ function getPageFromUrl() {
 let currentPage = getPageFromUrl();
 
 function switchPage(page, pushState) {
+  // Clean up intervals and panels from previous page
+  try { _stopPlanPoll(); } catch {}
+  try { _stopMeetingPoll(); } catch {}
+  try { closeDetail(); } catch {}
+
   currentPage = page;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const target = document.getElementById('page-' + page);

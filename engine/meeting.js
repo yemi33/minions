@@ -44,7 +44,7 @@ function saveMeeting(meeting) {
 }
 
 function createMeeting({ title, agenda, participants }) {
-  const id = 'MTG-' + uid().slice(0, 8);
+  const id = 'MTG-' + uid();
   const meeting = {
     id, title, agenda,
     status: 'investigating',

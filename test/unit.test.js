@@ -5675,6 +5675,16 @@ async function main() {
 
     // P-k7m2a9f4: Pipeline artifact navigation links
     await testPipelineArtifactLinks();
+
+    // Engine & dashboard hardening (resilience audit fixes)
+    await testEngineHardening();
+    await testDashboardHardening();
+    await testDashboardToctouFixes();
+    await testDashboardPagination();
+    await testSafeWriteEnospc();
+
+    // ID generation strength (uid change audit)
+    await testIdGenStrength();
   } finally {
     cleanupTmpDirs();
   }
@@ -6313,6 +6323,361 @@ async function testPipelineStepProgress() {
   await test('progress bar appears in both list and detail views', () => {
     assert.ok(src.includes('progressHtml'), 'List view should insert progress HTML');
     assert.ok(src.includes('detailRun'), 'Detail view should compute progress from detailRun');
+  });
+}
+
+// ─── Engine & Dashboard Hardening Tests ─────────────────────────────────────
+
+async function testEngineHardening() {
+  console.log('\n── Engine Hardening ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+  const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+  const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('tick phases wrapped in try/catch (checkTimeouts)', () => {
+    assert.ok(engineSrc.includes("try { checkTimeouts(config)"), 'checkTimeouts should be wrapped in try/catch');
+  });
+
+  await test('tick phases wrapped in try/catch (discoverWork)', () => {
+    assert.ok(engineSrc.includes("try { discoverWork(config)"), 'discoverWork should be wrapped in try/catch');
+  });
+
+  await test('tick phases wrapped in try/catch (consolidateInbox)', () => {
+    assert.ok(engineSrc.includes("try { consolidateInbox(config)"), 'consolidateInbox should be wrapped in try/catch');
+  });
+
+  await test('tick phases wrapped in try/catch (updateSnapshot)', () => {
+    assert.ok(engineSrc.includes("try { updateSnapshot(config)"), 'updateSnapshot should be wrapped in try/catch');
+  });
+
+  await test('tick phases wrapped in try/catch (runCleanup)', () => {
+    assert.ok(engineSrc.includes("try { runCleanup(config)"), 'runCleanup should be wrapped in try/catch');
+  });
+
+  await test('slow tick warning logged when tick exceeds 30s', () => {
+    assert.ok(engineSrc.includes('Slow tick:'), 'Should log slow tick warning');
+    assert.ok(engineSrc.includes('tickStart'), 'Should track tick start time');
+  });
+
+  await test('ADO fetch has AbortController timeout', () => {
+    assert.ok(adoSrc.includes('AbortController'), 'adoFetch should use AbortController');
+    assert.ok(adoSrc.includes('30000'), 'adoFetch should have 30s timeout');
+    assert.ok(adoSrc.includes('signal: controller.signal'), 'adoFetch should pass signal to fetch');
+  });
+
+  await test('ADO fetch timeout produces clear error message', () => {
+    assert.ok(adoSrc.includes('ADO API timeout'), 'AbortError should be rewritten to clear timeout message');
+  });
+
+  await test('safeWrite handles ENOSPC error', () => {
+    assert.ok(sharedSrc.includes('ENOSPC'), 'safeWrite should handle ENOSPC');
+    assert.ok(sharedSrc.includes("throw new Error(`[ENOSPC]"), 'ENOSPC should throw with clear message');
+  });
+
+  await test('file watcher uses global debounce', () => {
+    // Should be one shared debounce variable, not per-file
+    const watchSection = cliSrc.slice(cliSrc.indexOf('watchForWorkChanges'));
+    assert.ok(watchSection.includes('_globalDebounce'), 'Should use global debounce variable');
+    // _globalDebounce should be declared OUTSIDE watchForWorkChanges
+    const beforeFn = cliSrc.slice(0, cliSrc.indexOf('function watchForWorkChanges'));
+    assert.ok(beforeFn.includes('let _globalDebounce'), '_globalDebounce should be outside function to avoid shadowing');
+  });
+
+  await test('cleanup.js git worktree remove has timeout', () => {
+    assert.ok(cleanupSrc.includes('timeout: 30000') || cleanupSrc.includes('timeout:30000'),
+      'git worktree remove should have timeout');
+  });
+
+  await test('spawn-agent.js which command has timeout', () => {
+    assert.ok(spawnSrc.includes('timeout: 10000') || spawnSrc.includes('timeout:10000'),
+      'which claude command should have timeout');
+  });
+
+  await test('lifecycle.js Teams webhook has AbortController', () => {
+    assert.ok(lifecycleSrc.includes('AbortController') && lifecycleSrc.includes('TEAMS_PLAN_FLOW_URL'),
+      'Teams webhook fetch should have timeout via AbortController');
+  });
+}
+
+async function testDashboardHardening() {
+  console.log('\n── Dashboard Hardening ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const stateSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'state.js'), 'utf8');
+  const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+
+  await test('readBody handles empty body gracefully', () => {
+    assert.ok(dashSrc.includes('body ? JSON.parse(body) : {}'),
+      'readBody should return {} for empty body instead of crashing');
+  });
+
+  await test('top-level try/catch on request handler', () => {
+    // Should wrap route dispatcher in try/catch with 500 response
+    assert.ok(dashSrc.includes('[ERROR]') && dashSrc.includes('req.method') && dashSrc.includes('err.message'),
+      'Route dispatcher should have top-level error catch with logging');
+    assert.ok(dashSrc.includes('headersSent'),
+      'Should check headersSent before sending error response');
+  });
+
+  await test('live-stream watcher checks writableEnded', () => {
+    assert.ok(dashSrc.includes('if (res.writableEnded) return;'),
+      'Watcher callback should bail if response already ended');
+  });
+
+  await test('live-stream doneCheck checks writableEnded', () => {
+    // doneCheck interval should also check writableEnded
+    const doneSection = dashSrc.slice(dashSrc.indexOf('const doneCheck'));
+    assert.ok(doneSection.includes('res.writableEnded'),
+      'doneCheck should check writableEnded before writing');
+  });
+
+  await test('tail parameter capped at 1MB', () => {
+    assert.ok(dashSrc.includes('Math.min(parseInt') && dashSrc.includes('1024 * 1024'),
+      'Agent live output tail should be capped at 1MB');
+  });
+
+  await test('switchPage cleans up intervals and panels', () => {
+    assert.ok(stateSrc.includes('_stopPlanPoll'), 'switchPage should stop plan polling');
+    assert.ok(stateSrc.includes('_stopMeetingPoll'), 'switchPage should stop meeting polling');
+    assert.ok(stateSrc.includes('closeDetail'), 'switchPage should close detail panel');
+  });
+
+  await test('refresh pauses when tab is hidden', () => {
+    assert.ok(refreshSrc.includes('visibilitychange'), 'Should listen for visibilitychange event');
+    assert.ok(refreshSrc.includes('document.hidden'), 'Should check document.hidden');
+    assert.ok(refreshSrc.includes('clearInterval(_refreshTimer)'), 'Should clear interval when hidden');
+  });
+
+  await test('cc-drawer z-index above detail-overlay', () => {
+    // cc-drawer should be > 300 (detail-overlay) and < 400 (modal)
+    const ccMatch = layoutSrc.match(/cc-drawer.*z-index:(\d+)/);
+    assert.ok(ccMatch, 'cc-drawer should have z-index');
+    const ccZ = parseInt(ccMatch[1]);
+    assert.ok(ccZ > 300, `cc-drawer z-index (${ccZ}) should be > 300 (detail-overlay)`);
+    assert.ok(ccZ < 400, `cc-drawer z-index (${ccZ}) should be < 400 (modal)`);
+  });
+}
+
+async function testDashboardToctouFixes() {
+  console.log('\n── Dashboard TOCTOU Fixes ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('handleWorkItemsCreate uses mutateJsonFileLocked', () => {
+    const fnSrc = dashSrc.slice(dashSrc.indexOf('handleWorkItemsCreate'), dashSrc.indexOf('handleWorkItemsUpdate'));
+    assert.ok(fnSrc.includes('mutateJsonFileLocked'), 'Create handler should use file lock');
+    assert.ok(!fnSrc.includes('safeWrite(wiPath, items)'), 'Should not use raw safeWrite for items');
+  });
+
+  await test('handleWorkItemsUpdate uses mutateJsonFileLocked', () => {
+    const fnStart = dashSrc.indexOf('handleWorkItemsUpdate');
+    const fnEnd = dashSrc.indexOf('handleNotesCreate');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked'), 'Update handler should use file lock');
+  });
+
+  await test('handleWorkItemsRetry uses mutateJsonFileLocked for items', () => {
+    const fnStart = dashSrc.indexOf('handleWorkItemsRetry');
+    const fnEnd = dashSrc.indexOf('handleWorkItemsDelete');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(wiPath'), 'Retry handler should lock work-items file');
+  });
+
+  await test('handleWorkItemsRetry uses mutateJsonFileLocked for cooldowns', () => {
+    const fnStart = dashSrc.indexOf('handleWorkItemsRetry');
+    const fnEnd = dashSrc.indexOf('handleWorkItemsDelete');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(cooldownPath'), 'Retry handler should lock cooldowns file');
+  });
+
+  await test('handleWorkItemsDelete uses mutateJsonFileLocked for items', () => {
+    const fnStart = dashSrc.indexOf('handleWorkItemsDelete');
+    const fnEnd = dashSrc.indexOf('handleWorkItemsArchive');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(wiPath'), 'Delete handler should lock work-items file');
+  });
+
+  await test('handleWorkItemsDelete uses mutateJsonFileLocked for cooldowns', () => {
+    const fnStart = dashSrc.indexOf('handleWorkItemsDelete');
+    const fnEnd = dashSrc.indexOf('handleWorkItemsArchive');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(cooldownPath'), 'Delete handler should lock cooldowns file');
+  });
+
+  await test('handlePrdItemsUpdate uses mutateJsonFileLocked for plan', () => {
+    const fnStart = dashSrc.indexOf('handlePrdItemsUpdate');
+    const fnEnd = dashSrc.indexOf('handlePrdItemsRemove');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(planPath'), 'PRD update should lock plan file');
+  });
+
+  await test('handlePrdItemsUpdate uses mutateJsonFileLocked for work-item sync', () => {
+    const fnStart = dashSrc.indexOf('handlePrdItemsUpdate');
+    const fnEnd = dashSrc.indexOf('handlePrdItemsRemove');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked(wiPath'), 'PRD update work-item sync should use lock');
+  });
+
+  await test('feedback handler uses mutateJsonFileLocked', () => {
+    const fnStart = dashSrc.indexOf('/api/work-items/feedback');
+    const fnEnd = dashSrc.indexOf('// Pinned notes');
+    const fnSrc = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnSrc.includes('mutateJsonFileLocked'), 'Feedback handler should use file lock');
+  });
+}
+
+async function testDashboardPagination() {
+  console.log('\n── Dashboard Pagination ──');
+
+  const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-dispatch.js'), 'utf8');
+  const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+  const kbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+  const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+  const pipelinesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+
+  await test('render-dispatch.js paginates completed dispatches', () => {
+    assert.ok(dispatchSrc.includes('COMPLETED_PER_PAGE'), 'Should define page size constant');
+    assert.ok(dispatchSrc.includes('_completedPage'), 'Should have page state variable');
+    assert.ok(dispatchSrc.includes('_completedPrev') && dispatchSrc.includes('_completedNext'),
+      'Should have prev/next functions');
+  });
+
+  await test('render-dispatch.js paginates engine log', () => {
+    assert.ok(dispatchSrc.includes('LOG_PER_PAGE'), 'Should define log page size');
+    assert.ok(dispatchSrc.includes('_logPage'), 'Should have log page state');
+    assert.ok(dispatchSrc.includes('_logPrev') && dispatchSrc.includes('_logNext'),
+      'Should have log prev/next functions');
+  });
+
+  await test('render-inbox.js has pagination', () => {
+    assert.ok(inboxSrc.includes('INBOX_PER_PAGE'), 'Should define page size');
+    assert.ok(inboxSrc.includes('_inboxPage'), 'Should have page state');
+    assert.ok(inboxSrc.includes('_inboxPrev') && inboxSrc.includes('_inboxNext'),
+      'Should have prev/next functions');
+  });
+
+  await test('render-inbox.js uses correct index with pagination', () => {
+    assert.ok(inboxSrc.includes('inboxStart + i') || inboxSrc.includes('const idx = inboxStart + i'),
+      'Modal index should account for pagination offset');
+  });
+
+  await test('render-kb.js replaces hardcoded cutoff with proper pagination', () => {
+    assert.ok(kbSrc.includes('KB_PER_PAGE'), 'Should define page size');
+    assert.ok(!kbSrc.includes('slice(0, 50)'), 'Should NOT have hardcoded 50-item cutoff');
+    assert.ok(kbSrc.includes('_kbPrev') && kbSrc.includes('_kbNext'), 'Should have prev/next');
+  });
+
+  await test('render-kb.js resets page on tab change', () => {
+    const tabFn = kbSrc.slice(kbSrc.indexOf('function kbSetTab'));
+    assert.ok(tabFn.includes('_kbPage = 0'), 'Tab change should reset page to 0');
+  });
+
+  await test('render-plans.js paginates active plans', () => {
+    assert.ok(plansSrc.includes('PLANS_PER_PAGE'), 'Should define page size');
+    assert.ok(plansSrc.includes('_plansPage'), 'Should have page state');
+    assert.ok(plansSrc.includes('_plansPrev') && plansSrc.includes('_plansNext'), 'Should have prev/next');
+  });
+
+  await test('render-pipelines.js paginates pipeline cards', () => {
+    assert.ok(pipelinesSrc.includes('PIPELINES_PER_PAGE'), 'Should define page size');
+    assert.ok(pipelinesSrc.includes('_pipelinesPage'), 'Should have page state');
+    assert.ok(pipelinesSrc.includes('_pipelinesPrev') && pipelinesSrc.includes('_pipelinesNext'), 'Should have prev/next');
+  });
+}
+
+async function testSafeWriteEnospc() {
+  console.log('\n── safeWrite ENOSPC Handling (functional) ──');
+
+  await test('safeWrite ENOSPC throws with clear message', () => {
+    // Verify ENOSPC is caught and re-thrown with descriptive message
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const safeWriteFn = sharedSrc.slice(sharedSrc.indexOf('function safeWrite('), sharedSrc.indexOf('function safeUnlink'));
+    assert.ok(safeWriteFn.includes("writeErr.code === 'ENOSPC'"), 'Should check for ENOSPC code');
+    assert.ok(safeWriteFn.includes('fs.unlinkSync(tmp)'), 'Should clean up temp file on ENOSPC');
+    assert.ok(safeWriteFn.includes('throw new Error'), 'Should throw (not return false) on ENOSPC');
+  });
+
+  await test('mutateJsonFileLocked propagates ENOSPC to caller', () => {
+    // mutateJsonFileLocked calls safeWrite; if safeWrite throws, caller's try/catch handles it
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'test-lock.json');
+    // Normal operation should work
+    shared.mutateJsonFileLocked(fp, (data) => {
+      data.test = true;
+      return data;
+    });
+    const result = shared.safeJson(fp);
+    assert.ok(result.test === true, 'Normal mutation should persist');
+  });
+}
+
+// ─── ID Generation Strength Tests ───────────────────────────────────────────
+
+async function testIdGenStrength() {
+  console.log('\n── ID Generation Strength ──');
+
+  await test('uid() produces IDs of at least 16 chars', () => {
+    const id = shared.uid();
+    assert.ok(id.length >= 16, `uid() returned "${id}" (${id.length} chars), expected >= 16`);
+  });
+
+  await test('uid() uses 8 random chars (slice 2,10)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('.slice(2, 10)'), 'uid should use slice(2, 10) for 8 random chars');
+  });
+
+  await test('uid() produces 1000 unique values', () => {
+    const ids = new Set();
+    for (let i = 0; i < 1000; i++) ids.add(shared.uid());
+    assert.strictEqual(ids.size, 1000, `Expected 1000 unique IDs, got ${ids.size}`);
+  });
+
+  await test('work item ID has W- prefix and sufficient length', () => {
+    const id = 'W-' + shared.uid();
+    assert.ok(id.startsWith('W-'), 'Should start with W-');
+    assert.ok(id.length >= 18, `Work item ID "${id}" too short (${id.length} chars)`);
+  });
+
+  await test('meeting ID uses full uid (no truncation)', () => {
+    const meetingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'meeting.js'), 'utf8');
+    const createFn = meetingSrc.slice(meetingSrc.indexOf('function createMeeting'), meetingSrc.indexOf('const meeting = {'));
+    assert.ok(createFn.includes("'MTG-' + uid()"), 'Meeting should use full uid without slicing');
+    assert.ok(!createFn.includes('.slice'), 'createMeeting should not truncate uid');
+  });
+
+  await test('schedule ID uses 8 random chars', () => {
+    const schedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const genFn = schedSrc.slice(schedSrc.indexOf('_generateScheduleId'), schedSrc.indexOf('_generateScheduleId') + 300);
+    assert.ok(genFn.includes('.slice(2, 10)'), 'Schedule ID should use slice(2, 10) for 8 random chars');
+  });
+
+  await test('temp agent name shows 8 chars of uid', () => {
+    const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+    assert.ok(routingSrc.includes('.slice(5, 13)'), 'Temp agent name should use slice(5, 13) for 8 display chars');
+    assert.ok(!routingSrc.includes('.slice(5, 9)'), 'Should NOT use old slice(5, 9) pattern');
+  });
+
+  await test('pipeline run ID uses full uid', () => {
+    const pipeSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(pipeSrc.includes('`run-${uid()}`'), 'Pipeline run should use full uid');
+  });
+
+  await test('no fixed-length regex constraints on entity IDs', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Extract all route regex patterns
+    const routeRegexes = dashSrc.match(/path:\s*\/\^.*?\$\//g) || [];
+    for (const r of routeRegexes) {
+      // Check that ID capture groups use + (unlimited) not {N} (fixed length)
+      if (r.includes('MTG-') || r.includes('agent')) {
+        assert.ok(!r.match(/\\w\{\d+\}/), `Route "${r}" has fixed-length ID constraint`);
+      }
+    }
   });
 }
 

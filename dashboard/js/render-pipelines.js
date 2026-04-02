@@ -1,6 +1,11 @@
 // render-pipelines.js — Pipeline list, run detail, and create modal
 
 let _pipelinesData = [];
+const PIPELINES_PER_PAGE = 10;
+let _pipelinesPage = 0;
+
+function _pipelinesPrev() { if (_pipelinesPage > 0) { _pipelinesPage--; refresh(); } }
+function _pipelinesNext() { _pipelinesPage++; refresh(); }
 
 /**
  * Render clickable artifact links for a pipeline stage.
@@ -77,7 +82,24 @@ function renderPipelines(pipelines) {
   }
   countEl.textContent = pipelines.length;
 
-  el.innerHTML = pipelines.map(function(p) {
+  const totalPipelinePages = Math.ceil(pipelines.length / PIPELINES_PER_PAGE);
+  if (_pipelinesPage >= totalPipelinePages) _pipelinesPage = totalPipelinePages - 1;
+  if (_pipelinesPage < 0) _pipelinesPage = 0;
+  const pipStart = _pipelinesPage * PIPELINES_PER_PAGE;
+  const pagePipelines = pipelines.slice(pipStart, pipStart + PIPELINES_PER_PAGE);
+
+  var pipelinePagerHtml = '';
+  if (pipelines.length > PIPELINES_PER_PAGE) {
+    pipelinePagerHtml = '<div class="pr-pager">' +
+      '<span class="pr-page-info">' + (pipStart + 1) + '-' + Math.min(pipStart + PIPELINES_PER_PAGE, pipelines.length) + ' of ' + pipelines.length + '</span>' +
+      '<div class="pr-pager-btns">' +
+        '<button class="pr-pager-btn ' + (_pipelinesPage === 0 ? 'disabled' : '') + '" onclick="_pipelinesPrev()">Prev</button>' +
+        '<button class="pr-pager-btn ' + (_pipelinesPage >= totalPipelinePages - 1 ? 'disabled' : '') + '" onclick="_pipelinesNext()">Next</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  el.innerHTML = pagePipelines.map(function(p) {
     const activeRun = (p.runs || []).find(function(r) { return r.status === 'running'; });
     const lastRun = (p.runs || []).slice(-1)[0];
     const statusColor = activeRun ? 'var(--blue)' : lastRun?.status === 'completed' ? 'var(--green)' : lastRun?.status === 'failed' ? 'var(--red)' : 'var(--muted)';
@@ -143,7 +165,7 @@ function renderPipelines(pipelines) {
       '<div style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + stageFlow + '</div>' +
       progressHtml +
     '</div>';
-  }).join('');
+  }).join('') + pipelinePagerHtml;
 }
 
 function openPipelineDetail(id) {
@@ -249,8 +271,8 @@ async function _togglePipelineEnabled(id, enabled, btn) {
   try {
     var res = await fetch('/api/pipelines/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, enabled: enabled }) });
     if (res.ok) { showToast('cmd-toast', enabled ? 'Pipeline enabled' : 'Pipeline disabled', true); refresh(); }
-    else { alert('Failed'); }
-  } catch (e) { alert('Error: ' + e.message); }
+    else { alert('Failed'); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
   if (btn) { btn.textContent = enabled ? 'Disable' : 'Enable'; btn.style.pointerEvents = ''; }
 }
 
@@ -349,12 +371,13 @@ function _updatePlCronPreview() {
 }
 
 async function _submitCreatePipeline() {
+  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   var id = document.getElementById('pl-id')?.value?.trim();
   var title = document.getElementById('pl-title')?.value?.trim();
   var useCron = document.getElementById('pl-use-cron')?.checked;
   var cron = useCron ? (window._plComputedCron || '') : '';
   var stagesRaw = document.getElementById('pl-stages')?.value?.trim();
-  if (!id || !title) { alert('ID and title required'); return; }
+  if (!id || !title) { if (btn) { btn.disabled = false; btn.textContent = 'Create Pipeline'; } alert('ID and title required'); return; }
   var stages;
   try { stages = JSON.parse(stagesRaw); } catch (e) { alert('Invalid JSON in stages: ' + e.message); return; }
   if (!Array.isArray(stages) || stages.length === 0) { alert('Stages must be a non-empty array'); return; }
