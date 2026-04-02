@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.179 (2026-04-02)
+
+### Dashboard
+- dashboard/styles.css
+
 ## 0.1.178 (2026-04-02)
 
 ### Dashboard
