@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.175 (2026-04-02)
+
+### Engine
+- engine/cli.js
+
+### Dashboard
+- dashboard/js/refresh.js
+- dashboard/layout.html
+
+### Other
+- minions.js
+
 ## 0.1.174 (2026-04-02)
 
 ### Dashboard
