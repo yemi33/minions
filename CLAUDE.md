@@ -145,7 +145,7 @@ Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. Agents
 
 ## ADO Integration
 
-Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min backoff on failure. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking tracked in `pr-links.json`.
+Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min backoff on failure. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking derived from `pull-requests.json` prdItems.
 
 ## Dashboard
 
