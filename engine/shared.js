@@ -8,6 +8,7 @@ const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
+const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -501,7 +502,7 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  // Derive from PR.prdItems (single source of truth)
+  // Derive from PR.prdItems (single source of truth) + legacy pr-links.json as fallback
   const links = {};
   try {
     const projects = getProjects();
@@ -514,7 +515,74 @@ function getPrLinks() {
       }
     }
   } catch { /* optional */ }
+  // Merge legacy pr-links.json for items not yet in PR.prdItems
+  try {
+    const legacy = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
+    for (const [prId, itemId] of Object.entries(legacy)) {
+      if (!links[prId]) links[prId] = itemId;
+    }
+  } catch { /* optional */ }
   return links;
+}
+
+function addPrLink(prId, itemId) {
+  if (!prId || !itemId) return;
+  const links = getPrLinks();
+  if (links[prId] === itemId) return; // already correct, no write needed
+  links[prId] = itemId;
+  safeWrite(PR_LINKS_PATH, links);
+}
+
+/**
+ * Deduplicate PR entries in-place. When multiple entries share the same PR id
+ * (case-insensitive), merge them into a single entry — the most-recently-created
+ * entry's fields win, but prdItems arrays are unioned. Agent name comparison is
+ * also case-insensitive when detecting duplicates.
+ * Returns the deduplicated array (same reference, mutated).
+ */
+function deduplicatePrs(prs) {
+  if (!Array.isArray(prs) || prs.length === 0) return prs;
+  const seen = new Map(); // normalized id -> index in result
+  const result = [];
+  for (const pr of prs) {
+    const normId = String(pr.id || '').toUpperCase();
+    if (!normId) { result.push(pr); continue; }
+    if (seen.has(normId)) {
+      // Merge into existing entry — newer entry's scalar fields win
+      const existing = result[seen.get(normId)];
+      // Pick the entry with the more recent created date as the "winner"
+      const existingDate = existing.created || '';
+      const incomingDate = pr.created || '';
+      const winner = incomingDate > existingDate ? pr : existing;
+      // Snapshot the loser before mutation (existing and loser may be the same ref)
+      const loserSnapshot = {};
+      const loserRef = winner === pr ? existing : pr;
+      for (const key of Object.keys(loserRef)) loserSnapshot[key] = loserRef[key];
+      // Merge: winner fields take precedence, but union arrays
+      for (const key of Object.keys(winner)) {
+        if (key === 'prdItems') continue; // handled below
+        existing[key] = winner[key];
+      }
+      // Fill in blank/missing fields from loser snapshot
+      for (const key of Object.keys(loserSnapshot)) {
+        if (!(key in existing) || existing[key] === undefined || existing[key] === '') {
+          existing[key] = loserSnapshot[key];
+        }
+      }
+      // Union prdItems
+      const items = new Set([...(existing.prdItems || []), ...(pr.prdItems || [])]);
+      existing.prdItems = [...items];
+      // Normalize the ID to canonical PR-{num} form
+      existing.id = normId.startsWith('PR-') ? normId : `PR-${normId}`;
+    } else {
+      seen.set(normId, result.length);
+      result.push({ ...pr });
+    }
+  }
+  // Replace contents in-place
+  prs.length = 0;
+  prs.push(...result);
+  return prs;
 }
 
 /**
@@ -547,6 +615,7 @@ function linkPrToItem(project, prId, itemId) {
 module.exports = {
   MINIONS_DIR,
   CENTRAL_WI_PATH,
+  PR_LINKS_PATH,
   LOG_PATH,
   ts,
   logTs,
@@ -580,6 +649,8 @@ module.exports = {
   projectWorkItemsPath,
   projectPrPath,
   getPrLinks,
+  addPrLink,
+  deduplicatePrs,
   mutatePrs,
   linkPrToItem,
   nextWorkItemId,

@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, log, dateStamp } = shared;
+const { exec, getAdoOrgBase, addPrLink, deduplicatePrs, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
@@ -343,7 +343,8 @@ async function reconcilePrs(config) {
 
     const prPath = shared.projectPrPath(project);
     const existingPrs = shared.safeJson(prPath) || [];
-    const existingIds = new Set(existingPrs.map(p => p.id));
+    deduplicatePrs(existingPrs); // clean up any pre-existing duplicates
+    const existingIds = new Set(existingPrs.map(p => String(p.id).toUpperCase()));
     let projectAdded = 0;
 
     // Load work items to match branches to work item IDs
@@ -365,10 +366,12 @@ async function reconcilePrs(config) {
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
-      if (existingIds.has(prId)) {
-        // PR already tracked — update prdItems if we can extract an ID
+      const normPrId = prId.toUpperCase();
+      if (existingIds.has(normPrId)) {
+        // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
-          const existing = existingPrs.find(p => p.id === prId);
+          addPrLink(prId, confirmedItemId);
+          const existing = existingPrs.find(p => String(p.id).toUpperCase() === normPrId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -390,7 +393,8 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
-      existingIds.add(prId);
+      if (confirmedItemId) addPrLink(prId, confirmedItemId);
+      existingIds.add(normPrId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }

@@ -6,8 +6,8 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks,
-  mutateJsonFileLocked, log, ts, dateStamp } = shared;
+const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks, addPrLink,
+  mutateJsonFileLocked, deduplicatePrs, log, ts, dateStamp } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -603,7 +603,8 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
     const entry = dirtyTargets.get(targetName);
-    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
+    const normFullId = fullId.toUpperCase();
+    if (entry.prs.some(p => String(p.id).toUpperCase() === normFullId || String(p.id) === String(prId))) continue;
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -632,6 +633,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   }
 
   for (const [name, entry] of dirtyTargets) {
+    deduplicatePrs(entry.prs);
     shared.safeWrite(entry.prPath, entry.prs);
     log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
@@ -735,7 +737,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   // Mark review as approved since it was merged
   pr.reviewStatus = 'approved';
 
-  // Resolve linked work item from PR.prdItems or PR branch name
+  // Resolve linked work item from pr-links or PR branch name
   let mergedItemId = getPrLinks()[pr.id];
   if (!mergedItemId && pr.branch) {
     const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]+)/i);
