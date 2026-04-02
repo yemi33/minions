@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.173 (2026-04-02)
+
+### Engine
+- engine/lifecycle.js
+- engine/shared.js
+
+### Dashboard
+- dashboard/js/render-pipelines.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+
 ## 0.1.171 (2026-04-02)
 
 ### Dashboard
