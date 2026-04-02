@@ -173,11 +173,11 @@ function _renderMeetingDetail(m) {
       } else {
         html += '<div style="display:flex;gap:8px;border-top:1px solid var(--border);padding-top:8px">' +
           '<input id="meeting-note-input" type="text" placeholder="Add context for all agents..." style="flex:1;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:12px" onkeydown="if(event.key===\'Enter\')_submitMeetingNote(\'' + escHtml(m.id) + '\')">' +
-          '<button onclick="_submitMeetingNote(\'' + escHtml(m.id) + '\')" style="padding:6px 12px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:11px">Add Note</button>' +
+          '<button onclick="_submitMeetingNote(\'' + escHtml(m.id) + '\',this)" style="padding:6px 12px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:11px">Add Note</button>' +
         '</div>' +
         '<div style="display:flex;gap:8px;margin-top:4px">' +
-          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow);border-color:var(--yellow)" onclick="_advanceMeeting(\'' + escHtml(m.id) + '\')">Skip to Next Round</button>' +
-          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_endMeeting(\'' + escHtml(m.id) + '\')">End Meeting</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow);border-color:var(--yellow)" onclick="_advanceMeeting(\'' + escHtml(m.id) + '\',this)">Skip to Next Round</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_endMeeting(\'' + escHtml(m.id) + '\',this)">End Meeting</button>' +
           '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deleteMeeting(\'' + escHtml(m.id) + '\')">Delete</button>' +
         '</div>';
       }
@@ -269,45 +269,58 @@ async function _submitCreateMeeting() {
   } catch (e) { alert('Error: ' + e.message); openCreateMeetingModal(); }
 }
 
-async function _submitMeetingNote(id) {
+async function _submitMeetingNote(id, btn) {
   const input = document.getElementById('meeting-note-input');
   if (!input?.value?.trim()) return;
   const note = input.value.trim();
   input.value = '';
+  if (btn) { btn.textContent = 'Adding...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     const res = await fetch('/api/meetings/note', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, note })
     });
-    if (res.ok) openMeetingDetail(id);
+    if (res.ok) { showToast('cmd-toast', 'Note added', true); }
     else { input.value = note; alert('Failed to add note'); }
   } catch (e) { input.value = note; alert('Error: ' + e.message); }
+  if (btn) { btn.textContent = 'Add Note'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
 }
 
-async function _advanceMeeting(id) {
+async function _advanceMeeting(id, btn) {
   if (!confirm('Skip to next round? Agents that haven\'t finished will be skipped.')) return;
-  showToast('cmd-toast', 'Advancing to next round...', true);
+  if (btn) { btn.textContent = 'Advancing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
-    await fetch('/api/meetings/advance', {
+    const res = await fetch('/api/meetings/advance', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    wakeEngine();
-    openMeetingDetail(id);
+    if (res.ok) {
+      showToast('cmd-toast', 'Advanced to next round', true);
+      wakeEngine();
+    } else {
+      const d = await res.json().catch(function() { return {}; });
+      alert('Advance failed: ' + (d.error || 'unknown'));
+    }
   } catch (e) { alert('Error: ' + e.message); }
+  if (btn) { btn.textContent = 'Skip to Next Round'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
 }
 
-async function _endMeeting(id) {
+async function _endMeeting(id, btn) {
   if (!confirm('End this meeting? Current round will be stopped.')) return;
-  try { closeModal(); } catch { /* expected */ }
-  showToast('cmd-toast', 'Meeting ended', true);
+  if (btn) { btn.textContent = 'Ending...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
-    await fetch('/api/meetings/end', {
+    const res = await fetch('/api/meetings/end', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (res.ok) {
+      showToast('cmd-toast', 'Meeting ended', true);
+    } else {
+      const d = await res.json().catch(function() { return {}; });
+      alert('End failed: ' + (d.error || 'unknown'));
+      if (btn) { btn.textContent = 'End Meeting'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+    }
+  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'End Meeting'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
 
 async function _archiveMeeting(id) {

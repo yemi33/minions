@@ -1221,24 +1221,24 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch evaluate work item after implement completes successfully
+  // Auto-dispatch review work item after implement completes successfully
   if (isSuccess && !skipDoneStatus && type === 'implement' && meta?.item?.id) {
-    const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
-    if (evalLoop) {
+    const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
+    if (autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
-          // Dedup: skip if an evaluate item already exists for this parent
-          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'evaluate');
+          // Dedup: skip if a review item already exists for this parent
+          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'review');
           if (existing) {
-            log('info', `Eval loop: evaluate item ${existing.id} already exists for ${meta.item.id}, skipping`);
+            log('info', `Eval loop: review item ${existing.id} already exists for ${meta.item.id}, skipping`);
           } else {
             const parentItem = items.find(i => i.id === meta.item.id);
             const evalItem = {
               id: 'W-' + shared.uid(),
-              title: `Evaluate: ${meta.item.title || meta.item.id}`,
-              type: 'evaluate',
+              title: `Review: ${meta.item.title || meta.item.id}`,
+              type: 'review',
               priority: meta.item.priority || 'high',
               status: 'pending',
               created: ts(),
@@ -1263,14 +1263,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  // Evaluate completion: parse verdict and handle eval→fix iteration loop
-  if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
+  // Review completion: parse verdict and handle review→fix iteration loop
+  if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
-      const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
+      const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
       const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
 
-      if (verdict && !verdict.pass && evalLoop) {
+      if (verdict && !verdict.pass && autoReview) {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];

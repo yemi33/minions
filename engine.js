@@ -1256,8 +1256,8 @@ function discoverFromPrs(config, project) {
       if (!agentId) continue;
 
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
-        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
-        pr_author: pr.agent || '', pr_url: pr.url || '',
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title ? ': ' + pr.title : '', pr_branch: pr.branch || '',
+        branch_name: pr.branch || '', pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }

@@ -37,6 +37,28 @@ function ccRestoreMessages() {
   for (const msg of _ccMessages) {
     ccAddMessage(msg.role, msg.html, true);
   }
+  // Restore "thinking" indicator if CC was mid-request when page refreshed
+  try {
+    const sendingState = JSON.parse(localStorage.getItem('cc-sending') || 'null');
+    if (sendingState?.sending && (Date.now() - sendingState.startedAt) < 300000) {
+      _ccSending = true;
+      const elapsed = Date.now() - sendingState.startedAt;
+      const thinking = document.createElement('div');
+      thinking.id = 'cc-thinking';
+      thinking.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:11px;color:var(--muted);align-self:flex-start;display:flex;align-items:center;gap:8px';
+      thinking.innerHTML = '<span class="dot-pulse" style="display:inline-flex;gap:3px"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span> <span id="cc-thinking-text">Still working...</span> <span id="cc-thinking-time" style="font-size:10px;color:var(--border)">' + Math.floor(elapsed / 1000) + 's</span>' +
+        ' <button onclick="ccNewSession()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Reset</button>';
+      el.appendChild(thinking);
+      el.scrollTop = el.scrollHeight;
+      // Update timer
+      const startTime = sendingState.startedAt;
+      const restoreTimer = setInterval(function() {
+        var timeEl = document.getElementById('cc-thinking-time');
+        if (!timeEl || !_ccSending) { clearInterval(restoreTimer); return; }
+        timeEl.textContent = Math.floor((Date.now() - startTime) / 1000) + 's';
+      }, 1000);
+    }
+  } catch {}
 }
 
 function ccSaveState() {
@@ -109,6 +131,7 @@ async function ccSend() {
 
 async function _ccDoSend(message, skipUserMsg) {
   _ccSending = true;
+  try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
   if (!skipUserMsg) ccAddMessage('user', escHtml(message));
 
@@ -160,7 +183,9 @@ async function _ccDoSend(message, skipUserMsg) {
     thinking.remove();
 
     if (data.error) {
-      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(data.error) + '</span>');
+      const isBusy = data.error.includes('busy');
+      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(data.error) + '</span>' +
+        (isBusy ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
       return;
     }
 
@@ -201,6 +226,7 @@ async function _ccDoSend(message, skipUserMsg) {
       '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
   } finally {
     _ccSending = false;
+    try { localStorage.removeItem('cc-sending'); } catch {}
     // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
