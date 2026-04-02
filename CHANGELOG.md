@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.201 (2026-04-02)
+
+### Engine
+- engine/ado.js
+- engine/github.js
+- engine/lifecycle.js
+- engine/preflight.js
+- engine/queries.js
+- engine/shared.js
+- engine/spawn-agent.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+
+### Documentation
+- README.md
+
+### Other
+- minions.js
+- test/unit.test.js
+
 ## 0.1.189 (2026-04-02)
 
 ### Dashboard
