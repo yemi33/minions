@@ -1782,6 +1782,41 @@ function discoverCentralWorkItems(config) {
         assignedProject: projects.length > 0 ? projects[i % projects.length] : null
       }));
 
+      // Inject checkpoint context if agent left a checkpoint.json from a prior run
+      let fanOutCheckpointContext = '';
+      try {
+        const fanFirstProject = projects[0];
+        const fanBranch = item.branch || `work/${item.id}`;
+        const fanWtPath = fanFirstProject?.localPath
+          ? path.resolve(fanFirstProject.localPath, config.engine?.worktreeRoot || '../worktrees', fanBranch)
+          : '';
+        const fanCpPath = fanWtPath ? path.join(fanWtPath, 'checkpoint.json') : '';
+        if (fanCpPath && fs.existsSync(fanCpPath)) {
+          const fanCpData = JSON.parse(fs.readFileSync(fanCpPath, 'utf8'));
+          const fanCpCount = (item._checkpointCount || 0) + 1;
+          if (fanCpCount > 3) {
+            log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
+            item.status = 'needs-human-review';
+            item._checkpointCount = fanCpCount;
+            needsWrite = true;
+            continue;
+          }
+          item._checkpointCount = fanCpCount;
+          const fanCpSummary = [
+            `## Checkpoint (Resume #${fanCpCount}/3)`,
+            '',
+            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
+            '',
+            Array.isArray(fanCpData.completed) && fanCpData.completed.length > 0 ? `### Completed\n${fanCpData.completed.map(s => '- ' + s).join('\n')}` : '',
+            Array.isArray(fanCpData.remaining) && fanCpData.remaining.length > 0 ? `### Remaining\n${fanCpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+            Array.isArray(fanCpData.blockers) && fanCpData.blockers.length > 0 ? `### Blockers\n${fanCpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+            fanCpData.branch_state ? `### Branch State\n${fanCpData.branch_state}` : '',
+          ].filter(Boolean).join('\n');
+          fanOutCheckpointContext = fanCpSummary;
+          log('info', `Injecting checkpoint context for ${item.id} (resume #${fanCpCount})`);
+        }
+      } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
+
       for (const { agent, assignedProject } of assignments) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
@@ -1806,6 +1841,9 @@ function discoverCentralWorkItems(config) {
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
         const fanAc = (Array.isArray(item.acceptanceCriteria) ? item.acceptanceCriteria : []).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
+
+        // Inject checkpoint context (computed once above the loop)
+        vars.checkpoint_context = fanOutCheckpointContext;
 
         if (workType === 'ask') {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
