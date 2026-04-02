@@ -372,14 +372,13 @@ If no actions are needed (just answering a question, or you handled it directly)
 Available action types:
 - **dispatch**: Create a work item for an agent. Fields: title, workType, priority (low/medium/high), agents (array of IDs, optional), project, description.
   workType values — choose carefully, this determines the playbook and whether a PR is expected:
-  - \`explore\` — research, investigate, read code, gather information, write findings (NO PR expected)
+  - \`explore\` — research, investigate, read code, gather information, assess quality, write findings (NO PR expected)
   - \`ask\` — answer a question, analyze something, produce a report (NO PR expected)
   - \`implement\` — write new code, add a feature, create something (PR expected)
   - \`fix\` — fix a bug, address review feedback on an existing PR (PR expected)
-  - \`review\` — code review an existing PR
+  - \`review\` — code review an existing PR (NO PR expected)
   - \`test\` — run tests, write test cases (PR expected if new tests written)
-  - \`verify\` — build PRs locally, merge branches, start dev server, get localhost URL to test
-  - \`evaluate\` — assess quality of completed work, verify acceptance criteria
+  - \`verify\` — build PRs locally, merge branches, start dev server, get localhost URL to test (NO PR expected)
   If unsure, prefer \`explore\` for read-only tasks and \`implement\` for write tasks.
 - **note**: Save a note/decision. Fields: title, content
 - **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)

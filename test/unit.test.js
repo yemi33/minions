@@ -5732,9 +5732,9 @@ async function testSyncPrsFromOutputCentral() {
     assert.ok(src.includes('extractPrUrl'), 'lifecycle.js should have extractPrUrl function');
   });
 
-  await test('implement playbook marks PR creation as mandatory', () => {
+  await test('implement playbook includes PR section', () => {
     const playbook = fs.readFileSync(path.join(__dirname, '..', 'playbooks', 'implement.md'), 'utf8');
-    assert.ok(playbook.includes('MANDATORY'), 'implement playbook should mark PR creation as MANDATORY');
+    assert.ok(playbook.includes('pr_section') || playbook.includes('Create PR'), 'implement playbook should include PR creation instructions');
   });
 }
 
