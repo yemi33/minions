@@ -1373,6 +1373,7 @@ function discoverFromWorkItems(config, project) {
       }
     }
 
+    if (item.status === 'needs-human-review') continue; // Explicit skip — flagged for human attention
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
@@ -1757,6 +1758,7 @@ function discoverCentralWorkItems(config) {
   const newWork = [];
 
   for (const item of items) {
+    if (item.status === 'needs-human-review') continue; // Explicit skip — flagged for human attention
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     const key = `central-work-${item.id}`;

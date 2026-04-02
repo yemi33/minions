@@ -1244,11 +1244,30 @@ async function testEvalIterationTracking() {
   });
 
   await test('needs-human-review is a terminal status — engine skips dispatch', () => {
-    // Verify that the engine dispatch gate at discoverFromWorkItems skips non-pending/queued items
+    // Verify that the engine dispatch gates explicitly skip needs-human-review items
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The dispatch gate only dispatches 'queued' or 'pending' items
     assert.ok(src.includes("item.status !== 'queued' && item.status !== 'pending'"),
       'engine.js should gate dispatch on queued/pending status only');
+    // Explicit needs-human-review skip guard in all dispatch paths
+    const skipCount = (src.match(/item\.status === 'needs-human-review'/g) || []).length;
+    assert.ok(skipCount >= 2,
+      `engine.js should have explicit needs-human-review skip in project and central dispatch paths (found ${skipCount})`);
+  });
+
+  await test('needs-human-review item is never added to newWork in project dispatch', () => {
+    // Source-level assertion: explicit needs-human-review skip guard exists in both dispatch paths
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Project dispatch path (discoverFromWorkItems)
+    const projectIdx = src.indexOf('function discoverFromWorkItems');
+    const centralIdx = src.indexOf('function discoverCentralWorkItems');
+    const projectSection = src.slice(projectIdx, centralIdx);
+    assert.ok(projectSection.includes("item.status === 'needs-human-review'"),
+      'Project dispatch path must explicitly skip needs-human-review items');
+    // Central dispatch path (discoverCentralWorkItems) — also covers fan-out
+    const centralSection = src.slice(centralIdx, centralIdx + 3000);
+    assert.ok(centralSection.includes("item.status === 'needs-human-review'"),
+      'Central dispatch path must explicitly skip needs-human-review items');
   });
 
   await test('dashboard statusBadge maps needs-human-review to needs-review class', () => {
