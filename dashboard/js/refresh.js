@@ -6,21 +6,37 @@ let _prevEngineAlert = false;
 function _detectPageChanges(data) {
   const counts = {
     completions: (data.dispatch?.completed || []).length,
+    activeDispatches: (data.dispatch?.active || []).length,
     workDone: (data.workItems || []).filter(w => w.status === 'done' || w.status === 'failed').length,
     workTotal: (data.workItems || []).length,
+    workDispatched: (data.workItems || []).filter(w => w.status === 'dispatched').length,
     prdComplete: data.prdProgress?.complete || 0,
+    prdInProgress: data.prdProgress?.inProgress || 0,
+    plansTotal: (data.plans || []).length,
+    prsTotal: (data.pullRequests || []).length,
     prsMerged: (data.pullRequests || []).filter(p => p.status === 'merged').length,
+    prsReviewed: (data.pullRequests || []).filter(p => p.reviewStatus === 'approved' || p.reviewStatus === 'changes-requested').length,
     inbox: (data.inbox?.items || []).length,
+    kbTotal: Object.values(data.knowledgeBase || {}).reduce((s, v) => s + (Array.isArray(v) ? v.length : 0), 0),
+    skillsTotal: (data.skills || []).length,
+    mcpTotal: (data.mcpServers || []).length,
+    scheduleTotal: (data.schedules || []).length,
+    pipelineRuns: (data.pipelines || []).reduce((s, p) => s + (p.runs || []).length, 0),
+    pipelineActive: (data.pipelines || []).filter(p => (p.runs || []).some(r => r.status === 'running')).length,
     meetingRounds: (data.meetings || []).reduce((s, m) => s + (m.round || 0), 0),
+    meetingTotal: (data.meetings || []).length,
   };
   const changes = {};
   if (_prevCounts.completions !== undefined) {
-    if (counts.completions > _prevCounts.completions) changes.home = true;
-    if (counts.workDone > _prevCounts.workDone || counts.workTotal > _prevCounts.workTotal) changes.work = true;
-    if (counts.prdComplete > _prevCounts.prdComplete) changes.plans = true;
-    if (counts.prsMerged > _prevCounts.prsMerged) changes.prs = true;
-    if (counts.inbox > _prevCounts.inbox) changes.inbox = true;
-    if (counts.meetingRounds > _prevCounts.meetingRounds) changes.meetings = true;
+    if (counts.completions > _prevCounts.completions || counts.activeDispatches > _prevCounts.activeDispatches) changes.home = true;
+    if (counts.workDone > _prevCounts.workDone || counts.workTotal > _prevCounts.workTotal || counts.workDispatched !== _prevCounts.workDispatched) changes.work = true;
+    if (counts.prdComplete > _prevCounts.prdComplete || counts.prdInProgress > _prevCounts.prdInProgress || counts.plansTotal > _prevCounts.plansTotal) changes.plans = true;
+    if (counts.prsTotal > _prevCounts.prsTotal || counts.prsMerged > _prevCounts.prsMerged || counts.prsReviewed > _prevCounts.prsReviewed) changes.prs = true;
+    if (counts.inbox > _prevCounts.inbox || counts.kbTotal > _prevCounts.kbTotal) changes.inbox = true;
+    if (counts.skillsTotal > _prevCounts.skillsTotal || counts.mcpTotal > _prevCounts.mcpTotal) changes.tools = true;
+    if (counts.scheduleTotal > _prevCounts.scheduleTotal) changes.schedule = true;
+    if (counts.pipelineRuns > _prevCounts.pipelineRuns || counts.pipelineActive > _prevCounts.pipelineActive) changes.pipelines = true;
+    if (counts.meetingRounds > _prevCounts.meetingRounds || counts.meetingTotal > _prevCounts.meetingTotal) changes.meetings = true;
   }
   _prevCounts = counts;
 
