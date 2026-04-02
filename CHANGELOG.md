@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.176 (2026-04-02)
+
+### Engine
+- engine/meeting.js
+
+### Dashboard
+- dashboard/js/settings.js
+
 ## 0.1.175 (2026-04-02)
 
 ### Engine
