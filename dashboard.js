@@ -3103,9 +3103,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
         // Boolean fields
-        for (const key of ['autoApprovePlans', 'autoReview', 'autoDecompose', 'allowTempAgents']) {
+        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
+        // Eval loop settings
+        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
+        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
       }
 
       if (body.claude) {
@@ -3123,6 +3126,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           if (!config.agents[id]) continue;
           if (updates.role !== undefined) config.agents[id].role = String(updates.role);
           if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
+          if (updates.monthlyBudgetUsd !== undefined) {
+            const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
+            if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
+            else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+          }
         }
       }
 
