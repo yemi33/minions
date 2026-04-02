@@ -307,7 +307,7 @@ function spawnAgent(dispatchItem, config) {
 
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
-            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git fetch: ' + e.message); }
             try {
               runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (eShared) {
@@ -317,6 +317,11 @@ function spawnAgent(dispatchItem, config) {
                   log('info', `Shared branch ${branchName} already checked out at ${existingWtPath} — reusing`);
                   worktreePath = existingWtPath;
                 } else { throw eShared; }
+              } else if (eShared.message?.includes('invalid reference') || eShared.message?.includes('not a valid branch')) {
+                // Branch doesn't exist yet — create it from main
+                log('info', `Shared branch ${branchName} not found — creating from ${project.mainBranch || 'main'}`);
+                const mainRef = sanitizeBranch(project.mainBranch || 'main');
+                runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
               } else { throw eShared; }
             }
           } else {
@@ -1190,9 +1195,17 @@ function materializePlansAsWorkItems(config) {
           const root = path.resolve(firstProject.localPath);
           const mainBranch = firstProject.mainBranch || 'main';
           const branch = sanitizeBranch(plan.feature_branch);
-          // Create branch from main (idempotent — ignores if exists)
-          exec(`git branch "${branch}" "${mainBranch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
-          exec(`git push -u origin "${branch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });
+          // Create branch from main — verify it actually succeeded
+          try {
+            exec(`git branch "${branch}" "${mainBranch}"`, { cwd: root, stdio: 'pipe', windowsHide: true });
+          } catch (e) {
+            // Branch may already exist — that's fine
+            if (!e.message?.includes('already exists')) throw e;
+          }
+          // Push to remote (best-effort — may not have a remote)
+          try {
+            exec(`git push -u origin "${branch}"`, { cwd: root, stdio: 'pipe', windowsHide: true, timeout: 15000 });
+          } catch { /* no remote or push failed — branch still exists locally */ }
           log('info', `Shared branch pre-created: ${branch} for plan ${file}`);
         } catch (err) {
           log('warn', `Failed to pre-create shared branch for ${file}: ${err.message}`);
