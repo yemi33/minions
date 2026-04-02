@@ -2769,7 +2769,7 @@ async function testPreflightModule() {
     const { passed: p, results: r } = preflight.runPreflight();
     assert.ok(typeof p === 'boolean', 'passed should be boolean');
     assert.ok(Array.isArray(r), 'results should be array');
-    assert.strictEqual(r.length, 4, 'should have exactly 4 checks');
+    assert.strictEqual(r.length, 3, 'should have exactly 3 checks (Node, Git, Claude CLI)');
   });
 
   await test('runPreflight includes Node.js check as passing', () => {
@@ -2791,12 +2791,10 @@ async function testPreflightModule() {
     assert.ok(claudeCheck, 'Missing Claude Code CLI check');
   });
 
-  await test('runPreflight Anthropic auth is never fatal', () => {
+  await test('runPreflight does not check Anthropic auth (handled by Claude Code)', () => {
     const { results: r } = preflight.runPreflight();
     const authCheck = r.find(c => c.name === 'Anthropic auth');
-    assert.ok(authCheck, 'Missing Anthropic auth check');
-    assert.ok(authCheck.ok === true || authCheck.ok === 'warn',
-      'Anthropic auth should be ok or warn, never false');
+    assert.ok(!authCheck, 'Should not include Anthropic auth check — Claude Code handles auth');
   });
 
   await test('runPreflight each result has name, ok, message', () => {

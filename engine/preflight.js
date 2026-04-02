@@ -101,14 +101,7 @@ function runPreflight(opts = {}) {
     allOk = false;
   }
 
-  // 4. Anthropic API key or Claude Max (best-effort warning)
-  const hasApiKey = !!process.env.ANTHROPIC_API_KEY;
-  if (hasApiKey) {
-    results.push({ name: 'Anthropic auth', ok: true, message: 'ANTHROPIC_API_KEY set' });
-  } else {
-    // Not fatal — user may have Claude Max subscription
-    results.push({ name: 'Anthropic auth', ok: 'warn', message: 'ANTHROPIC_API_KEY not set — agents need an API key or Claude Max subscription' });
-  }
+  // Auth is handled by Claude Code itself (API key, Claude Max, etc.) — no check needed here.
 
   return { passed: allOk, results };
 }
