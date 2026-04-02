@@ -296,9 +296,12 @@ function renderPlaybook(type, vars) {
   };
   const allVars = { ...projectVars, ...vars };
 
-  // Substitute variables
-  for (const [key, val] of Object.entries(allVars)) {
-    content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
+  // Substitute variables — two passes to resolve nested templates
+  // (e.g. pr_section contains {{pr_create_instructions}}, {{branch_name}}, etc.)
+  for (let pass = 0; pass < 2; pass++) {
+    for (const [key, val] of Object.entries(allVars)) {
+      content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
+    }
   }
 
   // Warn on variables that resolved to empty string
