@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.156 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/shared.js
+
+### Dashboard
+- dashboard/js/render-plans.js
+- dashboard/js/render-prd.js
+
+### Other
+- test/unit.test.js
+
 ## 0.1.155 (2026-04-02)
 
 ### Engine
