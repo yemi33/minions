@@ -52,7 +52,7 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Output Format', 'set-outputFormat', c.outputFormat || 'stream-json', '', '') +
-      settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Comma-separated (empty = all)') +
+      settingsField('Allowed Tools', 'set-allowedTools', c.allowedTools || '', '', 'Tools agents can use without permission prompts. Add MCP tools here if using non-bypass mode (e.g. mcp__azure-ado__*)') +
     '</div>' +
     '<div style="margin-bottom:16px">' +
       '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Permission Mode <span style="opacity:0.6">(how agents handle tool approvals)</span></label>' +
