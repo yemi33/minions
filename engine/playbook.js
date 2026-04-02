@@ -481,7 +481,7 @@ function selectPlaybook(workType, item) {
   if (workType === 'review' && !item?._pr && !item?.pr_id) {
     return 'work-item';
   }
-  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];
+  const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'evaluate', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];
   return typeSpecificPlaybooks.includes(workType) ? workType : 'work-item';
 }
 
