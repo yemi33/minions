@@ -3,9 +3,9 @@
  * Minions Init — Link a project to the central minions
  *
  * Usage:
- *   node minions.js <project-dir>           Add a project interactively
- *   node minions.js <project-dir> --remove  Remove a project
- *   node minions.js --list                  List linked projects
+ *   minions add <project-dir>       Add a project interactively
+ *   minions remove <project-dir>   Remove a project
+ *   minions list                   List linked projects
  *
  * This adds the project to ~/.minions/config.json's projects array.
  * The minions engine and dashboard run centrally from ~/.minions/.
@@ -228,7 +228,7 @@ function listProjects() {
   const projects = config.projects || [];
   console.log(`\n  Minions Projects (${projects.length})\n`);
   if (projects.length === 0) {
-    console.log('  No projects linked. Run: node minions.js <project-dir>\n');
+    console.log('  No projects linked. Run: minions add <project-dir>\n');
     rl.close();
     return;
   }
@@ -406,7 +406,7 @@ async function scanAndAdd({ root, depth } = {}) {
 
   saveConfig(config);
   console.log(`\n  Done. ${config.projects.length} total project(s) linked.`);
-  console.log(`  Run "node minions.js list" to verify.\n`);
+  console.log(`  Run "minions list" to verify.\n`);
   rl.close();
 }
 
@@ -456,7 +456,7 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   }
 
   if (skipScan) {
-    console.log('  Skipping repo scan (--skip-scan). Run "node minions.js scan" later to link projects.\n');
+    console.log('  Run "minions scan" or "minions add <dir>" to link projects.\n');
     rl.close();
   } else {
     // Auto-chain into scan (scanAndAdd closes rl)

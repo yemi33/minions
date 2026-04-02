@@ -688,7 +688,7 @@ const commands = {
       : projects[0];
 
     if (!targetProject) {
-      console.log('No projects configured. Run: node minions.js add <dir>');
+      console.log('No projects configured. Run: minions add <dir>');
       return;
     }
 

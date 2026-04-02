@@ -438,8 +438,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   Minions — Central AI dev team manager
 
   Setup:
-    minions init [--skip-scan]       Bootstrap ~/.minions/ (first time)
-    minions init --force             Upgrade engine code + add new files (auto-skip scan)
+    minions init                     Bootstrap ~/.minions/ (first time)
+    minions init --force             Upgrade engine code + add new files
     minions version                  Show installed vs package version
     minions doctor                   Check prerequisites and runtime health
     minions add <project-dir>        Link a project (interactive)
