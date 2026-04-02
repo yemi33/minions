@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.151 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+
+### Dashboard
+- dashboard/js/command-center.js
+- dashboard/js/render-meetings.js
+
+### Playbooks
+- work-item.md
+
 ## 0.1.150 (2026-04-01)
 
 ### Dashboard
