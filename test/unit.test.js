@@ -3447,6 +3447,26 @@ async function testRenderPlaybook() {
       'Should not set critical_vars_missing error for plan type');
   });
 
+  await test('renderPlaybook with type=evaluate returns content from evaluate.md, not work-item.md', () => {
+    const result = renderPlaybook('evaluate', {
+      agent_name: 'TestAgent', agent_role: 'Lead', agent_id: 'ripley',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Evaluate feature', task_description: 'Evaluate quality of implementation',
+      work_item_id: 'W-eval01', item_id: 'W-eval01', item_title: 'Test eval',
+      item_description: 'Evaluate quality', branch_name: 'work/W-eval01',
+      team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return rendered evaluate playbook');
+    assert.ok(result.includes('Evaluation Rubric'),
+      'Should contain evaluation rubric from evaluate.md');
+    assert.ok(result.includes('Correctness') && result.includes('Completeness') &&
+      result.includes('Code Quality') && result.includes('Test Coverage'),
+      'Should contain all four scoring categories');
+    assert.ok(!result.includes('Branch Naming Convention'),
+      'Should NOT contain work-item.md content (branch naming section)');
+  });
+
   await test('CRITICAL_VARS map defines expected entries', () => {
     let CRITICAL_VARS;
     try { CRITICAL_VARS = require(path.join(MINIONS_DIR, 'engine', 'playbook')).CRITICAL_VARS; } catch {}
