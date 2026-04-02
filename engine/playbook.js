@@ -231,7 +231,7 @@ function getLastPromptSizes() { return _lastPromptSizes; }
 function renderPlaybook(type, vars) {
   _lastRenderError = null;
   _lastPromptSizes = null;
-  const sizes = { total: 0, systemPrompt: 0, playbook: 0, pinned: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
+  const sizes = { total: 0, systemPrompt: 0, playbook: 0, pinned: 0, notes: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
   const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
@@ -245,7 +245,7 @@ function renderPlaybook(type, vars) {
   try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch { /* optional */ }
   if (pinnedContent) {
     if (pinnedContent.length > 4096) pinnedContent = pinnedContent.slice(0, 4096) + '\n\n_...pinned.md truncated (read full file if needed)_';
-    sizes.pinned = pinnedContent.length;
+    sizes.pinned = pinnedContent.length; // post-truncation: reflects what the agent actually sees
     content += '\n\n---\n\n## Pinned Context (CRITICAL — READ FIRST)\n\n' + pinnedContent;
   }
 
@@ -258,6 +258,7 @@ function renderPlaybook(type, vars) {
       notes = recent.length > 8192 ? recent.slice(0, 8192) + '\n\n_...notes truncated_' : recent;
       notes += '\n\n_' + Math.max(0, sections.length - 10) + ' older entries in `notes.md` — Read if needed._';
     }
+    sizes.notes = notes.length; // post-truncation: reflects what the agent actually sees
     content += '\n\n---\n\n## Team Notes (MUST READ)\n\n' + notes;
   }
 
@@ -349,7 +350,7 @@ function renderPlaybook(type, vars) {
 
   // Record prompt sizes (playbook = the rendered content; total computed by caller with systemPrompt + agentContext)
   sizes.playbook = content.length;
-  sizes.total = content.length; // caller should add systemPrompt + agentContext
+  // sizes.total is set by the caller (engine.js spawnAgent) which adds systemPrompt + agentContext
   _lastPromptSizes = sizes;
 
   return content;

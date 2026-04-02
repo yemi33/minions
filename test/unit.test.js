@@ -3626,7 +3626,7 @@ async function testPromptSizeTracking() {
     assert.ok(result, 'renderPlaybook should return content');
     const sizes = getLastPromptSizes();
     assert.ok(sizes, 'getLastPromptSizes should return an object after successful render');
-    const requiredKeys = ['total', 'systemPrompt', 'playbook', 'pinned', 'pendingQueue', 'checkpoint', 'references', 'criteria'];
+    const requiredKeys = ['total', 'systemPrompt', 'playbook', 'pinned', 'notes', 'pendingQueue', 'checkpoint', 'references', 'criteria'];
     for (const key of requiredKeys) {
       assert.ok(key in sizes, `_promptSizes should have key: ${key}`);
       assert.strictEqual(typeof sizes[key], 'number', `_promptSizes.${key} should be a number`);
@@ -3643,7 +3643,8 @@ async function testPromptSizeTracking() {
     assert.ok(result, 'renderPlaybook should return content');
     const sizes = getLastPromptSizes();
     assert.strictEqual(sizes.playbook, result.length, 'playbook size should match rendered content length');
-    assert.ok(sizes.total > 0, 'total should be > 0');
+    // sizes.total is 0 at playbook level — set by caller (spawnAgent) after adding systemPrompt + agentContext
+    assert.strictEqual(sizes.total, 0, 'total should be 0 (set by caller, not renderPlaybook)');
   });
 
   await test('_promptSizes.references reflects injected references length', () => {

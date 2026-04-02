@@ -435,7 +435,7 @@ function spawnAgent(dispatchItem, config) {
     promptSizes.total = systemPrompt.length + fullTaskPrompt.length;
   }
   if (meta) {
-    meta._promptSizes = promptSizes || { total: systemPrompt.length + fullTaskPrompt.length, systemPrompt: systemPrompt.length, playbook: taskPrompt.length, pinned: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
+    meta._promptSizes = promptSizes || { total: systemPrompt.length + fullTaskPrompt.length, systemPrompt: systemPrompt.length, playbook: taskPrompt.length, pinned: 0, notes: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
   }
 
   // Write prompt and system prompt to temp files (avoids shell escaping issues)
