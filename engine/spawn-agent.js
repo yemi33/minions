@@ -22,64 +22,55 @@ const sysPrompt = fs.readFileSync(sysPromptFile, 'utf8');
 
 const env = cleanChildEnv();
 
-// Resolve claude binary — find the actual JS entry point
+// Resolve claude binary — supports both npm install (cli.js) and native installer (binary on PATH)
 let claudeBin;
+let claudeIsNative = false; // true = native binary, false = node cli.js
 
-// Strategy 1: Known global install locations
-const homeDir = process.env.USERPROFILE || process.env.HOME || '';
-const searchPaths = [
-  // npm global (npm_config_prefix)
-  process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
-  // Windows: %APPDATA%\npm
-  process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
-  // Unix global
-  '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-  '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-  // Homebrew (macOS)
-  '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js',
-  // nvm (current node version)
-  path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-  // fnm / volta — sibling to the node binary
-  path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-  // Local node_modules (if minions is in a project)
-  path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-].filter(Boolean);
-for (const p of searchPaths) {
-  try { if (fs.existsSync(p)) { claudeBin = p; break; } } catch {}
-}
-
-// Strategy 2: Use `which` (Unix) or `where` (Windows) to find the claude wrapper, then resolve cli.js
-if (!claudeBin) {
-  try {
-    const isWin = process.platform === 'win32';
-    const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
-    const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
-    if (which) {
-      const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
-      // The wrapper script or symlink — resolve to cli.js
-      try {
-        const resolved = fs.realpathSync(whichNative);
-        if (resolved.endsWith('cli.js')) {
-          claudeBin = resolved;
-        } else {
-          // Read wrapper script to extract cli.js path
-          const wrapper = fs.readFileSync(resolved, 'utf8');
-          const m = wrapper.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js/);
-          if (m) claudeBin = path.join(path.dirname(resolved), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-        }
-      } catch {
-        // Try reading the wrapper directly (may be a batch file on Windows)
-        try {
-          const wrapper = fs.readFileSync(whichNative, 'utf8');
-          const m = wrapper.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js/);
-          if (m) claudeBin = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-        } catch {}
+// Strategy 1: Check if `claude` is on PATH (native installer or npm global bin)
+try {
+  const isWin = process.platform === 'win32';
+  const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
+  const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
+  if (which) {
+    const whichNative = isWin ? which : which.replace(/^\/([a-zA-Z])\//, (_, d) => d.toUpperCase() + ':/').replace(/\//g, path.sep);
+    // Check if it's a node wrapper (npm install) or native binary
+    try {
+      const content = fs.readFileSync(whichNative, 'utf8');
+      // npm wrapper scripts reference cli.js — extract the path
+      const m = content.match(/node_modules[\\/]@anthropic-ai[\\/]claude-code[\\/]cli\.js/);
+      if (m) {
+        const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+        if (fs.existsSync(candidate)) { claudeBin = candidate; }
       }
+    } catch {
+      // Can't read as text — it's a compiled binary
     }
-  } catch { /* optional */ }
+    if (!claudeBin) {
+      // Native binary or wrapper without cli.js reference — use directly
+      claudeBin = whichNative;
+      claudeIsNative = true;
+    }
+  }
+} catch { /* optional */ }
+
+// Strategy 2: Known node_modules locations (npm global installs)
+if (!claudeBin) {
+  const searchPaths = [
+    process.env.npm_config_prefix ? path.join(process.env.npm_config_prefix, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
+    process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') : '',
+    '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+    '/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+    '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js',
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+  ].filter(Boolean);
+  for (const p of searchPaths) {
+    try { if (fs.existsSync(p)) { claudeBin = p; break; } } catch {}
+  }
 }
 
-// Strategy 3: npm root -g to find global node_modules
+// Strategy 3: npm root -g
 if (!claudeBin) {
   try {
     const globalRoot = exec('npm root -g', { encoding: 'utf8', env, timeout: 10000 }).trim();
@@ -92,7 +83,7 @@ if (!claudeBin) {
 const tmpDir = path.join(__dirname, 'tmp');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const debugPath = path.join(tmpDir, 'spawn-debug.log');
-fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
+fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
 
 // When resuming a session, skip system prompt (it's baked into the session)
 const isResume = extraArgs.includes('--resume');
@@ -124,7 +115,9 @@ try {
 if (_sysPromptFileSupported === null) {
   try {
     const { spawnSync } = require('child_process');
-    const testResult = spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    const testResult = claudeIsNative
+      ? spawnSync(claudeBin, ['--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true })
+      : spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
     try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: new Date().toISOString() })); } catch { /* optional */ }
   } catch { _sysPromptFileSupported = true; /* assume supported */ }
@@ -150,10 +143,9 @@ if (!isResume) try {
   // If help check fails, try file approach anyway
 }
 
-const proc = runFile(process.execPath, [claudeBin, ...actualArgs], {
-  stdio: ['pipe', 'pipe', 'pipe'],
-  env
-});
+const proc = claudeIsNative
+  ? runFile(claudeBin, actualArgs, { stdio: ['pipe', 'pipe', 'pipe'], env })
+  : runFile(process.execPath, [claudeBin, ...actualArgs], { stdio: ['pipe', 'pipe', 'pipe'], env });
 
 fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`);
 
