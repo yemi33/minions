@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.187 (2026-04-02)
+
+### Engine
+- engine/playbook.js
+
 ## 0.1.186 (2026-04-02)
 
 ### Dashboard
