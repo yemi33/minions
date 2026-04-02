@@ -1188,6 +1188,11 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         ? path.join(MINIONS_DIR, 'work-items.json')
         : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
+        // Cost ceiling circuit breaker config — resolved outside lock for clarity
+        const engineCfg = config?.engine || {};
+        const evalMaxCost = engineCfg.evalMaxCost != null ? engineCfg.evalMaxCost : shared.ENGINE_DEFAULTS.evalMaxCost;
+
+        // Single lock: accumulate cost AND check ceiling atomically (no TOCTOU)
         mutateJsonFileLocked(wiPath, (items) => {
           if (!Array.isArray(items)) return items;
           const wi = items.find(i => i.id === meta.item.id);
@@ -1195,29 +1200,17 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi._totalCostUsd = (wi._totalCostUsd || 0) + (taskUsage.costUsd || 0);
             wi._totalInputTokens = (wi._totalInputTokens || 0) + (taskUsage.inputTokens || 0);
             wi._totalOutputTokens = (wi._totalOutputTokens || 0) + (taskUsage.outputTokens || 0);
+
+            // Cost ceiling circuit breaker — treat like evalMaxIterations exceeded
+            if (evalMaxCost != null && evalMaxCost > 0 &&
+                wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
+              wi.status = 'needs-human-review';
+              wi.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds evalMaxCost ceiling $${evalMaxCost.toFixed(2)}`;
+              log('warn', `Work item ${meta.item.id} exceeded cost ceiling ($${wi._totalCostUsd.toFixed(2)} > $${evalMaxCost.toFixed(2)}) — needs-human-review`);
+            }
           }
           return items;
         }, { defaultValue: [] });
-
-        // Cost ceiling circuit breaker — treat like evalMaxIterations exceeded
-        const engineCfg = config?.engine || {};
-        const evalMaxCost = engineCfg.evalMaxCost != null ? engineCfg.evalMaxCost : shared.ENGINE_DEFAULTS.evalMaxCost;
-        if (evalMaxCost != null && evalMaxCost > 0) {
-          const freshItems = safeJson(wiPath) || [];
-          const wi = freshItems.find(i => i.id === meta.item.id);
-          if (wi && wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
-            mutateJsonFileLocked(wiPath, (items) => {
-              if (!Array.isArray(items)) return items;
-              const target = items.find(i => i.id === meta.item.id);
-              if (target) {
-                target.status = 'needs-human-review';
-                target.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds evalMaxCost ceiling $${evalMaxCost.toFixed(2)}`;
-                log('warn', `Work item ${meta.item.id} exceeded cost ceiling ($${wi._totalCostUsd.toFixed(2)} > $${evalMaxCost.toFixed(2)}) — needs-human-review`);
-              }
-              return items;
-            }, { defaultValue: [] });
-          }
-        }
       }
     } catch (err) { log('warn', `Cost accumulation: ${err.message}`); }
   }
@@ -1350,15 +1343,15 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   if (!isSuccess && meta?.item?.id) {
-    const wiPath = resolveWiPath(meta);
-    if (wiPath) {
-      let finalStatus = null;
-      try {
+    // Auto-retry with atomic read-modify-write (no TOCTOU race)
+    try {
+      const wiPath = resolveWiPath(meta);
+      if (wiPath) {
+        let retriesExhausted = false;
         mutateJsonFileLocked(wiPath, (items) => {
           if (!Array.isArray(items)) return items;
           const wi = items.find(i => i.id === meta.item.id);
           if (!wi) return items;
-
           const retries = wi._retryCount || 0;
           if (retries < 3) {
             log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
@@ -1366,22 +1359,28 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi.status = 'pending';
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            finalStatus = 'pending';
+            if (type === 'decompose') delete wi._decomposing;
           } else {
-            wi.status = 'failed';
-            wi.failReason = 'Agent failed (3 retries exhausted)';
-            wi.failedAt = ts();
-            finalStatus = 'failed';
+            retriesExhausted = true;
           }
+          // Clear _decomposing flag on any decompose failure to prevent permanent stuck
           if (type === 'decompose') delete wi._decomposing;
           return items;
-        });
-      } catch (err) { log('warn', `Retry update: ${err.message}`); }
-      // Sync status to PRD outside the work-items lock
-      if (finalStatus) {
-        syncPrdItemStatus(meta.item.id, finalStatus, meta.item?.sourcePlan);
+        }, { defaultValue: [] });
+        if (retriesExhausted) {
+          updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+        }
+      } else {
+        // No wiPath — can't read retries, fall back to meta snapshot
+        const retries = meta.item._retryCount || 0;
+        if (retries < 3) {
+          log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
+          updateWorkItemStatus(meta, 'pending', '');
+        } else {
+          updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+        }
       }
-    }
+    } catch (err) { log('warn', `Retry/decompose update: ${err.message}`); }
   }
   // Meeting post-completion: collect findings/debate/conclusion
   if (type === 'meeting' && meta?.meetingId) {
