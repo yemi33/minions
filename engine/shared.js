@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
-// PR_LINKS_PATH removed — PR linking uses PR.prdItems in pull-requests.json
+const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -68,15 +68,7 @@ function safeWrite(p, data) {
   const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
   const tmp = p + '.tmp.' + process.pid + '.' + (++_tmpCounter);
   try {
-    try {
-      fs.writeFileSync(tmp, content);
-    } catch (writeErr) {
-      if (writeErr.code === 'ENOSPC') {
-        try { fs.unlinkSync(tmp); } catch { /* cleanup */ }
-        throw new Error(`[ENOSPC] Disk full — cannot write ${path.basename(p)}`);
-      }
-      throw writeErr;
-    }
+    fs.writeFileSync(tmp, content);
     // Atomic rename — retry on Windows EPERM (file locking)
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
@@ -176,7 +168,7 @@ function mutateJsonFileLocked(filePath, mutateFn, {
  * Use for filenames that could collide (dispatch IDs, temp files, etc.)
  */
 function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
 /**
@@ -363,9 +355,10 @@ const ENGINE_DEFAULTS = {
   allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
+  autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
-  evalLoop: true, // enable review→fix loop after implementation completes
-  evalMaxIterations: 3, // max review→fix cycles before escalating to human
+  evalLoop: true, // enable evaluate→fix loop after implementation completes
+  evalMaxIterations: 3, // max evaluate→fix cycles before escalating to human
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
 };
 
@@ -411,24 +404,8 @@ function projectStateDir(project) {
   return dir;
 }
 
-const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
-
 function projectWorkItemsPath(project) {
   return path.join(projectStateDir(project), 'work-items.json');
-}
-
-/**
- * Resolve work-items.json path from dispatch meta.
- * Central items → CENTRAL_WI_PATH; project items → projects/<name>/work-items.json.
- */
-function resolveWiPath(meta) {
-  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    return CENTRAL_WI_PATH;
-  }
-  if (meta.project?.name) {
-    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-  }
-  return null;
 }
 
 function projectPrPath(project) {
@@ -524,11 +501,10 @@ function parseSkillFrontmatter(content, filename) {
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
 function getPrLinks() {
-  // Derive from PR.prdItems (single source of truth)
+  // Derive from PR.prdItems (single source of truth) + legacy pr-links.json as fallback
   const links = {};
   try {
-    const config = safeJson(path.join(MINIONS_DIR, 'config.json')) || {};
-    const projects = getProjects(config);
+    const projects = getProjects();
     for (const project of projects) {
       const prs = safeJson(projectPrPath(project)) || [];
       for (const pr of prs) {
@@ -538,16 +514,22 @@ function getPrLinks() {
       }
     }
   } catch { /* optional */ }
+  // Merge legacy pr-links.json for items not yet in PR.prdItems
+  try {
+    const legacy = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
+    for (const [prId, itemId] of Object.entries(legacy)) {
+      if (!links[prId]) links[prId] = itemId;
+    }
+  } catch { /* optional */ }
   return links;
 }
 
 function addPrLink(prId, itemId) {
   if (!prId || !itemId) return;
-  try {
-    const config = safeJson(path.join(MINIONS_DIR, 'config.json')) || {};
-    const projects = getProjects(config);
-    for (const project of projects) { linkPrToItem(project, prId, itemId); }
-  } catch { /* optional */ }
+  const links = getPrLinks();
+  if (links[prId] === itemId) return; // already correct, no write needed
+  links[prId] = itemId;
+  safeWrite(PR_LINKS_PATH, links);
 }
 
 /**
@@ -579,6 +561,7 @@ function linkPrToItem(project, prId, itemId) {
 
 module.exports = {
   MINIONS_DIR,
+  PR_LINKS_PATH,
   LOG_PATH,
   ts,
   logTs,
@@ -609,9 +592,7 @@ module.exports = {
   getProjects,
   projectRoot,
   projectStateDir,
-  CENTRAL_WI_PATH,
   projectWorkItemsPath,
-  resolveWiPath,
   projectPrPath,
   getPrLinks,
   addPrLink,

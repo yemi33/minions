@@ -58,7 +58,7 @@ function checkPlanCompletion(meta, config) {
   const unmaterialized = [...planFeatureIds].filter(id => {
     if (workItemById[id]) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && prdItem.status === 'done');
+    return !(prdItem && (prdItem.status === 'done'));
   });
   if (unmaterialized.length > 0) {
     log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
@@ -68,9 +68,9 @@ function checkPlanCompletion(meta, config) {
   // Check 2: every feature's work item must be done (or PRD item marked done externally)
   const notDone = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && w.status === 'done') return false;
+    if (w && (w.status === 'done')) return false; // in-pr accepted for backward compat
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && prdItem.status === 'done');
+    return !(prdItem && (prdItem.status === 'done'));
   });
   if (notDone.length > 0) {
     log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
@@ -478,7 +478,6 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
-        delete target._retryCount;
         target.completedAt = ts();
       } else if (status === 'failed') {
         if (reason) target.failReason = reason;
@@ -495,13 +494,12 @@ function updateWorkItemStatus(meta, status, reason) {
 }
 
 function syncPrdItemStatus(itemId, status, sourcePlan) {
-  if (!itemId || !sourcePlan) return; // sourcePlan required to prevent cross-PRD contamination
+  if (!itemId) return;
   try {
     const prdDir = path.join(MINIONS_DIR, 'prd');
-    const files = [sourcePlan];
+    const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
-      if (!fs.existsSync(fpath)) continue; // skip archived/deleted PRDs
       mutateJsonFileLocked(fpath, (plan) => {
         if (!plan?.missing_features) return plan;
         const feature = plan.missing_features.find(f => f.id === itemId);
@@ -605,14 +603,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
     const entry = dirtyTargets.get(targetName);
-    const existing = entry.prs.find(p => p.id === fullId || String(p.id) === String(prId));
-    if (existing) {
-      // Backfill prdItems if the entry was added by the poller before syncPrsFromOutput ran
-      if (meta?.item?.id && !existing.prdItems?.includes(meta.item.id)) {
-        existing.prdItems = [...(existing.prdItems || []), meta.item.id];
-      }
-      continue;
-    }
+    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -633,7 +624,10 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       sourcePlan: meta?.item?.sourcePlan || '',
       itemType: meta?.item?.itemType || ''
     });
-    if (meta?.item?.id) addPrLink(fullId, meta.item.id);
+    if (meta?.item?.id) {
+      const project = config ? shared.getProjects(config)[0] : null;
+      if (project) shared.linkPrToItem(project, fullId, meta.item.id);
+    }
     added++;
   }
 
@@ -646,26 +640,10 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-/**
- * Resolve which project's pull-requests.json contains a given PR ID.
- * Returns the project object, or null if not found in any project file.
- */
-function resolveProjectForPr(prId) {
-  const config = getConfig();
-  for (const p of shared.getProjects(config)) {
-    const prs = safeJson(projectPrPath(p)) || [];
-    if (prs.some(pr => pr.id === prId)) return p;
-  }
-  return null;
-}
-
 function updatePrAfterReview(agentId, pr, project) {
 
   if (!pr?.id) return;
-  // Resolve actual project if not provided — avoids writing merged array to wrong path
-  const resolvedProject = project || resolveProjectForPr(pr.id);
-  if (!resolvedProject) { log('warn', `updatePrAfterReview: cannot resolve project for ${pr.id}`); return; }
-  const prs = getPrs(resolvedProject);
+  const prs = getPrs(project);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -699,7 +677,7 @@ function updatePrAfterReview(agentId, pr, project) {
     shared.safeWrite(metricsPath, metrics);
   }
 
-  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
+  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
   log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
@@ -707,10 +685,7 @@ function updatePrAfterReview(agentId, pr, project) {
 function updatePrAfterFix(pr, project, source) {
 
   if (!pr?.id) return;
-  // Resolve actual project if not provided — avoids writing merged array to wrong path
-  const resolvedProject = project || resolveProjectForPr(pr.id);
-  if (!resolvedProject) { log('warn', `updatePrAfterFix: cannot resolve project for ${pr.id}`); return; }
-  const prs = getPrs(resolvedProject);
+  const prs = getPrs(project);
   const target = prs.find(p => p.id === pr.id);
   if (!target) return;
 
@@ -725,7 +700,7 @@ function updatePrAfterFix(pr, project, source) {
     log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(shared.projectPrPath(resolvedProject), prs);
+  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -768,7 +743,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   }
 
   if (mergedItemId) {
-    // Mark PRD feature as done
+    // Mark PRD feature as implemented
     const prdDir = path.join(MINIONS_DIR, 'prd');
     try {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
@@ -817,17 +792,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
   if (teamsUrl) {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 5000);
     try {
       await fetch(teamsUrl, {
         method: 'POST',
-        signal: ac.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: `PR ${pr.id} merged: ${pr.title} (${project.name}) by ${pr.agent || 'unknown'}` })
       });
     } catch (err) { log('warn', `Teams post-merge notify failed: ${err.message}`); }
-    clearTimeout(t);
   }
 
   log('info', `Post-merge hooks completed for ${pr.id}`);
@@ -1043,8 +1014,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     if (taskUsage.numTurns > cp.maxTurns) cp.maxTurns = taskUsage.numTurns;
     // Check if this dispatch hit the turn limit
     const engineConfig = require('./queries').getConfig()?.engine || {};
-    // maxTurns default defined in ENGINE_DEFAULTS (shared.js) — avoid hardcoded fallback
-    const turnLimit = engineConfig.maxTurns || shared.ENGINE_DEFAULTS.maxTurns;
+    const turnLimit = engineConfig.maxTurns || 100;
     if (taskUsage.numTurns >= turnLimit) cp.turnLimitHits++;
   }
 
@@ -1073,7 +1043,7 @@ function resolveWiPath(meta) {
 }
 
 /**
- * Parse structured eval verdict from review agent output.
+ * Parse structured eval verdict from evaluate agent output.
  * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
  * Returns parsed object or null if not found.
  */
@@ -1193,11 +1163,6 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         ? path.join(MINIONS_DIR, 'work-items.json')
         : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
-        // Cost ceiling circuit breaker config — resolved outside lock for clarity
-        const engineCfg = config?.engine || {};
-        const evalMaxCost = engineCfg.evalMaxCost != null ? engineCfg.evalMaxCost : shared.ENGINE_DEFAULTS.evalMaxCost;
-
-        // Single lock: accumulate cost AND check ceiling atomically (no TOCTOU)
         mutateJsonFileLocked(wiPath, (items) => {
           if (!Array.isArray(items)) return items;
           const wi = items.find(i => i.id === meta.item.id);
@@ -1205,17 +1170,29 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi._totalCostUsd = (wi._totalCostUsd || 0) + (taskUsage.costUsd || 0);
             wi._totalInputTokens = (wi._totalInputTokens || 0) + (taskUsage.inputTokens || 0);
             wi._totalOutputTokens = (wi._totalOutputTokens || 0) + (taskUsage.outputTokens || 0);
-
-            // Cost ceiling circuit breaker — treat like evalMaxIterations exceeded
-            if (evalMaxCost != null && evalMaxCost > 0 &&
-                wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
-              wi.status = 'needs-human-review';
-              wi.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds evalMaxCost ceiling $${evalMaxCost.toFixed(2)}`;
-              log('warn', `Work item ${meta.item.id} exceeded cost ceiling ($${wi._totalCostUsd.toFixed(2)} > $${evalMaxCost.toFixed(2)}) — needs-human-review`);
-            }
           }
           return items;
         }, { defaultValue: [] });
+
+        // Cost ceiling circuit breaker — treat like evalMaxIterations exceeded
+        const engineCfg = config?.engine || {};
+        const evalMaxCost = engineCfg.evalMaxCost != null ? engineCfg.evalMaxCost : shared.ENGINE_DEFAULTS.evalMaxCost;
+        if (evalMaxCost != null && evalMaxCost > 0) {
+          const freshItems = safeJson(wiPath) || [];
+          const wi = freshItems.find(i => i.id === meta.item.id);
+          if (wi && wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
+            mutateJsonFileLocked(wiPath, (items) => {
+              if (!Array.isArray(items)) return items;
+              const target = items.find(i => i.id === meta.item.id);
+              if (target) {
+                target.status = 'needs-human-review';
+                target.failReason = `Cumulative cost $${wi._totalCostUsd.toFixed(2)} exceeds evalMaxCost ceiling $${evalMaxCost.toFixed(2)}`;
+                log('warn', `Work item ${meta.item.id} exceeded cost ceiling ($${wi._totalCostUsd.toFixed(2)} > $${evalMaxCost.toFixed(2)}) — needs-human-review`);
+              }
+              return items;
+            }, { defaultValue: [] });
+          }
+        }
       }
     } catch (err) { log('warn', `Cost accumulation: ${err.message}`); }
   }
@@ -1232,8 +1209,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (meta?.item?.id) {
     try {
       const engineConfig = (config.engine || {});
-      // maxTurns resolved from config, fallback to ENGINE_DEFAULTS (shared.js)
-      const turnLimit = engineConfig.maxTurns || shared.ENGINE_DEFAULTS.maxTurns;
+      const turnLimit = engineConfig.maxTurns || 100;
       const turnCount = taskUsage?.numTurns || 0;
       const hitTurnLimit = turnCount >= turnLimit;
       let outputLogSizeBytes = 0;
@@ -1248,48 +1224,40 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch review work item after implement or fix completes successfully
-  // For 'fix' items, only trigger when they were created by the eval loop (_evalParentId set)
-  const isEvalEligible = type === 'implement' || (type === 'fix' && meta?.item?._evalParentId);
-  if (isSuccess && !skipDoneStatus && isEvalEligible && meta?.item?.id) {
-    const evalLoop = config.engine?.evalLoop !== false;
-    if (evalLoop) {
+  // Auto-dispatch review work item after implement completes successfully
+  if (isSuccess && !skipDoneStatus && type === 'implement' && meta?.item?.id) {
+    const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
+    if (autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
-          // For fix items, the eval parent is the original implement item
-          const evalParentId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
           // Dedup: skip if a review item already exists for this parent
-          const existing = items.find(i => i._evalParentId === evalParentId && i.type === 'review' && i.status !== 'done' && i.status !== 'failed');
+          const existing = items.find(i => i._evalParentId === meta.item.id && i.type === 'review');
           if (existing) {
-            log('info', `Eval loop: review item ${existing.id} already exists for ${evalParentId}, skipping`);
+            log('info', `Eval loop: review item ${existing.id} already exists for ${meta.item.id}, skipping`);
           } else {
-            const parentItem = items.find(i => i.id === evalParentId);
-            if (parentItem?._evalDispatched) {
-              log('info', `Eval loop: parent ${evalParentId} already has _evalDispatched set, skipping`);
-            } else {
-              const evalItem = {
-                id: 'W-' + shared.uid(),
-                title: `Review: ${parentItem?.title || meta.item.title || evalParentId}`,
-                type: 'review',
-                priority: parentItem?.priority || meta.item.priority || 'high',
-                status: 'pending',
-                created: ts(),
-                createdBy: 'engine:eval-loop',
-                project: meta.project?.name || meta.item.project,
-                branch_name: parentItem?.branch_name || meta.branch || null,
-                pr_url: parentItem?.pr_url || null,
-                acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
-                _evalParentId: evalParentId,
-              };
-              if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
-              // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
-              if (parentItem) parentItem._evalDispatched = true;
-              items.push(evalItem);
-              shared.safeWrite(wiPath, items);
-              log('info', `Eval loop: created ${evalItem.id} for completed ${type} ${meta.item.id} (parent: ${evalParentId})`);
-            }
+            const parentItem = items.find(i => i.id === meta.item.id);
+            const evalItem = {
+              id: 'W-' + shared.uid(),
+              title: `Review: ${meta.item.title || meta.item.id}`,
+              type: 'review',
+              priority: meta.item.priority || 'high',
+              status: 'pending',
+              created: ts(),
+              createdBy: 'engine:eval-loop',
+              project: meta.project?.name || meta.item.project,
+              branch_name: parentItem?.branch_name || meta.branch || null,
+              pr_url: parentItem?.pr_url || null,
+              acceptance_criteria: parentItem?.acceptance_criteria || meta.item.acceptance_criteria || null,
+              _evalParentId: meta.item.id,
+            };
+            if (parentItem?.sourcePlan) evalItem.sourcePlan = parentItem.sourcePlan;
+            // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
+            if (parentItem) parentItem._evalDispatched = true;
+            items.push(evalItem);
+            shared.safeWrite(wiPath, items);
+            log('info', `Eval loop: created ${evalItem.id} for completed implement ${meta.item.id}`);
           }
         }
       } catch (err) {
@@ -1302,10 +1270,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
-      const evalLoop = config.engine?.evalLoop !== false;
+      const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
       const maxIter = config.engine?.evalMaxIterations ?? shared.ENGINE_DEFAULTS.evalMaxIterations;
 
-      if (verdict && !verdict.pass && evalLoop) {
+      if (verdict && !verdict.pass && autoReview) {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
@@ -1356,44 +1324,52 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   if (!isSuccess && meta?.item?.id) {
-    // Auto-retry with atomic read-modify-write (no TOCTOU race)
+    // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
+    let retries = (meta.item._retryCount || 0);
     try {
-      const wiPath = resolveWiPath(meta);
+      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+        ? path.join(MINIONS_DIR, 'work-items.json')
+        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
-        let retriesExhausted = false;
-        mutateJsonFileLocked(wiPath, (items) => {
-          if (!Array.isArray(items)) return items;
-          const wi = items.find(i => i.id === meta.item.id);
-          if (!wi) return items;
-          const retries = wi._retryCount || 0;
-          if (retries < 3) {
-            log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
-            wi._retryCount = retries + 1;
-            wi.status = 'pending';
-            delete wi.dispatched_at;
-            delete wi.dispatched_to;
-            if (type === 'decompose') delete wi._decomposing;
-          } else {
-            retriesExhausted = true;
-          }
-          // Clear _decomposing flag on any decompose failure to prevent permanent stuck
-          if (type === 'decompose') delete wi._decomposing;
-          return items;
-        }, { defaultValue: [] });
-        if (retriesExhausted) {
-          updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
-        }
-      } else {
-        // No wiPath — can't read retries, fall back to meta snapshot
-        const retries = meta.item._retryCount || 0;
-        if (retries < 3) {
-          log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
-          updateWorkItemStatus(meta, 'pending', '');
-        } else {
-          updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
-        }
+        const items = safeJson(wiPath) || [];
+        const wi = items.find(i => i.id === meta.item.id);
+        if (wi) retries = (wi._retryCount || 0); // Use fresh value from file
       }
-    } catch (err) { log('warn', `Retry/decompose update: ${err.message}`); }
+    } catch { /* optional */ }
+
+    if (retries < 3) {
+      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
+      updateWorkItemStatus(meta, 'pending', '');
+      try {
+        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+          ? path.join(MINIONS_DIR, 'work-items.json')
+          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) {
+            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
+            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
+            shared.safeWrite(wiPath, items);
+          }
+        }
+      } catch (err) { log('warn', `Retry update: ${err.message}`); }
+    } else {
+      updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+    }
+    // Clear _decomposing flag on failure so item doesn't get permanently stuck
+    if (type === 'decompose') {
+      try {
+        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
+          ? path.join(MINIONS_DIR, 'work-items.json')
+          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        if (wiPath) {
+          const items = safeJson(wiPath) || [];
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) { delete wi._decomposing; shared.safeWrite(wiPath, items); }
+        }
+      } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
+    }
   }
   // Meeting post-completion: collect findings/debate/conclusion
   if (type === 'meeting' && meta?.meetingId) {
@@ -1445,7 +1421,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr) {
+  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
