@@ -62,7 +62,7 @@ async function openSettings() {
         '<option value="default"' + ((c.permissionMode) === 'default' ? ' selected' : '') + '>Default — prompt for every tool (agents WILL hang — not recommended)</option>' +
       '</select>' +
       '<div id="set-permissionMode-warn" style="font-size:9px;margin-top:4px;padding:4px 8px;border-radius:4px;' + ((c.permissionMode && c.permissionMode !== 'bypassPermissions') ? 'display:block;background:rgba(248,81,73,0.1);color:var(--red)' : 'display:none') + '">' +
-        '\u26A0 Agents run as background processes with no terminal. Non-bypass modes will cause agents to hang waiting for approval that can never arrive. Use Allowed Tools to restrict what agents can do instead.' +
+        '\u26A0 Tools listed in Allowed Tools above are auto-approved even in non-bypass modes. Agents will only hang if they try to use a tool NOT on that list (e.g. MCP tools). In bypass mode, all tools are approved automatically.' +
       '</div>' +
     '</div>' +
 
