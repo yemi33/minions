@@ -494,12 +494,13 @@ function updateWorkItemStatus(meta, status, reason) {
 }
 
 function syncPrdItemStatus(itemId, status, sourcePlan) {
-  if (!itemId) return;
+  if (!itemId || !sourcePlan) return; // sourcePlan required to prevent cross-PRD contamination
   try {
     const prdDir = path.join(MINIONS_DIR, 'prd');
-    const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
+    const files = [sourcePlan];
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      if (!fs.existsSync(fpath)) continue; // skip archived/deleted PRDs
       mutateJsonFileLocked(fpath, (plan) => {
         if (!plan?.missing_features) return plan;
         const feature = plan.missing_features.find(f => f.id === itemId);
