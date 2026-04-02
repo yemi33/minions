@@ -157,7 +157,7 @@ function resolveMinionsHome(forInit = false) {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
-const force = rest.includes('--force');
+let force = rest.includes('--force');
 const skipScan = rest.includes('--skip-scan');
 const MINIONS_HOME = resolveMinionsHome(cmd === 'init');
 
@@ -475,8 +475,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     console.error('  npm update failed:', e.message);
     process.exit(1);
   }
-  // Re-run init --force to apply the update
-  rest.push('--force');
+  force = true;
   init();
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
