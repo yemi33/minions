@@ -70,7 +70,7 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
     w.sourcePlan === prdFile || w.sourcePlan === mdFile ||
     (w.type === 'plan-to-prd' && (w.planFile === prdFile || w.planFile === mdFile))
   );
-  const implementWi = wi.filter(w => w.type !== 'plan-to-prd' && w.type !== 'verify');
+  const implementWi = wi.filter(w => w.type !== 'plan-to-prd' && w.type !== 'verify' && w.type !== 'evaluate');
   const hasPendingPrd = wi.some(w => w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched'));
   const hasActiveWork = implementWi.some(w => w.status === 'pending' || w.status === 'dispatched');
   const allDone = implementWi.length > 0 && implementWi.every(w => w.status === 'done');
