@@ -2563,7 +2563,7 @@ async function testStateIntegrity() {
   await test('Work-item dispatched sync writes work items before PRD status sync', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
-    const writeIdx = src.indexOf('safeWrite(workItemsPath, items);');
+    const writeIdx = src.indexOf('safeWrite(projectWorkItemsPath(project), items);');
     const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
     assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
       'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
@@ -6117,6 +6117,78 @@ async function testCumulativeCostTracking() {
     assert.ok(src.includes('_totalInputTokens'), 'Dashboard should display _totalInputTokens');
     assert.ok(src.includes('_totalOutputTokens'), 'Dashboard should display _totalOutputTokens');
     assert.ok(src.includes('Cumulative Cost'), 'Dashboard should label the cost field');
+  });
+
+  // ── Dispatch persistence gate (P-f7a2d8e1) ──────────────────────────────
+  console.log('\n── Dispatch persistence gate ──');
+
+  await test('discoverCentralWorkItems uses needsWrite flag for mutation-only persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Extract the full discoverCentralWorkItems function body
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    assert.ok(fnStart > -1, 'engine.js must define discoverCentralWorkItems');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+
+    // Must declare needsWrite flag
+    assert.ok(fnBody.includes('let needsWrite = false'),
+      'discoverCentralWorkItems must declare needsWrite flag');
+
+    // Must use needsWrite in the write condition
+    assert.ok(fnBody.includes('needsWrite || newWork.length > 0'),
+      'discoverCentralWorkItems must write when needsWrite is true even if newWork is empty');
+
+    // Must set needsWrite on _pendingReason mutation
+    assert.ok(fnBody.includes('needsWrite = true'),
+      'discoverCentralWorkItems must set needsWrite on item mutations');
+  });
+
+  await test('discoverCentralWorkItems sets needsWrite on fan-out status mutation', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+
+    // Fan-out dispatched block must set needsWrite
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'), fnBody.indexOf('} else {'));
+    assert.ok(fanOutSection.includes('needsWrite = true'),
+      'Fan-out dispatch path must set needsWrite when mutating item status');
+  });
+
+  await test('discoverCentralWorkItems sets needsWrite on single-agent critical_vars_missing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+
+    // The single-agent path sets _pendingReason = 'critical_vars_missing' and needsWrite
+    // Find the section after "Normal: single agent dispatch"
+    const singleIdx = fnBody.indexOf('Normal: single agent dispatch');
+    assert.ok(singleIdx > -1, 'Must have single-agent dispatch section');
+    const singleAgentSection = fnBody.slice(singleIdx);
+    assert.ok(singleAgentSection.includes('critical_vars_missing'),
+      'Single-agent section must handle critical_vars_missing');
+    assert.ok(singleAgentSection.includes("item._pendingReason = 'critical_vars_missing'"),
+      'Single-agent section must set _pendingReason');
+    // Verify needsWrite is set near the critical_vars_missing assignment
+    const cvm = singleAgentSection.indexOf('critical_vars_missing');
+    const nearbyCode = singleAgentSection.slice(cvm, cvm + 100);
+    assert.ok(nearbyCode.includes('needsWrite = true'),
+      'Single-agent central dispatch must set needsWrite after critical_vars_missing');
+  });
+
+  await test('discoverFromWorkItems consolidates persistence into single write gate', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverFromWorkItems(');
+    assert.ok(fnStart > -1, 'engine.js must define discoverFromWorkItems');
+    // Find the next function definition to bound the slice
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 15000);
+
+    // Must use needsWrite || newWork.length > 0 (not separate conditions)
+    assert.ok(fnBody.includes('needsWrite || newWork.length > 0'),
+      'discoverFromWorkItems must use consolidated write condition');
+
+    // The final persistence gate should be consolidated — no separate if(needsWrite) and if(newWork.length>0) writes
+    assert.ok(!fnBody.includes('if (newWork.length > 0) {\n    const workItemsPath'),
+      'discoverFromWorkItems should not have the old separate newWork.length > 0 write block');
   });
 }
 
