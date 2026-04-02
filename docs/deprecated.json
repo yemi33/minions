@@ -1,10 +1,1 @@
-[
-  {
-    "id": "eval-loop-config-key",
-    "summary": "evalLoop config key in engine defaults — lifecycle.js uses autoReview instead",
-    "deprecated": "2026-04-02",
-    "reason": "The evalLoop key at engine/shared.js:360 is never read by any code. lifecycle.js uses the autoReview key (shared.js:358) for the evaluate→fix loop. evalLoop is a ghost config key.",
-    "locations": ["engine/shared.js:360 — evalLoop: true in DEFAULTS object"],
-    "cleanup": "Remove the evalLoop key from DEFAULTS in engine/shared.js and any references in CLAUDE.md or config documentation"
-  }
-]
+[]
