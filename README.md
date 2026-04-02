@@ -188,7 +188,7 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 - **Human approval gate** — plans require approval before materializing as work items. Dashboard provides Approve / Discuss & Revise / Reject. Discussion launches an interactive Claude Code session.
 - **Dispatches AI agents** (Claude CLI) with full project context, git worktrees, and MCP server access
 - **Routes intelligently** — fixes first, then reviews, then implementation, matched to agent strengths
-- **LLM-powered consolidation** — Haiku summarizes notes (threshold: 5 files). Regex fallback. Source references required.
+- **LLM-powered consolidation** — Claude Haiku summarizes notes (threshold: 5 files). Regex fallback. Source references required.
 - **Knowledge base** — `knowledge/` with categories: architecture, conventions, project-notes, build-reports, reviews. Full notes preserved. Dashboard browsable with inline Q&A.
 - **Token tracking** — per-agent and per-day usage. Dashboard Token Usage panel.
 - **Engine watchdog** — dashboard auto-restarts dead engine.
@@ -204,6 +204,10 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 - **Plan verification** — when all PRD items complete, engine auto-dispatches a verify task that builds all repos, starts the webapp, and writes a manual testing guide
 - **PRD modification** — edit plans via doc-chat in the modal, then "Generate PRD" to regenerate. Dashboard supports regenerating, retrying failed items, and syncing edits to pending work items.
 - **Auto-extracts skills** — agents write ` ```skill ` blocks in output; engine auto-extracts them
+- **Team meetings** — multi-agent meetings with investigate → debate → conclude rounds. Agents research a topic, debate approaches, and produce a conclusion with action items.
+- **Pipelines** — multi-stage workflows chaining tasks, meetings, plans, and more. Cron triggers or manual. Artifacts flow between stages.
+- **Eval loop** — after implementation, auto-dispatches review → fix cycles (configurable iterations and cost ceiling per work item)
+- **Pinned notes** — critical context pinned to all agent prompts via `pinned.md`
 - **Heartbeat monitoring** — detects dead/hung agents via output file activity, not just timeouts
 - **Auto-cleanup** — stale temp files, orphaned worktrees, zombie processes cleaned every 10 minutes
 
@@ -212,20 +216,20 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 The web dashboard at `http://localhost:7331` provides:
 
 - **Projects bar** — all linked projects with descriptions (hover for full text)
-- **Command Center** — add work items, notes, plans (multi-project via `#project` tags). "make a plan for..." auto-detection, "remember" keyword, `--parallel`/`--shared` flags, arrow key history, Past Commands modal.
+- **Command Center** — add work items, notes, plans (multi-project via `#project` tags). "make a plan for..." auto-detection, "remember" keyword, `--parallel`/`--shared` flags, arrow key history, Past Commands modal. Session state persists across refreshes.
 - **Minions Members** — agent cards with status and result summary, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
-- **Work Items** — paginated table with status, source, type, priority, assigned agent, linked PRs, fan-out badges, and retry button for failed items
-- **Plans** — plan approval UI with Approve / Discuss & Revise / Reject. Click to open in doc-chat modal for natural language editing; "Generate PRD" button appears after edits.
-- **Knowledge Base** — browsable by category with inline Q&A (Haiku-powered)
-- **PRD Progress** — dependency graph view, per-item retry button, "Edit PRD" and "Regenerate" actions. Failed items show green retry button.
-- **Token Usage** — per-agent and per-day token tracking, plus engine LLM usage (command-center, doc-chat, consolidation)
-- **Pull Requests** — paginated PR tracker sorted by date, with review/build/merge status
-- **Skills** — agent-created reusable workflows (minions-wide + project-specific), click to view full content
-- **Notes Inbox + Team Notes** — learnings and team rules, editable from dashboard modal
-- **Dispatch Queue + Engine Log** — active/pending work and audit trail
-- **Agent Metrics** — tasks completed, errors, PRs created/approved/rejected, approval rates
-- **Document modals** — inline Q&A with Haiku on any document modal
+- **Work Items** — paginated table (20/page) with status, source, type, priority, assigned agent, linked PRs, fan-out badges, retry/delete/archive with optimistic updates
+- **Plans & PRD** — plan approval UI with Approve / Discuss & Revise / Reject / Pause / Archive. Paginated (10/page). Click to open in doc-chat modal for natural language editing. PRD dependency graph view with per-item retry, edit, and remove.
+- **Meetings** — create multi-agent meetings, view live progress per round, advance/end/archive. Paginated (10/page). Create plan from meeting conclusion.
+- **Pipelines** — multi-stage pipeline builder. Create, trigger, continue past wait stages, view run history with artifact links. Paginated (10/page).
+- **Pull Requests** — paginated PR tracker (25/page) sorted by date, with review/build/merge status. Link external PRs manually.
+- **Notes & KB** — inbox (paginated, 15/page), team notes (editable), knowledge base by category (paginated, 30/page) with inline Q&A. Pinned notes for critical context.
+- **Schedules** — create/edit/delete scheduled tasks with visual cron builder and natural language parsing. Paginated (15/page).
+- **Skills & MCP** — agent-created reusable workflows (minions-wide + project-specific), click to view full content. MCP server listing.
+- **Engine** — dispatch queue (completed paginated, 20/page), engine log (paginated, 50/page), agent metrics, token usage, context pressure.
+- **Settings** — engine config, eval loop, agent management, routing editor.
+- **Document modals** — inline Q&A on any document modal. Auto-polls for live updates with scroll preservation.
 
 ## Project Config
 
@@ -414,6 +418,10 @@ Routing rules in `routing.md`. Charters in `agents/{name}/charter.md`. Both are 
 | `implement-shared.md` | Implement on a shared branch (multiple agents) |
 | `ask.md` | Answer a question about the codebase |
 | `verify.md` | Plan completion: build all repos, start webapp, write testing guide |
+| `decompose.md` | Break large work items into 2-5 sub-tasks |
+| `meeting-investigate.md` | Meeting round 1: research the topic |
+| `meeting-debate.md` | Meeting round 2: debate approaches |
+| `meeting-conclude.md` | Meeting round 3: synthesize conclusion |
 
 All playbooks use `{{template_variables}}` filled from project config. The `work-item.md` playbook uses `{{scope_section}}` to inject project-specific or multi-project context. Playbooks are fully customizable — edit them to match your workflow.
 
@@ -500,6 +508,11 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `shutdownTimeout` | 300000 (5min) | Max wait for active agents during graceful shutdown (SIGTERM/SIGINT) |
 | `allowTempAgents` | false | Spawn ephemeral agents when all permanent agents are busy |
 | `autoDecompose` | true | Auto-decompose `implement:large` items into sub-tasks before dispatch |
+| `autoApprovePlans` | false | Auto-approve PRDs without waiting for human approval |
+| `evalLoop` | true | Auto-dispatch review → fix cycles after implementation completes |
+| `evalMaxIterations` | 3 | Max review → fix cycles before escalating to human |
+| `evalMaxCost` | null | USD ceiling per work item across all eval iterations (null = no limit) |
+| `meetingRoundTimeout` | 600000 (10min) | Timeout per meeting round before auto-advance |
 
 ### Scheduled Tasks
 
@@ -550,7 +563,7 @@ Set `engine.allowTempAgents: true` to let the engine spawn ephemeral agents when
 
 ### Live Output Streaming
 
-The dashboard streams agent output in real-time via Server-Sent Events (SSE) instead of polling. The `GET /api/agent/:id/live-stream` endpoint pushes output chunks as they're written. Falls back to 3-second polling if SSE is unavailable.
+The dashboard polls agent output every 3 seconds via `GET /api/agent/:id/live`. An SSE endpoint (`/api/agent/:id/live-stream`) is also available but polling is preferred to avoid HTTP/1.1 connection exhaustion.
 
 ## Node.js Upgrade Caution
 
@@ -591,21 +604,36 @@ To move to a new machine: `npm install -g @yemi33/minions && minions init --forc
     spawn-agent.js       <- Agent spawn wrapper (resolves claude cli.js)
     preflight.js         <- Prerequisite checks (Node, Git, Claude CLI, API key)
     scheduler.js         <- Cron-style scheduled task discovery
+    pipeline.js          <- Multi-stage pipeline orchestration
+    meeting.js           <- Meeting creation, rounds, conclusion
+    cleanup.js           <- Worktree + temp file cleanup
+    timeout.js           <- Agent timeout and heartbeat detection
+    cooldown.js          <- Dispatch cooldown with exponential backoff
+    github.js            <- GitHub PR polling, comment polling, reconciliation
+    routing.js           <- Agent routing and temp agent management
+    dispatch.js          <- Dispatch queue mutations (add, complete, retry)
     ado-mcp-wrapper.js   <- ADO MCP authentication wrapper
     check-status.js      <- Quick status check without full engine load
     control.json         <- running/paused/stopped (runtime, generated)
     dispatch.json        <- pending/active/completed queue (runtime, generated)
-    log.json             <- Audit trail, capped at 500 (runtime, generated)
+    log.json             <- Audit trail, capped at 2500 (runtime, generated)
     metrics.json         <- Per-agent quality metrics (runtime, generated)
     cooldowns.json       <- Dispatch cooldown tracking (runtime, generated)
     schedule-runs.json   <- Last-run timestamps for scheduled tasks (runtime, generated)
+    pipeline-runs.json   <- Pipeline run history per pipeline (runtime, generated)
   dashboard.js           <- Web dashboard server
-  dashboard.html         <- Dashboard UI (single-file)
+  dashboard/
+    layout.html          <- Page layout shell with sidebar navigation
+    styles.css           <- Dashboard CSS (dark theme, responsive)
+    pages/               <- HTML fragments per page (work, plans, engine, etc.)
+    js/                  <- JS modules: render-*.js, utils, refresh, settings, command-center
   config.json            <- projects[], agents, engine, claude settings (generated by minions init)
   config.template.json   <- Template for new installs
   package.json           <- npm package definition
   plans/                 <- Approved plans: plans/{project}-{date}.json (generated)
   prd/                   <- PRD archives and verification guides (generated)
+  pipelines/             <- Pipeline definitions (generated)
+  meetings/              <- Meeting state files (generated)
   knowledge/             <- KB: architecture, conventions, project-notes, build-reports, reviews (generated)
   routing.md             <- Dispatch rules table (generated, editable)
   notes.md               <- Team rules + consolidated learnings (generated)
@@ -624,6 +652,9 @@ To move to a new machine: `npm install -g @yemi33/minions && minions init --forc
     ask.md               <- Answer a question about the codebase
     verify.md            <- Plan verification: build, test, start webapp, testing guide
     decompose.md         <- Break large work items into 2-5 sub-tasks
+    meeting-investigate.md <- Meeting round 1: research
+    meeting-debate.md    <- Meeting round 2: debate
+    meeting-conclude.md  <- Meeting round 3: conclude
   skills/                <- Agent-created reusable workflows (generated)
   agents/
     {name}/
