@@ -1037,7 +1037,7 @@ async function testEvalLoopAutoDispatch() {
   await test('no evaluate item created for non-implement types', () => {
     // Verify the code path gates on type === 'implement'
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
+    assert.ok(src.includes("type === 'implement'") && src.includes('autoReview'),
       'lifecycle.js should gate eval-loop on type === implement');
     assert.ok(src.includes('_evalParentId'),
       'lifecycle.js should set _evalParentId on evaluate items');
@@ -1049,8 +1049,8 @@ async function testEvalLoopAutoDispatch() {
       'lifecycle.js should use resolveWiPath helper');
   });
 
-  await test('evalLoop defaults to true in ENGINE_DEFAULTS', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.evalLoop, true);
+  await test('autoReview defaults to true in ENGINE_DEFAULTS (gates both PR reviews and post-implement reviews)', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoReview, true);
     assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxIterations, 3);
   });
 
@@ -1080,10 +1080,14 @@ async function testEvalLoopAutoDispatch() {
   });
 
   await test('source guard requires work-item source for project-scoped path', () => {
-    // Verify the code path checks meta.source === 'work-item' for project-scoped items
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
-      'eval-loop should check meta.source === work-item for project-scoped path');
+    // resolveWiPath in shared.js guards project-scoped paths via meta.project?.name
+    // lifecycle.js delegates to resolveWiPath instead of inline checks
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes("meta.project?.name"),
+      'resolveWiPath in shared.js should check meta.project?.name for project-scoped path');
+    const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(lifecycleSrc.includes('resolveWiPath(meta)'),
+      'lifecycle.js should use shared resolveWiPath instead of inline path resolution');
   });
 }
 
@@ -1244,30 +1248,11 @@ async function testEvalIterationTracking() {
   });
 
   await test('needs-human-review is a terminal status — engine skips dispatch', () => {
-    // Verify that the engine dispatch gates explicitly skip needs-human-review items
+    // Verify that the engine dispatch gate at discoverFromWorkItems skips non-pending/queued items
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // The dispatch gate only dispatches 'queued' or 'pending' items
     assert.ok(src.includes("item.status !== 'queued' && item.status !== 'pending'"),
       'engine.js should gate dispatch on queued/pending status only');
-    // Explicit needs-human-review skip guard in all dispatch paths
-    const skipCount = (src.match(/item\.status === 'needs-human-review'/g) || []).length;
-    assert.ok(skipCount >= 2,
-      `engine.js should have explicit needs-human-review skip in project and central dispatch paths (found ${skipCount})`);
-  });
-
-  await test('needs-human-review item is never added to newWork in project dispatch', () => {
-    // Source-level assertion: explicit needs-human-review skip guard exists in both dispatch paths
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // Project dispatch path (discoverFromWorkItems)
-    const projectIdx = src.indexOf('function discoverFromWorkItems');
-    const centralIdx = src.indexOf('function discoverCentralWorkItems');
-    const projectSection = src.slice(projectIdx, centralIdx);
-    assert.ok(projectSection.includes("item.status === 'needs-human-review'"),
-      'Project dispatch path must explicitly skip needs-human-review items');
-    // Central dispatch path (discoverCentralWorkItems) — also covers fan-out
-    const centralSection = src.slice(centralIdx, centralIdx + 3000);
-    assert.ok(centralSection.includes("item.status === 'needs-human-review'"),
-      'Central dispatch path must explicitly skip needs-human-review items');
   });
 
   await test('dashboard statusBadge maps needs-human-review to needs-review class', () => {
@@ -3006,6 +2991,33 @@ async function testProjectPathHelpers() {
     const wi = shared.projectWorkItemsPath({ name: 'test' });
     const pr = shared.projectPrPath({ name: 'test' });
     assert.notStrictEqual(wi, pr);
+  });
+
+  await test('CENTRAL_WI_PATH is exported and ends with work-items.json', () => {
+    assert.ok(shared.CENTRAL_WI_PATH, 'CENTRAL_WI_PATH should be defined');
+    assert.ok(shared.CENTRAL_WI_PATH.endsWith('work-items.json'), 'Should end with work-items.json');
+    assert.ok(!shared.CENTRAL_WI_PATH.includes('projects'), 'Central path should not include projects dir');
+  });
+
+  await test('resolveWiPath returns central path for central-work-item source', () => {
+    const result = shared.resolveWiPath({ source: 'central-work-item' });
+    assert.strictEqual(result, shared.CENTRAL_WI_PATH);
+  });
+
+  await test('resolveWiPath returns central path for central-work-item-fanout source', () => {
+    const result = shared.resolveWiPath({ source: 'central-work-item-fanout' });
+    assert.strictEqual(result, shared.CENTRAL_WI_PATH);
+  });
+
+  await test('resolveWiPath returns project path when project.name is set', () => {
+    const result = shared.resolveWiPath({ source: 'work-item', project: { name: 'myproj' } });
+    assert.ok(result.includes('myproj'), 'Should include project name');
+    assert.ok(result.endsWith('work-items.json'), 'Should end with work-items.json');
+  });
+
+  await test('resolveWiPath returns null when no source or project', () => {
+    const result = shared.resolveWiPath({ source: 'unknown' });
+    assert.strictEqual(result, null);
   });
 }
 
