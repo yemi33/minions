@@ -1857,7 +1857,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           for (const w of items) {
             if (w.sourcePlan !== body.file) continue;
             // Keep completed items as-is, reset everything else to pending.
-            if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+            if (w.status === 'done') continue;
 
             if (w.status === 'dispatched') {
               // Kill the agent working on this item, if any.
@@ -2259,148 +2259,6 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  // POST /api/plans/revise-and-regenerate — REMOVED: plan versioning now handled by /api/doc-chat
-  // The "Replace old PRD" flow uses qaReplacePrd (frontend) which calls /api/plans/pause + /api/plans/regenerate + planExecute
-  async function handlePlansReviseAndRegenerate(req, res) {
-    try {
-      const body = await readBody(req);
-      if (!body.source || !body.instruction) return jsonReply(res, 400, { error: 'source and instruction required' });
-
-      // Find the source plan .md file for this PRD
-      // Convention: PRD JSON references plan via plan_summary containing the work item ID,
-      // or the .md file has a matching name prefix
-      const prdPath = path.join(PRD_DIR, body.source);
-      if (!fs.existsSync(prdPath)) return jsonReply(res, 404, { error: 'PRD file not found' });
-
-      // Look for corresponding .md plan file
-      let sourcePlanFile = null;
-      const planFiles = safeReadDir(PLANS_DIR).filter(f => f.endsWith('.md'));
-      if (body.sourcePlan) {
-        // Explicit source plan provided
-        sourcePlanFile = body.sourcePlan;
-      } else {
-        // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
-        const prd = JSON.parse(safeRead(prdPath) || '{}');
-        if (prd.source_plan) {
-          sourcePlanFile = prd.source_plan;
-        } else {
-          // Match by prefix: officeagent-2026-03-15.json → plan-*officeagent* or plan-w025*.md
-          const prdBase = body.source.replace('.json', '');
-          for (const f of planFiles) {
-            // Check if plan file mentions the same project or was created around same time
-            const content = safeRead(path.join(PLANS_DIR, f)) || '';
-            if (content.includes(prd.project || '___nomatch___') || content.includes(prd.plan_summary?.slice(0, 40) || '___nomatch___')) {
-              sourcePlanFile = f;
-              break;
-            }
-          }
-          // Last resort: most recent .md plan
-          if (!sourcePlanFile && planFiles.length > 0) {
-            sourcePlanFile = planFiles.sort((a, b) => {
-              try { return fs.statSync(path.join(PLANS_DIR, b)).mtimeMs - fs.statSync(path.join(PLANS_DIR, a)).mtimeMs; } catch { return 0; }
-            })[0];
-          }
-        }
-      }
-
-      if (!sourcePlanFile) {
-        return jsonReply(res, 404, { error: 'No source plan (.md) found for this PRD. You can edit the PRD JSON directly using "Edit Plan".' });
-      }
-
-      const sourcePlanPath = path.join(PLANS_DIR, sourcePlanFile);
-      const planContent = safeRead(sourcePlanPath);
-      if (!planContent) return jsonReply(res, 404, { error: 'Source plan file not readable: ' + sourcePlanFile });
-
-      // Step 1: Steer the source plan with the user's instruction via CC
-      const result = await ccDocCall({
-        message: body.instruction,
-        document: planContent,
-        title: sourcePlanFile,
-        filePath: 'plans/' + sourcePlanFile,
-        selection: body.selection || '',
-        canEdit: true,
-        isJson: false,
-      });
-
-      if (!result.content) {
-        return jsonReply(res, 200, { ok: true, answer: result.answer, updated: false });
-      }
-
-      // Save the revised plan
-      safeWrite(sourcePlanPath, result.content);
-
-      // Step 2: Pause the old PRD so it stops materializing items
-      const prd = JSON.parse(safeRead(prdPath) || '{}');
-      prd.status = 'revision-requested';
-      prd.revision_feedback = body.instruction;
-      prd.revisionRequestedAt = new Date().toISOString();
-      safeWrite(prdPath, prd);
-
-      // Step 3: Clean up pending/failed work items from old PRD
-      let reset = 0, kept = 0;
-      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
-      for (const proj of PROJECTS) {
-        wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
-      }
-      const deletedItemIds = [];
-      for (const wiInfo of wiPaths) {
-        try {
-          const items = safeJson(wiInfo.path);
-          const filtered = [];
-          for (const w of items) {
-            if (w.sourcePlan === body.source) {
-              if (w.status === 'pending' || w.status === 'failed') {
-                reset++;
-                deletedItemIds.push(w.id);
-              } else {
-                kept++;
-                filtered.push(w);
-              }
-            } else {
-              filtered.push(w);
-            }
-          }
-          if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
-        } catch (e) { console.error('work item deletion:', e.message); }
-      }
-      for (const itemId of deletedItemIds) {
-        cleanDispatchEntries(d =>
-          d.meta?.item?.sourcePlan === body.source && d.meta?.item?.id === itemId
-        );
-      }
-
-      // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
-      const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let centralItems = [];
-      try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
-      const wiId = 'W-' + shared.uid();
-      centralItems.push({
-        id: wiId,
-        title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
-        type: 'plan-to-prd',
-        priority: 'high',
-        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
-        status: 'pending',
-        created: new Date().toISOString(),
-        createdBy: 'dashboard:revise-and-regenerate',
-        project: prd.project || '',
-        planFile: sourcePlanFile,
-      });
-      safeWrite(centralWiPath, centralItems);
-
-      return jsonReply(res, 200, {
-        ok: true,
-        answer: result.answer,
-        updated: true,
-        sourcePlan: sourcePlanFile,
-        prdPaused: true,
-        reset,
-        kept,
-        workItemId: wiId,
-      });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
-  }
-
   async function handlePlansDiscuss(req, res) {
     try {
       const body = await readBody(req);
@@ -2570,7 +2428,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                     let changed = false;
                     for (const w of items) {
                       if (w.sourcePlan !== f) continue;
-                      if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+                      if (w.status === 'done') continue;
                       if (w.status === 'dispatched') {
                         const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
                         if (activeEntry) {

@@ -35,8 +35,6 @@ function closeModal() {
   // Clear edit/steer state
   _modalEditable = null;
   _modalFilePath = null;
-  _modalOriginalPlan = null;
-  // steer btn removed — unified send
   const body = document.getElementById('modal-body');
   body.contentEditable = 'false';
   body.style.border = '';
