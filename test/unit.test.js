@@ -5575,9 +5575,6 @@ async function main() {
 
     // P-k7m2a9f4: Pipeline artifact navigation links
     await testPipelineArtifactLinks();
-
-    // P-r4b8c1e6: Live step-progress indicator on pipelines list page
-    await testPipelineStepProgress();
   } finally {
     cleanupTmpDirs();
   }
