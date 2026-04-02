@@ -281,25 +281,34 @@ function findGitRepos(rootDir, maxDepth = 3) {
 }
 
 async function scanAndAdd({ root, depth } = {}) {
-  let scanRoot;
+  let scanRoots;
   if (root) {
-    scanRoot = path.resolve(root);
+    scanRoots = [path.resolve(root)];
   } else {
     const homeDir = process.env.USERPROFILE || process.env.HOME || '';
-    const answer = await ask('Where are your projects?', homeDir);
-    scanRoot = path.resolve(answer);
+    const answer = await ask('Where are your projects? (comma-separate for multiple)', homeDir);
+    scanRoots = answer.split(',').map(s => path.resolve(s.trim())).filter(Boolean);
   }
-  if (!fs.existsSync(scanRoot)) {
-    console.log(`  Directory not found: ${scanRoot}\n`);
+  // Validate all paths
+  const validRoots = [];
+  for (const r of scanRoots) {
+    if (fs.existsSync(r)) { validRoots.push(r); }
+    else { console.log(`  Directory not found (skipping): ${r}`); }
+  }
+  if (validRoots.length === 0) {
+    console.log('  No valid directories to scan.\n');
     rl.close();
     return;
   }
   const maxDepth = depth !== undefined ? (parseInt(depth, 10) || 4) : 4;
 
-  console.log(`\n  Scanning for git repos in: ${scanRoot}`);
-  console.log(`  Max depth: ${maxDepth}\n`);
-
-  const repos = findGitRepos(scanRoot, maxDepth);
+  let repos = [];
+  for (const scanRoot of validRoots) {
+    console.log(`\n  Scanning: ${scanRoot} (depth ${maxDepth})`);
+    repos.push(...findGitRepos(scanRoot, maxDepth));
+  }
+  // Deduplicate by resolved path
+  repos = [...new Map(repos.map(r => [path.resolve(r), r])).values()];
   if (repos.length === 0) {
     console.log('  No git repositories found.\n');
     rl.close();
