@@ -6091,6 +6091,46 @@ async function testCumulativeCostTracking() {
       'Should check evalMaxCost > 0 before enforcing');
   });
 
+  // ── updatePrAfterReview / updatePrAfterFix: correct project file resolution ──
+
+  await test('updatePrAfterReview resolves correct project file when project is null', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Old pattern: ternary fallback to MINIONS_DIR/pull-requests.json in updatePrAfter* — should be gone
+    const reviewFnSrc = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
+    const fixFnSrc = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\n// ─── Post-Merge'));
+    assert.ok(!reviewFnSrc.includes("path.join(MINIONS_DIR, 'pull-requests.json')"),
+      'updatePrAfterReview should not fall back to MINIONS_DIR/pull-requests.json');
+    assert.ok(!fixFnSrc.includes("path.join(MINIONS_DIR, 'pull-requests.json')"),
+      'updatePrAfterFix should not fall back to MINIONS_DIR/pull-requests.json');
+    // New pattern: resolveProjectForPr used when project is null
+    assert.ok(src.includes('resolveProjectForPr'),
+      'Should use resolveProjectForPr to find the correct project');
+    // Both functions should use resolvedProject
+    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
+    assert.ok(reviewFn.includes('resolvedProject'), 'updatePrAfterReview should use resolvedProject');
+    const fixFn = src.slice(src.indexOf('function updatePrAfterFix('), src.indexOf('\n// ─── Post-Merge'));
+    assert.ok(fixFn.includes('resolvedProject'), 'updatePrAfterFix should use resolvedProject');
+  });
+
+  await test('updatePrAfterReview writes to projectPrPath(resolvedProject), not a conditional fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction updatePrAfterFix('));
+    // Should write to projectPrPath(resolvedProject), not a ternary with fallback
+    assert.ok(reviewFn.includes('shared.safeWrite(shared.projectPrPath(resolvedProject)'),
+      'updatePrAfterReview should write to projectPrPath(resolvedProject)');
+    assert.ok(!reviewFn.includes('path.join(path.resolve(MINIONS_DIR'),
+      'Should not contain old stale path fallback');
+  });
+
+  await test('resolveProjectForPr scans all project PR files', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function resolveProjectForPr('), src.indexOf('\nfunction updatePrAfterReview('));
+    assert.ok(fn.includes('getProjects'), 'Should iterate over all projects');
+    assert.ok(fn.includes('projectPrPath'), 'Should read each project PR file');
+    assert.ok(fn.includes('return p'), 'Should return the matching project');
+    assert.ok(fn.includes('return null'), 'Should return null if not found');
+  });
+
   await test('dashboard renders cumulative cost fields', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
     assert.ok(src.includes('_totalCostUsd'), 'Dashboard should display _totalCostUsd');
