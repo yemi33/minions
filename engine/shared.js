@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
+const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 
@@ -561,6 +562,7 @@ function linkPrToItem(project, prId, itemId) {
 
 module.exports = {
   MINIONS_DIR,
+  CENTRAL_WI_PATH,
   PR_LINKS_PATH,
   LOG_PATH,
   ts,
