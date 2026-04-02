@@ -50,28 +50,7 @@ git push -u origin {{branch_name}}
 
 Do NOT remove the worktree — the engine handles cleanup automatically.
 
-## Create PR (MANDATORY)
-
-**Your task is NOT complete until a pull request exists.** If PR creation fails, retry up to 3 times before reporting the error.
-
-{{pr_create_instructions}}
-- sourceRefName: `refs/heads/{{branch_name}}`
-- targetRefName: `refs/heads/{{main_branch}}`
-- title: `{{commit_message}}`
-- labels: `["minions:{{agent_id}}"]`
-
-Include in the PR description:
-- What was built and why
-- Files changed
-- How to build and test, browser URL if applicable
-- Test plan
-
-## Post self-review on PR
-
-{{pr_comment_instructions}}
-- pullRequestId: `<from PR creation>`
-- Re-read your own diff critically before posting
-- Sign: `Built by Minions ({{agent_name}} — {{agent_role}})`
+{{pr_section}}
 
 ## Signal Completion
 

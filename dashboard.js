@@ -1038,6 +1038,7 @@ const server = http.createServer(async (req, res) => {
       if (body.agents) item.agents = body.agents;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
+      if (body.skipPr === true) item.skipPr = true;
       items.push(item);
       safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, id });
@@ -1076,6 +1077,7 @@ const server = http.createServer(async (req, res) => {
       if (agent !== undefined) item.agent = agent || null;
       if (body.references !== undefined) item.references = body.references;
       if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
+      if (body.skipPr !== undefined) item.skipPr = body.skipPr === true;
       item.updatedAt = new Date().toISOString();
 
       safeWrite(wiPath, items);
@@ -1643,7 +1645,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             file: f, format: 'draft', archived,
             project: projectMatch ? projectMatch[1].trim() : '',
             summary: titleMatch ? titleMatch[1].trim() : f.replace('.md', ''),
-            status: archived ? 'completed' : completedPrdFiles.has(f) ? 'converted' : 'draft',
+            status: archived ? 'completed' : completedPrdFiles.has(f) ? 'approved' : 'active',
             branchStrategy: '',
             featureBranch: '',
             itemCount: (content.match(/^\d+\.\s+\*\*/gm) || []).length,
@@ -3057,7 +3059,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
 
     // Work items
-    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?', handler: handleWorkItemsCreate },
+    { method: 'POST', path: '/api/work-items', desc: 'Create a new work item', params: 'title, type?, description?, priority?, project?, agent?, agents?, scope?, references?, acceptanceCriteria?, skipPr?', handler: handleWorkItemsCreate },
     { method: 'POST', path: '/api/work-items/update', desc: 'Edit a pending/failed work item', params: 'id, source?, title?, description?, type?, priority?, agent?, references?, acceptanceCriteria?', handler: handleWorkItemsUpdate },
     { method: 'POST', path: '/api/work-items/retry', desc: 'Reset a failed/dispatched item to pending', params: 'id, source?', handler: handleWorkItemsRetry },
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
@@ -3136,12 +3138,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/reject', desc: 'Reject a plan', params: 'file, rejectedBy?, reason?', handler: handlePlansReject },
     { method: 'POST', path: '/api/plans/regenerate', desc: 'Reset pending/failed work items for a plan so they re-materialize', params: 'source', handler: handlePlansRegenerate },
     { method: 'POST', path: '/api/plans/delete', desc: 'Delete a plan file and clean up work items', params: 'file', handler: handlePlansDelete },
-    { method: 'POST', path: '/api/plans/archive', desc: 'Move a plan/PRD to archive (preserves work items)', params: 'file', handler: handlePlansArchive },
+    { method: 'POST', path: '/api/plans/archive', desc: 'Archive a plan/PRD (move to archive folder, also archives source .md plan if PRD)', params: 'file', handler: handlePlansArchiveMove },
     { method: 'POST', path: '/api/plans/unarchive', desc: 'Restore a plan/PRD from archive', params: 'file', handler: handlePlansUnarchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
-    { method: 'POST', path: '/api/plans/archive', desc: 'Archive a plan/PRD (move to archive folder)', params: 'file', handler: handlePlansArchiveMove },
-    { method: 'POST', path: '/api/plans/unarchive', desc: 'Unarchive a plan/PRD (restore from archive folder)', params: 'file', handler: handlePlansUnarchive },
     { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
     { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
 

@@ -345,12 +345,22 @@ function openCreateWorkItemModal() {
       '</div>' +
       '<label style="color:var(--text);font-size:var(--text-md)">Acceptance Criteria <textarea id="wi-new-ac" rows="2" style="' + inputStyle + ';resize:vertical" placeholder="One criterion per line (optional)"></textarea></label>' +
       '<label style="color:var(--text);font-size:var(--text-md)">References <textarea id="wi-new-refs" rows="2" style="' + inputStyle + ';resize:vertical" placeholder="url | title | type — one per line (optional)"></textarea></label>' +
+      '<label id="wi-new-skippr-row" style="color:var(--text);font-size:var(--text-md);display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="wi-new-skippr"> Skip PR creation (push branch only)</label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
         '<button onclick="_submitCreateWorkItem()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
+  // Show skipPr checkbox only for implement/fix types
+  const typeSelect = document.getElementById('wi-new-type');
+  const skipPrRow = document.getElementById('wi-new-skippr-row');
+  function _toggleSkipPr() {
+    const v = typeSelect?.value || '';
+    if (skipPrRow) skipPrRow.style.display = (v === 'implement' || v === 'fix') ? 'flex' : 'none';
+  }
+  _toggleSkipPr();
+  if (typeSelect) typeSelect.addEventListener('change', _toggleSkipPr);
   setTimeout(() => document.getElementById('wi-new-title')?.focus(), 100);
 }
 
@@ -376,6 +386,8 @@ async function _submitCreateWorkItem() {
     if (project) body.project = project;
     if (acceptanceCriteria.length) body.acceptanceCriteria = acceptanceCriteria;
     if (references.length && references[0].url) body.references = references;
+    const skipPr = document.getElementById('wi-new-skippr')?.checked || false;
+    if (skipPr) body.skipPr = true;
 
     try { closeModal(); } catch { /* expected */ }
     showToast('cmd-toast', 'Creating work item...', true);
