@@ -5573,6 +5573,9 @@ async function main() {
 
     // P-k7m2a9f4: Pipeline artifact navigation links
     await testPipelineArtifactLinks();
+
+    // P-v8k3m1qa: Regression fixes from commit 5cff9b8
+    await testLifecycleRegressions();
   } finally {
     cleanupTmpDirs();
   }
@@ -6210,6 +6213,95 @@ async function testPipelineStepProgress() {
   await test('progress bar appears in both list and detail views', () => {
     assert.ok(src.includes('progressHtml'), 'List view should insert progress HTML');
     assert.ok(src.includes('detailRun'), 'Detail view should compute progress from detailRun');
+  });
+}
+
+async function testLifecycleRegressions() {
+  console.log('\n── Lifecycle Regression Fixes (commit 5cff9b8) ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('_retryCount is cleared when work item status set to done', () => {
+    // Regression 2: delete target._retryCount was removed on success path
+    const updateFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function updateWorkItemStatus('),
+      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updateWorkItemStatus(') + 1)
+    );
+    assert.ok(updateFn.includes("delete target._retryCount"),
+      'updateWorkItemStatus should clear _retryCount when marking done');
+    // Verify it's in the done branch
+    const doneBlock = updateFn.slice(updateFn.indexOf("status === 'done'"), updateFn.indexOf("} else if (status === 'failed')"));
+    assert.ok(doneBlock.includes("delete target._retryCount"),
+      '_retryCount deletion should be in the done branch');
+  });
+
+  await test('syncPrdItemStatus checks fs.existsSync before mutating PRD files', () => {
+    // Regression 1: fs.existsSync guard was removed
+    const syncFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrdItemStatus('),
+      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function syncPrdItemStatus(') + 1)
+    );
+    assert.ok(syncFn.includes('fs.existsSync(fpath)'),
+      'syncPrdItemStatus should check file exists before mutating (guards against archived/deleted PRDs)');
+  });
+
+  await test('syncPrsFromOutput backfills prdItems on existing PRs', () => {
+    // Regression 3: prdItems backfill was removed when PR already exists
+    const syncPrsFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput('),
+      lifecycleSrc.indexOf('\n// ─── Post-Completion', lifecycleSrc.indexOf('function syncPrsFromOutput(') + 1)
+    );
+    assert.ok(syncPrsFn.includes('prdItems') && syncPrsFn.includes('existing.prdItems'),
+      'syncPrsFromOutput should backfill prdItems when PR entry already exists');
+    assert.ok(syncPrsFn.includes("!existing.prdItems?.includes(meta"),
+      'Should check if item id already in prdItems before backfilling');
+  });
+
+  await test('resolveProjectForPr function exists for PR project resolution', () => {
+    // Regression 4: resolveProjectForPr was removed, causing wrong-path writes
+    assert.ok(lifecycleSrc.includes('function resolveProjectForPr('),
+      'resolveProjectForPr should exist to resolve which project owns a PR');
+  });
+
+  await test('updatePrAfterReview uses resolveProjectForPr fallback', () => {
+    const reviewFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function updatePrAfterReview('),
+      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterReview(') + 1)
+    );
+    assert.ok(reviewFn.includes('resolveProjectForPr'),
+      'updatePrAfterReview should fall back to resolveProjectForPr when project is null');
+    assert.ok(reviewFn.includes('projectPrPath(resolvedProject)'),
+      'Should write to resolvedProject path, not inline fallback');
+  });
+
+  await test('updatePrAfterFix uses resolveProjectForPr fallback', () => {
+    const fixFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function updatePrAfterFix('),
+      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterFix(') + 1)
+    );
+    assert.ok(fixFn.includes('resolveProjectForPr'),
+      'updatePrAfterFix should fall back to resolveProjectForPr when project is null');
+    assert.ok(fixFn.includes('projectPrPath(resolvedProject)'),
+      'Should write to resolvedProject path, not inline fallback');
+  });
+
+  await test('syncPrdItemStatus functional: updates PRD feature status', () => {
+    const tmpDir = createTmpDir();
+    const prdDir = path.join(tmpDir, 'prd');
+    fs.mkdirSync(prdDir, { recursive: true });
+    const prdFile = path.join(prdDir, 'test-plan.json');
+    fs.writeFileSync(prdFile, JSON.stringify({
+      missing_features: [{ id: 'P-001', status: 'pending' }, { id: 'P-002', status: 'pending' }]
+    }));
+    const { mutateJsonFileLocked } = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    mutateJsonFileLocked(prdFile, (plan) => {
+      const feature = plan.missing_features.find(f => f.id === 'P-001');
+      if (feature) feature.status = 'done';
+      return plan;
+    });
+    const result = JSON.parse(fs.readFileSync(prdFile, 'utf8'));
+    assert.strictEqual(result.missing_features[0].status, 'done', 'P-001 should be done');
+    assert.strictEqual(result.missing_features[1].status, 'pending', 'P-002 should remain pending');
   });
 }
 
