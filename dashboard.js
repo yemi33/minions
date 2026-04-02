@@ -14,7 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, CENTRAL_WI_PATH } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -851,7 +851,7 @@ const server = http.createServer(async (req, res) => {
       // Find the right file
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        wiPath = CENTRAL_WI_PATH;
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -909,7 +909,7 @@ const server = http.createServer(async (req, res) => {
       // Find the right work-items file
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        wiPath = CENTRAL_WI_PATH;
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -958,7 +958,7 @@ const server = http.createServer(async (req, res) => {
 
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        wiPath = CENTRAL_WI_PATH;
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -1022,7 +1022,7 @@ const server = http.createServer(async (req, res) => {
         wiPath = shared.projectWorkItemsPath(targetProject);
       } else {
         // Write to central queue — agent decides which project
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        wiPath = CENTRAL_WI_PATH;
       }
       let items = [];
       const existing = safeRead(wiPath);
@@ -1052,7 +1052,7 @@ const server = http.createServer(async (req, res) => {
 
       let wiPath;
       if (!source || source === 'central') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+        wiPath = CENTRAL_WI_PATH;
       } else {
         const proj = PROJECTS.find(p => p.name === source);
         if (proj) {
@@ -1104,7 +1104,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
       // Write as a work item with type 'plan' — user must explicitly execute plan-to-prd after reviewing
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -1184,7 +1184,7 @@ const server = http.createServer(async (req, res) => {
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
-      const wiSyncPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+      const wiSyncPaths = [CENTRAL_WI_PATH];
       for (const proj of PROJECTS) {
         wiSyncPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1237,7 +1237,7 @@ const server = http.createServer(async (req, res) => {
         } catch (e) { console.error('work item cleanup:', e.message); }
       }
       // Also check central work-items
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+      const centralPath = CENTRAL_WI_PATH;
       try {
         const items = safeJson(centralPath);
         const before = items.length;
@@ -1598,7 +1598,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
-    const centralWi = JSON.parse(safeRead(path.join(MINIONS_DIR, 'work-items.json')) || '[]');
+    const centralWi = JSON.parse(safeRead(CENTRAL_WI_PATH) || '[]');
     const completedPrdFiles = new Set(
       centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
         .map(w => w.planFile)
@@ -1788,7 +1788,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Resume paused work items across all projects
       let resumed = 0;
       const resumedItemIds = [];
-      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+      const wiPaths = [CENTRAL_WI_PATH];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1840,7 +1840,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Propagate pause to materialized work items across all projects:
       // kill any active agent process and reset non-completed items back to pending.
       let reset = 0;
-      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+      const wiPaths = [CENTRAL_WI_PATH];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -1957,7 +1957,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       try { fs.unlinkSync(prdPath); } catch { /* cleanup */ }
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -1997,7 +1997,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
 
       // Check if already queued
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+      const centralPath = CENTRAL_WI_PATH;
       const items = JSON.parse(safeRead(centralPath) || '[]');
       const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
       if (existing) return jsonReply(res, 200, { ok: true, id: existing.id, alreadyQueued: true });
@@ -2045,7 +2045,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const deletedItemIds = [];
 
       // Scan all work item sources for materialized items from this plan
-      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
+      const wiPaths = [{ path: CENTRAL_WI_PATH, label: 'central' }];
       for (const proj of PROJECTS) {
         wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
       }
@@ -2111,7 +2111,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Clean up materialized work items from all projects + central
       let cleaned = 0;
-      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+      const wiPaths = [CENTRAL_WI_PATH];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
@@ -2136,7 +2136,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // If deleting a PRD .json, reset the plan-to-prd work item so the source .md reverts to draft
       if (prdSourcePlan) {
         try {
-          const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+          const centralPath = CENTRAL_WI_PATH;
           const centralItems = safeJson(centralPath) || [];
           let changed = false;
           for (const w of centralItems) {
@@ -2241,7 +2241,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       safeWrite(planPath, plan);
 
       // Create a work item to revise the plan
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiPath = CENTRAL_WI_PATH;
       let items = [];
       const existing = safeRead(wiPath);
       if (existing) { try { items = JSON.parse(existing); } catch {} }
@@ -2338,7 +2338,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Step 3: Clean up pending/failed work items from old PRD
       let reset = 0, kept = 0;
-      const wiPaths = [{ path: path.join(MINIONS_DIR, 'work-items.json'), label: 'central' }];
+      const wiPaths = [{ path: CENTRAL_WI_PATH, label: 'central' }];
       for (const proj of PROJECTS) {
         wiPaths.push({ path: shared.projectWorkItemsPath(proj), label: proj.name });
       }
@@ -2370,7 +2370,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
 
       // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
-      const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const centralWiPath = CENTRAL_WI_PATH;
       let centralItems = [];
       try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
       const wiId = 'W-' + shared.uid();
@@ -2557,7 +2557,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                 safeWrite(path.join(prdDir, f), prd);
                 pausedPrd = f;
                 // Pause work items (reuse pause logic inline)
-                const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+                const wiPaths = [CENTRAL_WI_PATH];
                 for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
                 const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
                 const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
@@ -3207,7 +3207,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { id, source, rating, comment } = body;
       if (!id || !rating) return jsonReply(res, 400, { error: 'id and rating required' });
       const projects = shared.getProjects(CONFIG);
-      const paths = [path.join(MINIONS_DIR, 'work-items.json')];
+      const paths = [CENTRAL_WI_PATH];
       for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
       for (const wiPath of paths) {
         const items = JSON.parse(safeRead(wiPath) || '[]');

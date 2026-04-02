@@ -404,8 +404,24 @@ function projectStateDir(project) {
   return dir;
 }
 
+const CENTRAL_WI_PATH = path.join(MINIONS_DIR, 'work-items.json');
+
 function projectWorkItemsPath(project) {
   return path.join(projectStateDir(project), 'work-items.json');
+}
+
+/**
+ * Resolve work-items.json path from dispatch meta.
+ * Central items → CENTRAL_WI_PATH; project items → projects/<name>/work-items.json.
+ */
+function resolveWiPath(meta) {
+  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+    return CENTRAL_WI_PATH;
+  }
+  if (meta.project?.name) {
+    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+  }
+  return null;
 }
 
 function projectPrPath(project) {
@@ -545,7 +561,9 @@ module.exports = {
   getProjects,
   projectRoot,
   projectStateDir,
+  CENTRAL_WI_PATH,
   projectWorkItemsPath,
+  resolveWiPath,
   projectPrPath,
   getPrLinks,
   addPrLink,

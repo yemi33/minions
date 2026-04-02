@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks, addPrLink,
-  mutateJsonFileLocked, log, ts, dateStamp } = shared;
+  mutateJsonFileLocked, log, ts, dateStamp, CENTRAL_WI_PATH, resolveWiPath } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -40,7 +40,7 @@ function checkPlanCompletion(meta, config) {
   }
   // Also check central work-items.json (for no-project setups)
   try {
-    const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+    const central = safeJson(CENTRAL_WI_PATH) || [];
     for (const w of central) {
       if (!allWorkItems.some(existing => existing.id === w.id)) allWorkItems.push(w);
     }
@@ -405,7 +405,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
   }
 
   log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
-  const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+  const wiPath = CENTRAL_WI_PATH;
   let items = [];
   try {
     items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
@@ -434,12 +434,7 @@ function updateWorkItemStatus(meta, status, reason) {
   const itemId = meta.item?.id;
   if (!itemId) return;
 
-  let wiPath;
-  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    wiPath = path.join(MINIONS_DIR, 'work-items.json');
-  } else if (meta.source === 'work-item' && meta.project?.name) {
-    wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-  }
+  const wiPath = resolveWiPath(meta);
   if (!wiPath) return;
 
   const items = safeJson(wiPath);
@@ -759,7 +754,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done
-    const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+    const wiPaths = [CENTRAL_WI_PATH];
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
     for (const wiPath of wiPaths) {
       try {
@@ -852,15 +847,14 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
-        const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-        const items = safeJson(centralPath) || [];
+        const items = safeJson(CENTRAL_WI_PATH) || [];
         const alreadyExists = items.some(i => i.title === `Add skill: ${name}` && i.status !== 'failed');
         if (!alreadyExists) {
           const skillId = `SK${String(items.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           items.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
             description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: 'queued', created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
-          shared.safeWrite(centralPath, items);
+          shared.safeWrite(CENTRAL_WI_PATH, items);
           log('info', `Queued work item ${skillId} to PR project skill "${name}" into ${project}`);
         }
       }
@@ -936,12 +930,7 @@ function recordContextPressureOnWorkItem(meta, turnCount, outputLogSizeBytes, hi
   const itemId = meta.item?.id;
   if (!itemId) return;
 
-  let wiPath;
-  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    wiPath = path.join(MINIONS_DIR, 'work-items.json');
-  } else if (meta.source === 'work-item' && meta.project?.name) {
-    wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-  }
+  const wiPath = resolveWiPath(meta);
   if (!wiPath) return;
 
   shared.mutateJsonFileLocked(wiPath, (items) => {
@@ -1026,20 +1015,6 @@ function parseAgentOutput(stdout) {
 }
 
 /**
- * Resolve work-items.json path from dispatch meta.
- * Central items → MINIONS_DIR/work-items.json; project items → projects/<name>/work-items.json.
- */
-function resolveWiPath(meta) {
-  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    return path.join(MINIONS_DIR, 'work-items.json');
-  }
-  if (meta.project?.name) {
-    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-  }
-  return null;
-}
-
-/**
  * Parse structured eval verdict from evaluate agent output.
  * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
  * Returns parsed object or null if not found.
@@ -1092,7 +1067,7 @@ function handleDecompositionResult(stdout, meta, config) {
 
   // Find and update the parent work item
   const projects = shared.getProjects(config);
-  const allPaths = [path.join(MINIONS_DIR, 'work-items.json')];
+  const allPaths = [CENTRAL_WI_PATH];
   for (const p of projects) allPaths.push(shared.projectWorkItemsPath(p));
 
   for (const wiPath of allPaths) {
@@ -1156,9 +1131,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // ── Accumulate per-work-item cost tracking ──────────────────────────────────
   if (taskUsage && meta?.item?.id) {
     try {
-      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-        ? path.join(MINIONS_DIR, 'work-items.json')
-        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+      const wiPath = resolveWiPath(meta);
       if (wiPath) {
         mutateJsonFileLocked(wiPath, (items) => {
           if (!Array.isArray(items)) return items;
@@ -1324,9 +1297,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
     try {
-      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-        ? path.join(MINIONS_DIR, 'work-items.json')
-        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+      const wiPath = resolveWiPath(meta);
       if (wiPath) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
@@ -1338,9 +1309,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
       updateWorkItemStatus(meta, 'pending', '');
       try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
@@ -1357,9 +1326,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     // Clear _decomposing flag on failure so item doesn't get permanently stuck
     if (type === 'decompose') {
       try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
+        const wiPath = resolveWiPath(meta);
         if (wiPath) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
@@ -1425,12 +1392,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     if (!existingPrFound) {
       log('warn', `Agent completed implement task ${meta.item.id} but no PR was created — reverting to failed for retry`);
       // Revert to failed so auto-retry can re-attempt with PR creation
-      let wiPath;
-      if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      } else if (meta.project?.localPath) {
-        wiPath = shared.projectWorkItemsPath(meta.project);
-      }
+      const wiPath = resolveWiPath(meta);
       if (wiPath) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
