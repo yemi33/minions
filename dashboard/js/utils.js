@@ -134,7 +134,7 @@ function renderMd(s) {
         i++;
       }
       i--; // back up one since the for loop will increment
-      var tableHtml = '<table class="pr-table" style="margin:4px 0;font-size:11px"><thead><tr>';
+      var tableHtml = '<div class="md-table-wrap"><table style="font-size:11px"><thead><tr>';
       if (tableRows.length > 0) {
         tableRows[0].forEach(function(c) { tableHtml += '<th>' + c + '</th>'; });
         tableHtml += '</tr></thead><tbody>';
@@ -143,7 +143,7 @@ function renderMd(s) {
           tableRows[ti].forEach(function(c) { tableHtml += '<td>' + c + '</td>'; });
           tableHtml += '</tr>';
         }
-        tableHtml += '</tbody></table>';
+        tableHtml += '</tbody></table></div>';
       }
       out.push(tableHtml);
       continue;

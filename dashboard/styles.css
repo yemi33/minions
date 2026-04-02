@@ -570,8 +570,10 @@
   .md-content { font-family: 'Segoe UI', system-ui, sans-serif; font-size: 12px; line-height: 1.6; white-space: normal; word-break: break-word; overflow-x: auto; }
   .md-content pre { font-family: Consolas, 'Courier New', monospace; white-space: pre-wrap; }
   .md-content code { font-family: Consolas, 'Courier New', monospace; }
-  .md-content table { border-collapse: collapse; width: 100%; margin: 6px 0; table-layout: fixed; }
-  .md-content th, .md-content td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; font-size: 11px; word-wrap: break-word; overflow-wrap: break-word; }
+  .md-content table { border-collapse: collapse; margin: 6px 0; width: max-content; min-width: 100%; }
+  .md-content .md-table-wrap { overflow-x: auto; margin: 6px 0; }
+  .md-content th, .md-content td { padding: 4px 8px; border: 1px solid var(--border); text-align: left; font-size: 11px; white-space: nowrap; }
+  .md-content td { white-space: normal; min-width: 60px; }
   .md-content th { background: var(--surface); font-weight: 600; }
   .status-line { display: flex; align-items: center; gap: var(--space-5); padding: var(--space-5) var(--space-7); background: var(--bg); border-bottom: 1px solid var(--border); font-size: var(--text-md); }
 
