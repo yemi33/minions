@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.205 (2026-04-02)
+
+### Engine
+- engine/queries.js
+
+### Dashboard
+- dashboard/js/render-agents.js
+
 ## 0.1.204 (2026-04-02)
 
 ### Other
