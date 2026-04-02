@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.207 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/queries.js
+- engine/shared.js
+- engine/timeout.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/refresh.js
+- dashboard/js/render-plans.js
+- dashboard/js/settings.js
+
 ## 0.1.206 (2026-04-02)
 
 ### Other
