@@ -35,20 +35,23 @@ function runCleanup(config, verbose = false) {
   const projects = getProjects(config);
   let cleaned = { tempFiles: 0, liveOutputs: 0, worktrees: 0, zombies: 0 };
 
-  // 1. Clean stale temp prompt/sysprompt files (older than 1 hour)
+  // 1. Clean stale temp prompt/sysprompt files and orphaned safeWrite .tmp.* files (older than 1 hour)
   const oneHourAgo = Date.now() - 3600000;
   try {
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
     const scanDirs = [ENGINE_DIR, ...(fs.existsSync(tmpDir) ? [tmpDir] : [])];
     for (const dir of scanDirs) {
       for (const f of fs.readdirSync(dir)) {
-        if (f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-')) {
+        const isPromptTemp = f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-');
+        const isSafeWriteTemp = /\.tmp\.\d+\.\d+$/.test(f);
+        if (isPromptTemp || isSafeWriteTemp) {
           const fp = path.join(dir, f);
           try {
             const stat = fs.statSync(fp);
             if (stat.mtimeMs < oneHourAgo) {
               fs.unlinkSync(fp);
               cleaned.tempFiles++;
+              if (isSafeWriteTemp) log('info', `Cleaned orphaned temp file: ${f}`);
             }
           } catch { /* cleanup */ }
         }
