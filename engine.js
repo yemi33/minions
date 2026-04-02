@@ -1561,7 +1561,8 @@ function discoverFromWorkItems(config, project) {
 
   // Write back updated statuses — needsWrite covers mutation-only ticks, newWork covers dispatches
   if (needsWrite || newWork.length > 0) {
-    safeWrite(projectWorkItemsPath(project), items);
+    const workItemsPath = projectWorkItemsPath(project);
+    safeWrite(workItemsPath, items);
     for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
   }
 
