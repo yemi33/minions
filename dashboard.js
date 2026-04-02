@@ -2973,6 +2973,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
+        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
+        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
       }
 
       if (body.claude) {
