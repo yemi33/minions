@@ -490,14 +490,11 @@ function getWorkItems(config) {
       if (pr) item._prUrl = pr.url;
     }
     if (!item._pr) {
-      const prLinks = shared.getPrLinks();
-      const linkedPrId = Object.entries(prLinks).find(([, v]) => v === item.id)?.[0];
-      if (linkedPrId) {
-        item._pr = linkedPrId;
-        const linkedPr = allPrs.find(p => p.id === linkedPrId);
-        if (linkedPr) item._prUrl = linkedPr.url;
-      } else {
-        // no further fallback — pr-links.json and wi._pr are the sources of truth
+      // Derive from PR.prdItems (single source of truth)
+      const linkedPr = allPrs.find(p => (p.prdItems || []).includes(item.id));
+      if (linkedPr) {
+        item._pr = linkedPr.id;
+        item._prUrl = linkedPr.url;
       }
     }
   }
