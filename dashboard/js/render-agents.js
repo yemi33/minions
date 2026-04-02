@@ -11,6 +11,8 @@ function renderAgents(agents) {
       </div>
       <div class="agent-role">${a.role}</div>
       <div class="agent-action" title="${escHtml(a.lastAction)}">${escHtml(a.lastAction)}</div>
+      ${a._warning ? `<div style="margin-top:4px;padding:4px 8px;background:rgba(210,153,34,0.15);border:1px solid rgba(210,153,34,0.3);border-radius:4px;font-size:10px;color:var(--yellow)">&#x26A0; ${escHtml(a._warning)}</div>` : ''}
+      ${a._permissionMode && a._permissionMode !== 'bypassPermissions' && !a._warning ? `<div style="margin-top:4px;font-size:9px;color:var(--muted)">Permission mode: ${escHtml(a._permissionMode)}</div>` : ''}
       ${a.resultSummary ? `<div class="agent-result" title="${escHtml(a.resultSummary)}">${renderMd(a.resultSummary.slice(0, 200))}${a.resultSummary.length > 200 ? '...' : ''}</div>` : ''}
     </div>
   `).join('');

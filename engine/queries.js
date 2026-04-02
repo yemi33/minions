@@ -118,7 +118,7 @@ function getAgentStatus(agentId) {
   // Check active dispatch
   const active = (dispatch.active || []).find(d => d.agent === agentId);
   if (active) {
-    return {
+    const result = {
       status: 'working',
       task: active.task || '',
       dispatch_id: active.id,
@@ -126,6 +126,27 @@ function getAgentStatus(agentId) {
       branch: active.meta?.branch || '',
       started_at: active.started_at || active.created_at || null,
     };
+    // Detect permission-waiting: check live output for non-bypass permission mode
+    try {
+      const liveLog = shared.safeRead(path.join(AGENTS_DIR, agentId, 'live-output.log'));
+      if (liveLog) {
+        // Check init message for permission mode
+        const initMatch = liveLog.match(/"permissionMode"\s*:\s*"([^"]+)"/);
+        if (initMatch && initMatch[1] !== 'bypassPermissions') {
+          result._permissionMode = initMatch[1];
+        }
+        // Check if agent has been silent for >60s (possible permission prompt wait)
+        const lastLine = liveLog.trimEnd().split('\n').pop();
+        if (lastLine && lastLine.includes('"type":"assistant"') && lastLine.includes('"tool_use"')) {
+          const liveStat = fs.statSync(path.join(AGENTS_DIR, agentId, 'live-output.log'));
+          const silentMs = Date.now() - liveStat.mtimeMs;
+          if (silentMs > 60000 && result._permissionMode) {
+            result._warning = 'Possibly waiting for permission approval — agent is not in bypass mode';
+          }
+        }
+      }
+    } catch { /* optional — don't block status */ }
+    return result;
   }
 
   // Check most recent completed dispatch (within last 5 minutes → show done/error)
@@ -218,6 +239,8 @@ function getAgents(config) {
       ...a, status: s.status, lastAction,
       currentTask: (s.task || '').slice(0, 200),
       resultSummary: (s.resultSummary || '').slice(0, 500),
+      _warning: s._warning || null,
+      _permissionMode: s._permissionMode || null,
       chartered, inboxCount: inboxFiles.length
     };
   });
