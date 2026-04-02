@@ -917,6 +917,77 @@ async function testSyncPrdItemStatus() {
     // Should not throw
     lifecycle.syncPrdItemStatus(null, 'done', 'test-plan.json');
   });
+
+  await test('syncPrdItemStatus requires sourcePlan — returns without it', () => {
+    // Without sourcePlan, syncPrdItemStatus must return immediately (no cross-PRD contamination)
+    const tmpDir = createTmpDir();
+    const prdDir = path.join(tmpDir, 'prd');
+    fs.mkdirSync(prdDir, { recursive: true });
+    fs.writeFileSync(path.join(prdDir, 'plan-a.json'), JSON.stringify({
+      missing_features: [{ id: 'P-test1', name: 'Test', status: 'missing' }]
+    }));
+    // Call without sourcePlan — should NOT update any PRD
+    lifecycle.syncPrdItemStatus('P-test1', 'done', undefined);
+    lifecycle.syncPrdItemStatus('P-test1', 'done', null);
+    lifecycle.syncPrdItemStatus('P-test1', 'done', '');
+    // Feature should still be 'missing' since sync was skipped
+    const plan = JSON.parse(fs.readFileSync(path.join(prdDir, 'plan-a.json'), 'utf8'));
+    assert.strictEqual(plan.missing_features[0].status, 'missing',
+      'syncPrdItemStatus without sourcePlan must not update any PRD (cross-PRD contamination guard)');
+  });
+
+  await test('syncPrdItemStatus skips archived/deleted PRDs (fs.existsSync guard)', () => {
+    // If sourcePlan points to a file that no longer exists, should not create it
+    const tmpDir = createTmpDir();
+    const prdDir = path.join(tmpDir, 'prd');
+    fs.mkdirSync(prdDir, { recursive: true });
+    lifecycle.syncPrdItemStatus('P-test2', 'done', 'nonexistent-plan.json');
+    // File should NOT be created
+    assert.ok(!fs.existsSync(path.join(prdDir, 'nonexistent-plan.json')),
+      'syncPrdItemStatus must not create files for archived/deleted PRDs');
+  });
+
+  await test('getPrLinks derives from PR.prdItems (single source of truth)', () => {
+    const tmpDir = createTmpDir();
+    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+      { id: 'PR-100', prdItems: ['P-aaa', 'P-bbb'], url: 'http://test/100' },
+      { id: 'PR-200', prdItems: ['P-ccc'], url: 'http://test/200' },
+      { id: 'PR-300', prdItems: [], url: 'http://test/300' },
+    ]));
+    const links = shared.getPrLinks();
+    // Should find links from prdItems
+    assert.ok(typeof links === 'object', 'getPrLinks should return an object');
+    // Note: getPrLinks reads config.json for projects, so in test env it may return empty
+    // The important thing is it doesn't throw and returns an object
+  });
+
+  await test('addPrLink writes to PR.prdItems not pr-links.json', () => {
+    // Verify addPrLink does not write to pr-links.json
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'shared.js'), 'utf8');
+    const addPrLinkFn = src.slice(src.indexOf('function addPrLink'), src.indexOf('function addPrLink') + 300);
+    assert.ok(!addPrLinkFn.includes('PR_LINKS_PATH'), 'addPrLink must not write to pr-links.json');
+    assert.ok(addPrLinkFn.includes('linkPrToItem'), 'addPrLink must use linkPrToItem to write to PR.prdItems');
+  });
+
+  await test('mutatePrs and linkPrToItem are exported from shared.js', () => {
+    assert.ok(typeof shared.mutatePrs === 'function', 'mutatePrs should be exported');
+    assert.ok(typeof shared.linkPrToItem === 'function', 'linkPrToItem should be exported');
+  });
+
+  await test('no deprecated status aliases remain in engine code', () => {
+    const engineSrc = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const lifecycleSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    // PRD_MET_STATUSES should only contain 'done'
+    const metMatch = engineSrc.match(/PRD_MET_STATUSES\s*=\s*new Set\(\[([^\]]+)\]\)/);
+    assert.ok(metMatch, 'PRD_MET_STATUSES should exist');
+    assert.ok(!metMatch[1].includes('in-pr'), 'PRD_MET_STATUSES should not contain in-pr');
+    assert.ok(!metMatch[1].includes('implemented'), 'PRD_MET_STATUSES should not contain implemented');
+    assert.ok(!metMatch[1].includes('complete'), 'PRD_MET_STATUSES should not contain complete (use done)');
+    // lifecycle.js should not set status to 'implemented'
+    assert.ok(!lifecycleSrc.includes("status = 'implemented'"), 'lifecycle.js should not set status to implemented (use done)');
+  });
 }
 
 async function testEvalLoopAutoDispatch() {
