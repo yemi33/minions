@@ -65,7 +65,8 @@ function _collectRunArtifacts(run) {
 }
 
 function renderPipelines(pipelines) {
-  _pipelinesData = pipelines || [];
+  _pipelinesData = (pipelines || []).filter(function(p) { return !isDeleted('pipeline:' + p.id); });
+  pipelines = _pipelinesData;
   const el = document.getElementById('pipelines-content');
   const countEl = document.getElementById('pipelines-count');
   if (!el) return;

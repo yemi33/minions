@@ -228,7 +228,7 @@ function renderPrdProgress(prog) {
           '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan || g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;padding:2px 8px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:4px" title="Review latest plan changes">Review plan</span>' +
         '</div>'
       : '';
-    const isCompleted = (t && t.allDone) || (done > 0 && done === g.items.length);
+    const isCompleted = done > 0 && done === g.items.length;
     const pauseResumeBtn = isAwaitingApproval
       ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Approve</span>'
       : isPaused

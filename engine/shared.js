@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
-const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
+// PR_LINKS_PATH removed — PR linking uses PR.prdItems in pull-requests.json
 const LOG_PATH = path.join(__dirname, 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
@@ -571,7 +571,6 @@ function linkPrToItem(project, prId, itemId) {
 
 module.exports = {
   MINIONS_DIR,
-  PR_LINKS_PATH,
   LOG_PATH,
   ts,
   logTs,

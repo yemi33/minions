@@ -1534,7 +1534,6 @@ module.exports = {
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,
-  resolveProjectForPr,
   updatePrAfterReview,
   updatePrAfterFix,
   handlePostMerge,
