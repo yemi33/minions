@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.168 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/lifecycle.js
+- engine/playbook.js
+- engine/shared.js
+
+### Dashboard
+- dashboard.js
+- dashboard/js/render-work-items.js
+- dashboard/js/settings.js
+
+### Other
+- routing.md
+- test/unit.test.js
+
 ## 0.1.167 (2026-04-02)
 
 ### Engine
