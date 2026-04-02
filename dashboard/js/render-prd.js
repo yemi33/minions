@@ -444,6 +444,11 @@ function renderPrdProgress(prog) {
     // Store archived data for the modal
     window._archivedPrdGroups = archivedKeys.map(k => grouped[k]);
     window._archivedPrdRenderGroup = renderGroup;
+    window._archivedPrdRenderItem = renderItem;
+    window._archivedPrdRenderGraph = renderGraph;
+    window._archivedPrdRenderGroupHeader = renderGroupHeader;
+    window._archivedPrdRenderGroupStats = renderGroupStats;
+    window._archivedPrdRenderE2eSection = renderE2eSection;
     html += '<div style="margin-top:8px;text-align:right;position:relative" data-file="prd-archives">' +
       '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px;color:var(--muted)" onclick="openArchivedPrdModal()">' +
         'View Archives (' + archivedKeys.length + ')' +
@@ -514,12 +519,21 @@ function showArchivedPrdDetail(idx) {
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="openArchivedPrdModal()">Back</button>' +
   '</div>';
 
-  // Reuse the renderGroup logic — temporarily swap view mode
-  const prevMode = window._prdViewMode;
-  window._prdViewMode = isGraph ? 'graph' : 'list';
-  const renderGroup = window._archivedPrdRenderGroup;
-  const content = renderGroup ? renderGroup(g.file) : '<p>Error rendering</p>';
-  window._prdViewMode = prevMode;
+  // Render directly from the archived group data (not from stale renderGroup closure)
+  const renderItem = window._archivedPrdRenderItem;
+  const renderGraph = window._archivedPrdRenderGraph;
+  const renderGroupHeader = window._archivedPrdRenderGroupHeader;
+  const renderGroupStats = window._archivedPrdRenderGroupStats;
+  const renderE2eSection = window._archivedPrdRenderE2eSection;
+  const viewContent = (renderItem && renderGraph)
+    ? (isGraph ? renderGraph(g.items) : '<div class="prd-items-list">' + g.items.map(renderItem).join('') + '</div>')
+    : '<p>Error rendering</p>';
+  const content = '<div style="margin-bottom:16px">' +
+    (renderGroupHeader ? renderGroupHeader(g) : '') +
+    (renderE2eSection ? renderE2eSection(g.file) : '') +
+    (renderGroupStats ? renderGroupStats(g.items) : '') +
+    viewContent +
+  '</div>';
 
   document.getElementById('modal-title').textContent = g.summary || g.file;
   document.getElementById('modal-body').innerHTML = toggleHtml + content;
