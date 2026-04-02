@@ -54,7 +54,12 @@ function autoDiscover(targetDir) {
 
   // 1. Detect main branch from git
   try {
-    const head = execSync('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || git symbolic-ref HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+    let head = '';
+    try {
+      head = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+    } catch {
+      head = execSync('git symbolic-ref HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+    }
     const branch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
     if (branch) { result.mainBranch = branch; result._found.push('main branch'); }
   } catch {}
@@ -141,20 +146,12 @@ function buildProjectEntry({ name, description, localPath, repoHost, repositoryI
     repoName: repoName || name,
     mainBranch: mainBranch || 'main',
     prUrlBase: buildPrUrlBase({ repoHost, org, project, repoName }),
-    workSources: {
-      pullRequests: { enabled: true, path: '.minions/pull-requests.json', cooldownMinutes: 30 },
-      workItems: { enabled: true, path: '.minions/work-items.json', cooldownMinutes: 0 },
-    }
   };
 }
 
-function ensureProjectStateFiles(projectPath) {
-  const minionsDir = path.join(projectPath, '.minions');
-  if (!fs.existsSync(minionsDir)) fs.mkdirSync(minionsDir, { recursive: true });
-  for (const f of ['pull-requests.json', 'work-items.json']) {
-    const fp = path.join(minionsDir, f);
-    if (!fs.existsSync(fp)) fs.writeFileSync(fp, '[]');
-  }
+function ensureProjectStateFiles() {
+  // Project state is stored centrally at ~/.minions/projects/<name>/
+  // No files created inside user repos.
 }
 
 // ─── Commands ────────────────────────────────────────────────────────────────
