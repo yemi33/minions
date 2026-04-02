@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, log, dateStamp } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, deduplicatePrs, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -321,7 +321,8 @@ async function reconcilePrs(config) {
 
     const prPath = projectPrPath(project);
     const existingPrs = safeJson(prPath) || [];
-    const existingIds = new Set(existingPrs.map(p => p.id));
+    deduplicatePrs(existingPrs); // clean up any pre-existing duplicates
+    const existingIds = new Set(existingPrs.map(p => String(p.id).toUpperCase()));
     let projectAdded = 0;
 
     // Load work items to match branches
@@ -339,10 +340,11 @@ async function reconcilePrs(config) {
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
-      if (existingIds.has(prId)) {
+      const normPrId = prId.toUpperCase();
+      if (existingIds.has(normPrId)) {
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = existingPrs.find(p => p.id === prId);
+          const existing = existingPrs.find(p => String(p.id).toUpperCase() === normPrId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -365,7 +367,7 @@ async function reconcilePrs(config) {
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
       if (confirmedItemId) addPrLink(prId, confirmedItemId);
-      existingIds.add(prId);
+      existingIds.add(normPrId);
       projectAdded++;
 
       log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);

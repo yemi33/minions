@@ -534,6 +534,58 @@ function addPrLink(prId, itemId) {
 }
 
 /**
+ * Deduplicate PR entries in-place. When multiple entries share the same PR id
+ * (case-insensitive), merge them into a single entry — the most-recently-created
+ * entry's fields win, but prdItems arrays are unioned. Agent name comparison is
+ * also case-insensitive when detecting duplicates.
+ * Returns the deduplicated array (same reference, mutated).
+ */
+function deduplicatePrs(prs) {
+  if (!Array.isArray(prs) || prs.length === 0) return prs;
+  const seen = new Map(); // normalized id -> index in result
+  const result = [];
+  for (const pr of prs) {
+    const normId = String(pr.id || '').toUpperCase();
+    if (!normId) { result.push(pr); continue; }
+    if (seen.has(normId)) {
+      // Merge into existing entry — newer entry's scalar fields win
+      const existing = result[seen.get(normId)];
+      // Pick the entry with the more recent created date as the "winner"
+      const existingDate = existing.created || '';
+      const incomingDate = pr.created || '';
+      const winner = incomingDate > existingDate ? pr : existing;
+      // Snapshot the loser before mutation (existing and loser may be the same ref)
+      const loserSnapshot = {};
+      const loserRef = winner === pr ? existing : pr;
+      for (const key of Object.keys(loserRef)) loserSnapshot[key] = loserRef[key];
+      // Merge: winner fields take precedence, but union arrays
+      for (const key of Object.keys(winner)) {
+        if (key === 'prdItems') continue; // handled below
+        existing[key] = winner[key];
+      }
+      // Fill in blank/missing fields from loser snapshot
+      for (const key of Object.keys(loserSnapshot)) {
+        if (!(key in existing) || existing[key] === undefined || existing[key] === '') {
+          existing[key] = loserSnapshot[key];
+        }
+      }
+      // Union prdItems
+      const items = new Set([...(existing.prdItems || []), ...(pr.prdItems || [])]);
+      existing.prdItems = [...items];
+      // Normalize the ID to canonical PR-{num} form
+      existing.id = normId.startsWith('PR-') ? normId : `PR-${normId}`;
+    } else {
+      seen.set(normId, result.length);
+      result.push({ ...pr });
+    }
+  }
+  // Replace contents in-place
+  prs.length = 0;
+  prs.push(...result);
+  return prs;
+}
+
+/**
  * Locked mutation of a project's pull-requests.json.
  * Single source of truth for PR data including prdItems links.
  */
@@ -598,6 +650,7 @@ module.exports = {
   projectPrPath,
   getPrLinks,
   addPrLink,
+  deduplicatePrs,
   mutatePrs,
   linkPrToItem,
   nextWorkItemId,

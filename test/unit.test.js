@@ -3722,8 +3722,8 @@ async function testSyncPrsFromOutput() {
   await test('PR dedup uses strict equality, not substring includes', () => {
     assert.ok(!src.includes("String(p.id).includes(prId)"),
       'Should not use String.includes for PR dedup — causes false positives (PR 123 matching 1234)');
-    assert.ok(src.includes("String(p.id) === String(prId)"),
-      'Should use strict equality for PR ID comparison');
+    assert.ok(src.includes("String(p.id) === String(prId)") || src.includes('.toUpperCase() === normFullId'),
+      'Should use strict equality (case-insensitive) for PR ID comparison');
   });
 }
 
@@ -5573,6 +5573,9 @@ async function main() {
 
     // P-k7m2a9f4: Pipeline artifact navigation links
     await testPipelineArtifactLinks();
+
+    // P-d4e8n1q7: PR deduplication in pull-requests.json
+    await testPrDeduplication();
   } finally {
     cleanupTmpDirs();
   }
@@ -6210,6 +6213,91 @@ async function testPipelineStepProgress() {
   await test('progress bar appears in both list and detail views', () => {
     assert.ok(src.includes('progressHtml'), 'List view should insert progress HTML');
     assert.ok(src.includes('detailRun'), 'Detail view should compute progress from detailRun');
+  });
+}
+
+// ─── P-d4e8n1q7: PR deduplication in pull-requests.json ─────────────────────
+
+async function testPrDeduplication() {
+  console.log('\n── PR deduplication (P-d4e8n1q7) ──');
+
+  // Test deduplicatePrs directly
+  await test('deduplicatePrs merges entries with same PR id', () => {
+    const prs = [
+      { id: 'PR-64', title: 'first', agent: 'ralph', branch: 'work/test', status: 'active', created: '2026-04-01', prdItems: ['P-001'] },
+      { id: 'PR-64', title: 'second', agent: 'Ralph', branch: 'work/test', status: 'active', created: '2026-04-02', prdItems: ['P-002'] },
+    ];
+    shared.deduplicatePrs(prs);
+    assert.strictEqual(prs.length, 1, 'Should merge duplicates into 1 entry');
+    assert.strictEqual(prs[0].id, 'PR-64', 'Should preserve canonical PR id');
+    assert.strictEqual(prs[0].title, 'second', 'Newer entry fields should win');
+    assert.deepStrictEqual(prs[0].prdItems, ['P-001', 'P-002'], 'prdItems should be unioned');
+  });
+
+  await test('deduplicatePrs handles case-insensitive id match', () => {
+    const prs = [
+      { id: 'PR-49', agent: 'dallas', status: 'active', created: '2026-04-01', prdItems: [] },
+      { id: 'pr-49', agent: 'Dallas', status: 'merged', created: '2026-04-02', prdItems: ['P-003'] },
+    ];
+    shared.deduplicatePrs(prs);
+    assert.strictEqual(prs.length, 1, 'Case-insensitive ids should be treated as duplicates');
+    assert.strictEqual(prs[0].status, 'merged', 'Newer entry status should win');
+    assert.deepStrictEqual(prs[0].prdItems, ['P-003'], 'prdItems should be unioned');
+  });
+
+  await test('deduplicatePrs preserves unique entries', () => {
+    const prs = [
+      { id: 'PR-10', agent: 'a', status: 'active', created: '2026-04-01', prdItems: [] },
+      { id: 'PR-20', agent: 'b', status: 'active', created: '2026-04-01', prdItems: [] },
+      { id: 'PR-30', agent: 'c', status: 'active', created: '2026-04-01', prdItems: [] },
+    ];
+    shared.deduplicatePrs(prs);
+    assert.strictEqual(prs.length, 3, 'Unique entries should all be preserved');
+  });
+
+  await test('deduplicatePrs handles empty and null inputs', () => {
+    assert.deepStrictEqual(shared.deduplicatePrs([]), [], 'Empty array returns empty');
+    assert.strictEqual(shared.deduplicatePrs(null), null, 'null returns null');
+  });
+
+  await test('deduplicatePrs merges fields — most recent status/agent wins', () => {
+    const prs = [
+      { id: 'PR-55', agent: 'dallas', status: 'active', reviewStatus: 'pending', created: '2026-04-01', prdItems: ['P-A'], url: '', branch: 'work/test' },
+      { id: 'PR-55', agent: 'Dallas', status: 'merged', reviewStatus: 'approved', created: '2026-04-02', prdItems: ['P-B'], url: 'https://example.com/pr/55', branch: '' },
+    ];
+    shared.deduplicatePrs(prs);
+    assert.strictEqual(prs.length, 1);
+    assert.strictEqual(prs[0].status, 'merged', 'Newer status wins');
+    assert.strictEqual(prs[0].reviewStatus, 'approved', 'Newer reviewStatus wins');
+    assert.strictEqual(prs[0].url, 'https://example.com/pr/55', 'Winner url wins');
+    assert.strictEqual(prs[0].branch, 'work/test', 'Loser branch fills empty winner field');
+    assert.deepStrictEqual(prs[0].prdItems, ['P-A', 'P-B'], 'prdItems unioned');
+  });
+
+  // Source code checks for dedup integration
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+  const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+
+  await test('syncPrsFromOutput uses case-insensitive dedup', () => {
+    assert.ok(lifecycleSrc.includes('toUpperCase()'),
+      'syncPrsFromOutput should use case-insensitive comparison for PR IDs');
+    assert.ok(lifecycleSrc.includes('deduplicatePrs(entry.prs)'),
+      'syncPrsFromOutput should call deduplicatePrs before writing');
+  });
+
+  await test('ADO reconcilePrs uses case-insensitive dedup', () => {
+    assert.ok(adoSrc.includes('toUpperCase()'),
+      'ADO reconcilePrs should normalize PR IDs to uppercase for comparison');
+    assert.ok(adoSrc.includes('deduplicatePrs(existingPrs)'),
+      'ADO reconcilePrs should call deduplicatePrs to clean up existing duplicates');
+  });
+
+  await test('GitHub reconcilePrs uses case-insensitive dedup', () => {
+    assert.ok(ghSrc.includes('toUpperCase()'),
+      'GitHub reconcilePrs should normalize PR IDs to uppercase for comparison');
+    assert.ok(ghSrc.includes('deduplicatePrs(existingPrs)'),
+      'GitHub reconcilePrs should call deduplicatePrs to clean up existing duplicates');
   });
 }
 
