@@ -3078,30 +3078,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!config.agents) config.agents = {};
 
       if (body.engine) {
-        // Validate and apply engine settings
         const e = body.engine;
         const D = shared.ENGINE_DEFAULTS;
-        if (e.tickInterval !== undefined) config.engine.tickInterval = Math.max(10000, Number(e.tickInterval) || D.tickInterval);
-        if (e.maxConcurrent !== undefined) config.engine.maxConcurrent = Math.max(1, Math.min(10, Number(e.maxConcurrent) || D.maxConcurrent));
-        if (e.inboxConsolidateThreshold !== undefined) config.engine.inboxConsolidateThreshold = Math.max(1, Number(e.inboxConsolidateThreshold) || D.inboxConsolidateThreshold);
-        if (e.agentTimeout !== undefined) config.engine.agentTimeout = Math.max(60000, Number(e.agentTimeout) || D.agentTimeout);
-        if (e.maxTurns !== undefined) config.engine.maxTurns = Math.max(5, Math.min(500, Number(e.maxTurns) || D.maxTurns));
-        if (e.heartbeatTimeout !== undefined) config.engine.heartbeatTimeout = Math.max(60000, Number(e.heartbeatTimeout) || D.heartbeatTimeout);
-        if (e.worktreeCreateTimeout !== undefined) config.engine.worktreeCreateTimeout = Math.max(60000, Number(e.worktreeCreateTimeout) || D.worktreeCreateTimeout);
-        if (e.worktreeCreateRetries !== undefined) config.engine.worktreeCreateRetries = Math.max(0, Math.min(3, Number(e.worktreeCreateRetries) || D.worktreeCreateRetries));
+        const numericFields = {
+          tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
+          agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
+          worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
+          idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
+          meetingRoundTimeout: [60000],
+        };
+        for (const [key, [min, max]] of Object.entries(numericFields)) {
+          if (e[key] !== undefined) {
+            let val = Number(e[key]) || D[key];
+            val = Math.max(min, val);
+            if (max !== undefined) val = Math.min(max, val);
+            config.engine[key] = val;
+          }
+        }
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        if (e.idleAlertMinutes !== undefined) config.engine.idleAlertMinutes = Math.max(1, Number(e.idleAlertMinutes) || D.idleAlertMinutes);
-        if (e.shutdownTimeout !== undefined) config.engine.shutdownTimeout = Math.max(30000, Number(e.shutdownTimeout) || D.shutdownTimeout);
-        if (e.restartGracePeriod !== undefined) config.engine.restartGracePeriod = Math.max(60000, Number(e.restartGracePeriod) || D.restartGracePeriod);
-        if (e.meetingRoundTimeout !== undefined) config.engine.meetingRoundTimeout = Math.max(60000, Number(e.meetingRoundTimeout) || D.meetingRoundTimeout);
-        if (e.autoApprovePlans !== undefined) config.engine.autoApprovePlans = !!e.autoApprovePlans;
-        if (e.autoDecompose !== undefined) config.engine.autoDecompose = !!e.autoDecompose;
-        if (e.allowTempAgents !== undefined) config.engine.allowTempAgents = !!e.allowTempAgents;
+        for (const key of ['autoApprovePlans', 'autoReview', 'autoDecompose', 'allowTempAgents']) {
+          if (e[key] !== undefined) config.engine[key] = !!e[key];
+        }
       }
 
       if (body.claude) {
-        if (body.claude.allowedTools !== undefined) config.claude.allowedTools = String(body.claude.allowedTools);
-        if (body.claude.outputFormat !== undefined) config.claude.outputFormat = String(body.claude.outputFormat);
+        for (const key of ['allowedTools', 'outputFormat']) {
+          if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
+        }
       }
 
       if (body.agents) {
