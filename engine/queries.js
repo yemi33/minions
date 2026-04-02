@@ -288,7 +288,10 @@ function getPullRequests(config) {
     }
   }
   allPrs.sort((a, b) => {
-    const dateComp = (b.created || '').localeCompare(a.created || '');
+    // Normalize to YYYY-MM-DD for date comparison (some have full ISO, some date-only)
+    const aDate = (a.created || '').slice(0, 10);
+    const bDate = (b.created || '').slice(0, 10);
+    const dateComp = bDate.localeCompare(aDate);
     if (dateComp !== 0) return dateComp;
     // Same date — sort by PR number descending (newest first)
     const aNum = parseInt((a.id || '').replace(/\D/g, '')) || 0;
