@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.218 (2026-04-02)
+
+### Engine
+- engine.js
+- engine/cli.js
+
+### Other
+- bin/minions.js
+- minions.js
+- team.md
+
 ## 0.1.217 (2026-04-02)
 
 ### Engine
