@@ -1503,6 +1503,7 @@ function discoverFromWorkItems(config, project) {
         ].filter(Boolean).join('\n');
         vars.checkpoint_context = cpSummary;
         log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+        try { fs.unlinkSync(cpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
       }
     } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
@@ -1814,6 +1815,7 @@ function discoverCentralWorkItems(config) {
           ].filter(Boolean).join('\n');
           fanOutCheckpointContext = fanCpSummary;
           log('info', `Injecting checkpoint context for ${item.id} (resume #${fanCpCount})`);
+          try { fs.unlinkSync(fanCpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
         }
       } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
@@ -1890,6 +1892,7 @@ function discoverCentralWorkItems(config) {
       item.dispatched_to = idleAgents.map(a => a.id).join(', ');
       item.scope = 'fan-out';
       item.fanOutAgents = idleAgents.map(a => a.id);
+      delete item._pendingReason;
       needsWrite = true;
       setCooldown(key);
       log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
@@ -1958,6 +1961,7 @@ function discoverCentralWorkItems(config) {
           ].filter(Boolean).join('\n');
           vars.checkpoint_context = cpSummary;
           log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+          try { fs.unlinkSync(cpPath); } catch (ue) { log('warn', `checkpoint cleanup for ${item.id}: ${ue.message}`); }
         }
       } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
@@ -2040,6 +2044,7 @@ function discoverCentralWorkItems(config) {
       item.status = 'dispatched';
       item.dispatched_at = ts();
       item.dispatched_to = agentId;
+      delete item._pendingReason;
       needsWrite = true;
       setCooldown(key);
     }

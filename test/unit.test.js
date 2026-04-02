@@ -6228,6 +6228,78 @@ async function testCumulativeCostTracking() {
       'Single-agent central dispatch must set needsWrite after critical_vars_missing');
   });
 
+  // ── Checkpoint cleanup after consumption (P-e6b0d3a5) ──────────────────────
+  console.log('\n── Checkpoint cleanup after consumption ──');
+
+  await test('project dispatch deletes checkpoint.json after consumption', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverFromWorkItems(');
+    assert.ok(fnStart > -1, 'engine.js must define discoverFromWorkItems');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    // After injecting checkpoint context, must unlink the checkpoint file
+    const cpInject = fnBody.indexOf('Injecting checkpoint context');
+    assert.ok(cpInject > -1, 'Must log checkpoint injection');
+    const afterInject = fnBody.slice(cpInject, cpInject + 200);
+    assert.ok(afterInject.includes('fs.unlinkSync(cpPath)'),
+      'Project dispatch must delete checkpoint.json after consumption via fs.unlinkSync(cpPath)');
+  });
+
+  await test('central single-agent dispatch deletes checkpoint.json after consumption', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    assert.ok(fnStart > -1, 'engine.js must define discoverCentralWorkItems');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    // Find the single-agent section
+    const singleIdx = fnBody.indexOf('Normal: single agent dispatch');
+    assert.ok(singleIdx > -1, 'Must have single-agent dispatch section');
+    const singleSection = fnBody.slice(singleIdx);
+    const cpInject = singleSection.indexOf('Injecting checkpoint context');
+    assert.ok(cpInject > -1, 'Single-agent path must log checkpoint injection');
+    const afterInject = singleSection.slice(cpInject, cpInject + 200);
+    assert.ok(afterInject.includes('fs.unlinkSync(cpPath)'),
+      'Central single-agent dispatch must delete checkpoint.json after consumption');
+  });
+
+  await test('fan-out dispatch deletes checkpoint.json after consumption', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnBody = src.slice(fnStart, fnStart + 15000);
+    const fanOutSection = fnBody.slice(fnBody.indexOf('isFanOut'));
+    const cpInject = fanOutSection.indexOf('Injecting checkpoint context');
+    assert.ok(cpInject > -1, 'Fan-out path must log checkpoint injection');
+    const afterInject = fanOutSection.slice(cpInject, cpInject + 200);
+    assert.ok(afterInject.includes('fs.unlinkSync(fanCpPath)'),
+      'Fan-out dispatch must delete checkpoint.json after consumption via fs.unlinkSync(fanCpPath)');
+  });
+
+  // ── _pendingReason cleanup on successful dispatch (P-e6b0d3a5) ─────────────
+  console.log('\n── _pendingReason cleanup on successful dispatch ──');
+
+  await test('fan-out dispatch clears _pendingReason on success', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 20000);
+    const fanOutStart = fnBody.indexOf('isFanOut');
+    const normalIdx = fnBody.indexOf('Normal: single agent dispatch');
+    const fanOutSection = fnBody.slice(fanOutStart, normalIdx);
+    // After setting status = 'dispatched', must delete _pendingReason
+    assert.ok(fanOutSection.includes("delete item._pendingReason"),
+      'Fan-out dispatch must clear _pendingReason on successful dispatch');
+  });
+
+  await test('central single-agent dispatch clears _pendingReason on success', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnStart = src.indexOf('function discoverCentralWorkItems(');
+    const fnEnd = src.indexOf('\nfunction ', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 20000);
+    const singleIdx = fnBody.indexOf('Normal: single agent dispatch');
+    assert.ok(singleIdx > -1, 'Must have single-agent dispatch section');
+    const singleSection = fnBody.slice(singleIdx);
+    assert.ok(singleSection.includes("delete item._pendingReason"),
+      'Central single-agent dispatch must clear _pendingReason on successful dispatch');
+  });
+
   await test('discoverFromWorkItems consolidates persistence into single write gate', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const fnStart = src.indexOf('function discoverFromWorkItems(');
