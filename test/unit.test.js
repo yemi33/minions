@@ -5572,6 +5572,9 @@ async function main() {
 
     // P-2b1c0d9e: Per-work-item cumulative cost tracking
     await testCumulativeCostTracking();
+
+    // P-k7m2a9f4: Pipeline artifact navigation links
+    await testPipelineArtifactLinks();
   } finally {
     cleanupTmpDirs();
   }
@@ -6098,6 +6101,117 @@ async function testCumulativeCostTracking() {
     assert.ok(src.includes('_totalInputTokens'), 'Dashboard should display _totalInputTokens');
     assert.ok(src.includes('_totalOutputTokens'), 'Dashboard should display _totalOutputTokens');
     assert.ok(src.includes('Cumulative Cost'), 'Dashboard should label the cost field');
+  });
+}
+
+async function testPipelineArtifactLinks() {
+  console.log('\n── Pipeline Artifact Navigation Links ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+
+  await test('render-pipelines.js has _renderArtifactLinks helper', () => {
+    assert.ok(src.includes('function _renderArtifactLinks(artifacts)'),
+      'Should define _renderArtifactLinks function');
+  });
+
+  await test('artifact links cover all artifact types', () => {
+    assert.ok(src.includes('artifacts.workItems'), 'Should render work item links');
+    assert.ok(src.includes('artifacts.meetings'), 'Should render meeting links');
+    assert.ok(src.includes('artifacts.plans'), 'Should render plan links');
+    assert.ok(src.includes('artifacts.prds'), 'Should render PRD links');
+    assert.ok(src.includes('artifacts.prs'), 'Should render PR links');
+    assert.ok(src.includes('artifacts.subStages'), 'Should render sub-stage labels');
+  });
+
+  await test('artifact links navigate to correct pages', () => {
+    // Source uses escaped quotes in onclick strings: switchPage(\'work\')
+    assert.ok(src.includes("switchPage(\\'work\\')"), 'Work items should navigate to work page');
+    assert.ok(src.includes("switchPage(\\'meetings\\')"), 'Meetings should navigate to meetings page');
+    assert.ok(src.includes("switchPage(\\'plans\\')"), 'Plans should navigate to plans page');
+    assert.ok(src.includes("switchPage(\\'prd\\')"), 'PRDs should navigate to PRD page');
+    assert.ok(src.includes("switchPage(\\'prs\\')"), 'PRs should navigate to PRs page');
+  });
+
+  await test('work item and meeting links open detail views', () => {
+    assert.ok(src.includes('openWorkItemDetail('), 'Work items should open detail modal');
+    assert.ok(src.includes('openMeetingDetail('), 'Meetings should open detail modal');
+  });
+
+  await test('_collectRunArtifacts helper deduplicates across stages', () => {
+    assert.ok(src.includes('function _collectRunArtifacts(run)'),
+      'Should define _collectRunArtifacts function');
+    assert.ok(src.includes('indexOf(v) === -1'),
+      'Should deduplicate artifacts');
+  });
+
+  await test('pipeline detail modal renders artifact links per stage', () => {
+    assert.ok(src.includes('_renderArtifactLinks(stageRun.artifacts)'),
+      'Stage detail should call _renderArtifactLinks with stage artifacts');
+  });
+
+  await test('run history shows artifact counts with expand toggle', () => {
+    assert.ok(src.includes('_collectRunArtifacts(r)'),
+      'Run history should collect artifacts per run');
+    assert.ok(src.includes('artifactCount'),
+      'Run history should calculate artifact count');
+    assert.ok(src.includes('run-artifacts-'),
+      'Run history should have expandable artifact containers');
+  });
+}
+
+async function testPipelineStepProgress() {
+  console.log('\n── Pipeline Step-Progress Indicator ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+  const css = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+
+  await test('render-pipelines.js computes progress from stage statuses', () => {
+    assert.ok(src.includes('completedCount'), 'Should count completed stages');
+    assert.ok(src.includes('runningCount'), 'Should count running stages');
+    assert.ok(src.includes('failedCount'), 'Should count failed stages');
+  });
+
+  await test('render-pipelines.js builds segmented progress bar', () => {
+    assert.ok(src.includes('pl-progress-bar'), 'Should render progress bar container');
+    assert.ok(src.includes('pl-prog-seg'), 'Should render individual stage segments');
+    assert.ok(src.includes('pl-progress-label'), 'Should render progress label');
+  });
+
+  await test('progress bar segments map to correct CSS classes', () => {
+    // Verify segment status-to-class mapping
+    assert.ok(src.includes("'complete'"), 'Should map completed to complete class');
+    assert.ok(src.includes("'running'"), 'Should map running to running class');
+    assert.ok(src.includes("'failed'"), 'Should map failed to failed class');
+    assert.ok(src.includes("'waiting'"), 'Should map waiting-human to waiting class');
+    assert.ok(src.includes("'pending'"), 'Should map default to pending class');
+  });
+
+  await test('progress percentage calculated from completed/total', () => {
+    assert.ok(src.includes('Math.round((completedCount / totalStages) * 100)') ||
+              src.includes('Math.round((ddone / dtotal) * 100)'),
+      'Should calculate percentage from completed stages');
+  });
+
+  await test('progress bar only shown when run exists', () => {
+    assert.ok(src.includes('displayRun && (p.stages || []).length > 0'),
+      'List view should guard progress bar on run existence');
+    assert.ok(src.includes('detailRun && (p.stages || []).length > 0'),
+      'Detail view should guard progress bar on run existence');
+  });
+
+  await test('CSS defines pipeline progress bar styles', () => {
+    assert.ok(css.includes('.pl-progress-bar'), 'Should define progress bar styles');
+    assert.ok(css.includes('.pl-prog-seg.complete'), 'Should define complete segment style');
+    assert.ok(css.includes('.pl-prog-seg.running'), 'Should define running segment style with animation');
+    assert.ok(css.includes('.pl-prog-seg.failed'), 'Should define failed segment style');
+    assert.ok(css.includes('.pl-prog-seg.pending'), 'Should define pending segment style');
+    assert.ok(css.includes('.pl-prog-seg.waiting'), 'Should define waiting segment style');
+    assert.ok(css.includes('plSegPulse'), 'Should define pulse animation for running stages');
+  });
+
+  await test('progress bar appears in both list and detail views', () => {
+    assert.ok(src.includes('progressHtml'), 'List view should insert progress HTML');
+    assert.ok(src.includes('detailRun'), 'Detail view should compute progress from detailRun');
   });
 }
 
