@@ -28,7 +28,14 @@ function getMeetings() {
 
 function getMeeting(id) {
   const filePath = path.join(MEETINGS_DIR, id + '.json');
-  return safeJson(filePath);
+  const m = safeJson(filePath);
+  if (m) {
+    if (!m.findings) m.findings = {};
+    if (!m.debate) m.debate = {};
+    if (!m.humanNotes) m.humanNotes = [];
+    if (!m.participants) m.participants = [];
+  }
+  return m;
 }
 
 function saveMeeting(meeting) {

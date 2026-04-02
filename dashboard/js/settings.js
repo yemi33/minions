@@ -66,6 +66,7 @@ async function openSettings() {
 
   // Add save button to modal header actions (next to copy/close)
   const actions = document.querySelector('.modal-header-actions');
+  if (!actions) return;
   const existingSaveBtn = document.getElementById('modal-settings-save');
   if (!existingSaveBtn) {
     const saveBtn = document.createElement('button');
