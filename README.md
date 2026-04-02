@@ -43,21 +43,14 @@ node ~/.minions/minions.js init
 ## Upgrading
 
 ```bash
-# Check if an update is available
-minions version
-
-# Update the npm package and apply changes
-npm update -g @yemi33/minions
-minions init --force
+minions update
 ```
+
+One command — pulls the latest npm package and applies the update automatically. Equivalent to `npm update -g @yemi33/minions && minions init --force`.
 
 **What gets updated:** Engine code (`.js`, `.html`), new playbooks, new agent charters, new docs, `CHANGELOG.md`.
 
-**What's preserved:** Your `config.json`, agent history, notes, knowledge base, routing, skills, and any `.md` files you've customized (charters, playbooks). If a new playbook or charter is added in an update, it's installed automatically without touching your existing ones.
-
-Upgrades now skip the interactive repo scan automatically. If you want to re-run discovery later, run `minions scan`. To skip scanning during the very first install, pass `--skip-scan` and link projects manually when ready.
-
-**What's shown:** A summary of files updated, added, and preserved, plus a pointer to the changelog.
+**What's preserved:** Your `config.json`, agent history, notes, knowledge base, routing, skills, and any `.md` files you've customized (charters, playbooks). New files are added automatically without touching existing ones.
 
 ### Migrating from legacy installs
 
@@ -131,8 +124,8 @@ minions work "Explore the codebase and document the architecture"
 
 | Command | Description |
 |---------|-------------|
-| `minions init` | Bootstrap `~/.minions/` with default agents and config (`--skip-scan` to skip repo scan) |
-| `minions init --force` | Upgrade engine code + add new files (preserves customizations) |
+| `minions init` | Bootstrap `~/.minions/` with default agents and config |
+| `minions update` | Update to latest version (npm update + apply) |
 | `minions version` | Show installed vs package version |
 | `minions scan [dir] [depth]` | Scan for git repos and multi-select to add (default: ~, depth 3) |
 | `minions add <dir>` | Link a single project (auto-detects settings from git, prompts to confirm) |
