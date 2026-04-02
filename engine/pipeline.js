@@ -169,7 +169,7 @@ function executeTaskStage(stage, stageState, run, config) {
       id,
       title: item.title || stage.title,
       description: item.description || stage.description || '',
-      type: item.type || stage.taskType || 'implement',
+      type: item.type || stage.taskType || 'explore',
       priority: item.priority || stage.priority || 'medium',
       agent: item.agent || stage.agent || '',
       status: 'pending',
