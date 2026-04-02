@@ -3112,6 +3112,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         for (const key of ['allowedTools', 'outputFormat']) {
           if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
         }
+        if (body.claude.permissionMode !== undefined) {
+          const valid = ['bypassPermissions', 'auto', 'default'];
+          config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
+        }
       }
 
       if (body.agents) {
