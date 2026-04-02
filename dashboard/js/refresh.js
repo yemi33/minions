@@ -97,17 +97,24 @@ function _processStatusUpdate(data) {
   }
   document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
   const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
+
+  // Engine status FIRST — most critical indicator, must not be blocked by other render failures
+  renderEngineStatus(data.engine);
+
   // Show setup banner if no projects linked (the key onboarding step)
   const noProjects = !data.projects || data.projects.length === 0;
   document.getElementById('setup-banner').style.display = (noProjects && engineState !== 'stopped') ? 'block' : 'none';
-  renderAgents(data.agents);
-  renderPrdProgress(data.prdProgress);
-  _cachePrdItems(data.prdProgress);
-  renderInbox(data.inbox);
-  cmdUpdateAgentList(data.agents);
-  cmdUpdateProjectList(data.projects || []);
-  renderNotes(data.notes);
-  renderPrd(data.prd, data.prdProgress);
+
+  // Each render call wrapped so one failure doesn't block the rest
+  const _r = (fn) => { try { fn(); } catch (e) { console.error('render error:', e.message); } };
+  _r(() => renderAgents(data.agents));
+  _r(() => renderPrdProgress(data.prdProgress));
+  _r(() => _cachePrdItems(data.prdProgress));
+  _r(() => renderInbox(data.inbox));
+  _r(() => cmdUpdateAgentList(data.agents));
+  _r(() => cmdUpdateProjectList(data.projects || []));
+  _r(() => renderNotes(data.notes));
+  _r(() => renderPrd(data.prd, data.prdProgress));
   // Auto-approve badge
   const autoEl = document.getElementById('auto-approve-badge');
   if (autoEl) autoEl.innerHTML = data.autoMode?.approvePlans
@@ -116,24 +123,23 @@ function _processStatusUpdate(data) {
   // Inbox consolidation threshold from config
   const threshEl = document.getElementById('inbox-threshold');
   if (threshEl && data.autoMode?.inboxThreshold) threshEl.textContent = data.autoMode.inboxThreshold;
-  renderPrs(data.pullRequests || []);
-  renderArchiveButtons(data.archivedPrds || []);
-  renderEngineStatus(data.engine);
-  renderDispatch(data.dispatch);
+  _r(() => renderPrs(data.pullRequests || []));
+  _r(() => renderArchiveButtons(data.archivedPrds || []));
+  _r(() => renderDispatch(data.dispatch));
   window._lastDispatch = data.dispatch;
   window._lastWorkItems = data.workItems || [];
   window._lastStatus = data;
-  prunePrdRequeueState(window._lastWorkItems);
-  renderEngineLog(data.engineLog || []);
-  renderProjects(data.projects || []);
-  renderMetrics(data.metrics || {});
-  renderWorkItems(data.workItems || []);
-  renderSkills(data.skills || []);
-  renderMcpServers(data.mcpServers || []);
-  renderSchedules(data.schedules || []);
-  renderMeetings(data.meetings || []);
-  if (typeof renderPipelines === 'function') renderPipelines(data.pipelines || []);
-  renderPinned(data.pinned || []);
+  _r(() => prunePrdRequeueState(window._lastWorkItems));
+  _r(() => renderEngineLog(data.engineLog || []));
+  _r(() => renderProjects(data.projects || []));
+  _r(() => renderMetrics(data.metrics || {}));
+  _r(() => renderWorkItems(data.workItems || []));
+  _r(() => renderSkills(data.skills || []));
+  _r(() => renderMcpServers(data.mcpServers || []));
+  _r(() => renderSchedules(data.schedules || []));
+  _r(() => renderMeetings(data.meetings || []));
+  _r(() => { if (typeof renderPipelines === 'function') renderPipelines(data.pipelines || []); });
+  _r(() => renderPinned(data.pinned || []));
   // Update sidebar counts
   const swi = document.getElementById('sidebar-wi');
   if (swi) swi.textContent = (data.workItems || []).length || '';
