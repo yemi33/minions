@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.158 (2026-04-02)
+
+### Engine
+- engine/shared.js
+
 ## 0.1.157 (2026-04-02)
 
 ### Engine
