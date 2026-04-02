@@ -16,10 +16,10 @@ function toggleCommandCenter() {
     document.getElementById('cc-input').focus();
     ccRestoreMessages();
   } else if (_ccSending) {
-    // Closing drawer while CC is processing — show animated badge
     showNotifBadge(document.getElementById('cc-toggle-btn'), 'processing');
   }
 }
+
 
 function ccNewSession() {
   fetch('/api/command-center/new-session', { method: 'POST' }).catch(() => {});
@@ -88,7 +88,7 @@ function ccAddMessage(role, html, skipSave) {
   const isUser = role === 'user';
   const div = document.createElement('div');
   const isAssistant = !isUser;
-  div.className = isAssistant ? 'cc-msg-assistant md-content' : '';
+  div.className = isAssistant ? 'cc-msg-assistant' : '';
   div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
     (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
   div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;

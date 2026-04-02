@@ -93,7 +93,7 @@ function renderPipelines(pipelines) {
 
     // Build step-progress indicator for pipelines with a run
     var progressHtml = '';
-    var displayRun = activeRun || lastRun;
+    var displayRun = activeRun;
     if (displayRun && (p.stages || []).length > 0) {
       var totalStages = (p.stages || []).length;
       var completedCount = 0;
@@ -164,7 +164,7 @@ function openPipelineDetail(id) {
   '</div>';
 
   // Stage detail with progress bar
-  var detailRun = activeRun || (p.runs || []).slice(-1)[0];
+  var detailRun = activeRun;
   if (detailRun && (p.stages || []).length > 0) {
     var dtotal = (p.stages || []).length;
     var ddone = 0, drun = 0, dfail = 0;

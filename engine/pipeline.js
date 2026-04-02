@@ -345,7 +345,7 @@ function isStageComplete(stage, stageState, run, config) {
       if (ids.length === 0) return false;
       return ids.every(id => {
         const wi = workItems.find(w => w.id === id);
-        return wi && (wi.status === 'done' || wi.status === 'failed');
+        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
       });
     }
     case 'meeting': {
@@ -370,7 +370,7 @@ function isStageComplete(stage, stageState, run, config) {
       const prdWiIds = artifacts.workItems || [];
       const prdDone = prdWiIds.every(id => {
         const wi = all.find(w => w.id === id);
-        return wi && wi.status === 'done';
+        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
       });
       if (!prdDone) return false;
 
@@ -418,7 +418,7 @@ function isStageComplete(stage, stageState, run, config) {
       if (implementIds.length === 0 && artifacts.prds?.length > 0) return false; // items not materialized yet
       return implementIds.every(id => {
         const wi = all.find(w => w.id === id);
-        return wi && (wi.status === 'done' || wi.status === 'failed');
+        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
       });
     }
     case 'merge-prs': {
