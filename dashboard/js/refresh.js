@@ -2,6 +2,7 @@
 
 // Sidebar activity indicators — detect changes between refreshes
 let _prevCounts = {};
+let _prevEngineAlert = false;
 function _detectPageChanges(data) {
   const counts = {
     completions: (data.dispatch?.completed || []).length,
@@ -22,7 +23,50 @@ function _detectPageChanges(data) {
     if (counts.meetingRounds > _prevCounts.meetingRounds) changes.meetings = true;
   }
   _prevCounts = counts;
+
+  // Engine page — only badge for genuine problems, not routine activity
+  const engineAlert = _isEngineAlertWorthy(data);
+  if (engineAlert && !_prevEngineAlert) changes.engine = true;
+  // Clear the engine badge when alert condition resolves
+  if (!engineAlert && _prevEngineAlert) {
+    const engineLink = document.querySelector('.sidebar-link[data-page="engine"]');
+    if (engineLink) clearNotifBadge(engineLink);
+  }
+  _prevEngineAlert = engineAlert;
+
   return changes;
+}
+
+/**
+ * Determine if the engine state warrants a notification dot.
+ * Returns true only for genuine problems:
+ * - Engine stopped, stale, or in error state
+ * - 3+ failed work items in the last hour
+ * - Agent timeout/crash detected (error results in recent completions)
+ */
+function _isEngineAlertWorthy(data) {
+  // 1. Engine not running (stopped, stale, or error)
+  const engineState = data.engine?.state || 'stopped';
+  if (engineState === 'stopped' || engineState === 'error') return true;
+  // Stale heartbeat (>2 min old while claiming running)
+  if (engineState === 'running' && data.engine?.heartbeat) {
+    if (Date.now() - data.engine.heartbeat > 120000) return true;
+  }
+
+  // 2. 3+ failed work items in the last hour
+  const oneHourAgo = Date.now() - 3600000;
+  const recentFailures = (data.workItems || []).filter(w =>
+    w.status === 'failed' && w.updated_at && new Date(w.updated_at).getTime() > oneHourAgo
+  );
+  if (recentFailures.length >= 3) return true;
+
+  // 3. Agent timeout/crash — 3+ error results in recent completed dispatches
+  const recentErrors = (data.dispatch?.completed || []).filter(d =>
+    d.result === 'error' && d.completed_at && new Date(d.completed_at).getTime() > oneHourAgo
+  );
+  if (recentErrors.length >= 3) return true;
+
+  return false;
 }
 
 function _processStatusUpdate(data) {
