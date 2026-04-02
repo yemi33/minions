@@ -3589,6 +3589,109 @@ async function testRenderPlaybook() {
   });
 }
 
+// ─── engine/playbook.js — Prompt Size Tracking Tests ────────────────────────
+
+async function testPromptSizeTracking() {
+  console.log('\n── engine/playbook.js — prompt size tracking ──');
+
+  let getLastPromptSizes, renderPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    getLastPromptSizes = pb.getLastPromptSizes;
+    renderPlaybook = pb.renderPlaybook;
+  } catch {}
+
+  if (!getLastPromptSizes || !renderPlaybook) {
+    skip('prompt-sizes-not-exported', 'getLastPromptSizes or renderPlaybook not available');
+    return;
+  }
+
+  await test('getLastPromptSizes returns null before any render', () => {
+    // Render a nonexistent playbook to reset state
+    renderPlaybook('nonexistent-playbook-xyz', {});
+    const sizes = getLastPromptSizes();
+    assert.strictEqual(sizes, null, 'Should be null when renderPlaybook returns null');
+  });
+
+  await test('renderPlaybook populates _promptSizes with correct keys', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Implement the feature', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+      references: 'http://example.com/doc',
+      acceptance_criteria: '- Must pass tests\n- Must not break existing code',
+      checkpoint_context: 'Previous attempt failed at step 3',
+    });
+    assert.ok(result, 'renderPlaybook should return content');
+    const sizes = getLastPromptSizes();
+    assert.ok(sizes, 'getLastPromptSizes should return an object after successful render');
+    const requiredKeys = ['total', 'systemPrompt', 'playbook', 'pinned', 'pendingQueue', 'checkpoint', 'references', 'criteria'];
+    for (const key of requiredKeys) {
+      assert.ok(key in sizes, `_promptSizes should have key: ${key}`);
+      assert.strictEqual(typeof sizes[key], 'number', `_promptSizes.${key} should be a number`);
+    }
+  });
+
+  await test('_promptSizes.playbook matches rendered content length', () => {
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(result, 'renderPlaybook should return content');
+    const sizes = getLastPromptSizes();
+    assert.strictEqual(sizes.playbook, result.length, 'playbook size should match rendered content length');
+    assert.ok(sizes.total > 0, 'total should be > 0');
+  });
+
+  await test('_promptSizes.references reflects injected references length', () => {
+    const refs = 'https://example.com/api-doc\nhttps://example.com/design';
+    renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+      references: refs,
+    });
+    const sizes = getLastPromptSizes();
+    assert.strictEqual(sizes.references, refs.length, 'references size should match input length');
+  });
+
+  await test('_promptSizes.criteria reflects injected acceptance criteria length', () => {
+    const criteria = '- Must handle edge cases\n- Must be backwards compatible';
+    renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+      acceptance_criteria: criteria,
+    });
+    const sizes = getLastPromptSizes();
+    assert.strictEqual(sizes.criteria, criteria.length, 'criteria size should match input length');
+  });
+
+  await test('prompt sizes do not modify rendered content', () => {
+    const sentinel = 'UNIQUE_SENTINEL_FOR_SIZE_TEST';
+    const result = renderPlaybook('implement', {
+      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
+      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
+      item_description: sentinel,
+    });
+    assert.ok(result.includes(sentinel), 'Content should not be modified by size tracking');
+  });
+
+  // Source-level assertion: spawnAgent writes _promptSizes to meta
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  await test('spawnAgent records _promptSizes in dispatch meta', () => {
+    assert.ok(engineSrc.includes('meta._promptSizes'), 'spawnAgent should write _promptSizes to meta');
+    assert.ok(engineSrc.includes('getLastPromptSizes'), 'spawnAgent should call getLastPromptSizes');
+  });
+}
+
 // ─── engine.js — completeDispatch Tests ─────────────────────────────────────
 
 async function testCompleteDispatch() {
@@ -5642,6 +5745,7 @@ async function main() {
     await testCooldownContextDedup();
     await testResolveAgent();
     await testRenderPlaybook();
+    await testPromptSizeTracking();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testDiscoverFromWorkItems();

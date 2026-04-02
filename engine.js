@@ -120,7 +120,7 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
-const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
+const { renderPlaybook, getLastRenderError, getLastPromptSizes, buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
   getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
@@ -427,6 +427,16 @@ function spawnAgent(dispatchItem, config) {
   const fullTaskPrompt = agentContext
     ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPrompt}`
     : taskPrompt;
+
+  // Record prompt component sizes in dispatch metadata for token-usage visibility
+  const promptSizes = getLastPromptSizes();
+  if (promptSizes) {
+    promptSizes.systemPrompt = systemPrompt.length;
+    promptSizes.total = systemPrompt.length + fullTaskPrompt.length;
+  }
+  if (meta) {
+    meta._promptSizes = promptSizes || { total: systemPrompt.length + fullTaskPrompt.length, systemPrompt: systemPrompt.length, playbook: taskPrompt.length, pinned: 0, pendingQueue: 0, checkpoint: 0, references: 0, criteria: 0 };
+  }
 
   // Write prompt and system prompt to temp files (avoids shell escaping issues)
   const tmpDir = path.join(ENGINE_DIR, 'tmp');
@@ -2387,6 +2397,8 @@ module.exports = {
 
   // Playbooks
   renderPlaybook,
+  getLastRenderError,
+  getLastPromptSizes,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,
