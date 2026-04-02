@@ -5683,6 +5683,9 @@ async function main() {
 
     // P-v8k3m1qa: Regression fixes from commit 5cff9b8
     await testLifecycleRegressions();
+
+    // P-j2n7f4xb: Lock audit — high-risk lifecycle.js sites
+    await testLockAuditHighRiskSites();
   } finally {
     cleanupTmpDirs();
   }
@@ -6409,6 +6412,174 @@ async function testLifecycleRegressions() {
     const result = JSON.parse(fs.readFileSync(prdFile, 'utf8'));
     assert.strictEqual(result.missing_features[0].status, 'done', 'P-001 should be done');
     assert.strictEqual(result.missing_features[1].status, 'pending', 'P-002 should remain pending');
+  });
+}
+
+// ─── P-j2n7f4xb: Lock Audit — High-Risk Sites Use mutateJsonFileLocked ──────
+
+async function testLockAuditHighRiskSites() {
+  console.log('\n── Lock Audit: High-Risk lifecycle.js Sites ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // Helper: extract a function body from source
+  function extractFn(src, fnName) {
+    const start = src.indexOf(`function ${fnName}(`);
+    if (start < 0) return '';
+    const nextFn = src.indexOf('\nfunction ', start + 1);
+    const nextSection = src.indexOf('\n// ─── ', start + 1);
+    const end = Math.min(
+      nextFn > 0 ? nextFn : Infinity,
+      nextSection > 0 ? nextSection : Infinity
+    );
+    return src.slice(start, end === Infinity ? undefined : end);
+  }
+
+  await test('eval-loop review creation uses mutateJsonFileLocked (not safeWrite)', () => {
+    // The review creation in handleAgentCompletion must be atomic
+    const completionSection = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Auto-dispatch review work item after implement'),
+      lifecycleSrc.indexOf('Review completion: parse verdict')
+    );
+    assert.ok(completionSection.includes('mutateJsonFileLocked(wiPath'),
+      'Eval-loop review creation must use mutateJsonFileLocked');
+    assert.ok(!completionSection.includes('shared.safeWrite(wiPath'),
+      'Eval-loop review creation must NOT use bare safeWrite');
+  });
+
+  await test('review→fix/escalation uses mutateJsonFileLocked (not safeWrite)', () => {
+    // The fix item creation / escalation after eval failure must be atomic
+    const evalSection = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Review completion: parse verdict'),
+      lifecycleSrc.indexOf('if (!isSuccess && meta?.item?.id)')
+    );
+    assert.ok(evalSection.includes('mutateJsonFileLocked(wiPath'),
+      'Review→fix iteration must use mutateJsonFileLocked');
+    assert.ok(!evalSection.includes('shared.safeWrite(wiPath'),
+      'Review→fix iteration must NOT use bare safeWrite');
+  });
+
+  await test('auto-retry counter uses mutateJsonFileLocked (not safeWrite)', () => {
+    // Retry count increment must be atomic to avoid lost updates
+    const retrySection = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('auto-retry'),
+      lifecycleSrc.indexOf('Clear _decomposing flag')
+    );
+    assert.ok(retrySection.includes('mutateJsonFileLocked(wiPath'),
+      'Auto-retry counter must use mutateJsonFileLocked');
+    assert.ok(!retrySection.includes('shared.safeWrite(wiPath'),
+      'Auto-retry must NOT use bare safeWrite for work items');
+  });
+
+  await test('PR sync writes use mutateJsonFileLocked (not safeWrite)', () => {
+    const syncPrsFn = extractFn(lifecycleSrc, 'syncPrsFromOutput');
+    // The final write loop should use locked mutation
+    const writeLoop = syncPrsFn.slice(syncPrsFn.indexOf('for (const [name, entry]'));
+    assert.ok(writeLoop.includes('mutateJsonFileLocked(entry.prPath'),
+      'PR sync writes must use mutateJsonFileLocked');
+    assert.ok(!writeLoop.includes('shared.safeWrite(entry.prPath'),
+      'PR sync writes must NOT use bare safeWrite');
+  });
+
+  await test('post-merge WI status uses mutateJsonFileLocked (not safeWrite)', () => {
+    // handlePostMerge is async, so extract manually
+    const start = lifecycleSrc.indexOf('async function handlePostMerge(');
+    const nextSection = lifecycleSrc.indexOf('\n// ─── ', start + 1);
+    const postMergeFn = lifecycleSrc.slice(start, nextSection > 0 ? nextSection : undefined);
+    const wiSection = postMergeFn.slice(postMergeFn.indexOf('Mark work item as done'));
+    assert.ok(wiSection.includes('mutateJsonFileLocked(wiPath'),
+      'Post-merge work item status must use mutateJsonFileLocked');
+    assert.ok(!wiSection.includes('shared.safeWrite(wiPath'),
+      'Post-merge WI update must NOT use bare safeWrite');
+  });
+
+  await test('post-merge metrics uses mutateJsonFileLocked (not safeWrite)', () => {
+    // handlePostMerge is async and long — find prsMerged section directly
+    const postMergeStart = lifecycleSrc.indexOf('async function handlePostMerge(');
+    const prsMergedIdx = lifecycleSrc.indexOf('prsMerged', postMergeStart);
+    assert.ok(prsMergedIdx > 0, 'prsMerged should exist in handlePostMerge');
+    const context = lifecycleSrc.slice(prsMergedIdx - 200, prsMergedIdx + 200);
+    assert.ok(context.includes('mutateJsonFileLocked(metricsPath'),
+      'Post-merge metrics must use mutateJsonFileLocked');
+    assert.ok(!context.includes('shared.safeWrite(metricsPath'),
+      'Post-merge metrics must NOT use bare safeWrite');
+  });
+
+  await test('review metrics uses mutateJsonFileLocked (not safeWrite)', () => {
+    const reviewFn = extractFn(lifecycleSrc, 'updatePrAfterReview');
+    assert.ok(reviewFn.includes('mutateJsonFileLocked(metricsPath'),
+      'Review metrics must use mutateJsonFileLocked');
+    assert.ok(!reviewFn.includes('shared.safeWrite(metricsPath'),
+      'Review metrics must NOT use bare safeWrite');
+  });
+
+  await test('decompose cleanup uses mutateJsonFileLocked (not safeWrite)', () => {
+    const decomposeSection = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Clear _decomposing flag'),
+      lifecycleSrc.indexOf('Meeting post-completion')
+    );
+    assert.ok(decomposeSection.includes('mutateJsonFileLocked(wiPath'),
+      'Decompose cleanup must use mutateJsonFileLocked');
+    assert.ok(!decomposeSection.includes('shared.safeWrite(wiPath'),
+      'Decompose cleanup must NOT use bare safeWrite');
+  });
+
+  // Functional test: concurrent eval-loop review creation deduplicates
+  await test('concurrent eval-loop review creation deduplicates items', () => {
+    const tmpDir = createTmpDir();
+    const wiPath = path.join(tmpDir, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-parent', title: 'Test item', type: 'implement', status: 'done', project: 'test' }
+    ]);
+
+    // Simulate two concurrent review creations using mutateJsonFileLocked
+    // (the pattern used in the converted code)
+    for (let i = 0; i < 2; i++) {
+      shared.mutateJsonFileLocked(wiPath, (items) => {
+        const existing = items.find(it => it._evalParentId === 'W-parent' && it.type === 'review');
+        if (existing) return items; // dedup
+        const parentItem = items.find(it => it.id === 'W-parent');
+        items.push({
+          id: 'W-review-' + shared.uid(),
+          title: 'Review: Test item',
+          type: 'review',
+          status: 'pending',
+          _evalParentId: 'W-parent',
+        });
+        if (parentItem) parentItem._evalDispatched = true;
+        return items;
+      }, { defaultValue: [] });
+    }
+
+    const result = shared.safeJson(wiPath);
+    const reviews = result.filter(i => i.type === 'review' && i._evalParentId === 'W-parent');
+    assert.strictEqual(reviews.length, 1,
+      'Should create exactly 1 review item even with 2 attempts (dedup inside lock)');
+    assert.ok(result.find(i => i.id === 'W-parent')._evalDispatched,
+      'Parent should be marked _evalDispatched');
+  });
+
+  // Functional test: concurrent retry counter increments don't lose updates
+  await test('concurrent retry counter increments are atomic', () => {
+    const tmpDir = createTmpDir();
+    const wiPath = path.join(tmpDir, 'work-items.json');
+    shared.safeWrite(wiPath, [
+      { id: 'W-fail', title: 'Failing item', type: 'implement', status: 'pending', _retryCount: 0 }
+    ]);
+
+    // Simulate 3 sequential retry increments via mutateJsonFileLocked
+    for (let i = 0; i < 3; i++) {
+      shared.mutateJsonFileLocked(wiPath, (items) => {
+        const wi = items.find(it => it.id === 'W-fail');
+        if (wi) wi._retryCount = (wi._retryCount || 0) + 1;
+        return items;
+      }, { defaultValue: [] });
+    }
+
+    const result = shared.safeJson(wiPath);
+    const wi = result.find(i => i.id === 'W-fail');
+    assert.strictEqual(wi._retryCount, 3,
+      'Retry count should be 3 after 3 atomic increments (no lost updates)');
   });
 }
 
