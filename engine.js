@@ -396,7 +396,7 @@ function spawnAgent(dispatchItem, config) {
           log('warn', `Proceeding with recovered worktree after add failure for ${branchName}`);
         } else {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
-          completeDispatch(id, 'error', 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
+          completeDispatch(id, DISPATCH_RESULT.ERROR, 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
           return null;
         }
       }
@@ -610,7 +610,7 @@ function spawnAgent(dispatchItem, config) {
       resumeProc.on('error', (err) => {
         log('error', `Steering re-spawn failed for ${agentId}: ${err.message}`);
         activeProcesses.delete(id);
-        completeDispatch(id, 'error', `Steering re-spawn error: ${err.message}`);
+        completeDispatch(id, DISPATCH_RESULT.ERROR, `Steering re-spawn error: ${err.message}`);
       });
 
       // Don't run completion hooks — agent is still working
@@ -642,7 +642,7 @@ function spawnAgent(dispatchItem, config) {
     if (code === 78) {
       const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
       log('error', `Agent ${agentId} (${id}) failed: ${errMsg}`);
-      completeDispatch(id, 'error', errMsg, '');
+      completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '');
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
@@ -653,7 +653,7 @@ function spawnAgent(dispatchItem, config) {
     const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
-    completeDispatch(id, code === 0 ? 'success' : 'error', '', resultSummary);
+    completeDispatch(id, code === 0 ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, '', resultSummary);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
@@ -680,7 +680,7 @@ function spawnAgent(dispatchItem, config) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
-    completeDispatch(id, 'error', `Spawn error: ${err.message}`);
+    completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
   });
 
   // Safety: if process exits immediately (within 3s), log it
@@ -769,7 +769,7 @@ function areDependenciesMet(item, config) {
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
-    if (depItem.status === 'failed') return 'failed';
+    if (depItem.status === WI_STATUS.FAILED) return 'failed';
     if (!PRD_MET_STATUSES.has(depItem.status)) return false; // Pending, dispatched, or retrying — wait (legacy aliases accepted)
   }
   return true;
@@ -801,7 +801,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
   const prLinks = shared.getPrLinks();
   let reconciled = 0;
   for (const wi of items) {
-    if (wi.status !== 'pending' || wi._pr) continue;
+    if (wi.status !== WI_STATUS.PENDING || wi._pr) continue;
     if (onlyIds && !onlyIds.has(wi.id)) continue;
 
     let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
@@ -810,7 +810,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
       if (linkedPrId) exactPr = allPrs.find(pr => pr.id === linkedPrId) || { id: linkedPrId };
     }
     if (exactPr) {
-      wi.status = 'done';
+      wi.status = WI_STATUS.DONE;
       wi._pr = exactPr.id;
       reconciled++;
     }
@@ -894,7 +894,7 @@ function autoCleanPrdWorkItems(prdFile, config) {
       const items = safeJson(wiPath);
       if (!items) continue;
       const filtered = items.filter(w => {
-        if (w.sourcePlan === prdFile && (w.status === 'pending' || w.status === 'failed')) {
+        if (w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED)) {
           deletedIds.push(w.id); return false;
         }
         return true;
@@ -1011,7 +1011,7 @@ function materializePlansAsWorkItems(config) {
                 const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
                 const centralItems = safeJson(centralWiPath) || [];
                 const alreadyQueued = centralItems.some(w =>
-                  w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+                  w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
                 );
                 if (!alreadyQueued) {
                   centralItems.push({
@@ -1054,7 +1054,7 @@ function materializePlansAsWorkItems(config) {
         continue; // Skip — waiting for human approval
       }
     }
-    if (planStatus === 'paused' || planStatus === 'rejected' || planStatus === 'revision-requested') {
+    if (planStatus === PLAN_STATUS.PAUSED || planStatus === PLAN_STATUS.REJECTED || planStatus === PLAN_STATUS.REVISION_REQUESTED) {
       continue; // Skip — paused or revision requested
     }
     // Stale PRDs: source plan was revised — don't materialize NEW items until user regenerates
@@ -1082,7 +1082,7 @@ function materializePlansAsWorkItems(config) {
     }
     const items = plan.missing_features.filter(f =>
       statusFilter.includes(f.status) ||
-      ((f.status === 'in-pr' || f.status === 'done') && f.id && !allExistingWiIds.has(f.id))
+      (DONE_STATUSES.has(f.status) && f.id && !allExistingWiIds.has(f.id))
     );
 
     // Group items by target project (per-item project field overrides plan-level project)
@@ -1175,7 +1175,7 @@ function materializePlansAsWorkItems(config) {
         const currentPrdIds = new Set(plan.missing_features.map(f => f.id));
         let cancelled = 0;
         for (const wi of existingItems) {
-          if (wi.status !== 'pending' || wi.sourcePlan !== file) continue;
+          if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
           if (!currentPrdIds.has(wi.id)) {
             wi.status = 'cancelled';
             wi.cancelledAt = ts();
@@ -1376,23 +1376,23 @@ function discoverFromWorkItems(config, project) {
   for (const item of items) {
     try {
     // Re-evaluate failed items: if deps have recovered, reset to pending
-    if (item.status === 'failed' && item.failReason === 'Dependency failed — cannot proceed') {
+    if (item.status === WI_STATUS.FAILED && item.failReason === 'Dependency failed — cannot proceed') {
       const depStatus = areDependenciesMet(item, config);
       if (depStatus === true) {
-        item.status = 'pending';
+        item.status = WI_STATUS.PENDING;
         delete item.failReason;
         log('info', `Recovered ${item.id} from dependency failure — deps now met`);
         needsWrite = true;
       }
     }
 
-    if (item.status !== 'queued' && item.status !== 'pending') continue;
+    if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
     if (item.depends_on && item.depends_on.length > 0) {
       const depStatus = areDependenciesMet(item, config);
       if (depStatus === 'failed') {
-        item.status = 'failed';
+        item.status = WI_STATUS.FAILED;
         item.failReason = 'Dependency failed — cannot proceed';
         delete item._pendingReason;
         log('warn', `Marking ${item.id} as failed: dependency failed (plan: ${item.sourcePlan})`);
@@ -1422,7 +1422,7 @@ function discoverFromWorkItems(config, project) {
       safeWrite(projectWorkItemsPath(project), items);
     }
     if (isAlreadyDispatched(key)) {
-      if (item.status === 'pending') { item.status = 'dispatched'; needsWrite = true; }
+      if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
       if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
       skipped.gated++; continue;
     }
@@ -1432,12 +1432,12 @@ function discoverFromWorkItems(config, project) {
     }
 
     let workType = item.type || 'implement';
-    if (workType === 'implement' && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
-      workType = 'implement:large';
+    if (workType === WORK_TYPE.IMPLEMENT && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
+      workType = WORK_TYPE.IMPLEMENT_LARGE;
     }
     // Auto-decompose large items before implementation
     if (workType === 'implement:large' && !item._decomposed && !item._decomposing && config.engine?.autoDecompose !== false) {
-      workType = 'decompose';
+      workType = WORK_TYPE.DECOMPOSE;
       item._decomposing = true;
       needsWrite = true;
     }
@@ -1522,7 +1522,7 @@ function discoverFromWorkItems(config, project) {
     } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
     // Inject ask-specific variables for the ask playbook
-    if (workType === 'ask') {
+    if (workType === WORK_TYPE.ASK) {
       vars.question = item.title + (item.description ? '\n\n' + item.description : '');
       vars.task_id = item.id;
       vars.notes_content = '';
@@ -1537,7 +1537,7 @@ function discoverFromWorkItems(config, project) {
     }
 
     const playbookName = selectPlaybook(workType, item);
-    if (playbookName === 'work-item' && workType === 'review') {
+    if (playbookName === 'work-item' && workType === WORK_TYPE.REVIEW) {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
     }
     const prompt = item.prompt || renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars) || item.description;
@@ -1547,7 +1547,7 @@ function discoverFromWorkItems(config, project) {
     }
 
     // Mark item as dispatched BEFORE adding to newWork (prevents race on next tick)
-    item.status = 'dispatched';
+    item.status = WI_STATUS.DISPATCHED;
     item.dispatched_at = ts();
     item.dispatched_to = agentId;
     delete item._pendingReason;
@@ -1772,7 +1772,7 @@ function discoverCentralWorkItems(config) {
 
   for (const item of items) {
     try {
-    if (item.status !== 'queued' && item.status !== 'pending') continue;
+    if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     const key = `central-work-${item.id}`;
     if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
@@ -1824,7 +1824,7 @@ function discoverCentralWorkItems(config) {
         const fanAc = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
 
-        if (workType === 'ask') {
+        if (workType === WORK_TYPE.ASK) {
           vars.question = item.title + (item.description ? '\n\n' + item.description : '');
           vars.task_id = item.id;
           vars.notes_content = '';
@@ -1858,7 +1858,7 @@ function discoverCentralWorkItems(config) {
         });
       }
 
-      item.status = 'dispatched';
+      item.status = WI_STATUS.DISPATCHED;
       item.dispatched_at = ts();
       item.dispatched_to = idleAgents.map(a => a.id).join(', ');
       item.scope = 'fan-out';
@@ -1934,7 +1934,7 @@ function discoverCentralWorkItems(config) {
       } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
 
       // Inject plan-specific variables for the plan playbook
-      if (workType === 'plan') {
+      if (workType === WORK_TYPE.PLAN) {
         // Ensure plans directory exists before agent tries to write
         if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
         const planFileName = `plan-${item.id.toLowerCase()}-${dateStamp()}.md`;
@@ -1949,7 +1949,7 @@ function discoverCentralWorkItems(config) {
       }
 
       // Inject plan-to-prd variables — read the plan file content for the playbook
-      if (workType === 'plan-to-prd' && item.planFile) {
+      if (workType === WORK_TYPE.PLAN_TO_PRD && item.planFile) {
         if (!fs.existsSync(PLANS_DIR)) fs.mkdirSync(PLANS_DIR, { recursive: true });
         if (!fs.existsSync(PRD_DIR)) fs.mkdirSync(PRD_DIR, { recursive: true });
         const planPath = path.join(PLANS_DIR, item.planFile);
@@ -1968,7 +1968,7 @@ function discoverCentralWorkItems(config) {
       }
 
       // Inject ask-specific variables for the ask playbook
-      if (workType === 'ask') {
+      if (workType === WORK_TYPE.ASK) {
         vars.question = item.title + (item.description ? '\n\n' + item.description : '');
         vars.task_id = item.id;
         vars.notes_content = '';
@@ -1986,7 +1986,7 @@ function discoverCentralWorkItems(config) {
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
       if (!prompt) {
         log('warn', `Dispatch: playbook '${playbookName}' failed to render for ${item.id}, resetting to pending`);
-        item.status = 'pending';
+        item.status = WI_STATUS.PENDING;
         continue;
       }
 
@@ -2000,7 +2000,7 @@ function discoverCentralWorkItems(config) {
         meta: { dispatchKey: key, source: 'central-work-item', item, planFileName: item.planFile || item._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}` }
       });
 
-      item.status = 'dispatched';
+      item.status = WI_STATUS.DISPATCHED;
       item.dispatched_at = ts();
       item.dispatched_to = agentId;
       setCooldown(key);
@@ -2032,9 +2032,9 @@ function discoverWork(config) {
 
     // Source 1: Pull Requests → fixes, reviews, build-test
     const prWork = discoverFromPrs(config, project);
-    allFixes.push(...prWork.filter(w => w.type === 'fix'));
-    allReviews.push(...prWork.filter(w => w.type === 'review'));
-    allWorkItems.push(...prWork.filter(w => w.type === 'test'));
+    allFixes.push(...prWork.filter(w => w.type === WORK_TYPE.FIX));
+    allReviews.push(...prWork.filter(w => w.type === WORK_TYPE.REVIEW));
+    allWorkItems.push(...prWork.filter(w => w.type === WORK_TYPE.TEST));
 
     // Side-effect: specs → work items (picked up below)
     materializeSpecsAsWorkItems(config, project);
@@ -2059,14 +2059,14 @@ function discoverWork(config) {
       const items = safeJson(centralPath) || [];
       let added = 0;
       for (const item of scheduledWork) {
-        if (item.type === 'meeting') {
+        if (item.type === WORK_TYPE.MEETING) {
           // Create a real multi-agent meeting instead of a single-agent work item
           const sched = (config.schedules || []).find(s => s.id === item._scheduleId);
           const participants = (sched && sched.participants) || [];
           const meeting = createMeeting({ title: item.title, agenda: item.description, participants });
           log('info', `Scheduled meeting created: ${item._scheduleId} → ${meeting.id} (${participants.length} participants)`);
         } else {
-          if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== 'done' && i.status !== 'failed')) {
+          if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED)) {
             items.push(item);
             added++;
             log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
@@ -2259,9 +2259,9 @@ async function tickInner() {
             const wiPath = projectWorkItemsPath(project);
             const items = safeJson(wiPath) || [];
             let changed = false;
-            const failedIds = new Set(items.filter(w => w.status === 'failed').map(w => w.id));
+            const failedIds = new Set(items.filter(w => w.status === WI_STATUS.FAILED).map(w => w.id));
             const pendingWithBlockedDeps = items.filter(w =>
-              w.status === 'pending' && (w.depends_on || []).some(d => failedIds.has(d))
+              w.status === WI_STATUS.PENDING && (w.depends_on || []).some(d => failedIds.has(d))
             );
 
             if (pendingWithBlockedDeps.length > 0) {
@@ -2269,11 +2269,11 @@ async function tickInner() {
               for (const item of items) {
                 if (item.status !== 'failed') continue;
                 // Only retry if something depends on this item
-                const isBlocking = items.some(w => w.status === 'pending' && (w.depends_on || []).includes(item.id));
+                const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
                 if (!isBlocking) continue;
 
                 log('info', `Stall recovery: auto-retrying ${item.id} (blocking ${pendingWithBlockedDeps.filter(w => (w.depends_on || []).includes(item.id)).length} items)`);
-                item.status = 'pending';
+                item.status = WI_STATUS.PENDING;
                 item._retryCount = 0;
                 delete item.failReason;
                 delete item.failedAt;
@@ -2303,9 +2303,9 @@ async function tickInner() {
 
             // Un-fail dependent items that were cascade-failed
             if (changed) {
-              const retriedIds = new Set(items.filter(w => w.status === 'pending' && w._retryCount === 0).map(w => w.id));
+              const retriedIds = new Set(items.filter(w => w.status === WI_STATUS.PENDING && w._retryCount === 0).map(w => w.id));
               for (const dep of items) {
-                if (dep.status === 'failed' && dep.failReason === 'Dependency failed — cannot proceed') {
+                if (dep.status === WI_STATUS.FAILED && dep.failReason === 'Dependency failed — cannot proceed') {
                   const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
                   if (blockers.length > 0) {
                     log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
@@ -2418,7 +2418,7 @@ async function tickInner() {
             if (wiPath) {
               const items = safeJson(wiPath) || [];
               const wi = items.find(i => i.id === item.meta.item.id);
-              if (wi && wi.status === 'dispatched') {
+              if (wi && wi.status === WI_STATUS.DISPATCHED) {
                 // completeDispatch didn't update the work item — re-queue manually
                 wi.status = 'pending';
                 wi._retryCount = (wi._retryCount || 0) + 1;

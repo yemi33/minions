@@ -2217,9 +2217,9 @@ async function testStateIntegrity() {
 
   await test('Dependency gate fail-fast treats failed dependency as failed immediately', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes("if (depItem.status === 'failed') return 'failed';"),
+    assert.ok(src.includes("depItem.status === WI_STATUS.FAILED") || src.includes("depItem.status === 'failed'"),
       'dependency gate should fail fast on failed dependency');
-    assert.ok(!src.includes("depItem.status === 'failed' && (depItem._retryCount || 0) >= 3"),
+    assert.ok(!src.includes("depItem._retryCount || 0) >= 3"),
       'dependency gate should not wait for retryCount threshold before propagating failure');
   });
 
@@ -2936,8 +2936,8 @@ async function testAreDependenciesMet() {
   });
 
   await test('areDependenciesMet returns failed for failed dep', () => {
-    assert.ok(src.includes("if (depItem.status === 'failed') return 'failed'"),
-      'Should return string "failed" when any dependency has failed');
+    assert.ok(src.includes("depItem.status === WI_STATUS.FAILED") || src.includes("depItem.status === 'failed'"),
+      'Should return failed when any dependency has failed');
   });
 
   await test('areDependenciesMet uses PRD_MET_STATUSES for all done aliases', () => {
@@ -4121,7 +4121,7 @@ async function testExitCode78Handling() {
   });
 
   await test('engine.js fails dispatch immediately on exit code 78', () => {
-    assert.ok(src.includes("code === 78") && src.includes("completeDispatch(id, 'error'"),
+    assert.ok(src.includes("code === 78") && (src.includes("completeDispatch(id, DISPATCH_RESULT.ERROR") || src.includes("completeDispatch(id, 'error'")),
       'Should call completeDispatch with error on exit code 78 without waiting for timeout');
   });
 
