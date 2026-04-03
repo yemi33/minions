@@ -43,6 +43,15 @@ If you encounter merge conflicts (e.g., during `git pull` or when the PR shows c
 - content: Explain what was fixed, reference each review finding
 - Sign: `Fixed by Minions ({{agent_name}} — {{agent_role}})`
 
+## Test Validation (MANDATORY before pushing)
+
+Before pushing your fix, run the project's test suite:
+
+1. Find the test command (check `package.json` scripts, CLAUDE.md, or README — usually `npm test`)
+2. Run the full test suite
+3. If any tests fail due to your changes, fix them before pushing
+4. Do NOT push code that breaks existing tests
+
 ## Signal Completion
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

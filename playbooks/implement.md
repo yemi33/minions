@@ -68,3 +68,16 @@ After building, verify the build succeeded. If the build fails:
 2. Fix the issue
 3. Re-run the build
 4. If it fails 3 times, report the build errors in your findings file and stop
+
+## Test Validation (MANDATORY before PR)
+
+Before creating a PR, you MUST run the project's test suite and ensure all existing tests pass:
+
+1. Find the test command (check `package.json` scripts, CLAUDE.md, or README — usually `npm test`)
+2. Run the full test suite
+3. If any tests fail:
+   - Determine if YOUR changes caused the failure (compare with the failing test's assertions)
+   - Fix any regressions you introduced
+   - Re-run tests until all pass
+4. If tests were already failing before your changes (pre-existing failures), note them in the PR description but do NOT block on them
+5. Do NOT create a PR with failing tests that you introduced
