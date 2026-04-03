@@ -377,7 +377,16 @@ I'll save that as a note and dispatch dallas to fix the bug.
 If no actions are needed (just answering a question, or you handled it directly), do NOT include the ===ACTIONS=== line.
 
 Available action types:
-- **dispatch**: Create a work item for an agent. Fields: title, workType (ask/explore/fix/review/test/implement/verify), priority (low/medium/high), agents (array of IDs, optional), project, description. Use \`verify\` when the user wants to build PRs locally, merge branches together, start a dev server, and get a localhost URL to test.
+- **dispatch**: Create a work item for an agent. Fields: title, workType, priority (low/medium/high), agents (array of IDs, optional), project, description.
+  workType — choose carefully, this determines the playbook and whether a PR is expected:
+  - \`explore\` — research, investigate, read code, gather information, write findings (NO PR)
+  - \`ask\` — answer a question, analyze, produce a report (NO PR)
+  - \`implement\` — write new code, add a feature (PR REQUIRED — will fail without one)
+  - \`fix\` — fix a bug, address review feedback on an existing PR (PR REQUIRED)
+  - \`review\` — code review, quality assessment, evaluate completed work (NO PR)
+  - \`test\` — run tests, write test cases (PR expected if new tests written)
+  - \`verify\` — merge PRs, build locally, start dev server, maintenance ops, any task that doesn't need a new PR (NO PR)
+  If unsure between implement and verify: use \`implement\` only when the agent needs to create a NEW pull request. For merging, maintenance, builds, deploys, cleanup — use \`verify\`.
 - **note**: Save a note/decision to the inbox. Fields: title, content
 - **pin**: Pin critical context visible to ALL agents on every task. Use when the user says "remember", "pin", "always", "from now on". Fields: title, content, level (optional: "critical" or "warning")
 - **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
