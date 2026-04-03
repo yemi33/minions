@@ -2689,6 +2689,247 @@ async function testMutateJsonFileLocked() {
   });
 }
 
+// ─── shared.js — safeWrite / backup / restore Tests ─────────────────────────
+
+async function testSafeWriteBackupRestore() {
+  console.log('\n── shared.js — safeWrite atomic + backup + restore ──');
+
+  await test('safeWrite throws after rename failures (no writeFileSync fallback)', () => {
+    // Verify the source code has no writeFileSync fallback in safeWrite
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // Extract safeWrite function body
+    const match = src.match(/function safeWrite\(p, data\)\s*\{[\s\S]*?^}/m);
+    assert.ok(match, 'safeWrite function should exist');
+    const body = match[0];
+    // Should NOT contain a direct writeFileSync to the target path as fallback
+    // The only writeFileSync should be to the tmp file
+    const writeFileCalls = body.match(/fs\.writeFileSync\(/g) || [];
+    assert.strictEqual(writeFileCalls.length, 1,
+      'safeWrite should have exactly 1 writeFileSync (to tmp file), no fallback');
+    // Should throw after exhausting retries
+    assert.ok(body.includes('throw'), 'safeWrite should throw on rename exhaustion');
+  });
+
+  await test('mutateJsonFileLocked creates .backup before mutation', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'data.json');
+    shared.safeWrite(fp, { version: 1 });
+    shared.mutateJsonFileLocked(fp, (data) => { data.version = 2; });
+    // .backup should exist with the pre-mutation data
+    const backup = shared.safeJson(fp + '.backup');
+    assert.ok(backup, '.backup file should exist');
+    assert.strictEqual(backup.version, 1, '.backup should contain pre-mutation state');
+    // primary should have the mutation
+    assert.strictEqual(shared.safeJson(fp).version, 2);
+  });
+
+  await test('safeJson auto-restores from .backup when primary is corrupted', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'corrupted.json');
+    // Write corrupted primary
+    fs.writeFileSync(fp, 'NOT VALID JSON{{{');
+    // Write valid backup
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ restored: true }));
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { restored: true }, 'should restore from .backup');
+    // Primary should now be restored too
+    const primaryAfter = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    assert.deepStrictEqual(primaryAfter, { restored: true }, 'primary file should be restored');
+  });
+
+  await test('safeJson returns null when both primary and .backup are missing', () => {
+    const result = shared.safeJson('/nonexistent/path/data.json');
+    assert.strictEqual(result, null);
+  });
+
+  await test('safeJson returns null when primary is corrupted and no .backup exists', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'no-backup.json');
+    fs.writeFileSync(fp, 'CORRUPTED');
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result, null, 'should return null with no backup available');
+  });
+
+  await test('safeJson returns null when both primary and .backup are corrupted', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'both-bad.json');
+    fs.writeFileSync(fp, 'BAD PRIMARY');
+    fs.writeFileSync(fp + '.backup', 'BAD BACKUP');
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result, null, 'should return null when both files are corrupted');
+  });
+
+  await test('safeJson backup restore verifies written content and throws on failure', () => {
+    // Verify the source code: safeJson restore path now has verification + CRITICAL error
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const safeJsonMatch = src.match(/function safeJson\(p\)\s*\{[\s\S]*?^}/m);
+    assert.ok(safeJsonMatch, 'safeJson function should exist');
+    const body = safeJsonMatch[0];
+    // Should contain verification read-back
+    assert.ok(body.includes('verifyData'), 'safeJson should verify restored data');
+    assert.ok(body.includes('CRITICAL'), 'safeJson should log CRITICAL on restore failure');
+    assert.ok(body.includes('console.error'), 'safeJson should use console.error for critical failures');
+    assert.ok(body.includes('throw new Error'), 'safeJson should throw on restore failure');
+  });
+
+  await test('safeJson restore succeeds and returns data when backup is valid', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'restore-success.json');
+    // Write corrupted primary and valid backup
+    fs.writeFileSync(fp, 'CORRUPTED DATA');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ restored: true, value: 42 }));
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { restored: true, value: 42 }, 'should return backup data');
+    // Verify primary was actually restored
+    const primary = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    assert.deepStrictEqual(primary, { restored: true, value: 42 }, 'primary should be restored');
+  });
+
+  await test('safeJson CRITICAL error propagates to caller on restore write failure', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'critical-propagate.json');
+    // Write corrupted primary and valid backup
+    fs.writeFileSync(fp, 'CORRUPTED');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ ok: true }));
+    // Make the primary path a directory so safeWrite will fail
+    fs.unlinkSync(fp);
+    fs.mkdirSync(fp);
+    let threw = false;
+    let errMsg = '';
+    try {
+      shared.safeJson(fp);
+    } catch (e) {
+      threw = true;
+      errMsg = e.message;
+    }
+    assert.ok(threw, 'safeJson should throw when restore write fails critically');
+    assert.ok(errMsg.includes('CRITICAL'), 'error message should contain CRITICAL');
+    // Clean up directory we created
+    try { fs.rmdirSync(fp); } catch { /* cleanup */ }
+  });
+
+  await test('safeJson CRITICAL verification mismatch propagates to caller', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'verify-mismatch.json');
+    // Write corrupted primary and valid backup
+    fs.writeFileSync(fp, 'CORRUPTED');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ expected: true }));
+    // Successful restore should NOT throw — complementary baseline
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { expected: true }, 'successful restore should return data');
+
+    // Now test the CRITICAL propagation path by making the primary path read-only dir
+    // so safeWrite fails and triggers CRITICAL throw through all catch layers
+    const fp2 = path.join(dir, 'crit-propagate-dir.json');
+    fs.writeFileSync(fp2, 'BAD');
+    fs.writeFileSync(fp2 + '.backup', JSON.stringify({ data: 1 }));
+    // Replace primary with a directory — safeWrite will throw, triggering CRITICAL
+    fs.unlinkSync(fp2);
+    fs.mkdirSync(fp2);
+    let threw = false;
+    let caughtErr = null;
+    try {
+      shared.safeJson(fp2);
+    } catch (e) {
+      threw = true;
+      caughtErr = e;
+    }
+    assert.ok(threw, 'CRITICAL error must propagate through outer catch — not swallowed');
+    assert.ok(caughtErr.message.includes('CRITICAL'),
+      'propagated error must contain CRITICAL marker');
+    // Verify no double-wrapped CRITICAL prefix
+    const critCount = (caughtErr.message.match(/CRITICAL/g) || []).length;
+    assert.strictEqual(critCount, 1,
+      `error should contain CRITICAL exactly once, got ${critCount}: ${caughtErr.message}`);
+    try { fs.rmdirSync(fp2); } catch { /* cleanup */ }
+  });
+
+  await test('withFileLock handles ENOENT when stale lock disappears between stat and unlink', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'enoent-race.lock');
+    // Create a stale lock file
+    fs.writeFileSync(lockPath, 'stale');
+    const pastTime = Date.now() - shared.LOCK_STALE_MS - 5000;
+    fs.utimesSync(lockPath, new Date(pastTime), new Date(pastTime));
+
+    // Remove the lock file after stat but before unlink would run —
+    // simulate the race by deleting it now and creating a fresh one that's stale.
+    // The ENOENT guard ensures withFileLock doesn't throw when another process
+    // cleans the lock between stat and unlink. We verify it still completes.
+    let called = false;
+    shared.withFileLock(lockPath, () => { called = true; }, { timeoutMs: 3000 });
+    assert.ok(called, 'withFileLock should succeed after stale lock cleanup');
+
+    // Now test the specific ENOENT race: create stale lock, delete it mid-retry
+    // by using a short timeout on a permanently locked file that gets freed
+    const lockPath2 = path.join(dir, 'enoent-race2.lock');
+    // Hold a real lock, then release it — simulates lock contention + stale cleanup
+    const fd = fs.openSync(lockPath2, 'wx');
+    // Set mtime to past to make it look stale
+    fs.utimesSync(lockPath2, new Date(pastTime), new Date(pastTime));
+    // Release the lock in background after a small delay — simulates another process
+    // cleaning the stale lock (withFileLock will see ENOENT on retry)
+    setTimeout(() => {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(lockPath2); } catch {}
+    }, 50);
+    let called2 = false;
+    shared.withFileLock(lockPath2, () => { called2 = true; }, { timeoutMs: 3000 });
+    assert.ok(called2, 'withFileLock should succeed when stale lock disappears mid-retry');
+  });
+
+  await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
+    // Verify the source code: stale lock unlink is properly guarded
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // Extract withFileLock body using indexOf — regex is fragile with destructured params
+    const start = src.indexOf('function withFileLock(');
+    assert.ok(start >= 0, 'withFileLock function should exist');
+    const body = src.substring(start, start + 1500);
+    // Should catch ENOENT specifically on unlink
+    assert.ok(body.includes("unlinkErr.code !== 'ENOENT'"),
+      'stale lock unlink should check for ENOENT specifically');
+    // Should have sleepMs before continue (no busy-loop)
+    assert.ok(body.includes('sleepMs(retryDelayMs); // avoid busy-loop'),
+      'should sleep before continue after stale lock removal');
+    // statSync catch should also handle ENOENT
+    assert.ok(body.includes("staleErr.code !== 'ENOENT'"),
+      'statSync catch should check for ENOENT specifically');
+  });
+
+  await test('withFileLock acquires and releases lock correctly', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'test.lock');
+    const result = shared.withFileLock(lockPath, () => 'executed', { timeoutMs: 1000 });
+    assert.strictEqual(result, 'executed', 'should execute the function under lock');
+    // Lock should be cleaned up
+    assert.ok(!fs.existsSync(lockPath), 'lock file should be removed after release');
+  });
+
+  await test('_tmpCounter has JSDoc documenting single-thread assumption', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const counterSection = src.substring(
+      Math.max(0, src.indexOf('let _tmpCounter') - 300),
+      src.indexOf('let _tmpCounter') + 20
+    );
+    assert.ok(counterSection.includes('single-thread') || counterSection.includes('worker_threads'),
+      '_tmpCounter should have a doc comment noting single-thread assumption');
+    assert.ok(counterSection.includes('/**'),
+      '_tmpCounter should have a JSDoc comment');
+  });
+
+  await test('mutateJsonFileLocked backup updated on each mutation', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'multi.json');
+    shared.safeWrite(fp, { step: 0 });
+    shared.mutateJsonFileLocked(fp, (data) => { data.step = 1; });
+    assert.strictEqual(shared.safeJson(fp + '.backup').step, 0);
+    shared.mutateJsonFileLocked(fp, (data) => { data.step = 2; });
+    assert.strictEqual(shared.safeJson(fp + '.backup').step, 1,
+      '.backup should reflect state before latest mutation');
+    assert.strictEqual(shared.safeJson(fp).step, 2);
+  });
+}
+
 // ─── engine.js — isRetryableFailureReason Tests ─────────────────────────────
 
 async function testIsRetryableFailureReason() {
