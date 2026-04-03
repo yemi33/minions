@@ -5999,6 +5999,53 @@ async function testCheckpointResume() {
     assert.ok(engineSrc.includes('exceeded 3 checkpoint-resumes'),
       'Should log when work item is escalated to needs-human-review');
   });
+
+  // ── Bug #15: Worktree deletion re-reads PR status before proceeding ──
+
+  await test('cleanup.js re-reads PR status before worktree deletion (TOCTOU guard)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Must re-read PRs right before the deletion loop
+    assert.ok(src.includes('freshPrs'), 'Should read fresh PR data before deletion');
+    assert.ok(src.includes('freshMergedBranches'), 'Should build a fresh merged branches set');
+    // Must check if PR was reopened
+    assert.ok(src.includes('stillMerged'), 'Should verify branch is still merged before deleting');
+    assert.ok(src.includes('PR was reopened'), 'Should log when PR was reopened since initial check');
+  });
+
+  await test('cleanup.js worktree deletion skips if PR was reopened but allows age/cap cleanup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Should distinguish branch-based cleanup from age/cap-based cleanup
+    assert.ok(src.includes('wasMarkedByBranch'), 'Should check if entry was originally marked due to merged branch');
+    // Age/cap-based cleanups should still proceed even if branch is no longer in merged set
+    assert.ok(src.includes('continue'), 'Should skip (continue) when branch-based entry is no longer merged');
+  });
+
+  // ── Bug #27: Each readdirSync individually try-caught ──
+
+  await test('cleanup.js wraps each readdirSync in individual try-catch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // The temp file cleanup section should have per-directory error handling
+    assert.ok(src.includes('dirEntries = fs.readdirSync(dir)'), 'Should assign readdirSync to variable for per-dir error handling');
+    assert.ok(src.includes('failed to read') && src.includes('continue'),
+      'Should log warning and continue to next directory on readdirSync failure');
+    // KB watchdog category counting should also be individually wrapped
+    assert.ok(src.includes('failed to read') && src.includes('cat'),
+      'KB watchdog directory reads should be individually try-caught');
+  });
+
+  // ── Bug #29: KB restore checks exit code and verifies result ──
+
+  await test('cleanup.js KB restore checks git exit code and verifies file count', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Should catch git checkout errors specifically
+    assert.ok(src.includes('git checkout exited with error'),
+      'Should log warning when git checkout exits with error');
+    // Should verify the restore result by recounting
+    assert.ok(src.includes('postRestoreCount'),
+      'Should count files after restore to verify success');
+    assert.ok(src.includes('restore incomplete'),
+      'Should warn when restore did not fully recover files');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

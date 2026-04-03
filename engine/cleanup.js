@@ -37,27 +37,33 @@ function runCleanup(config, verbose = false) {
 
   // 1. Clean stale temp prompt/sysprompt files and orphaned safeWrite .tmp.* files (older than 1 hour)
   const oneHourAgo = Date.now() - 3600000;
-  try {
-    const tmpDir = path.join(ENGINE_DIR, 'tmp');
-    const scanDirs = [ENGINE_DIR, ...(fs.existsSync(tmpDir) ? [tmpDir] : [])];
-    for (const dir of scanDirs) {
-      for (const f of fs.readdirSync(dir)) {
-        const isPromptTemp = f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-');
-        const isSafeWriteTemp = /\.tmp\.\d+\.\d+$/.test(f);
-        if (isPromptTemp || isSafeWriteTemp) {
-          const fp = path.join(dir, f);
-          try {
-            const stat = fs.statSync(fp);
-            if (stat.mtimeMs < oneHourAgo) {
-              fs.unlinkSync(fp);
-              cleaned.tempFiles++;
-              if (isSafeWriteTemp) log('info', `Cleaned orphaned temp file: ${f}`);
-            }
-          } catch { /* cleanup */ }
-        }
+  const tmpDir = path.join(ENGINE_DIR, 'tmp');
+  const scanDirs = [ENGINE_DIR, ...(fs.existsSync(tmpDir) ? [tmpDir] : [])];
+  for (const dir of scanDirs) {
+    // Each directory gets its own try-catch so one failure doesn't abort other directories (Bug #27)
+    let dirEntries;
+    try {
+      dirEntries = fs.readdirSync(dir);
+    } catch (e) {
+      log('warn', `cleanup temp files: failed to read ${dir} — ${e.message}`);
+      continue;
+    }
+    for (const f of dirEntries) {
+      const isPromptTemp = f.startsWith('prompt-') || f.startsWith('sysprompt-') || f.startsWith('tmp-sysprompt-');
+      const isSafeWriteTemp = /\.tmp\.\d+\.\d+$/.test(f);
+      if (isPromptTemp || isSafeWriteTemp) {
+        const fp = path.join(dir, f);
+        try {
+          const stat = fs.statSync(fp);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(fp);
+            cleaned.tempFiles++;
+            if (isSafeWriteTemp) log('info', `Cleaned orphaned temp file: ${f}`);
+          }
+        } catch { /* cleanup */ }
       }
     }
-  } catch (e) { log('warn', 'cleanup temp files: ' + e.message); }
+  }
 
   // 2. Clean live-output.log for idle agents (not currently working)
   for (const [agentId] of Object.entries(config.agents || {})) {
@@ -202,8 +208,42 @@ function runCleanup(config, verbose = false) {
       }
 
       // Remove all marked worktrees
+      // Re-read PR status immediately before deletion — a PR can be reopened between
+      // the initial status check and the actual deletion (Bug #15: TOCTOU race)
+      const freshPrs = safeJson(projectPrPath(project)) || [];
+      const freshMergedBranches = new Set();
+      for (const pr of freshPrs) {
+        if (pr.status === 'merged' || pr.status === 'abandoned' || pr.status === 'completed') {
+          if (pr.branch) freshMergedBranches.add(pr.branch);
+        }
+      }
+
       for (const entry of wtEntries) {
         if (entry.shouldClean) {
+          // Verify the branch is still merged/closed — skip if PR was reopened since initial check
+          const entryDirLower = entry.dir.toLowerCase();
+          let stillMerged = false;
+          for (const branch of freshMergedBranches) {
+            const branchSlug = sanitizeBranch(branch).toLowerCase();
+            if (entryDirLower === branchSlug || entryDirLower.includes(branchSlug + '-') || entryDirLower.endsWith('-' + branchSlug)) {
+              stillMerged = true;
+              break;
+            }
+          }
+          // If originally marked due to merged branch but PR was reopened, skip deletion
+          if (!stillMerged) {
+            // Check if it was marked for age/cap cleanup (not branch-based) — those are still valid
+            const wasMarkedByBranch = [...mergedBranches].some(branch => {
+              const branchSlug = sanitizeBranch(branch).toLowerCase();
+              return entryDirLower === branchSlug || entryDirLower.includes(branchSlug + '-') || entryDirLower.endsWith('-' + branchSlug);
+            });
+            if (wasMarkedByBranch) {
+              if (verbose) console.log(`  Skipping worktree ${entry.dir}: PR was reopened since initial check`);
+              log('info', `Worktree deletion skipped — PR reopened: ${entry.dir}`);
+              continue;
+            }
+          }
+
           try {
             exec(`git worktree remove "${entry.wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 30000 });
             cleaned.worktrees++;
@@ -334,7 +374,11 @@ function runCleanup(config, verbose = false) {
       let current = 0;
       for (const cat of cats) {
         const d = path.join(knowledgeDir, cat);
-        if (fs.existsSync(d)) current += fs.readdirSync(d).length;
+        try {
+          if (fs.existsSync(d)) current += fs.readdirSync(d).length;
+        } catch (e) {
+          log('warn', `KB watchdog: failed to read ${cat} directory — ${e.message}`);
+        }
       }
       if (current < checkpoint.count) {
         log('warn', `KB watchdog: file count dropped ${checkpoint.count} → ${current}, restoring from git`);
@@ -343,8 +387,29 @@ function runCleanup(config, verbose = false) {
           if (!trackedCheck) {
             log('warn', 'KB watchdog: knowledge/ is not tracked in git HEAD — skipping restore');
           } else {
-            execSilent('git checkout HEAD -- knowledge', { cwd: MINIONS_DIR });
-            log('info', 'KB watchdog: restored knowledge/ from git HEAD');
+            // Bug #29: Check exit code and verify restore succeeded
+            let restoreOutput;
+            try {
+              restoreOutput = execSilent('git checkout HEAD -- knowledge', { cwd: MINIONS_DIR });
+            } catch (restoreErr) {
+              log('warn', `KB watchdog: git checkout exited with error — ${restoreErr.message}`);
+              restoreOutput = null;
+            }
+            if (restoreOutput !== null) {
+              // Verify the restore actually recovered files
+              let postRestoreCount = 0;
+              for (const cat of cats) {
+                const d = path.join(knowledgeDir, cat);
+                try {
+                  if (fs.existsSync(d)) postRestoreCount += fs.readdirSync(d).length;
+                } catch { /* count what we can */ }
+              }
+              if (postRestoreCount < checkpoint.count) {
+                log('warn', `KB watchdog: restore incomplete — expected ${checkpoint.count} files, got ${postRestoreCount}`);
+              } else {
+                log('info', `KB watchdog: restored knowledge/ from git HEAD (${postRestoreCount} files)`);
+              }
+            }
           }
         } catch (err) {
           log('error', `KB watchdog: git restore failed — ${err.message}`);
