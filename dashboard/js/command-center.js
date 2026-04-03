@@ -234,13 +234,6 @@ async function _ccDoSend(message, skipUserMsg) {
         } catch { /* incomplete JSON */ }
       }
     }
-
-    // Execute actions
-    if (data.actions && data.actions.length > 0) {
-      for (const action of data.actions) {
-        await ccExecuteAction(action);
-      }
-    }
   } catch (e) {
     clearInterval(ccTimer);
     thinking.remove();
