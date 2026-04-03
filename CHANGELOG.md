@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.330 (2026-04-03)
+
+### Fixes
+-  resolve all 25 lifecycle.js test failures
+-  remove orphan statuses, add validation, replace in-progress with dispatched
+
 ## 0.1.328 (2026-04-03)
 
 ### Fixes
