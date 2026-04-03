@@ -154,6 +154,19 @@ async function pollPrStatus(config) {
       }
       const states = [...latestByUser.values()];
 
+      // Store human reviewer names who approved or requested changes
+      const reviewedBy = [...latestByUser.entries()]
+        .filter(([, state]) => state === 'APPROVED' || state === 'CHANGES_REQUESTED')
+        .map(([user]) => user)
+        .filter(Boolean);
+      // Fallback: if PR was merged and no decisive reviews, use merged_by
+      if (!reviewedBy.length && prData.merged && prData.merged_by?.login) {
+        reviewedBy.push(prData.merged_by.login);
+      }
+      if (JSON.stringify(pr.reviewedBy || []) !== JSON.stringify(reviewedBy)) {
+        pr.reviewedBy = reviewedBy; updated = true;
+      }
+
       let newReviewStatus = pr.reviewStatus || 'pending';
       if (states.some(s => s === 'CHANGES_REQUESTED')) newReviewStatus = 'changes-requested';
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';

@@ -151,6 +151,19 @@ async function pollPrStatus(config) {
       else newReviewStatus = 'pending';
     }
 
+    // Store human reviewer names who approved or requested changes
+    const reviewedBy = reviewers
+      .filter(r => r.vote >= 5 || r.vote === -10)
+      .map(r => r.displayName)
+      .filter(Boolean);
+    // Fallback: if PR was merged and no decisive votes, use completedBy
+    if (!reviewedBy.length && newStatus === 'merged' && prData.closedBy?.displayName) {
+      reviewedBy.push(prData.closedBy.displayName);
+    }
+    if (JSON.stringify(pr.reviewedBy || []) !== JSON.stringify(reviewedBy)) {
+      pr.reviewedBy = reviewedBy; updated = true;
+    }
+
     if (pr.reviewStatus !== newReviewStatus) {
       log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
       pr.reviewStatus = newReviewStatus;
