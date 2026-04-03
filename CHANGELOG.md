@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.226 (2026-04-03)
+
+### Features
+- add evaluate type to routing and playbooks (#70)
+- fix cooldown context accumulation bloat (#71)
+- wire dead test and extract progress bar helper (#64)
+
+### Fixes
+-  silence git stderr noise during repo scan
+
 ## 0.1.224 (2026-04-03)
 
 ### Fixes
