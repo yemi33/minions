@@ -45,53 +45,66 @@ jobs:
             git ls-files -- . ':!package.json' ':!CHANGELOG.md' ':!.gitignore' ':!.npmignore' ':!LICENSE' ':!notes/' > /tmp/changed_files.txt 2>/dev/null || true
           fi
 
-          # Write changelog update script to a temp file (avoids shell escaping)
+          # Generate changelog from commit messages (not file lists)
           cat > /tmp/update-changelog.js << 'SCRIPT'
           const fs = require('fs');
+          const { execSync } = require('child_process');
           const version = process.argv[2];
           const date = process.argv[3];
-          const changed = fs.readFileSync('/tmp/changed_files.txt', 'utf8').trim().split('\n').filter(Boolean);
-          if (changed.length === 0) process.exit(0);
+          const lastPublish = process.argv[4] || '';
 
-          // Skip runtime artifacts
-          const skip = /\.(pid|log|tmp)$|cooldowns\.json|engine-stdout|consolidate-prompt|triage-/;
-          const filtered = changed.filter(f => !skip.test(f));
-          if (filtered.length === 0) process.exit(0);
+          // Get commit messages since last publish
+          let commits = [];
+          try {
+            const range = lastPublish ? `${lastPublish}..HEAD` : 'HEAD~20..HEAD';
+            const log = execSync(`git log ${range} --pretty=format:"%s" --no-merges`, { encoding: 'utf8' }).trim();
+            commits = log.split('\n').filter(Boolean);
+          } catch { /* fallback: no commits */ }
 
-          const cats = { Engine: [], Dashboard: [], Playbooks: [], Agents: [], Documentation: [], Other: [] };
-          for (const f of filtered) {
-            const name = f.split('/').pop();
-            if (f === 'engine.js' || (f.startsWith('engine/') && f.endsWith('.js'))) cats.Engine.push(f);
-            else if (f.startsWith('dashboard')) cats.Dashboard.push(f);
-            else if (f.startsWith('playbooks/')) cats.Playbooks.push(name);
-            else if (/^agents\/.*\/charter\.md$/.test(f)) cats.Agents.push(f);
-            else if (f.startsWith('docs/') || f === 'README.md') cats.Documentation.push(name);
-            else if (f !== '.gitignore' && f !== '.npmignore' && f !== 'LICENSE' && !f.startsWith('notes/')) cats.Other.push(f);
+          // Filter out noise
+          commits = commits.filter(m =>
+            !m.includes('[skip ci]') &&
+            !m.startsWith('chore: publish') &&
+            !m.startsWith('Merge ')
+          );
+          if (commits.length === 0) process.exit(0);
+
+          // Group by conventional commit prefix
+          const groups = { 'Features': [], 'Fixes': [], 'Other': [] };
+          for (const m of commits) {
+            // Strip Co-Authored-By suffix
+            const clean = m.replace(/\s*Co-Authored-By:.*$/i, '').trim();
+            if (m.startsWith('feat:') || m.startsWith('feat(')) groups.Features.push(clean.replace(/^feat[:(]/, '').replace(/^[^:]*:\s*/, ''));
+            else if (m.startsWith('fix:') || m.startsWith('fix(')) groups.Fixes.push(clean.replace(/^fix[:(]/, '').replace(/^[^:]*:\s*/, ''));
+            else if (m.startsWith('docs:')) groups.Other.push(clean);
+            else if (m.startsWith('ui:')) groups.Fixes.push(clean.replace(/^ui:\s*/, ''));
+            else if (m.startsWith('test:')) { /* skip test-only commits */ }
+            else groups.Other.push(clean);
           }
-
-          // Only create entry if there are categorized changes
-          const total = Object.values(cats).reduce((s, a) => s + a.length, 0);
-          if (total === 0) process.exit(0);
 
           let entry = `## ${version} (${date})\n\n`;
-          for (const [cat, files] of Object.entries(cats)) {
-            if (files.length > 0) {
-              entry += `### ${cat}\n`;
-              for (const f of files) entry += `- ${f}\n`;
-              entry += '\n';
-            }
+          let hasContent = false;
+          for (const [cat, items] of Object.entries(groups)) {
+            if (items.length === 0) continue;
+            hasContent = true;
+            entry += `### ${cat}\n`;
+            // Deduplicate and limit
+            const unique = [...new Set(items)].slice(0, 20);
+            for (const item of unique) entry += `- ${item}\n`;
+            entry += '\n';
           }
+          if (!hasContent) process.exit(0);
 
           if (!fs.existsSync('CHANGELOG.md')) fs.writeFileSync('CHANGELOG.md', '# Changelog\n\n');
           const cl = fs.readFileSync('CHANGELOG.md', 'utf8');
           const idx = cl.indexOf('\n\n');
           if (idx !== -1) {
             fs.writeFileSync('CHANGELOG.md', cl.slice(0, idx + 2) + entry + cl.slice(idx + 2));
-            console.log('Changelog updated with ' + total + ' changed files');
+            console.log('Changelog updated with ' + commits.length + ' commits');
           }
           SCRIPT
 
-          node /tmp/update-changelog.js "$NEXT" "$TODAY"
+          node /tmp/update-changelog.js "$NEXT" "$TODAY" "$LAST_PUBLISH"
 
           # Publish
           npm publish --access public
