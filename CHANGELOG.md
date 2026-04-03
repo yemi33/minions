@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.312 (2026-04-03)
+
+### Fixes
+-  truncate work item title tooltip + description in modal to prevent UI lag
+-  wrap all tickInner phases in try-catch for resilient dispatch
+
+### Other
+- refactor: simplify tick resilience — safe() helper, per-spawn catch, discovery guard
+
 ## 0.1.309 (2026-04-03)
 
 ### Fixes
