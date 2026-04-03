@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.326 (2026-04-03)
+
+### Fixes
+-  stop writing legacy done aliases, add migration, keep read compat
+
 ## 0.1.325 (2026-04-03)
 
 ### Fixes
