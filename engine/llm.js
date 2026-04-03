@@ -139,6 +139,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
     let stderr = '';
     let lineBuf = '';
 
+    let lastTextSent = '';
     proc.stdout.on('data', d => {
       const chunk = d.toString();
       stdout += chunk;
@@ -153,11 +154,26 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
           const obj = JSON.parse(trimmed);
           if (obj.type === 'assistant' && obj.message?.content) {
             for (const block of obj.message.content) {
-              if (block.type === 'text' && block.text) onChunk(block.text);
+              if (block.type === 'text' && block.text && block.text !== lastTextSent) {
+                lastTextSent = block.text;
+                onChunk(block.text);
+              }
             }
           }
         } catch { /* incomplete JSON or non-JSON line */ }
       }
+      // Also try to extract partial text from incomplete line buffer (real-time streaming)
+      // Claude CLI writes large JSON objects incrementally — extract "text":"..." as it grows
+      try {
+        const textMatch = lineBuf.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)$/);
+        if (textMatch && textMatch[1].length > 20 && textMatch[1] !== lastTextSent) {
+          // Unescape basic JSON escapes for display
+          const partial = textMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          if (partial.length > lastTextSent.length) {
+            onChunk(partial);
+          }
+        }
+      } catch { /* best-effort partial extraction */ }
     });
     proc.stderr.on('data', d => { stderr += d.toString(); });
 
