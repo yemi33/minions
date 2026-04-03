@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.309 (2026-04-03)
+
+### Fixes
+-  per-item try-catch in discovery loops — one bad item no longer blocks tick
+
 ## 0.1.308 (2026-04-03)
 
 ### Features
