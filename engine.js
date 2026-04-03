@@ -1461,6 +1461,8 @@ function discoverFromWorkItems(config, project) {
       task_description: item.title + (item.description ? '\n\n' + item.description : ''),
       task_id: item.id,
       work_type: workType,
+      source_plan: item.sourcePlan || '',
+      plan_slug: (item.sourcePlan || '').replace('.json', ''),
       additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
       scope_section: `## Scope: Project — ${project?.name || 'default'}\n\nThis task is scoped to a single project.`,
       branch_name: branchName,

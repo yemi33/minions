@@ -148,7 +148,10 @@ function checkPlanCompletion(meta, config) {
   // existingPrItem/existingVerify guards, so the flag does NOT block crash recovery of those.
   plan._completionNotified = true;
   mutateJsonFileLocked(planPath, (data) => {
+    data.status = 'completed';
+    data.completedAt = plan.completedAt;
     data._completionNotified = true;
+    if (plan._timing) data._timing = plan._timing;
     return data;
   });
 
@@ -227,9 +230,10 @@ function checkPlanCompletion(meta, config) {
     ).join('\n');
 
     // List projects and their worktree paths for the agent
-    const projectWorktrees = Object.entries(projectPrs).map(([name, { project: p }]) =>
-      `- **${name}**: \`${p.localPath}/../worktrees/verify-${planSlug}\``
-    ).join('\n');
+    const projectWorktrees = Object.entries(projectPrs).map(([name, { project: p }]) => {
+      const lp = p.localPath.replace(/\\/g, '/');
+      return `- **${name}**: see setup commands below (\`${lp}/../worktrees/verify-${name}-${planSlug}-*\`)`;
+    }).join('\n');
 
     const description = [
       `Verification task for completed plan \`${planFile}\`.`,
@@ -274,19 +278,30 @@ function checkPlanCompletion(meta, config) {
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
-  // 5. Archive: move PRD .json to prd/archive/ and source .md plan to plans/archive/
+  // 5. Archive deferred until verify completes (see runPostCompletionHooks).
+  //    Plan stays active until verification finishes so artifacts are visible.
+
+  log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
+}
+
+// ─── Plan Archiving (called after verify completes) ─────────────────────────
+
+function archivePlan(planFile, plan, projects, config) {
+  const planPath = path.join(PRD_DIR, planFile);
+  const projectName = plan.project || '';
+
+  // Archive PRD .json to prd/archive/
   const prdArchiveDir = path.join(PRD_DIR, 'archive');
   if (!fs.existsSync(prdArchiveDir)) fs.mkdirSync(prdArchiveDir, { recursive: true });
-  shared.safeWrite(planPath, plan); // save completed status first
-  try {
-    fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
-    log('info', `Archived completed PRD: prd/archive/${planFile}`);
-  } catch (err) {
-    log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
+  if (fs.existsSync(planPath)) {
     shared.safeWrite(planPath, plan);
+    try {
+      fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
+      log('info', `Archived completed PRD: prd/archive/${planFile}`);
+    } catch (err) { log('warn', `Failed to archive PRD ${planFile}: ${err.message}`); }
   }
 
-  // Also archive the source .md plan if it exists (use source_plan field, not content matching)
+  // Archive the source .md plan
   const planArchiveDir = path.join(PLANS_DIR, 'archive');
   if (!fs.existsSync(planArchiveDir)) fs.mkdirSync(planArchiveDir, { recursive: true });
   if (plan.source_plan) {
@@ -298,7 +313,6 @@ function checkPlanCompletion(meta, config) {
       } catch (err) { log('warn', `Failed to archive source plan ${plan.source_plan}: ${err.message}`); }
     }
   } else {
-    // Fallback: scan for matching .md files (legacy PRDs without source_plan)
     try {
       const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
       for (const md of mdFiles) {
@@ -314,16 +328,25 @@ function checkPlanCompletion(meta, config) {
     } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
   }
 
-  // 6. Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
+  // Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
   try {
-    // Collect all branch slugs: shared-branch + per-item branches + item IDs
+    let allWi = [];
+    for (const p of projects) {
+      try { allWi = allWi.concat(safeJson(shared.projectWorkItemsPath(p)) || []); } catch {}
+    }
+    const planWi = allWi.filter(w => w.sourcePlan === planFile && w.itemType !== 'verify');
+    const allPrs = [];
+    for (const p of projects) {
+      try { allPrs.push(...(safeJson(shared.projectPrPath(p)) || [])); } catch {}
+    }
+
     const branchSlugs = new Set();
     if (plan.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
-    for (const w of doneItems) {
+    for (const w of planWi) {
       if (w.branch) branchSlugs.add(shared.sanitizeBranch(w.branch).toLowerCase());
       if (w.id) branchSlugs.add(w.id.toLowerCase());
     }
-    for (const pr of uniquePrs) {
+    for (const pr of allPrs.filter(pr => (pr.prdItems || []).some(id => planWi.find(w => w.id === id)))) {
       if (pr.branch) branchSlugs.add(shared.sanitizeBranch(pr.branch).toLowerCase());
     }
 
@@ -345,10 +368,8 @@ function checkPlanCompletion(meta, config) {
         }
       }
     }
-    if (cleanedWt > 0) log('info', `Plan completion: cleaned ${cleanedWt} worktree(s)`);
+    if (cleanedWt > 0) log('info', `Plan archive: cleaned ${cleanedWt} worktree(s)`);
   } catch (err) { log('warn', `Worktree cleanup: ${err.message}`); }
-
-  log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }
 
 // ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
@@ -1424,6 +1445,19 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   let prsCreatedCount = 0;
   if (isSuccess) prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
 
+  // Archive plan after verify task completes (AFTER PR sync so E2E PR is linked)
+  if (meta?.item?.itemType === 'verify' && meta?.item?.sourcePlan) {
+    try {
+      const vPlanFile = meta.item.sourcePlan;
+      const vPlanPath = path.join(PRD_DIR, vPlanFile);
+      const vPlan = safeJson(vPlanPath);
+      if (vPlan) {
+        const vProjects = shared.getProjects(config);
+        archivePlan(vPlanFile, vPlan, vProjects, config);
+      }
+    } catch (err) { log('warn', `Verify archive: ${err.message}`); }
+  }
+
   // Clean up worktree for non-shared-branch tasks after completion
   if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {
     try {
@@ -1551,6 +1585,7 @@ function syncPrdFromPrs(config) {
 
 module.exports = {
   checkPlanCompletion,
+  archivePlan,
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,

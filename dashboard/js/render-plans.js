@@ -227,7 +227,9 @@ function renderPlans(plans) {
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
     const showPause = effectiveStatus === 'in-progress' && prdFile && !isArchived;
     const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;
-    const showVerify = effectiveStatus === 'completed' && prdFile && !isArchived;
+    const verifyWi = allWi.find(w => w.itemType === 'verify' && w.sourcePlan === prdFile);
+    const hasVerifyWi = !!verifyWi;
+    const showVerify = effectiveStatus === 'completed' && prdFile && !isArchived && !hasVerifyWi;
     const pauseBtn = showPause ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow)" ' +
       'onclick="event.stopPropagation();planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>' : '';
     const resumeBtn = showResume
@@ -256,7 +258,7 @@ function renderPlans(plans) {
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
             (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
-            executeBtn + pauseBtn + resumeBtn + verifyBtn + archiveBtn + deleteBtn +
+            executeBtn + pauseBtn + resumeBtn + verifyBtn + (hasVerifyWi ? _renderVerifyBadge(verifyWi) : '') + archiveBtn + deleteBtn +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -442,13 +444,15 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
     'onclick="planPause(\'' + escHtml(normalizedFile) + '\',this)">Pause</button>' : '';
   const modalResumeBtn = isPaused ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
     'onclick="planApprove(\'' + escHtml(normalizedFile) + '\',this)">Resume</button>' : '';
-  const modalVerifyBtn = isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
+  const modalVerifyWi = (window._lastWorkItems || []).find(w => w.itemType === 'verify' && w.sourcePlan === normalizedFile);
+  const modalVerifyBtn = isModalCompleted && !modalVerifyWi ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
     'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\',this)">Verify</button>' : '';
+  const modalVerifyInfo = modalVerifyWi ? _renderVerifyBadge(modalVerifyWi) : '';
   const modalArchiveBtn = '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--muted)" ' +
     'onclick="planArchive(\'' + escHtml(normalizedFile) + '\')">Archive</button>';
   const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
   const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
-    (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') +
+    (modalCompletedLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') + (modalVerifyInfo || '') +
     ' ' + modalArchiveBtn +
     ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
     'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
@@ -662,6 +666,17 @@ async function planRegeneratePRD(source) {
       alert('Failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+function _renderVerifyBadge(verifyWi) {
+  const statusColors = { pending: 'var(--muted)', dispatched: 'var(--blue)', done: 'var(--green)', failed: 'var(--red)' };
+  const color = statusColors[verifyWi.status] || 'var(--muted)';
+  const label = verifyWi.status === 'dispatched' ? 'Verifying...' : verifyWi.status === 'done' ? 'Verified' : verifyWi.status === 'failed' ? 'Verify failed' : 'Verify pending';
+  const allPrs = (window._lastStatus?.pullRequests) || [];
+  const verifyPr = allPrs.find(pr => (pr.prdItems || []).includes(verifyWi.id));
+  const prLink = verifyPr?.url ? ' <a href="' + escHtml(verifyPr.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:none;font-size:9px">E2E PR</a>' : '';
+  const branchInfo = verifyPr?.branch ? ' <span style="font-size:8px;color:var(--muted)" title="' + escHtml(verifyPr.branch) + '">(' + escHtml(verifyPr.branch.slice(0, 25)) + ')</span>' : '';
+  return '<span style="font-size:9px;font-weight:600;color:' + color + ';padding:0 4px">' + label + '</span>' + prLink + branchInfo;
 }
 
 async function openVerifyGuide(file) {
