@@ -577,7 +577,13 @@ async function testQueriesAgents() {
       const status = queries.getAgentStatus(active[0].agent);
       assert.strictEqual(status.status, 'working');
     } else {
-      skip('getAgentStatus-working', 'no active dispatches');
+      // No active dispatches — verify idle agents return idle status
+      const config = queries.getConfig();
+      const firstAgent = Object.keys(config.agents || {})[0];
+      if (firstAgent) {
+        const status = queries.getAgentStatus(firstAgent);
+        assert.ok(['idle', 'done', 'error'].includes(status.status), 'Idle agent should have idle/done/error status');
+      }
     }
   });
 
@@ -3494,7 +3500,7 @@ async function testRenderPlaybook() {
 
   let getLastRenderError;
   try {
-    getLastRenderError = require(path.join(MINIONS_DIR, 'engine')).getLastRenderError;
+    getLastRenderError = require(path.join(MINIONS_DIR, 'engine', 'playbook')).getLastRenderError;
   } catch {}
 
   await test('renderPlaybook returns null when critical task_description is empty (implement)', () => {
