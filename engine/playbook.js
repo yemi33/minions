@@ -9,7 +9,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, getProjects, log, dateStamp } = shared;
+const { safeJson, safeRead, getProjects, log, dateStamp, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
@@ -135,7 +135,7 @@ function resolveTaskContext(item, config) {
         // Check work-items to find which plan file this agent created
         const workItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
         const agentPlanItems = workItems.filter(w =>
-          w.type === 'plan' && w.dispatched_to === agent.id && w.status === 'done' && w._planFileName
+          w.type === WORK_TYPE.PLAN && w.dispatched_to === agent.id && w.status === WI_STATUS.DONE && w._planFileName
         ).sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));
 
         if (agentPlanItems.length > 0) {
@@ -390,7 +390,7 @@ function buildAgentContext(agentId, config, project) {
 
   // Recent completions (last 5, not 10)
   const recentCompleted = (dispatch.completed || []).slice(-5).reverse().map(d =>
-    `- **${d.agent}** ${d.result === 'success' ? 'completed' : 'failed'}: ${(d.task || '').slice(0, 80)}${d.resultSummary ? ' — ' + d.resultSummary.slice(0, 100) : ''}`
+    `- **${d.agent}** ${d.result === DISPATCH_RESULT.SUCCESS ? 'completed' : 'failed'}: ${(d.task || '').slice(0, 80)}${d.resultSummary ? ' — ' + d.resultSummary.slice(0, 100) : ''}`
   );
   if (recentCompleted.length > 0) {
     context += `## Recently Completed\n\n${recentCompleted.join('\n')}\n\n`;
@@ -400,13 +400,13 @@ function buildAgentContext(agentId, config, project) {
   const projects = getProjects(config);
   const allPrs = [];
   for (const p of projects) {
-    const prs = getPrs(p).filter(pr => pr.status === 'active' || pr.status === 'linked');
+    const prs = getPrs(p).filter(pr => pr.status === PR_STATUS.ACTIVE || pr.status === 'linked');
     for (const pr of prs) allPrs.push({ ...pr, _project: p.name });
   }
   // Also check central pull-requests.json
   try {
     const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json')) || [];
-    for (const pr of centralPrs.filter(pr => pr.status === 'active' || pr.status === 'linked')) {
+    for (const pr of centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE || pr.status === 'linked')) {
       if (!allPrs.some(p => p.id === pr.id)) allPrs.push({ ...pr, _project: 'central' });
     }
   } catch (e) { log('warn', 'read central pull-requests: ' + e.message); }
@@ -450,10 +450,10 @@ function buildBaseVars(agentId, config, project) {
 }
 
 function selectPlaybook(workType, item) {
-  if (item?.branchStrategy === 'shared-branch' && (workType === 'implement' || workType === 'implement:large')) {
+  if (item?.branchStrategy === 'shared-branch' && (workType === WORK_TYPE.IMPLEMENT || workType === WORK_TYPE.IMPLEMENT_LARGE)) {
     return 'implement-shared';
   }
-  if (workType === 'review' && !item?._pr && !item?.pr_id) {
+  if (workType === WORK_TYPE.REVIEW && !item?._pr && !item?.pr_id) {
     return 'work-item';
   }
   const typeSpecificPlaybooks = ['explore', 'review', 'test', 'plan-to-prd', 'plan', 'ask', 'verify', 'decompose', 'meeting-investigate', 'meeting-debate', 'meeting-conclude'];

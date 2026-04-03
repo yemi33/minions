@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, dateStamp } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -53,7 +53,7 @@ async function forEachActiveGhPr(config, callback) {
     if (!slug) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === 'active');
+    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
     if (activePrs.length === 0) continue;
 
     let projectUpdated = 0;
@@ -79,7 +79,7 @@ async function forEachActiveGhPr(config, callback) {
   // Also poll manually-linked PRs from central pull-requests.json (extract slug from URL)
   const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
   const centralPrs = safeJson(centralPath) || [];
-  const activeCentral = centralPrs.filter(pr => pr.status === 'active' && pr.url);
+  const activeCentral = centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE && pr.url);
   let centralUpdated = 0;
   for (const pr of activeCentral) {
     const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
@@ -123,19 +123,19 @@ async function pollPrStatus(config) {
 
     // Map GitHub PR state to minions status
     let newStatus = pr.status;
-    if (prData.merged) newStatus = 'merged';
-    else if (prData.state === 'closed') newStatus = 'abandoned';
-    else if (prData.state === 'open') newStatus = 'active';
+    if (prData.merged) newStatus = PR_STATUS.MERGED;
+    else if (prData.state === 'closed') newStatus = PR_STATUS.ABANDONED;
+    else if (prData.state === 'open') newStatus = PR_STATUS.ACTIVE;
 
     if (pr.status !== newStatus) {
       log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
       pr.status = newStatus;
       updated = true;
 
-      if (newStatus === 'merged' || newStatus === 'abandoned') {
+      if (newStatus === PR_STATUS.MERGED || newStatus === PR_STATUS.ABANDONED) {
         // Resolve stale 'waiting' review status — won't be polled again after this
         if (pr.reviewStatus === 'waiting') {
-          pr.reviewStatus = newStatus === 'merged' ? 'approved' : 'pending';
+          pr.reviewStatus = newStatus === PR_STATUS.MERGED ? 'approved' : 'pending';
           log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
         }
         await engine().handlePostMerge(pr, project, config, newStatus);

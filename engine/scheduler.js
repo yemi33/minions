@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, mutateJsonFileLocked } = shared;
+const { safeJson, safeWrite, mutateJsonFileLocked, WI_STATUS } = shared;
 
 const SCHEDULE_RUNS_PATH = path.join(__dirname, 'schedule-runs.json');
 
@@ -125,7 +125,7 @@ function discoverScheduledWork(config) {
         type: sched.type || 'implement',
         priority: sched.priority || 'medium',
         description: sched.description || sched.title,
-        status: 'pending',
+        status: WI_STATUS.PENDING,
         created: new Date().toISOString(),
         createdBy: 'scheduler',
         agent: sched.agent || null,

@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid, log, ENGINE_DEFAULTS } = shared;
+const { safeJson, safeWrite, safeRead, uid, log, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getDispatch, getConfig } = queries;
 const { renderPlaybook } = require('./playbook');
@@ -118,7 +118,7 @@ function discoverMeetingWork(config) {
       if (!prompt) continue;
 
       work.push({
-        type: 'meeting',
+        type: WORK_TYPE.MEETING,
         agent: concluder,
         agentName: agents[concluder]?.name || concluder,
         agentRole: agents[concluder]?.role || 'Agent',
@@ -165,7 +165,7 @@ function discoverMeetingWork(config) {
       if (!prompt) continue;
 
       work.push({
-        type: 'meeting',
+        type: WORK_TYPE.MEETING,
         agent: agentId,
         agentName: agents[agentId]?.name || agentId,
         agentRole: agents[agentId]?.role || 'Agent',
@@ -278,7 +278,7 @@ function _killMeetingDispatches(meetingId) {
       dp.active = (dp.active || []).filter(d => d.meta?.meetingId !== meetingId);
       dp.completed = dp.completed || [];
       for (const d of toKill) {
-        dp.completed.push({ ...d, result: 'error', reason: 'Meeting ended/advanced by human', completed_at: new Date().toISOString() });
+        dp.completed.push({ ...d, result: DISPATCH_RESULT.ERROR, reason: 'Meeting ended/advanced by human', completed_at: new Date().toISOString() });
       }
       if (dp.completed.length > 100) dp.completed = dp.completed.slice(-100);
       return dp;

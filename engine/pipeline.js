@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS } = shared;
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
 const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
@@ -172,7 +172,7 @@ function executeTaskStage(stage, stageState, run, config) {
       type: item.type || stage.taskType || 'explore',
       priority: item.priority || stage.priority || 'medium',
       agent: item.agent || stage.agent || '',
-      status: 'pending',
+      status: WI_STATUS.PENDING,
       created: ts(),
       createdBy: 'pipeline:' + run.pipelineId,
       branch: `pipeline/${run.pipelineId}/${stage.id}`,
@@ -243,9 +243,9 @@ function executePlanStage(stage, stageState, run, config) {
     workItems.push({
       id: wiId,
       title: `Convert plan to PRD: ${path.basename(filePath)}`,
-      type: 'plan-to-prd',
+      type: WORK_TYPE.PLAN_TO_PRD,
       priority: 'high',
-      status: 'pending',
+      status: WI_STATUS.PENDING,
       planFile: path.basename(filePath),
       created: ts(),
       createdBy: 'pipeline:' + run.pipelineId,
@@ -347,7 +347,7 @@ function isStageComplete(stage, stageState, run, config) {
       if (ids.length === 0) return false;
       return ids.every(id => {
         const wi = workItems.find(w => w.id === id);
-        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
+        return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
     }
     case 'meeting': {
@@ -372,7 +372,7 @@ function isStageComplete(stage, stageState, run, config) {
       const prdWiIds = artifacts.workItems || [];
       const prdDone = prdWiIds.every(id => {
         const wi = all.find(w => w.id === id);
-        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
+        return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
       if (!prdDone) return false;
 
@@ -390,7 +390,7 @@ function isStageComplete(stage, stageState, run, config) {
         }
         // Find materialized work items for discovered PRDs
         for (const prdFile of (artifacts.prds || [])) {
-          const prdItems = all.filter(w => w.sourcePlan === prdFile && w.type !== 'plan-to-prd');
+          const prdItems = all.filter(w => w.sourcePlan === prdFile && w.type !== WORK_TYPE.PLAN_TO_PRD);
           for (const wi of prdItems) {
             if (!(artifacts.workItems || []).includes(wi.id)) {
               artifacts.workItems = artifacts.workItems || [];
@@ -405,8 +405,8 @@ function isStageComplete(stage, stageState, run, config) {
         for (const prdFile of artifacts.prds) {
           const prdPath = path.join(prdDir, prdFile);
           const prd = safeJson(prdPath);
-          if (prd && prd.status === 'awaiting-approval') {
-            prd.status = 'approved';
+          if (prd && prd.status === PLAN_STATUS.AWAITING_APPROVAL) {
+            prd.status = PLAN_STATUS.APPROVED;
             prd.approvedAt = ts();
             prd.approvedBy = 'pipeline:' + run.pipelineId;
             safeWrite(prdPath, prd);
@@ -420,7 +420,7 @@ function isStageComplete(stage, stageState, run, config) {
       if (implementIds.length === 0 && artifacts.prds?.length > 0) return false; // items not materialized yet
       return implementIds.every(id => {
         const wi = all.find(w => w.id === id);
-        return !wi || wi.status === 'done' || wi.status === 'failed'; // missing = treat as done
+        return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
     }
     case 'merge-prs': {
@@ -431,7 +431,7 @@ function isStageComplete(stage, stageState, run, config) {
         const prs = safeJson(shared.projectPrPath(project)) || [];
         for (const prId of prIds) {
           const pr = prs.find(p => p.id === prId);
-          if (pr && pr.status !== 'merged' && pr.status !== 'abandoned') return false;
+          if (pr && pr.status !== PR_STATUS.MERGED && pr.status !== PR_STATUS.ABANDONED) return false;
         }
       }
       return true;

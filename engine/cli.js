@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite } = shared;
+const { safeRead, safeJson, safeWrite, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus,
   MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
@@ -159,8 +159,8 @@ const commands = {
               const wiPath = path.join(MINIONS_DIR, "projects", item.meta.project.name, "work-items.json");
               const wiItems = safeJson(wiPath) || [];
               const wi = wiItems.find(w => w.id === item.meta.item.id);
-              if (wi && wi.status !== 'dispatched') {
-                wi.status = 'dispatched';
+              if (wi && wi.status !== WI_STATUS.DISPATCHED) {
+                wi.status = WI_STATUS.DISPATCHED;
                 wi.dispatched_to = wi.dispatched_to || agentId;
                 wi.dispatched_at = wi.dispatched_at || new Date().toISOString();
                 safeWrite(wiPath, wiItems);
@@ -210,7 +210,7 @@ const commands = {
           if (!hasResult && !hasError) continue;
 
           const isSuccess = hasResult && !hasError;
-          const result = isSuccess ? 'success' : 'error';
+          const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
 
           e.log('info', `Orphan recovery: ${agentId} (${item.id}) completed while engine was down — result: ${result}`);
 
@@ -222,7 +222,7 @@ const commands = {
 
           // Update work item status
           if (item.meta?.item?.id) {
-            const status = isSuccess ? 'done' : 'failed';
+            const status = isSuccess ? WI_STATUS.DONE : WI_STATUS.FAILED;
             try {
               lifecycle.updateWorkItemStatus(item.meta, status, isSuccess ? '' : 'Completed while engine was down');
             } catch {
@@ -286,8 +286,8 @@ const commands = {
           const items = safeJson(wiPath) || [];
           let changed = false;
           for (const item of items) {
-            if (item.status === 'dispatched' && !activeIds.has(item.id)) {
-              item.status = 'pending';
+            if (item.status === WI_STATUS.DISPATCHED && !activeIds.has(item.id)) {
+              item.status = WI_STATUS.PENDING;
               delete item.dispatched_at;
               delete item.dispatched_to;
               changed = true;
@@ -656,7 +656,7 @@ const commands = {
       id: `W${String(items.length + 1).padStart(3, '0')}`,
       title: title,
       type: opts.type || 'implement',
-      status: 'queued',
+      status: WI_STATUS.QUEUED,
       priority: opts.priority || 'medium',
       complexity: opts.complexity || 'medium',
       description: opts.description || title,
@@ -750,7 +750,7 @@ const commands = {
     }
 
     const id = e.addToDispatch({
-      type: 'plan-to-prd',
+      type: WORK_TYPE.PLAN_TO_PRD,
       agent: agentId,
       agentName: config.agents[agentId]?.name,
       agentRole: config.agents[agentId]?.role,
@@ -815,13 +815,13 @@ const commands = {
         }
         if (exists && name === 'pullRequests') {
           const prs = safeJson(filePath) || [];
-          const pending = prs.filter(p => p.status === 'active' && (p.reviewStatus === 'pending' || p.reviewStatus === 'waiting'));
-          const needsFix = prs.filter(p => p.status === 'active' && p.reviewStatus === 'changes-requested');
+          const pending = prs.filter(p => p.status === PR_STATUS.ACTIVE && (p.reviewStatus === 'pending' || p.reviewStatus === 'waiting'));
+          const needsFix = prs.filter(p => p.status === PR_STATUS.ACTIVE && p.reviewStatus === 'changes-requested');
           console.log(`    PRs: ${pending.length} pending review, ${needsFix.length} need fixes`);
         }
         if (exists && name === 'workItems') {
           const items = safeJson(filePath) || [];
-          const queued = items.filter(i => i.status === 'queued');
+          const queued = items.filter(i => i.status === WI_STATUS.QUEUED);
           console.log(`    Items: ${queued.length} queued`);
         }
         if (name === 'specs' || name === 'mergedDesignDocs') {
@@ -853,7 +853,7 @@ const commands = {
     const killed = dispatch.active || [];
     for (const item of killed) {
       if (item.meta) {
-        e.updateWorkItemStatus(item.meta, 'pending', '');
+        e.updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
         const itemId = item.meta.item?.id;
         if (itemId) {
           const wiPath = (item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout')
@@ -865,7 +865,7 @@ const commands = {
             const items = safeJson(wiPath) || [];
             const target = items.find(i => i.id === itemId);
             if (target) {
-              target.status = 'pending';
+              target.status = WI_STATUS.PENDING;
               delete target.dispatched_at;
               delete target.dispatched_to;
               delete target.failReason;

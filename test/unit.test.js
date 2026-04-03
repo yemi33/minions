@@ -5728,12 +5728,12 @@ async function testPlanArchiveApi() {
 async function testPrWaitingResolve() {
   await test('github.js resolves waiting review status on merge', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
-    assert.ok(src.includes("reviewStatus === 'waiting'") && src.includes("'merged'"), 'should resolve waiting on merge');
+    assert.ok(src.includes("reviewStatus === 'waiting'") && (src.includes("'merged'") || src.includes("PR_STATUS.MERGED")), 'should resolve waiting on merge');
   });
 
   await test('ado.js resolves waiting review status on merge', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'ado.js'), 'utf8');
-    assert.ok(src.includes("reviewStatus === 'waiting'") && src.includes("'merged'"), 'should resolve waiting on merge');
+    assert.ok(src.includes("reviewStatus === 'waiting'") && (src.includes("'merged'") || src.includes("PR_STATUS.MERGED")), 'should resolve waiting on merge');
   });
 }
 

@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink, log, dateStamp } = shared;
+const { exec, getAdoOrgBase, addPrLink, log, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
@@ -80,7 +80,7 @@ async function forEachActivePr(config, token, callback) {
     if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === 'active');
+    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
     if (activePrs.length === 0) continue;
 
     let projectUpdated = 0;
@@ -123,18 +123,18 @@ async function pollPrStatus(config) {
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
     let newStatus = pr.status;
-    if (prData.status === 'completed') newStatus = 'merged';
-    else if (prData.status === 'abandoned') newStatus = 'abandoned';
-    else if (prData.status === 'active') newStatus = 'active';
+    if (prData.status === 'completed') newStatus = PR_STATUS.MERGED;
+    else if (prData.status === 'abandoned') newStatus = PR_STATUS.ABANDONED;
+    else if (prData.status === 'active') newStatus = PR_STATUS.ACTIVE;
 
     if (pr.status !== newStatus) {
       log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
       pr.status = newStatus;
       updated = true;
 
-      if (newStatus === 'merged' || newStatus === 'abandoned') {
+      if (newStatus === PR_STATUS.MERGED || newStatus === PR_STATUS.ABANDONED) {
         if (pr.reviewStatus === 'waiting') {
-          pr.reviewStatus = newStatus === 'merged' ? 'approved' : 'pending';
+          pr.reviewStatus = newStatus === PR_STATUS.MERGED ? 'approved' : 'pending';
           log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
@@ -157,7 +157,7 @@ async function pollPrStatus(config) {
       .map(r => r.displayName)
       .filter(Boolean);
     // Fallback: if PR was merged and no decisive votes, use completedBy
-    if (!reviewedBy.length && newStatus === 'merged' && prData.closedBy?.displayName) {
+    if (!reviewedBy.length && newStatus === PR_STATUS.MERGED && prData.closedBy?.displayName) {
       reviewedBy.push(prData.closedBy.displayName);
     }
     if (JSON.stringify(pr.reviewedBy || []) !== JSON.stringify(reviewedBy)) {
@@ -184,7 +184,7 @@ async function pollPrStatus(config) {
       }
     }
 
-    if (newStatus !== 'active') return updated;
+    if (newStatus !== PR_STATUS.ACTIVE) return updated;
 
     const statusData = await adoFetch(`${repoBase}/statuses?api-version=7.1`, token);
 
