@@ -5556,25 +5556,21 @@ async function testAuditLogging() {
   });
 
   await test('auditLog creates structured entry with required fields', () => {
-    const tmpDir = createTmpDir();
-    const auditPath = path.join(tmpDir, 'audit-log.json');
-    // Write an entry directly via the module's logic pattern
-    const entry = {
-      id: 'AUD-test1',
-      timestamp: new Date().toISOString(),
-      action: 'login',
-      category: 'auth',
-      user: 'testuser',
-      resource: null,
-      details: 'User testuser logged in',
-      meta: null,
-    };
-    // Verify structure
-    assert.ok(entry.id.startsWith('AUD-'));
-    assert.ok(entry.timestamp);
+    const auditMod = require(path.join(MINIONS_DIR, 'engine', 'audit.js'));
+    // Clean up any prior test state
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
+    const entry = auditMod.auditLog('login', { user: 'testuser', category: 'auth', details: 'User testuser logged in' });
+    assert.ok(entry.id.startsWith('AUD-'), 'id should start with AUD-');
+    assert.ok(entry.timestamp, 'should have timestamp');
     assert.strictEqual(entry.action, 'login');
     assert.strictEqual(entry.category, 'auth');
     assert.strictEqual(entry.user, 'testuser');
+    assert.strictEqual(entry.details, 'User testuser logged in');
+    // Verify it was persisted to disk
+    const log = JSON.parse(fs.readFileSync(auditMod.AUDIT_LOG_PATH, 'utf8'));
+    assert.ok(log.some(e => e.id === entry.id), 'entry should be persisted to disk');
+    // Clean up
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
   });
 
   await test('audit.js uses mutateJsonFileLocked for concurrency safety', () => {
@@ -5598,33 +5594,29 @@ async function testAuditLogging() {
   });
 
   await test('searchAuditLog filters by category', () => {
-    const tmpDir = createTmpDir();
-    const logPath = path.join(tmpDir, 'audit-log.json');
-    const entries = [
-      { id: 'AUD-1', timestamp: '2026-04-01T00:00:00Z', action: 'login', category: 'auth', user: 'a', resource: null, details: null, meta: null },
-      { id: 'AUD-2', timestamp: '2026-04-01T01:00:00Z', action: 'work_item_create', category: 'mutation', user: 'b', resource: 'W-1', details: null, meta: null },
-      { id: 'AUD-3', timestamp: '2026-04-01T02:00:00Z', action: 'logout', category: 'auth', user: 'a', resource: null, details: null, meta: null },
-    ];
-    fs.writeFileSync(logPath, JSON.stringify(entries));
-    // Temporarily swap the path — test the filter logic directly
-    const filtered = entries.filter(e => e.category === 'auth');
-    assert.strictEqual(filtered.length, 2);
-    assert.ok(filtered.every(e => e.category === 'auth'));
+    const auditMod = require(path.join(MINIONS_DIR, 'engine', 'audit.js'));
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
+    // Write entries via the real module
+    auditMod.auditLog('login', { user: 'a', category: 'auth' });
+    auditMod.auditLog('work_item_create', { user: 'b', category: 'mutation', resource: 'W-1' });
+    auditMod.auditLog('logout', { user: 'a', category: 'auth' });
+    // Search via the real module
+    const result = auditMod.searchAuditLog({ category: 'auth' });
+    assert.strictEqual(result.total, 2, 'should find 2 auth entries');
+    assert.ok(result.entries.every(e => e.category === 'auth'), 'all results should be auth category');
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
   });
 
   await test('searchAuditLog full-text search (q param) matches across fields', () => {
-    const entries = [
-      { action: 'login', details: 'User admin logged in', resource: null, user: 'admin' },
-      { action: 'permission_change', details: 'Role changed for bob', resource: 'bob', user: 'admin' },
-      { action: 'logout', details: 'User guest logged out', resource: null, user: 'guest' },
-    ];
-    const q = 'bob';
-    const filtered = entries.filter(e => {
-      const haystack = [e.action, e.details, e.resource, e.user].filter(Boolean).join(' ').toLowerCase();
-      return haystack.includes(q);
-    });
-    assert.strictEqual(filtered.length, 1);
-    assert.strictEqual(filtered[0].action, 'permission_change');
+    const auditMod = require(path.join(MINIONS_DIR, 'engine', 'audit.js'));
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
+    auditMod.auditLog('login', { user: 'admin', category: 'auth', details: 'User admin logged in' });
+    auditMod.auditLog('permission_change', { user: 'admin', category: 'access', resource: 'bob', details: 'Role changed for bob' });
+    auditMod.auditLog('logout', { user: 'guest', category: 'auth', details: 'User guest logged out' });
+    const result = auditMod.searchAuditLog({ q: 'bob' });
+    assert.strictEqual(result.total, 1, 'should find 1 entry matching bob');
+    assert.strictEqual(result.entries[0].action, 'permission_change');
+    try { fs.unlinkSync(auditMod.AUDIT_LOG_PATH); } catch (_) {}
   });
 
   await test('getAuditSummary returns expected shape', () => {

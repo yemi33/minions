@@ -69,7 +69,7 @@ function buildDashboardHtml() {
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
   // Assemble page fragments
-  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'pipelines', 'meetings', 'engine'];
+  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'pipelines', 'meetings', 'audit', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
@@ -82,7 +82,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-pinned',
+    'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-audit', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
@@ -3460,20 +3460,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }},
     { method: 'POST', path: '/api/knowledge/sweep', desc: 'Deduplicate, consolidate, and reorganize knowledge base', handler: handleKnowledgeSweep },
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
-
-    // Audit log
-    { method: 'GET', path: '/api/audit/summary', desc: 'Audit log summary stats (totals by category/action, recent entries)', handler: (req, res) => {
-      return jsonReply(res, 200, audit.getAuditSummary());
-    }},
-    { method: 'GET', path: '/api/audit', desc: 'Search audit log with filters', params: 'user?, action?, category?, resource?, q?, from?, to?, limit?, offset?', handler: (req, res) => {
-      const url = new URL(req.url, 'http://localhost');
-      const filters = {};
-      for (const key of ['user', 'action', 'category', 'resource', 'q', 'from', 'to', 'limit', 'offset']) {
-        const val = url.searchParams.get(key);
-        if (val) filters[key] = val;
-      }
-      return jsonReply(res, 200, audit.searchAuditLog(filters));
-    }},
 
     // Doc chat
     { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?', handler: handleDocChat },
