@@ -215,6 +215,15 @@ async function _ccDoSend(message, skipUserMsg) {
     let streamedText = '';
     let toolsUsed = [];
     const dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
+    function _getThinkingPhase() {
+      var elapsed = Date.now() - ccStartTime;
+      var label = 'Thinking...';
+      for (var pi = phases.length - 1; pi >= 0; pi--) {
+        if (elapsed >= phases[pi][0]) { label = phases[pi][1]; break; }
+      }
+      var secs = Math.floor(elapsed / 1000);
+      return label + ' <span style="font-size:9px;color:var(--border)">' + secs + 's</span>';
+    }
     function updateStreamDiv() {
       var html = '';
       if (toolsUsed.length > 0) {
@@ -227,12 +236,15 @@ async function _ccDoSend(message, skipUserMsg) {
       if (streamedText) {
         html += renderMd(streamedText);
       }
-      html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '"><span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span></div>';
+      html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '"><span style="color:var(--muted);font-size:11px">' + _getThinkingPhase() + dotPulse + '</span></div>';
       streamDiv.innerHTML = html;
       // Re-append queue indicators so they stay below the streaming content
       if (_ccQueue.length > 0) _renderQueueIndicator();
       if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
     }
+
+    // Periodically update thinking phase text + timer
+    const phaseTimer = setInterval(updateStreamDiv, 1000);
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -257,7 +269,7 @@ async function _ccDoSend(message, skipUserMsg) {
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
             // Replace streaming div with a proper ccAddMessage
-            streamDiv.remove();
+            clearInterval(phaseTimer); streamDiv.remove();
             // placeholder was added with skipSave=true — nothing to pop
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             const rendered = renderMd(evt.text || streamedText || '');
@@ -267,7 +279,7 @@ async function _ccDoSend(message, skipUserMsg) {
               for (const action of evt.actions) { await ccExecuteAction(action); }
             }
           } else if (evt.type === 'error') {
-            streamDiv.remove();
+            clearInterval(phaseTimer); streamDiv.remove();
             // placeholder was skipSave — no pop needed
             ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
           }
@@ -281,7 +293,7 @@ async function _ccDoSend(message, skipUserMsg) {
         try {
           const evt = JSON.parse(line.slice(6));
           if (evt.type === 'done') {
-            streamDiv.remove();
+            clearInterval(phaseTimer); streamDiv.remove();
             // placeholder was skipSave — no pop needed
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             const rendered = renderMd(evt.text || streamedText || '');
@@ -299,7 +311,7 @@ async function _ccDoSend(message, skipUserMsg) {
     }
     // If stream ended without a 'done' event, finalize with whatever we have
     if (streamDiv.parentNode) {
-      streamDiv.remove();
+      clearInterval(phaseTimer); streamDiv.remove();
       if (streamedText) {
         const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
         ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
@@ -314,6 +326,7 @@ async function _ccDoSend(message, skipUserMsg) {
   } finally {
     _ccSending = false;
     _ccAbortController = null;
+    try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
     // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
