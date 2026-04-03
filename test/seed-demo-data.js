@@ -123,8 +123,8 @@ safeWrite(path.join(prdDir, 'demo-auth-prd.json'), {
   generated_by: 'Lambert',
   generated_at: '2026-03-18',
   source_plan: 'demo-auth-plan.md',
-  status: 'awaiting-approval',
-  requires_approval: true,
+  status: 'approved',
+  requires_approval: false,
   branch_strategy: 'parallel',
   missing_features: [
     { id: 'DEMO-P001', name: 'OAuth2 Authentication Middleware', description: 'JWT-based auth with refresh tokens using passport.js', priority: 'high', estimated_complexity: 'large', status: 'done', acceptance_criteria: ['JWT tokens issued on login', 'Refresh token rotation', 'Token blacklisting on logout'], depends_on: [] },
