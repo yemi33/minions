@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.296 (2026-04-03)
+
+### Features
+- fix 7 bugs across cooldown, spawn-agent, playbook, scheduler, consolidation
+
 ## 0.1.295 (2026-04-03)
 
 ### Features
