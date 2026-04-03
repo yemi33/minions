@@ -396,6 +396,15 @@ Available action types:
 - **create-meeting**: Start a team meeting. Fields: title (short meeting name), agenda (detailed text — what agents should investigate/debate, numbered items work best), agents (array of agent IDs), rounds (optional, default 3), project (optional).
 - **set-config**: Update engine settings. Fields: setting (setting name), value (new value). Valid settings: autoApprovePlans (bool), autoDecompose (bool), allowTempAgents (bool), maxConcurrent (number), maxTurns (number). Example: { "type": "set-config", "setting": "autoApprovePlans", "value": true }
 - **edit-pipeline**: Update an existing pipeline. Fields: id (pipeline ID), title (optional), stages (optional, JSON array), trigger (optional, { cron: "minute hour dow" } or null for manual).
+- **unpin**: Remove a pinned note. Fields: title (exact title of the pinned note to remove)
+- **archive-plan**: Archive a completed/paused plan. Fields: file (PRD .json or plan .md filename)
+- **reject-plan**: Reject a plan. Fields: file (PRD .json filename), reason (optional)
+- **steer-agent**: Send a steering message to a running agent. Fields: agent (agent ID), message (text to inject)
+- **add-meeting-note**: Add a human note to an active meeting. Fields: id (meeting ID like MTG-xxx), note (text)
+- **trigger-pipeline**: Manually trigger a pipeline run. Fields: id (pipeline ID)
+- **link-pr**: Link an external PR for tracking. Fields: url (PR URL), title (optional), project (optional), autoObserve (bool, default true)
+- **archive-meeting**: Archive a completed meeting. Fields: id (meeting ID)
+- **update-routing**: Update the routing table. Fields: content (full routing.md content)
 
 ## Rules
 

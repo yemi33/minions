@@ -483,6 +483,93 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'unpin': {
+        await fetch('/api/pinned/remove', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: action.title })
+        });
+        status.innerHTML = '&#10003; Unpinned: <strong>' + escHtml(action.title) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'archive-plan': {
+        await fetch('/api/plans/archive', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: action.file })
+        });
+        status.innerHTML = '&#10003; Archived plan: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'reject-plan': {
+        await fetch('/api/plans/reject', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: action.file, reason: action.reason || '' })
+        });
+        status.innerHTML = '&#10003; Rejected plan: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--orange)';
+        break;
+      }
+      case 'steer-agent': {
+        await fetch('/api/agents/steer', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: action.agent, message: action.message || action.content })
+        });
+        status.innerHTML = '&#10003; Steering message sent to <strong>' + escHtml(action.agent) + '</strong>';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'add-meeting-note': {
+        await fetch('/api/meetings/note', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: action.id, note: action.note || action.content })
+        });
+        status.innerHTML = '&#10003; Note added to meeting <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'trigger-pipeline': {
+        var res = await fetch('/api/pipelines/trigger', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: action.id })
+        });
+        if (!res.ok) { var d = await res.json().catch(function() { return {}; }); throw new Error(d.error || 'Pipeline trigger failed'); }
+        status.innerHTML = '&#10003; Pipeline triggered: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'link-pr': {
+        await fetch('/api/pull-requests/link', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: action.url, title: action.title || '', project: action.project || '', autoObserve: action.autoObserve !== false })
+        });
+        status.innerHTML = '&#10003; PR linked: <strong>' + escHtml(action.url) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'archive-meeting': {
+        await fetch('/api/meetings/archive', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: action.id })
+        });
+        status.innerHTML = '&#10003; Meeting archived: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'update-routing': {
+        await fetch('/api/settings/routing', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: action.content })
+        });
+        status.innerHTML = '&#10003; Routing updated';
+        status.style.color = 'var(--green)';
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';
