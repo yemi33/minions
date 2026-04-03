@@ -630,7 +630,22 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   }
 
   for (const [name, entry] of dirtyTargets) {
-    shared.safeWrite(entry.prPath, entry.prs);
+    mutateJsonFileLocked(entry.prPath, (existingPrs) => {
+      // Merge new PRs into existing data to avoid losing concurrent writes
+      for (const pr of entry.prs) {
+        const idx = existingPrs.findIndex(p => p.id === pr.id);
+        if (idx >= 0) {
+          // Backfill prdItems if needed
+          if (pr.prdItems?.length) {
+            const merged = new Set([...(existingPrs[idx].prdItems || []), ...pr.prdItems]);
+            existingPrs[idx].prdItems = [...merged];
+          }
+        } else {
+          existingPrs.push(pr);
+        }
+      }
+      return existingPrs;
+    }, { defaultValue: [] });
     log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
   return added;
@@ -668,11 +683,12 @@ function updatePrAfterReview(agentId, pr, project) {
   const authorAgentId = (pr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath) || {};
-    if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
-    shared.safeWrite(metricsPath, metrics);
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
+      return metrics;
+    });
   }
 
   shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
@@ -747,12 +763,16 @@ async function handlePostMerge(pr, project, config, newStatus) {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
       for (const pf of planFiles) {
-        const plan = safeJson(path.join(prdDir, pf));
+        const prdPath = path.join(prdDir, pf);
+        const plan = safeJson(prdPath);
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
         if (feature && feature.status !== 'implemented') {
-          feature.status = 'implemented';
-          shared.safeWrite(path.join(prdDir, pf), plan);
+          mutateJsonFileLocked(prdPath, (data) => {
+            const feat = data.missing_features?.find(f => f.id === mergedItemId);
+            if (feat && feat.status !== 'implemented') feat.status = 'implemented';
+            return data;
+          });
           updated++;
         }
       }
@@ -764,17 +784,19 @@ async function handlePostMerge(pr, project, config, newStatus) {
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
     for (const wiPath of wiPaths) {
       try {
-        const items = safeJson(wiPath);
-        if (!items) continue;
-        const item = items.find(i => i.id === mergedItemId);
-        if (item && item.status !== 'done') {
-          log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          item.status = 'done';
-          item.completedAt = ts();
-          item._mergedVia = pr.id;
-          shared.safeWrite(wiPath, items);
-          break;
-        }
+        let found = false;
+        mutateJsonFileLocked(wiPath, (items) => {
+          const item = items.find(i => i.id === mergedItemId);
+          if (item && item.status !== 'done') {
+            log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
+            item.status = 'done';
+            item.completedAt = ts();
+            item._mergedVia = pr.id;
+            found = true;
+          }
+          return items;
+        }, { defaultValue: [] });
+        if (found) break;
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
   }
@@ -782,10 +804,11 @@ async function handlePostMerge(pr, project, config, newStatus) {
   const agentId = (pr.agent || '').toLowerCase();
   if (agentId && config.agents?.[agentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath) || {};
-    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
-    shared.safeWrite(metricsPath, metrics);
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
+      return metrics;
+    });
   }
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
@@ -1229,14 +1252,15 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          // For fix items, target the original implement parent; for implement, target self
-          const evalTargetId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
-          // Dedup: skip if an evaluate item already exists for this parent
-          const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'evaluate' && i.status === 'pending');
-          if (existing) {
-            log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
-          } else {
+          mutateJsonFileLocked(wiPath, (items) => {
+            // For fix items, target the original implement parent; for implement, target self
+            const evalTargetId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
+            // Dedup: skip if an evaluate item already exists for this parent
+            const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'evaluate' && i.status === 'pending');
+            if (existing) {
+              log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
+              return items;
+            }
             const parentItem = items.find(i => i.id === evalTargetId);
             const evalItem = {
               id: 'W-' + shared.uid(),
@@ -1256,9 +1280,9 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             // Mark parent as eval-dispatched before writing to prevent duplicates on re-run
             if (parentItem) parentItem._evalDispatched = true;
             items.push(evalItem);
-            shared.safeWrite(wiPath, items);
             log('info', `Eval loop: created ${evalItem.id} for completed ${type} ${meta.item.id} (parent: ${evalTargetId})`);
-          }
+            return items;
+          }, { defaultValue: [] });
         }
       } catch (err) {
         log('warn', `Eval loop dispatch error: ${err.message}`);
@@ -1276,9 +1300,9 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       if (verdict && !verdict.pass && evalLoop) {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const parent = items.find(i => i.id === meta.item._evalParentId);
-          if (parent) {
+          mutateJsonFileLocked(wiPath, (items) => {
+            const parent = items.find(i => i.id === meta.item._evalParentId);
+            if (!parent) return items;
             const iterations = (parent._evalIterations || 0) + 1;
             parent._evalIterations = iterations;
 
@@ -1286,7 +1310,6 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
               // Max iterations reached — escalate to human review
               parent.status = 'needs-human-review';
               parent._evalEscalatedAt = ts();
-              shared.safeWrite(wiPath, items);
               log('info', `Eval loop: ${parent.id} reached ${iterations}/${maxIter} iterations — escalated to needs-human-review`);
             } else {
               // Create fix work item with evaluator feedback
@@ -1312,10 +1335,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
               // Parent stays 'done' — fix item picks up from here
               parent.status = 'done';
               items.push(fixItem);
-              shared.safeWrite(wiPath, items);
               log('info', `Eval loop: created fix ${fixItem.id} for failed eval on ${parent.id} (iteration ${iterations}/${maxIter})`);
             }
-          }
+            return items;
+          }, { defaultValue: [] });
         }
       }
     } catch (err) {
@@ -1345,13 +1368,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           ? path.join(MINIONS_DIR, 'work-items.json')
           : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const wi = items.find(i => i.id === meta.item.id);
-          if (wi) {
-            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
-            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
-            shared.safeWrite(wiPath, items);
-          }
+          mutateJsonFileLocked(wiPath, (items) => {
+            const wi = items.find(i => i.id === meta.item.id);
+            if (wi) {
+              wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
+              if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
+            }
+            return items;
+          }, { defaultValue: [] });
         }
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
     } else {
@@ -1364,9 +1388,11 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           ? path.join(MINIONS_DIR, 'work-items.json')
           : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const wi = items.find(i => i.id === meta.item.id);
-          if (wi) { delete wi._decomposing; shared.safeWrite(wiPath, items); }
+          mutateJsonFileLocked(wiPath, (items) => {
+            const wi = items.find(i => i.id === meta.item.id);
+            if (wi) { delete wi._decomposing; }
+            return items;
+          }, { defaultValue: [] });
         }
       } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
     }

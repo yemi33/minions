@@ -2904,6 +2904,52 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handleProjectsScan(req, res) {
+    try {
+      const body = await readBody(req);
+      const scanRoot = path.resolve(body.path || os.homedir());
+      const maxDepth = Math.min(Number(body.depth) || 3, 6);
+      if (!fs.existsSync(scanRoot)) return jsonReply(res, 400, { error: 'path does not exist' });
+
+      // Find git repos recursively (same logic as minions.js findGitRepos)
+      const skipDirs = new Set(['node_modules', '.git', '.hg', 'AppData', '$Recycle.Bin', 'Windows',
+        'Program Files', 'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees', '.minions', '.squad']);
+      const repos = [];
+      function walk(dir, depth) {
+        if (depth > maxDepth) return;
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+          if (!e.isDirectory() || (e.name.startsWith('.') && e.name !== '.git') || skipDirs.has(e.name)) continue;
+          if (e.name === '.git') { repos.push(dir); return; }
+          walk(path.join(dir, e.name), depth + 1);
+        }
+      }
+      walk(scanRoot, 0);
+
+      // Enrich each repo with metadata
+      const existingPaths = new Set(PROJECTS.map(p => path.resolve(p.localPath)));
+      const results = repos.map(repoPath => {
+        const result = { path: repoPath.replace(/\\/g, '/'), name: path.basename(repoPath), host: 'git', linked: existingPaths.has(path.resolve(repoPath)) };
+        try {
+          const remoteUrl = require('child_process').execSync('git remote get-url origin', { cwd: repoPath, encoding: 'utf8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+          const gh = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+          const ado = remoteUrl.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/\s]+)/) || remoteUrl.match(/([^.]+)\.visualstudio\.com.*?\/([^/]+)\/_git\/([^/\s]+)/);
+          if (gh) { result.host = 'GitHub'; result.org = gh[1]; result.name = gh[2]; }
+          else if (ado) { result.host = 'ADO'; result.org = ado[1]; result.name = ado[3] || ado[2]; }
+        } catch { /* no remote */ }
+        try {
+          const pkg = JSON.parse(fs.readFileSync(path.join(repoPath, 'package.json'), 'utf8'));
+          if (pkg.name) result.name = pkg.name.replace(/@[^/]+\//, '');
+          if (pkg.description) result.description = pkg.description.slice(0, 100);
+        } catch { /* no package.json */ }
+        return result;
+      });
+
+      return jsonReply(res, 200, { repos: results });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
@@ -3444,6 +3490,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Projects
     { method: 'POST', path: '/api/projects/browse', desc: 'Open folder picker dialog, return selected path', handler: handleProjectsBrowse },
+    { method: 'POST', path: '/api/projects/scan', desc: 'Scan a directory for git repos', params: 'path?, depth?', handler: handleProjectsScan },
     { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config', params: 'path, name?', handler: handleProjectsAdd },
 
     // Command Center

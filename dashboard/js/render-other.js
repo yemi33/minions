@@ -16,7 +16,8 @@ function renderProjects(projects) {
       (p.description ? '<span style="color:var(--muted);font-weight:400;margin-left:6px;font-size:10px">' + escHtml(p.description.slice(0, 60)) + (p.description.length > 60 ? '...' : '') + '</span>' : '') +
     '</span>'
   ).join('') +
-  '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--muted);font-weight:500;cursor:pointer;border-style:dashed">+ Add</span>';
+  '<span onclick="addProject()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--muted);font-weight:500;cursor:pointer;border-style:dashed">+ Add</span>' +
+  '<span onclick="openScanProjectsModal()" style="background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:3px 10px;color:var(--blue);font-weight:500;cursor:pointer;border-style:dashed;font-size:10px">Scan</span>';
 
 }
 
@@ -206,4 +207,99 @@ function renderContextPressure(metrics) {
   el.innerHTML = html;
 }
 
-window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage, renderContextPressure };
+async function openScanProjectsModal() {
+  document.getElementById('modal-title').textContent = 'Scan for Projects';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px">' +
+      '<div style="display:flex;gap:8px;align-items:flex-end">' +
+        '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Directory to scan' +
+          '<input id="scan-path" value="' + escHtml((typeof os !== 'undefined' ? os.homedir() : '~') || '~') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' +
+        '</label>' +
+        '<label style="width:60px;color:var(--text);font-size:var(--text-md)">Depth' +
+          '<input id="scan-depth" type="number" value="3" min="1" max="6" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' +
+        '</label>' +
+        '<button onclick="_runProjectScan()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;white-space:nowrap">Scan</button>' +
+      '</div>' +
+      '<div id="scan-results" style="color:var(--muted);font-size:12px">Click Scan to find git repos in the directory.</div>' +
+    '</div>';
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal').classList.add('open');
+}
+
+async function _runProjectScan() {
+  var scanPath = document.getElementById('scan-path')?.value?.trim();
+  var depth = document.getElementById('scan-depth')?.value || '3';
+  var resultsEl = document.getElementById('scan-results');
+  if (!scanPath) { alert('Enter a path'); return; }
+  resultsEl.innerHTML = '<span style="color:var(--blue)">Scanning...</span>';
+
+  try {
+    var res = await fetch('/api/projects/scan', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: scanPath, depth: Number(depth) })
+    });
+    var data = await res.json();
+    if (!res.ok) { resultsEl.innerHTML = '<span style="color:var(--red)">Error: ' + escHtml(data.error) + '</span>'; return; }
+    var repos = data.repos || [];
+    if (repos.length === 0) { resultsEl.innerHTML = '<span style="color:var(--muted)">No git repos found in ' + escHtml(scanPath) + '</span>'; return; }
+
+    var html = '<div style="margin-bottom:8px;font-size:11px;color:var(--muted)">' + repos.length + ' repos found — select to add:</div>';
+    html += '<div style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:4px">';
+    repos.forEach(function(r, i) {
+      var linked = r.linked;
+      var hostBadge = '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:' +
+        (r.host === 'GitHub' ? 'rgba(88,166,255,0.15);color:var(--blue)' : r.host === 'ADO' ? 'rgba(188,140,255,0.15);color:var(--purple)' : 'var(--surface2);color:var(--muted)') +
+        '">' + escHtml(r.host) + '</span>';
+      html += '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:' + (linked ? 'default' : 'pointer') + ';opacity:' + (linked ? '0.5' : '1') + '">' +
+        '<input type="checkbox" data-scan-idx="' + i + '" ' + (linked ? 'disabled checked' : '') + ' style="accent-color:var(--blue);width:16px;height:16px">' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-weight:600;font-size:12px">' + escHtml(r.name) + ' ' + hostBadge + (linked ? ' <span style="font-size:9px;color:var(--green)">linked</span>' : '') + '</div>' +
+          '<div style="font-size:10px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(r.path) + '</div>' +
+          (r.description ? '<div style="font-size:10px;color:var(--muted)">' + escHtml(r.description) + '</div>' : '') +
+        '</div>' +
+      '</label>';
+    });
+    html += '</div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">' +
+      '<div style="display:flex;gap:8px">' +
+        '<span onclick="_scanSelectAll()" style="font-size:10px;color:var(--blue);cursor:pointer;text-decoration:underline">Select all</span>' +
+        '<span onclick="_scanSelectNone()" style="font-size:10px;color:var(--muted);cursor:pointer;text-decoration:underline">Clear</span>' +
+      '</div>' +
+      '<button onclick="_addSelectedProjects()" style="padding:6px 16px;background:var(--green);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Add Selected</button>' +
+    '</div>';
+    resultsEl.innerHTML = html;
+    window._scanRepos = repos;
+  } catch (e) { resultsEl.innerHTML = '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>'; }
+}
+
+function _scanSelectAll() {
+  document.querySelectorAll('[data-scan-idx]').forEach(function(cb) { if (!cb.disabled) cb.checked = true; });
+}
+function _scanSelectNone() {
+  document.querySelectorAll('[data-scan-idx]').forEach(function(cb) { if (!cb.disabled) cb.checked = false; });
+}
+
+async function _addSelectedProjects() {
+  var checkboxes = document.querySelectorAll('[data-scan-idx]:checked:not(:disabled)');
+  if (checkboxes.length === 0) { alert('Select at least one repo'); return; }
+  var repos = window._scanRepos || [];
+  var added = 0;
+  for (var cb of checkboxes) {
+    var repo = repos[parseInt(cb.dataset.scanIdx)];
+    if (!repo) continue;
+    try {
+      var res = await fetch('/api/projects/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: repo.path })
+      });
+      if (res.ok) { added++; cb.disabled = true; cb.closest('label').style.opacity = '0.5'; }
+    } catch { /* continue with next */ }
+  }
+  if (added > 0) {
+    showToast('cmd-toast', added + ' project(s) added', true);
+    refresh();
+  }
+}
+
+window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage, renderContextPressure, openScanProjectsModal };
