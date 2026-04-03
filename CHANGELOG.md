@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.281 (2026-04-03)
+
+### Other
+- refactor: remove duplicate thinking indicator — single source via updateStreamDiv
+
 ## 0.1.280 (2026-04-03)
 
 ### Features
