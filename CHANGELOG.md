@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.232 (2026-04-03)
+
+### Fixes
+-  only show _pendingReason on actually pending items
+
 ## 0.1.231 (2026-04-03)
 
 ### Fixes
