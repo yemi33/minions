@@ -479,7 +479,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
-} else if (cmd === 'add' || cmd === 'remove' || cmd === 'list') {
+} else if (cmd === 'add' || cmd === 'remove' || cmd === 'list' || cmd === 'scan') {
   delegate('minions.js', [cmd, ...rest]);
 } else if (cmd === 'up' || cmd === 'restart') {
   // Start both engine and dashboard — the go-to command after a reboot
