@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.324 (2026-04-03)
+
+### Fixes
+-  7 bugs from engine audit — runtime crashes, race conditions, stale state
+-  scan skips NugetCache, OneDrive, .vs, packages + validates .git/HEAD
+
+### Other
+- refactor: final magic string replacements in engine, lifecycle, cleanup
+
 ## 0.1.321 (2026-04-03)
 
 ### Fixes
