@@ -448,7 +448,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions list                     List linked projects
 
   Engine:
-    minions up                       Start engine + dashboard (use after reboot)
+    minions restart                   Start engine + dashboard (use after reboot)
     minions start                    Start engine daemon only
     minions stop                     Stop the engine
     minions status                   Show agents, projects, queue
@@ -487,7 +487,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   showVersion();
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list' || cmd === 'scan') {
   delegate('minions.js', [cmd, ...rest]);
-} else if (cmd === 'up' || cmd === 'restart') {
+} else if (cmd === 'restart') {
   // Start both engine and dashboard — the go-to command after a reboot
   ensureInstalled();
   // Stop engine if running
