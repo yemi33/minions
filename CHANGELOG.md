@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.297 (2026-04-03)
+
+### Features
+- fix 7 bugs across cooldown, spawn-agent, playbook, scheduler, consolidation
+
+### Fixes
+-  remove orphaned test runner calls for functions lost in merge conflict resolution
+
 ## 0.1.295 (2026-04-03)
 
 ### Features
