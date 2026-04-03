@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.252 (2026-04-03)
+
+### Features
+-  add 10 missing CC action types for full dashboard parity
+-  add 'pin' action to CC — pin critical context to all agents
+-  mandatory test validation before PR creation in implement and fix playbooks
+
+### Fixes
+-  don't hardcode npm test — agents must read project conventions
+
 ## 0.1.248 (2026-04-03)
 
 ### Fixes
