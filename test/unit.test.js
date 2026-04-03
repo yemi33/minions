@@ -601,8 +601,8 @@ async function testQueriesAgents() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
-    assert.ok(src.includes("w.status === 'dispatched' || w.status === 'in-progress'"),
-      'fallback should only treat dispatched/in-progress work items as working');
+    assert.ok(src.includes("w.status === 'dispatched'"),
+      'fallback should only treat dispatched work items as working');
     assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
       'fallback should map by dispatched_to marker');
   });
@@ -4874,9 +4874,9 @@ async function testPlanPrdStateFlow() {
       'Should return awaiting-approval when PRD is awaiting and no items materialized');
   });
 
-  await test('derivePlanStatus returns in-progress when active work exists', () => {
-    assert.ok(plansSrc.includes('hasActiveWork') && plansSrc.includes("return 'in-progress'"),
-      'Should return in-progress when pending/dispatched items exist');
+  await test('derivePlanStatus returns dispatched when active work exists', () => {
+    assert.ok(plansSrc.includes('hasActiveWork') && plansSrc.includes("return 'dispatched'"),
+      'Should return dispatched when pending/dispatched items exist');
   });
 
   await test('derivePlanStatus returns completed when all items done', () => {
@@ -4911,9 +4911,9 @@ async function testPlanPrdStateFlow() {
       'needsAction should be true for awaiting-approval');
   });
 
-  await test('plan card showPause only for in-progress', () => {
-    assert.ok(plansSrc.includes("effectiveStatus === 'in-progress'") && plansSrc.includes('showPause'),
-      'Pause button should only show when effectiveStatus is in-progress');
+  await test('plan card showPause only for dispatched', () => {
+    assert.ok(plansSrc.includes("effectiveStatus === 'dispatched'") && plansSrc.includes('showPause'),
+      'Pause button should only show when effectiveStatus is dispatched');
   });
 
   await test('plan card showResume for paused or awaiting-approval', () => {
@@ -5193,7 +5193,7 @@ async function testMeetings() {
   });
 
   await test('lifecycle collects meeting findings on completion', () => {
-    assert.ok(lifecycleSrc.includes('collectMeetingFindings') && lifecycleSrc.includes("type === 'meeting'"),
+    assert.ok(lifecycleSrc.includes('collectMeetingFindings') && (lifecycleSrc.includes("type === WORK_TYPE.MEETING") || lifecycleSrc.includes("type === 'meeting'")),
       'runPostCompletionHooks should call collectMeetingFindings for meeting type');
   });
 

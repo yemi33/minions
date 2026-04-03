@@ -400,19 +400,19 @@ function buildAgentContext(agentId, config, project) {
   const projects = getProjects(config);
   const allPrs = [];
   for (const p of projects) {
-    const prs = getPrs(p).filter(pr => pr.status === PR_STATUS.ACTIVE || pr.status === 'linked');
+    const prs = getPrs(p).filter(pr => pr.status === PR_STATUS.ACTIVE);
     for (const pr of prs) allPrs.push({ ...pr, _project: p.name });
   }
   // Also check central pull-requests.json
   try {
     const centralPrs = safeJson(path.join(MINIONS_DIR, 'pull-requests.json')) || [];
-    for (const pr of centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE || pr.status === 'linked')) {
+    for (const pr of centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE)) {
       if (!allPrs.some(p => p.id === pr.id)) allPrs.push({ ...pr, _project: 'central' });
     }
   } catch (e) { log('warn', 'read central pull-requests: ' + e.message); }
   if (allPrs.length > 0) {
     const prLines = allPrs.map(pr =>
-      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${pr.status === 'linked' ? 'context-only' : (pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${pr._context ? ' — ' + pr._context.slice(0, 100) : ''}`
+      `- **${pr.id}** (${pr._project}): ${(pr.title || '').slice(0, 80)} [${(pr.reviewStatus || 'pending')}${pr.buildStatus === 'failing' ? ', BUILD FAILING' : ''}]${pr.branch ? ' branch: `' + pr.branch + '`' : ''}${pr._context ? ' — ' + pr._context.slice(0, 100) : ''}`
     );
     context += `## Active Pull Requests\n\n${prLines.join('\n')}\n\n`;
   }

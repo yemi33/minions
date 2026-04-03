@@ -83,7 +83,7 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
 
   // Derive from work item progress
   if (allDone && !hasActiveWork) return 'completed';
-  if (hasActiveWork || hasPendingPrd) return 'in-progress';
+  if (hasActiveWork || hasPendingPrd) return 'dispatched';
   if (hasFailed && !hasActiveWork) return 'has-failures';
 
   if (prdJsonStatus === 'awaiting-approval' && implementWi.length === 0) return 'awaiting-approval';
@@ -192,7 +192,7 @@ function renderPlans(plans) {
     const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, prdJsonStatus, allWi);
 
     const statusLabelsMap = {
-      'completed': 'Completed', 'in-progress': 'In Progress', 'paused': 'Paused',
+      'completed': 'Completed', 'dispatched': 'In Progress', 'paused': 'Paused',
       'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected',
       'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active'
     };
@@ -225,7 +225,7 @@ function renderPlans(plans) {
 
     const executeBtn = isDraft && (effectiveStatus === 'active' || effectiveStatus === 'draft') && !isArchived && !prdFile ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);font-weight:600" ' +
       'onclick="event.stopPropagation();planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project) + '\',this)">Execute</button>' : '';
-    const showPause = effectiveStatus === 'in-progress' && prdFile && !isArchived;
+    const showPause = effectiveStatus === 'dispatched' && prdFile && !isArchived;
     const showResume = (effectiveStatus === 'paused' || effectiveStatus === 'awaiting-approval') && prdFile && !isArchived;
     const verifyWi = allWi.find(w => w.itemType === 'verify' && w.sourcePlan === prdFile);
     const hasVerifyWi = !!verifyWi;
@@ -246,8 +246,8 @@ function renderPlans(plans) {
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
     const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
-    const statusColors = { 'completed': 'var(--green)', 'in-progress': 'var(--blue)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
-    const cardClass = effectiveStatus === 'in-progress' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
+    const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
+    const cardClass = effectiveStatus === 'dispatched' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
     return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +

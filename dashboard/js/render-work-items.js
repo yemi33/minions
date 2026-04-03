@@ -30,7 +30,7 @@ function wiRetryBtn(item) {
 
 function wiRow(item) {
   const statusBadge = (s) => {
-    const cls = s === 'failed' ? 'rejected' : s === 'needs-human-review' ? 'needs-review' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : 'draft';
+    const cls = s === 'failed' ? 'rejected' : s === 'needs-human-review' ? 'needs-review' : s === 'dispatched' ? 'building' : s === 'pending' || s === 'queued' ? 'active' : s === 'done' ? 'approved' : s === 'decomposed' ? 'building' : 'draft';
     return '<span class="pr-badge ' + cls + '">' + escHtml(s) + '</span>';
   };
   const typeBadge = (t) => '<span class="dispatch-type ' + (t || 'implement') + '">' + escHtml(t || 'implement') + '</span>';

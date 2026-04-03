@@ -177,7 +177,7 @@ function getAgentStatus(agentId) {
     const latestInFlight = allItems
       .filter(w =>
         (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        (w.status === 'dispatched' || w.status === 'in-progress')
+        w.status === 'dispatched'
       )
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
@@ -679,9 +679,9 @@ function getPrdInfo(config) {
   }
 
   // PRD JSON status is the source of truth — kept in sync with work item by syncPrdItemStatus.
-  // Map from PRD JSON values to display values (dispatched → in-progress etc.)
+  // Map from PRD JSON values to display values (pending → missing for undispatched items)
   // Augment each item with execution metadata from the work item.
-  const statusDisplay = { dispatched: 'in-progress', pending: 'missing' };
+  const statusDisplay = { pending: 'missing' };
   for (const item of items) {
     const wi = wiById[item.id];
     // Work item status is source of truth when available (PRD JSON may lag behind)
@@ -697,7 +697,7 @@ function getPrdInfo(config) {
   const byStatus = {};
   items.forEach(item => { const s = item.status || 'missing'; byStatus[s] = byStatus[s] || []; byStatus[s].push(item); });
   const complete = (byStatus['done'] || []).length;
-  const inProgress = (byStatus['in-progress'] || []).length;
+  const inProgress = (byStatus['dispatched'] || []).length;
   const paused = (byStatus['paused'] || []).length;
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round((complete / total) * 100) : 0;

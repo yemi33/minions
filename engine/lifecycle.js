@@ -5,9 +5,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, execSilent, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp } = shared;
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
+  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  ENGINE_DEFAULTS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -21,7 +23,9 @@ function checkPlanCompletion(meta, config) {
   const planPath = path.join(PRD_DIR, planFile);
   const plan = safeJson(planPath);
   if (!plan?.missing_features) return;
-  if (plan.status === 'completed') return;
+  if (plan.status === PLAN_STATUS.COMPLETED) {
+    if (plan._completionNotified) return;
+  }
 
   const projects = shared.getProjects(config);
 
@@ -53,7 +57,7 @@ function checkPlanCompletion(meta, config) {
   const unmaterialized = [...planFeatureIds].filter(id => {
     if (workItemById[id]) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && DONE_STATUSES.has(prdItem.status));
   });
   if (unmaterialized.length > 0) {
     log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
@@ -63,20 +67,20 @@ function checkPlanCompletion(meta, config) {
   // Check 2: every feature's work item must be done (or PRD item marked done externally)
   const notDone = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
+    if (w && DONE_STATUSES.has(w.status)) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && DONE_STATUSES.has(prdItem.status));
   });
   if (notDone.length > 0) {
     log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
     return;
   }
 
-  const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
-  const failedItems = planItems.filter(w => w.status === 'failed');
+  const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
+  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED);
 
   // 1. Mark plan as completed
-  plan.status = 'completed';
+  plan.status = PLAN_STATUS.COMPLETED;
   plan.completedAt = ts();
 
   // Compute timing
@@ -156,7 +160,7 @@ function checkPlanCompletion(meta, config) {
         id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
         type: 'implement', priority: 'high',
         description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.\n\n**Branch:** \`${featureBranch}\`\n**Target:** \`${mainBranch}\`\n\n## Completed Items\n${itemSummary}`,
-        status: 'pending', created: ts(), createdBy: 'engine:plan-completion',
+        status: WI_STATUS.PENDING, created: ts(), createdBy: 'engine:plan-completion',
         sourcePlan: planFile, itemType: 'pr',
         branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
       });
@@ -177,7 +181,7 @@ function checkPlanCompletion(meta, config) {
       const prs = (safeJson(shared.projectPrPath(p)) || [])
         .filter(pr => {
           const linkedId = prLinks[pr.id];
-          return pr.status === 'active' && linkedId && doneItems.find(w => w.id === linkedId);
+          return pr.status === PR_STATUS.ACTIVE && linkedId && doneItems.find(w => w.id === linkedId);
         });
       if (prs.length > 0) {
         projectPrs[p.name] = { project: p, prs, mainBranch: p.mainBranch || 'main' };
@@ -190,7 +194,7 @@ function checkPlanCompletion(meta, config) {
       const branches = prs.map(pr => pr.branch).filter(Boolean);
       const lines = [
         `# ${name} — merge ${branches.length} PR branch(es) into one worktree`,
-        `cd "${p.localPath}"`,
+        `cd "${p.localPath.replace(/\\/g, '/')}"`,
         `git fetch origin ${branches.map(b => `"${b}"`).join(' ')} "${mainBranch}"`,
         `git worktree add "${wtPath}" "origin/${mainBranch}" 2>/dev/null || (cd "${wtPath}" && git checkout "${mainBranch}" && git pull origin "${mainBranch}")`,
         `cd "${wtPath}"`,
@@ -247,7 +251,7 @@ function checkPlanCompletion(meta, config) {
       type: 'verify',
       priority: 'high',
       description,
-      status: 'pending',
+      status: WI_STATUS.PENDING,
       created: ts(),
       createdBy: 'engine:plan-verification',
       sourcePlan: planFile,
@@ -400,7 +404,7 @@ function chainPlanToPrd(dispatchItem, meta, config) {
     type: 'plan-to-prd',
     priority: meta?.item?.priority || 'high',
     description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
-    status: 'pending',
+    status: WI_STATUS.PENDING,
     created: ts(),
     createdBy: 'engine:chain',
     project: targetProject.name,
@@ -410,10 +414,15 @@ function chainPlanToPrd(dispatchItem, meta, config) {
 }
 
 // ─── Work Item Status ────────────────────────────────────────────────────────
+const _VALID_WI_STATUSES = new Set(Object.values(WI_STATUS));
 function updateWorkItemStatus(meta, status, reason) {
 
   const itemId = meta.item?.id;
   if (!itemId) return;
+  if (!_VALID_WI_STATUSES.has(status)) {
+    log('warn', `Invalid work item status '${status}' for ${itemId} — ignoring`);
+    return;
+  }
 
   let wiPath;
   if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
@@ -435,20 +444,20 @@ function updateWorkItemStatus(meta, status, reason) {
       target.agentResults[agent] = { status, completedAt: ts(), reason: reason || undefined };
 
       const results = Object.values(target.agentResults);
-      const anySuccess = results.some(r => r.status === 'done');
+      const anySuccess = results.some(r => r.status === WI_STATUS.DONE);
       const allDone = Array.isArray(target.fanOutAgents) && target.fanOutAgents.length > 0 ? results.length >= target.fanOutAgents.length : false;
       const dispatchAge = target.dispatched_at ? Date.now() - new Date(target.dispatched_at).getTime() : 0;
       const timedOut = !allDone && dispatchAge > 6 * 60 * 60 * 1000 && results.length > 0;
 
       if (anySuccess) {
-        target.status = 'done';
+        target.status = WI_STATUS.DONE;
         delete target.failReason;
         delete target.failedAt;
         target.completedAgents = Object.entries(target.agentResults)
-          .filter(([, r]) => r.status === 'done')
+          .filter(([, r]) => r.status === WI_STATUS.DONE)
           .map(([a]) => a);
       } else if (allDone || timedOut) {
-        target.status = 'failed';
+        target.status = WI_STATUS.FAILED;
         target.failReason = timedOut
           ? `Fan-out timed out: ${results.length}/${(target.fanOutAgents || []).length} agents reported (all failed)`
           : 'All fan-out agents failed';
@@ -456,11 +465,11 @@ function updateWorkItemStatus(meta, status, reason) {
       }
     } else {
       target.status = status;
-      if (status === 'done') {
+      if (status === WI_STATUS.DONE) {
         delete target.failReason;
         delete target.failedAt;
         target.completedAt = ts();
-      } else if (status === 'failed') {
+      } else if (status === WI_STATUS.FAILED) {
         if (reason) target.failReason = reason;
         target.failedAt = ts();
       }
@@ -474,8 +483,10 @@ function updateWorkItemStatus(meta, status, reason) {
   }
 }
 
+const _VALID_PRD_STATUSES = new Set([...Object.values(WI_STATUS), 'missing']);
 function syncPrdItemStatus(itemId, status, sourcePlan) {
   if (!itemId) return;
+  if (!_VALID_PRD_STATUSES.has(status)) return;
   try {
     const prdDir = path.join(MINIONS_DIR, 'prd');
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
@@ -594,7 +605,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       agent: agentName,
       branch: meta?.branch || '',
       reviewStatus: 'pending',
-      status: 'active',
+      status: PR_STATUS.ACTIVE,
       created: dateStamp(),
       url: extractPrUrl(prId),
       prdItems: meta?.item?.id ? [meta.item.id] : [],
@@ -703,7 +714,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
     } catch (err) { log('warn', `Post-merge worktree cleanup: ${err.message}`); }
   }
 
-  if (newStatus !== 'merged') return;
+  if (newStatus !== PR_STATUS.MERGED) return;
 
   // Resolve linked work item from pr-links or PR branch name
   let mergedItemId = getPrLinks()[pr.id];
@@ -722,13 +733,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
-        if (feature && feature.status !== 'implemented') {
-          feature.status = 'implemented';
+        if (feature && feature.status !== WI_STATUS.DONE) {
+          feature.status = WI_STATUS.DONE;
           shared.safeWrite(path.join(prdDir, pf), plan);
           updated++;
         }
       }
-      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
+      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done
@@ -739,10 +750,10 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const items = safeJson(wiPath);
         if (!items) continue;
         const item = items.find(i => i.id === mergedItemId);
-        if (item && item.status !== 'done') {
+        if (item && item.status !== WI_STATUS.DONE) {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          item.status = 'done';
-          item.completedAt = e.ts();
+          item.status = WI_STATUS.DONE;
+          item.completedAt = ts();
           item._mergedVia = pr.id;
           shared.safeWrite(wiPath, items);
           break;
@@ -827,19 +838,19 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
       if (proj) {
         const centralPath = path.join(MINIONS_DIR, 'work-items.json');
         const items = safeJson(centralPath) || [];
-        const alreadyExists = items.some(i => i.title === `Add skill: ${name}` && i.status !== 'failed');
+        const alreadyExists = items.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED);
         if (!alreadyExists) {
           const skillId = `SK${String(items.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           items.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
             description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
-            priority: 'low', status: 'queued', created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
+            priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           shared.safeWrite(centralPath, items);
           log('info', `Queued work item ${skillId} to PR project skill "${name}" into ${project}`);
         }
       }
     } else {
       // Write in Claude Code native format: ~/.claude/skills/<name>/SKILL.md
-      const claudeSkillsDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+      const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills');
       const skillDir = path.join(claudeSkillsDir, name.replace(/[^a-z0-9-]/g, '-'));
       const skillPath = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillPath)) {
@@ -918,10 +929,10 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   m.lastTask = dispatchItem.task;
   m.lastCompleted = ts();
   if (model) m.model = model;
-  if (result === 'success') {
+  if (result === DISPATCH_RESULT.SUCCESS) {
     m.tasksCompleted++;
     if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
-    if (dispatchItem.type === 'review') m.reviewsDone++;
+    if (dispatchItem.type === WORK_TYPE.REVIEW) m.reviewsDone++;
   } else if (result === 'retry') {
     // Auto-retry: count cost but not as a final outcome
     m.tasksRetried = (m.tasksRetried || 0) + 1;
@@ -1003,7 +1014,7 @@ function handleDecompositionResult(stdout, meta, config) {
     if (!parent) continue;
 
     // Mark parent as decomposed
-    parent.status = 'decomposed';
+    parent.status = WI_STATUS.DECOMPOSED;
     parent._decomposed = true;
     delete parent._decomposing;
     parent._subItemIds = subItems.map(s => s.id);
@@ -1017,7 +1028,7 @@ function handleDecompositionResult(stdout, meta, config) {
         type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
         priority: sub.priority || parent.priority || 'medium',
         description: sub.description || '',
-        status: 'pending',
+        status: WI_STATUS.PENDING,
         complexity: sub.estimated_complexity || 'medium',
         depends_on: sub.depends_on || [],
         parent_id: parentId,
@@ -1042,7 +1053,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const type = dispatchItem.type;
   const meta = dispatchItem.meta;
   const isSuccess = code === 0;
-  const result = isSuccess ? 'success' : 'error';
+  const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
   // Save session for potential resume on next dispatch
@@ -1057,13 +1068,13 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;
-  if (type === 'decompose' && isSuccess && meta?.item?.id) {
+  if (type === WORK_TYPE.DECOMPOSE && isSuccess && meta?.item?.id) {
     const subCount = handleDecompositionResult(stdout, meta, config);
     if (subCount > 0) skipDoneStatus = true; // parent already marked 'decomposed' by handler
     // If decomposition produced nothing, fall through to mark parent as done
   }
 
-  if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
+  if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, WI_STATUS.DONE, '');
   if (!isSuccess && meta?.item?.id) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
@@ -1078,9 +1089,9 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       }
     } catch { /* optional */ }
 
-    if (retries < 3) {
-      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
-      updateWorkItemStatus(meta, 'pending', '');
+    if (retries < ENGINE_DEFAULTS.maxRetries) {
+      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
+      updateWorkItemStatus(meta, WI_STATUS.PENDING, '');
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
           ? path.join(MINIONS_DIR, 'work-items.json')
@@ -1089,17 +1100,17 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
           if (wi) {
-            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
-            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
+            wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to;
+            if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing; // clear so item can retry decomposition
             shared.safeWrite(wiPath, items);
           }
         }
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
     } else {
-      updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+      updateWorkItemStatus(meta, WI_STATUS.FAILED, `Agent failed (${ENGINE_DEFAULTS.maxRetries} retries exhausted)`);
     }
     // Clear _decomposing flag on failure so item doesn't get permanently stuck
-    if (type === 'decompose') {
+    if (type === WORK_TYPE.DECOMPOSE) {
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
           ? path.join(MINIONS_DIR, 'work-items.json')
@@ -1113,7 +1124,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
   // Meeting post-completion: collect findings/debate/conclusion
-  if (type === 'meeting' && meta?.meetingId) {
+  if (type === WORK_TYPE.MEETING && meta?.meetingId) {
     try {
       const { collectMeetingFindings } = require('./meeting');
       collectMeetingFindings(meta.meetingId, agentId, meta.roundName, stdout);
@@ -1140,7 +1151,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           return d.includes(branchSlug) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
         });
         // Only remove if no other active dispatch uses this branch
-        const dispatch = e.getDispatch();
+        const dispatch = getDispatch();
         const otherActive = ((dispatch.active || []).concat(dispatch.pending || [])).some(d =>
           d.id !== dispatchItem.id && d.meta?.branch && shared.sanitizeBranch && shared.sanitizeBranch(d.meta.branch) === branchSlug
         );
@@ -1162,7 +1173,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
+  if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
@@ -1182,15 +1193,15 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           wi.noPr = true;
           wi.failReason = 'Completed without creating a pull request';
           const retries = wi._retryCount || 0;
-          if (retries < 3) {
-            wi.status = 'pending';
+          if (retries < ENGINE_DEFAULTS.maxRetries) {
+            wi.status = WI_STATUS.PENDING;
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            e.log('info', `Auto-retry ${retries + 1}/3 for ${meta.item.id} (no PR created)`);
+            log('info', `Auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no PR created)`);
           } else {
-            wi.status = 'failed';
-            e.log('warn', `${meta.item.id} failed after 3 retries — no PR created`);
+            wi.status = WI_STATUS.FAILED;
+            log('warn', `${meta.item.id} failed after ${ENGINE_DEFAULTS.maxRetries} retries — no PR created`);
           }
           shared.safeWrite(wiPath, items);
         }
@@ -1198,13 +1209,13 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
-  if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+  if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project);
+  if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (isSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
   updateAgentHistory(agentId, dispatchItem, result);
   // Don't count auto-retries as errors in metrics — only count final outcomes
-  const isAutoRetry = !isSuccess && meta?.item?.id && (meta.item._retryCount || 0) < 3;
+  const isAutoRetry = !isSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
   const metricsResult = isAutoRetry ? 'retry' : result;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
@@ -1229,14 +1240,14 @@ function syncPrdFromPrs(config) {
     for (const project of allProjects) {
       const wiPath = projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
-      const hasPending = items.some(wi => wi.status === 'pending' && !wi._pr);
+      const hasPending = items.some(wi => wi.status === WI_STATUS.PENDING && !wi._pr);
       if (!hasPending) continue;
       const reconciled = reconcileItemsWithPrs(items, allPrs);
       if (reconciled > 0) {
         safeWrite(wiPath, items);
         // Sync done status to PRD JSON for each newly reconciled item
         for (const wi of items) {
-          if (wi.status === 'done') syncPrdItemStatus(wi.id, 'done', wi.sourcePlan);
+          if (wi.status === WI_STATUS.DONE) syncPrdItemStatus(wi.id, WI_STATUS.DONE, wi.sourcePlan);
         }
         totalReconciled += reconciled;
       }

@@ -809,8 +809,8 @@ const commands = {
         if (exists && name === 'prd') {
           const prd = safeJson(filePath);
           if (prd) {
-            const missing = (prd.missing_features || []).filter(f => ['missing', 'planned'].includes(f.status));
-            console.log(`    Items: ${missing.length} missing/planned features`);
+            const missing = (prd.missing_features || []).filter(f => f.status === 'missing' || !f.status);
+            console.log(`    Items: ${missing.length} missing features`);
           }
         }
         if (exists && name === 'pullRequests') {

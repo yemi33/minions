@@ -13,8 +13,8 @@ function renderPrd(prd, prog) {
     return;
   }
 
-  const statusColors = { 'completed': 'var(--green)', 'in-progress': 'var(--blue)', 'awaiting-approval': 'var(--yellow)', 'paused': 'var(--muted)', 'approved': 'var(--green)' };
-  const statusLabels = { 'completed': 'Completed', 'in-progress': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'paused': 'Paused', 'approved': 'Approved' };
+  const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'awaiting-approval': 'var(--yellow)', 'paused': 'var(--muted)', 'approved': 'var(--green)' };
+  const statusLabels = { 'completed': 'Completed', 'dispatched': 'In Progress', 'awaiting-approval': 'Awaiting Approval', 'paused': 'Paused', 'approved': 'Approved' };
 
   // Show per-PRD status summary in header when multiple PRDs exist
   const existing = prd.existing || [];
@@ -28,7 +28,7 @@ function renderPrd(prd, prog) {
     const hasActive = implementItems.some(w => w.status === 'pending' || w.status === 'dispatched');
     const prdFile = existing[0]?.file || '';
     const prdStatus = existing[0]?.status || '';
-    const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : prdStatus || 'active';
+    const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'dispatched' : prdStatus || 'active';
 
     let actions = '';
     if (prdFile) {
@@ -37,7 +37,7 @@ function renderPrd(prd, prog) {
       } else if (effectiveStatus === 'completed') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
           ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\',this)">Archive</button>';
-      } else if (effectiveStatus === 'in-progress') {
+      } else if (effectiveStatus === 'dispatched') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
       } else if (effectiveStatus === 'paused') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Resume</button>' +
@@ -48,13 +48,13 @@ function renderPrd(prd, prog) {
       ' <span style="color:var(--muted);font-size:10px">' + (prd.age || '') + '</span>' + actions;
   } else {
     // Multiple PRDs — show count summary, per-PRD details are in renderPrdProgress groups
-    const counts = { completed: 0, 'in-progress': 0, 'awaiting-approval': 0, paused: 0 };
+    const counts = { completed: 0, 'dispatched': 0, 'awaiting-approval': 0, paused: 0 };
     for (const p of existing) {
       const items = prdItems.filter(i => i.source === p.file);
       const wiForPrd = allWi.filter(w => items.some(pi => pi.id === w.id));
       const allDone = wiForPrd.length > 0 && wiForPrd.every(w => w.status === 'done');
       const hasActive = wiForPrd.some(w => w.status === 'pending' || w.status === 'dispatched');
-      const s = allDone && !hasActive ? 'completed' : hasActive ? 'in-progress' : p.status || 'active';
+      const s = allDone && !hasActive ? 'completed' : hasActive ? 'dispatched' : p.status || 'active';
       counts[s] = (counts[s] || 0) + 1;
     }
     const parts = Object.entries(counts).filter(([, n]) => n > 0).map(([s, n]) =>
@@ -83,7 +83,7 @@ function renderPrdProgress(prog) {
     const total = items.length;
     if (total === 0) return '';
     const done = items.filter(i => i.status === 'done').length;
-    const inProgress = items.filter(i => i.status === 'in-progress').length;
+    const inProgress = items.filter(i => i.status === 'dispatched').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
     const missing = items.filter(i => i.status === 'missing' || !i.status).length;
@@ -100,7 +100,7 @@ function renderPrdProgress(prog) {
 
     const bar = '<div class="prd-progress-bar">' +
       '<div class="seg complete" style="width:' + pct(done) + '%"></div>' +
-      '<div class="seg in-progress" style="width:' + pct(inProgress) + '%"></div>' +
+      '<div class="seg dispatched" style="width:' + pct(inProgress) + '%"></div>' +
       '<div class="seg paused" style="width:' + pct(paused) + '%"></div>' +
       '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
     '</div>';
@@ -108,15 +108,15 @@ function renderPrdProgress(prog) {
     return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + '<div style="margin-top:8px">' + bar + '</div></div>';
   }
 
-  // PRD item statuses: missing → in-progress → done
+  // PRD item statuses: missing → dispatched → done
   const statusBadge = (s) => {
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
-      'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
+      'dispatched': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
     };
-    const labels = { 'done': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014' };
+    const labels = { 'done': 'DONE', 'dispatched': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -196,7 +196,7 @@ function renderPrdProgress(prog) {
 
   const renderGroupHeader = (g) => {
     const done = g.items.filter(i => i.status === 'done').length;
-    const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'dispatched').length;
+    const wip = g.items.filter(i => i.status === 'dispatched' || i.status === 'dispatched').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isAwaitingApproval = g.planStatus === 'awaiting-approval';
     const isPaused = g.planStatus === 'paused';
@@ -303,7 +303,7 @@ function renderPrdProgress(prog) {
 
     const statusColor = (s) => {
       if (s === 'done') return 'var(--green)';
-      if (s === 'in-progress') return 'var(--yellow)';
+      if (s === 'dispatched') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
       return 'var(--border)';
@@ -322,7 +322,7 @@ function renderPrdProgress(prog) {
         const iid = escHtml(i.id || '');
         const agent = wi[i.id]?.dispatched_to || '';
         const deps = (i.depends_on || []).join(', ');
-        const wipAnim = i.status === 'in-progress' ? 'animation:prdWipPulse 2s infinite;' : '';
+        const wipAnim = i.status === 'dispatched' ? 'animation:prdWipPulse 2s infinite;' : '';
         html += '<div onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')" ' +
           'style="background:var(--surface2);border:1px solid var(--border);border-left:3px solid ' + borderColor + ';' + wipAnim +
           'border-radius:4px;padding:6px 8px;margin-bottom:6px;cursor:pointer;font-size:11px">' +
@@ -557,7 +557,7 @@ async function prdItemEdit(source, itemId) {
   let completionHtml = '';
   const isDone = item.status === 'done';
   const isFailed = item.status === 'failed';
-  const isActive = item.status === 'in-progress' || item.status === 'dispatched';
+  const isActive = item.status === 'dispatched' || item.status === 'dispatched';
 
   if (isDone || isFailed || isActive) {
     const agent = wi?.dispatched_to || completedEntry?.agent || '';
