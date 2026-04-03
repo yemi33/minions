@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.280 (2026-04-03)
+
+### Features
+-  thinking indicator shows progressive phases with elapsed timer
+
+### Fixes
+-  doc chat elapsed time no longer overlaps copy button
+
 ## 0.1.278 (2026-04-03)
 
 ### Features
