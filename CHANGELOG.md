@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.332 (2026-04-03)
+
+### Fixes
+-  retry doesn't revert completed work items + restore skipPr guard
+
 ## 0.1.331 (2026-04-03)
 
 ### Fixes
