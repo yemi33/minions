@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.285 (2026-04-03)
+
+### Fixes
+-  scan default path uses os.homedir() not env vars
+-  render proper thinking layout immediately — no flash of unstyled text
+-  thinking indicator layout — text ... dots ... elapsed time right-aligned
+-  thinking indicator shows immediately when user sends message
+
 ## 0.1.281 (2026-04-03)
 
 ### Other
