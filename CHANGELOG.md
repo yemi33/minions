@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.321 (2026-04-03)
+
+### Fixes
+-  project scan finds git repos — .git was in skipDirs
+
+### Other
+- refactor: replace magic strings in remaining engine files with constants
+
 ## 0.1.319 (2026-04-03)
 
 ### Other
