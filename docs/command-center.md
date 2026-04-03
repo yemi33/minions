@@ -13,7 +13,7 @@ CC maintains a true multi-turn session using Claude CLI's `--resume` flag. Unlik
 **Session lifecycle:**
 - **Created** on first message (or after expiry/new-session)
 - **Resumed** on subsequent messages via `--resume <sessionId>`
-- **Expires** after 2 hours of inactivity or 50 turns
+- **Expires** after 2 hours of inactivity
 - **Persisted** to `engine/cc-session.json` — survives dashboard restarts
 - **Frontend messages** saved to `localStorage` — survive page refresh
 
@@ -108,7 +108,7 @@ User message (CC panel, doc modal, or steer)
     ▼
 POST /api/command-center  (or /api/doc-chat, /api/steer-document)
     │
-    ├── Validate session (expiry, turn limit)
+    ├── Validate session (expiry check)
     ├── Build dynamic state preamble (buildCCStatePreamble)
     ├── callLLM() with sessionId (resume) or without (new)
     │     model: sonnet

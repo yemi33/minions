@@ -20,7 +20,7 @@ tick()
 
 ## Work Discovery
 
-`discoverWork()` iterates every project in `config.projects[]` and runs three core discovery sources. Results are prioritized: fixes > reviews > implements > work-items.
+`discoverWork()` iterates every project in `config.projects[]` and runs four core discovery sources: pull requests, per-project work items, central work items, and pipeline/scheduled tasks. Results are prioritized: fixes > reviews > implements > work-items.
 
 Before scanning, the engine materializes plans and specs into project work items (side-effect writes to `work-items.json`), so they're picked up by the work items source below.
 

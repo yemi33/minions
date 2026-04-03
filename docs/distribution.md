@@ -92,5 +92,4 @@ git checkout master
 git branch -D dist-clean
 ```
 
-The full workflow is documented in `.claude/skills/sync-to-personal/SKILL.md`.
 

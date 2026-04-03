@@ -354,18 +354,14 @@ When an agent fails (timeout, crash, error), the engine marks the work item as `
 
 ## Auto-Discovery Pipeline
 
-The engine discovers work from 5 sources, in priority order:
+The engine discovers work from 4 sources, in priority order:
 
 | Priority | Source | Dispatch Type |
 |----------|--------|---------------|
-| 1 | PRs with changes-requested | `fix` |
-| 2 | PRs with human `@minions` feedback | `fix` |
-| 3 | PRs with build failures | `fix` |
-| 4 | PRs pending review | `review` |
-| 5 | PRs needing build/test verification | `test` |
-| 6 | Plan items (`plans/*.json`, approved) | `implement` |
-| 7 | Per-project work items | item's `type` |
-| 8 | Central work items | item's `type` |
+| 1 | Pull requests (changes-requested, human feedback, build failures, pending review) | `fix`, `review`, `test` |
+| 2 | Plan items (`plans/*.json`, approved) | `implement` |
+| 3 | Per-project work items | item's `type` |
+| 4 | Central work items (project-agnostic tasks) | item's `type` |
 
 Each item passes through: dedup (checks pending, active, AND recently completed), cooldown, and agent availability gates. See `docs/auto-discovery.md` for the full pipeline.
 

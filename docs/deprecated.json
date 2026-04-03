@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "id": "evaluate-work-type",
+    "summary": "evaluate work type removed — eval loop uses review exclusively",
+    "deprecated": "2026-04-02",
+    "reason": "Consolidated into review + evalLoop config. No separate evaluate dispatch.",
+    "locations": ["routing.md: evaluate row removed", "CLAUDE.md: evaluate references removed"],
+    "cleanup": "Already cleaned — routing.md and CLAUDE.md updated 2026-04-02"
+  }
+]

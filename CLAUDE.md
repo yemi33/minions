@@ -133,11 +133,11 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
 
 ## Routing
 
-`routing.md` maps work types to agents: `implement → dallas`, `review → ripley`, `evaluate → ripley`, `fix → _author_`, `decompose → ripley`, etc. The engine reads this on each tick.
+`routing.md` maps work types to agents: `implement → dallas`, `review → ripley`, `fix → _author_`, `decompose → ripley`, etc. The engine reads this on each tick.
 
 ## Playbooks
 
-Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, `evaluate.md`, `decompose.md`, etc.) with `{{template_variables}}` filled at dispatch time. These define what agents actually do.
+Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `plan-to-prd.md`, `verify.md`, `decompose.md`, `meeting-investigate.md`, `meeting-debate.md`, `meeting-conclude.md`, etc.) with `{{template_variables}}` filled at dispatch time. These define what agents actually do.
 
 ## Skills
 
