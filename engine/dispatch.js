@@ -134,7 +134,8 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
             ? path.join(MINIONS_DIR, 'work-items.json')
             : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
           if (wiPath) {
-            const items = safeJson(wiPath) || [];
+            const items = safeJson(wiPath);
+            if (!items || !Array.isArray(items)) throw new Error('work items unreadable');
             const wi = items.find(i => i.id === item.meta.item.id);
             if (wi && wi.status !== WI_STATUS.PAUSED) {
               wi._retryCount = retries + 1;
