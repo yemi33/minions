@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.308 (2026-04-03)
+
+### Features
+- Fix PR write race conditions in lifecycle.js
+
 ## 0.1.306 (2026-04-03)
 
 ### Features
