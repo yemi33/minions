@@ -127,17 +127,18 @@ async function ccSend() {
 }
 
 function _renderQueueIndicator() {
-  var existing = document.getElementById('cc-queue-indicator');
-  if (existing) existing.remove();
+  // Remove all existing queue indicators
+  document.querySelectorAll('.cc-queue-item').forEach(function(el) { el.remove(); });
   if (_ccQueue.length === 0) return;
   var msgs = document.getElementById('cc-messages');
-  var el = document.createElement('div');
-  el.id = 'cc-queue-indicator';
-  el.style.cssText = 'padding:6px 12px;border-radius:8px;font-size:11px;max-width:95%;align-self:flex-end;background:rgba(88,166,255,0.1);border:1px dashed var(--blue);color:var(--blue);opacity:0.7';
-  el.innerHTML = _ccQueue.map(function(m) {
-    return '<div>' + escHtml(m.length > 50 ? m.slice(0, 50) + '...' : m) + '</div>';
-  }).join('') + '<div style="font-size:9px;color:var(--muted);font-style:italic;margin-top:2px">' + _ccQueue.length + ' queued</div>';
-  msgs.appendChild(el);
+  // Add each queued message as its own bubble at the bottom
+  _ccQueue.forEach(function(m) {
+    var el = document.createElement('div');
+    el.className = 'cc-queue-item';
+    el.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;align-self:flex-end;background:var(--blue);color:#fff;opacity:0.5;order:9999';
+    el.innerHTML = escHtml(m) + '<div style="font-size:9px;opacity:0.7;font-style:italic;margin-top:2px">queued</div>';
+    msgs.appendChild(el);
+  });
   msgs.scrollTop = msgs.scrollHeight;
 }
 
@@ -229,6 +230,8 @@ async function _ccDoSend(message, skipUserMsg) {
         html += '<span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span>';
       }
       streamDiv.innerHTML = html;
+      // Re-append queue indicators so they stay below the streaming content
+      if (_ccQueue.length > 0) _renderQueueIndicator();
       if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
     }
 
