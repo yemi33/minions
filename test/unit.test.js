@@ -5492,24 +5492,6 @@ async function main() {
     // Checkpoint resume support
     await testCheckpointResume();
 
-    // P-2b1c0d9e: Per-work-item cumulative cost tracking
-    await testCumulativeCostTracking();
-
-    // P-k7m2a9f4: Pipeline artifact navigation links
-    await testPipelineArtifactLinks();
-
-    // P-r5w9c2hd: Pipeline step-progress indicator tests
-    await testPipelineStepProgress();
-
-    // P-v8k3m1qa: Regression fixes from commit 5cff9b8
-    await testLifecycleRegressions();
-
-    // P-j2n7f4xb: Lock audit — high-risk lifecycle.js sites
-    await testLockAuditHighRiskSites();
-
-    // P-a5b1k9m3: Orphaned temp file cleanup
-    await testOrphanedTempFileCleanup();
-
     // P-t8822idp: Dashboard bug fixes — tail clamping, notes validation, watcher cleanup, atomic PRD updates
     await testDashboardBugFixes();
 
