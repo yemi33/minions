@@ -2897,7 +2897,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       // Find git repos recursively (same logic as minions.js findGitRepos)
       const skipDirs = new Set(['node_modules', '.git', '.hg', 'AppData', '$Recycle.Bin', 'Windows',
-        'Program Files', 'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees', '.minions', '.squad']);
+        'Program Files', 'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'NugetCache',
+        'worktrees', '.minions', '.squad', '.vs', '.vscode', 'obj', 'bin', 'packages',
+        'OneDrive', 'OneDrive - Microsoft', '.copilot', 'marketplace-cache']);
       const repos = [];
       function walk(dir, depth) {
         if (depth > maxDepth) return;
@@ -2905,7 +2907,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
         for (const e of entries) {
           if (!e.isDirectory()) continue;
-          if (e.name === '.git') { repos.push(dir); return; }
+          if (e.name === '.git') {
+            // Validate it's a real repo — must have HEAD file
+            try { if (fs.existsSync(path.join(dir, '.git', 'HEAD'))) repos.push(dir); } catch {}
+            return;
+          }
           if (e.name.startsWith('.') || skipDirs.has(e.name)) continue;
           walk(path.join(dir, e.name), depth + 1);
         }

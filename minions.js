@@ -257,7 +257,9 @@ function findGitRepos(rootDir, maxDepth = 3) {
       // Skip common non-project dirs
       const base = path.basename(dir);
       if (['node_modules', '.git', '.hg', 'AppData', '$Recycle.Bin', 'Windows', 'Program Files',
-           'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'worktrees', '.minions'].includes(base)) return;
+           'Program Files (x86)', '.cache', '.npm', '.yarn', '.nuget', 'NugetCache',
+           'worktrees', '.minions', '.squad', '.vs', '.vscode', 'obj', 'bin', 'packages',
+           'OneDrive', 'OneDrive - Microsoft', '.copilot', 'marketplace-cache'].includes(base)) return;
       // Skip minions home directory itself
       if (path.resolve(dir) === path.resolve(MINIONS_HOME)) return;
 
@@ -271,6 +273,8 @@ function findGitRepos(rootDir, maxDepth = 3) {
             if (content.trimStart().startsWith('gitdir:')) return; // worktree, skip
           } catch {}
         }
+        // Validate it's a real repo — must have HEAD file
+        if (stat.isDirectory() && !fs.existsSync(path.join(gitDir, 'HEAD'))) return;
         repos.push(dir);
         return; // Don't recurse into git repos (they may have nested submodules)
       }
