@@ -11,7 +11,7 @@ const _pageCounters = {
   meetings:  function(d) { return (d.meetings || []).reduce(function(s, m) { return s + (m.round || 0); }, 0); },
   pipelines: function(d) { return (d.pipelines || []).reduce(function(s, p) { return s + (p.runs || []).length; }, 0); },
   schedule:  function(d) { return (d.schedules || []).length; },
-  engine:    function(d) { return (d.dispatch?.active || []).length; },
+  engine:    function(d) { return (d.dispatch?.completed || []).filter(function(c) { return c.result === 'error'; }).length; },
 };
 let _prevCounts = {};
 function _detectPageChanges(data) {
