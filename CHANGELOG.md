@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.307 (2026-04-03)
+
+### Features
+- guard projects[0] fallbacks in lifecycle.js
+- Add null guards to dashboard.js request handlers
+
+### Fixes
+-  normalize acceptanceCriteria to array (string from doc-chat crashed tick)
+
 ## 0.1.304 (2026-04-03)
 
 ### Features
