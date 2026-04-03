@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.258 (2026-04-03)
+
+### Fixes
+-  remove last evaluate references — eval loop now creates review items
+
 ## 0.1.257 (2026-04-03)
 
 ### Features
