@@ -110,27 +110,25 @@ async function ccSend() {
   if (!message) return;
   input.value = '';
 
-  // If already processing, queue the message
+  // If already processing, queue the message — don't show user bubble yet
   if (_ccSending) {
     _ccQueue.push(message);
-    ccAddMessage('user', escHtml(message));
-    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued — will send after current request</span>');
+    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(message.length > 40 ? message.slice(0, 40) + '...' : message) + '"</span>');
     return;
   }
   await _ccDoSend(message);
 
-  // Drain queue — process queued messages one by one
+  // Drain queue — show each as a fresh user message + process
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
-    // Remove the "Queued" pill for this message (user message bubble stays)
+    // Remove the "Queued" pill
     const msgs = document.getElementById('cc-messages');
     const queuedPills = msgs.querySelectorAll('.cc-queued-pill');
     for (const pill of queuedPills) {
       if (pill.closest('div')) { pill.closest('div').remove(); break; }
     }
-    // Scroll to make the queued user message visible before processing
-    msgs.scrollTop = msgs.scrollHeight;
-    await _ccDoSend(next, true); // user message already shown when queued
+    // Show as a normal user message being sent now
+    await _ccDoSend(next);
   }
 }
 
