@@ -5,8 +5,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, execSilent, projectPrPath, getPrLinks, addPrLink,
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
@@ -21,7 +22,10 @@ function checkPlanCompletion(meta, config) {
   const planPath = path.join(PRD_DIR, planFile);
   const plan = safeJson(planPath);
   if (!plan?.missing_features) return;
-  if (plan.status === 'completed') return;
+  if (plan.status === 'completed') {
+    if (plan._completionNotified) return;
+    // Crash recovery: status=completed but _completionNotified not set — fall through
+  }
 
   const projects = shared.getProjects(config);
 
@@ -132,10 +136,20 @@ function checkPlanCompletion(meta, config) {
     ...uniquePrs.map(pr => `- ${pr.id}: ${pr.title || ''} ${pr.url || ''}`),
   ].filter(Boolean).join('\n');
 
-  // Write summary to notes/inbox
-  const summaryFile = `prd-completion-${planFile.replace('.json', '')}-${ts().slice(0, 10)}.md`;
-  shared.safeWrite(shared.uniquePath(path.join(MINIONS_DIR, 'notes', 'inbox', summaryFile)), summary);
-  log('info', `PRD completion summary written to notes/inbox/${summaryFile}`);
+  // Write summary to notes/inbox (slug-based dedup prevents duplicates on same day)
+  const slug = `prd-completion-${planFile.replace('.json', '')}`;
+  const wrote = shared.writeToInbox('engine', slug, summary);
+  if (wrote) log('info', `PRD completion summary written to notes/inbox/`);
+
+  // Persist status and _completionNotified atomically BEFORE creating work items
+  plan._completionNotified = true;
+  mutateJsonFileLocked(planPath, (data) => {
+    data.status = 'completed';
+    data.completedAt = plan.completedAt;
+    data._completionNotified = true;
+    if (plan._timing) data._timing = plan._timing;
+    return data;
+  });
 
   // Resolve the primary project for writing new work items (PR, verify)
   const projectName = plan.project;
@@ -186,11 +200,12 @@ function checkPlanCompletion(meta, config) {
 
     // Build per-project checkout commands: one worktree, merge all PR branches into it
     const checkoutBlocks = Object.entries(projectPrs).map(([name, { project: p, prs, mainBranch }]) => {
-      const wtPath = `${p.localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
+      const localPath = p.localPath.replace(/\\/g, '/');
+      const wtPath = `${localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
       const branches = prs.map(pr => pr.branch).filter(Boolean);
       const lines = [
         `# ${name} — merge ${branches.length} PR branch(es) into one worktree`,
-        `cd "${p.localPath}"`,
+        `cd "${localPath}"`,
         `git fetch origin ${branches.map(b => `"${b}"`).join(' ')} "${mainBranch}"`,
         `git worktree add "${wtPath}" "origin/${mainBranch}" 2>/dev/null || (cd "${wtPath}" && git checkout "${mainBranch}" && git pull origin "${mainBranch}")`,
         `cd "${wtPath}"`,
@@ -211,9 +226,10 @@ function checkPlanCompletion(meta, config) {
     ).join('\n');
 
     // List projects and their worktree paths for the agent
-    const projectWorktrees = Object.entries(projectPrs).map(([name, { project: p }]) =>
-      `- **${name}**: \`${p.localPath}/../worktrees/verify-${planSlug}\``
-    ).join('\n');
+    const projectWorktrees = Object.entries(projectPrs).map(([name, { project: p }]) => {
+      const lp = p.localPath.replace(/\\/g, '/');
+      return `- **${name}**: see setup commands below (\`${lp}/../worktrees/verify-${name}-${planSlug}-*\`)`;
+    }).join('\n');
 
     const description = [
       `Verification task for completed plan \`${planFile}\`.`,
@@ -258,46 +274,75 @@ function checkPlanCompletion(meta, config) {
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
-  // 5. Archive: move PRD .json to prd/archive/ and source .md plan to plans/archive/
+  // 5. Archive deferred until verify completes (see runPostCompletionHooks).
+  //    Plan stays active until verification finishes so artifacts are visible.
+
+  log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
+}
+
+// ─── Plan Archiving (called after verify completes) ─────────────────────────
+
+function archivePlan(planFile, plan, projects, config) {
+  const planPath = path.join(PRD_DIR, planFile);
+  const projectName = plan.project || '';
+
+  // Archive PRD .json to prd/archive/
   const prdArchiveDir = path.join(PRD_DIR, 'archive');
   if (!fs.existsSync(prdArchiveDir)) fs.mkdirSync(prdArchiveDir, { recursive: true });
-  shared.safeWrite(planPath, plan); // save completed status first
-  try {
-    fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
-    log('info', `Archived completed PRD: prd/archive/${planFile}`);
-  } catch (err) {
-    log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
+  if (fs.existsSync(planPath)) {
     shared.safeWrite(planPath, plan);
+    try {
+      fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
+      log('info', `Archived completed PRD: prd/archive/${planFile}`);
+    } catch (err) { log('warn', `Failed to archive PRD ${planFile}: ${err.message}`); }
   }
 
-  // Also archive the source .md plan if it exists
+  // Archive the source .md plan
   const planArchiveDir = path.join(PLANS_DIR, 'archive');
   if (!fs.existsSync(planArchiveDir)) fs.mkdirSync(planArchiveDir, { recursive: true });
-  try {
-    const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
-    for (const md of mdFiles) {
-      const mdContent = shared.safeRead(path.join(PLANS_DIR, md)) || '';
-      // Match by project name or plan summary appearing in the .md content
-      if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
-        try {
-          fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
-          log('info', `Archived source plan: plans/archive/${md}`);
-        } catch (err) { log('warn', `Failed to archive plan ${md}: ${err.message}`); }
-        break;
-      }
+  if (plan.source_plan) {
+    const mdPath = path.join(PLANS_DIR, plan.source_plan);
+    if (fs.existsSync(mdPath)) {
+      try {
+        fs.renameSync(mdPath, path.join(planArchiveDir, plan.source_plan));
+        log('info', `Archived source plan: plans/archive/${plan.source_plan}`);
+      } catch (err) { log('warn', `Failed to archive source plan ${plan.source_plan}: ${err.message}`); }
     }
-  } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
+  } else {
+    try {
+      const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
+      for (const md of mdFiles) {
+        const mdContent = shared.safeRead(path.join(PLANS_DIR, md)) || '';
+        if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
+          try {
+            fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
+            log('info', `Archived source plan: plans/archive/${md}`);
+          } catch (err) { log('warn', `Failed to archive plan ${md}: ${err.message}`); }
+          break;
+        }
+      }
+    } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
+  }
 
-  // 6. Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
+  // Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
   try {
-    // Collect all branch slugs: shared-branch + per-item branches + item IDs
+    let allWi = [];
+    for (const p of projects) {
+      try { allWi = allWi.concat(safeJson(shared.projectWorkItemsPath(p)) || []); } catch {}
+    }
+    const planWi = allWi.filter(w => w.sourcePlan === planFile && w.itemType !== 'verify');
+    const allPrs = [];
+    for (const p of projects) {
+      try { allPrs.push(...(safeJson(shared.projectPrPath(p)) || [])); } catch {}
+    }
+
     const branchSlugs = new Set();
     if (plan.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
-    for (const w of doneItems) {
+    for (const w of planWi) {
       if (w.branch) branchSlugs.add(shared.sanitizeBranch(w.branch).toLowerCase());
       if (w.id) branchSlugs.add(w.id.toLowerCase());
     }
-    for (const pr of uniquePrs) {
+    for (const pr of allPrs.filter(pr => (pr.prdItems || []).some(id => planWi.find(w => w.id === id)))) {
       if (pr.branch) branchSlugs.add(shared.sanitizeBranch(pr.branch).toLowerCase());
     }
 
@@ -319,10 +364,8 @@ function checkPlanCompletion(meta, config) {
         }
       }
     }
-    if (cleanedWt > 0) log('info', `Plan completion: cleaned ${cleanedWt} worktree(s)`);
+    if (cleanedWt > 0) log('info', `Plan archive: cleaned ${cleanedWt} worktree(s)`);
   } catch (err) { log('warn', `Worktree cleanup: ${err.message}`); }
-
-  log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
 }
 
 // ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
@@ -839,7 +882,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
       }
     } else {
       // Write in Claude Code native format: ~/.claude/skills/<name>/SKILL.md
-      const claudeSkillsDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+      const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills');
       const skillDir = path.join(claudeSkillsDir, name.replace(/[^a-z0-9-]/g, '-'));
       const skillPath = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillPath)) {
@@ -1126,6 +1169,19 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   let prsCreatedCount = 0;
   if (isSuccess) prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
 
+  // Archive plan after verify task completes (AFTER PR sync so E2E PR is linked)
+  if (meta?.item?.itemType === 'verify' && meta?.item?.sourcePlan) {
+    try {
+      const vPlanFile = meta.item.sourcePlan;
+      const vPlanPath = path.join(PRD_DIR, vPlanFile);
+      const vPlan = safeJson(vPlanPath);
+      if (vPlan) {
+        const vProjects = shared.getProjects(config);
+        archivePlan(vPlanFile, vPlan, vProjects, config);
+      }
+    } catch (err) { log('warn', `Verify archive: ${err.message}`); }
+  }
+
   // Clean up worktree for non-shared-branch tasks after completion
   if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {
     try {
@@ -1252,6 +1308,7 @@ function syncPrdFromPrs(config) {
 
 module.exports = {
   checkPlanCompletion,
+  archivePlan,
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,
