@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.305 (2026-04-03)
+
+### Fixes
+-  normalize acceptanceCriteria to array (string from doc-chat crashed tick)
+
 ## 0.1.304 (2026-04-03)
 
 ### Features
