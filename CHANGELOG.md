@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.272 (2026-04-03)
+
+### Features
+-  sending a new CC message aborts the current request instead of queuing
+-  CC streaming shows cumulative tool list with loading dots
+
+### Fixes
+-  remove 'minions up' alias, keep 'minions restart' only
+-  agent and engine usage tables both have 7 columns for alignment
+-  streaming CC was popping user messages from _ccMessages
+-  process remaining SSE buffer after stream ends + fallback finalization
+-  Thinking... indicator shows alongside tool calls until text arrives
+-  use safeJson instead of JSON.parse(safeRead()) in trigger-verify handler
+
 ## 0.1.265 (2026-04-03)
 
 ### Features
