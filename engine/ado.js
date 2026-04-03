@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, log, dateStamp } = shared;
+const { exec, getAdoOrgBase, addPrLink, log, dateStamp } = shared;
 const { getPrs } = require('./queries');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
@@ -29,7 +29,7 @@ function getAdoToken() {
   try {
     // azureauth supports multiple --mode flags as an ordered fallback chain:
     // tries IWA (Integrated Windows Auth) first, falls back to broker if unavailable.
-    const token = exec('azureauth ado token --mode broker --mode iwa --output token --timeout 5', {
+    const token = exec('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
       timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
     if (token && token.startsWith('eyJ')) {
       _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
@@ -46,20 +46,9 @@ function getAdoToken() {
 
 async function adoFetch(url, token, _retryCount = 0) {
   const MAX_RETRIES = 1;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-  let res;
-  try {
-    res = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    if (err.name === 'AbortError') throw new Error(`ADO API timeout (30s) for ${url.split('?')[0]}`);
-    throw err;
-  }
-  clearTimeout(timer);
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+  });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
@@ -366,8 +355,9 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
-        // PR already tracked — update prdItems if we can extract an ID
+        // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
+          addPrLink(prId, confirmedItemId);
           const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
@@ -390,12 +380,25 @@ async function reconcilePrs(config) {
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
+      if (confirmedItemId) addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
     }
 
-    if (projectAdded > 0 || projectUpdated > 0) {
+    // Backfill prdItems from pr-links for any PR with empty array
+    const prLinks = shared.getPrLinks();
+    let backfilled = 0;
+    for (const pr of existingPrs) {
+      const linked = prLinks[pr.id];
+      if (linked && !(pr.prdItems || []).includes(linked)) {
+        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
+        pr.prdItems.push(linked);
+        backfilled++;
+      }
+    }
+
+    if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
       shared.safeWrite(prPath, existingPrs);
       totalAdded += projectAdded;
       if (projectUpdated > 0) log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);

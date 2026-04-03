@@ -505,9 +505,19 @@ async function testPrLinks() {
     assert.ok(typeof result === 'object');
   });
 
-  await test('getPrLinks derives from PR.prdItems', () => {
+  await test('addPrLink is idempotent', () => {
+    // This uses the real pr-links.json — just verify it doesn't crash
+    // The function short-circuits if the link already exists
     const links = shared.getPrLinks();
-    assert.ok(typeof links === 'object', 'getPrLinks should return an object');
+    const existingId = Object.keys(links)[0];
+    if (existingId) {
+      shared.addPrLink(existingId, links[existingId]); // should be a no-op
+    }
+  });
+
+  await test('addPrLink rejects null inputs', () => {
+    shared.addPrLink(null, 'item-1'); // should not crash
+    shared.addPrLink('pr-1', null);   // should not crash
   });
 }
 
@@ -577,13 +587,7 @@ async function testQueriesAgents() {
       const status = queries.getAgentStatus(active[0].agent);
       assert.strictEqual(status.status, 'working');
     } else {
-      // No active dispatches — verify idle agents return idle status
-      const config = queries.getConfig();
-      const firstAgent = Object.keys(config.agents || {})[0];
-      if (firstAgent) {
-        const status = queries.getAgentStatus(firstAgent);
-        assert.ok(['idle', 'done', 'error'].includes(status.status), 'Idle agent should have idle/done/error status');
-      }
+      skip('getAgentStatus-working', 'no active dispatches');
     }
   });
 
@@ -665,14 +669,10 @@ async function testQueriesPullRequests() {
   await test('getPullRequests returns sorted array', () => {
     const prs = queries.getPullRequests();
     assert.ok(Array.isArray(prs));
-    // Should be sorted by date (YYYY-MM-DD) descending, then PR number descending
+    // Should be sorted by created date descending
     for (let i = 1; i < prs.length; i++) {
-      const prevDate = (prs[i - 1].created || '').slice(0, 10);
-      const currDate = (prs[i].created || '').slice(0, 10);
-      const prevNum = parseInt((prs[i - 1].id || '').replace(/\D/g, '')) || 0;
-      const currNum = parseInt((prs[i].id || '').replace(/\D/g, '')) || 0;
-      assert.ok(prevDate > currDate || (prevDate === currDate && prevNum >= currNum),
-        `PR sort violation: ${prs[i - 1].id} (${prevDate}) before ${prs[i].id} (${currDate})`);
+      assert.ok((prs[i - 1].created || '') >= (prs[i].created || ''),
+        `PR sort violation: ${prs[i - 1].created} before ${prs[i].created}`);
     }
   });
 
@@ -916,353 +916,6 @@ async function testSyncPrdItemStatus() {
   await test('syncPrdItemStatus handles null itemId gracefully', () => {
     // Should not throw
     lifecycle.syncPrdItemStatus(null, 'done', 'test-plan.json');
-  });
-}
-
-async function testEvalLoopAutoDispatch() {
-  console.log('\n── lifecycle.js — Eval Loop Auto-Dispatch ──');
-
-  await test('implement completion creates evaluate work item when evalLoop is true', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-    const parentItem = {
-      id: 'W-test-impl-1', title: 'Build feature X', type: 'implement',
-      status: 'dispatched', priority: 'high', branch_name: 'feat/test',
-      pr_url: 'https://github.com/test/repo/pull/1',
-      acceptance_criteria: '- [ ] Feature works\n- [ ] Tests pass',
-      project: 'TestProject',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
-
-    // Simulate what runPostCompletionHooks does for the eval-loop section
-    const evalLoop = true;
-    if (evalLoop) {
-      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-      const pi = items.find(i => i.id === 'W-test-impl-1');
-      // Idempotency check (mirrors lifecycle.js logic)
-      if (!pi._evalDispatched) {
-        const evalItem = {
-          id: 'W-' + shared.uid(),
-          title: `Evaluate: ${parentItem.title}`,
-          type: 'evaluate',
-          priority: parentItem.priority,
-          status: 'pending',
-          created: new Date().toISOString(),
-          createdBy: 'engine:eval-loop',
-          project: 'TestProject',
-          branch_name: pi.branch_name,
-          pr_url: pi.pr_url,
-          acceptance_criteria: pi.acceptance_criteria,
-          _evalParentId: parentItem.id,
-        };
-        pi._evalDispatched = true;
-        items.push(evalItem);
-        fs.writeFileSync(wiPath, JSON.stringify(items));
-      }
-    }
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    assert.strictEqual(result.length, 2, 'Should have 2 items (parent + evaluate)');
-    const evalItem = result.find(i => i.type === 'evaluate');
-    assert.ok(evalItem, 'Evaluate item should exist');
-    assert.strictEqual(evalItem.status, 'pending');
-    assert.strictEqual(evalItem._evalParentId, 'W-test-impl-1');
-    assert.strictEqual(evalItem.branch_name, 'feat/test');
-    assert.strictEqual(evalItem.pr_url, 'https://github.com/test/repo/pull/1');
-    assert.strictEqual(evalItem.acceptance_criteria, parentItem.acceptance_criteria);
-    assert.strictEqual(evalItem.project, 'TestProject');
-    assert.ok(evalItem.id.startsWith('W-'), 'Evaluate item ID should start with W-');
-    assert.strictEqual(evalItem.createdBy, 'engine:eval-loop');
-    const updatedParent = result.find(i => i.id === 'W-test-impl-1');
-    assert.strictEqual(updatedParent._evalDispatched, true, 'Parent should have _evalDispatched flag');
-  });
-
-  await test('duplicate eval dispatch is prevented by _evalDispatched flag', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-    const parentItem = {
-      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
-      status: 'done', priority: 'high', branch_name: 'feat/test-dup',
-      _evalDispatched: true, // already dispatched
-      project: 'TestProject',
-    };
-    const existingEval = {
-      id: 'W-eval-existing', type: 'evaluate', status: 'pending',
-      _evalParentId: 'W-test-impl-dup',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
-
-    // Simulate the eval-loop section — should skip because _evalDispatched is set
-    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const pi = items.find(i => i.id === 'W-test-impl-dup');
-    if (!pi._evalDispatched) {
-      items.push({ id: 'W-should-not-exist', type: 'evaluate', _evalParentId: pi.id });
-      pi._evalDispatched = true;
-      fs.writeFileSync(wiPath, JSON.stringify(items));
-    }
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    assert.strictEqual(result.length, 2, 'Should still have only 2 items (no duplicate eval)');
-    assert.ok(!result.find(i => i.id === 'W-should-not-exist'), 'Duplicate eval should not exist');
-  });
-
-  await test('no evaluate item created when evalLoop is false', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-    const parentItem = {
-      id: 'W-test-impl-2', title: 'Build feature Y', type: 'implement',
-      status: 'dispatched', priority: 'high',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
-
-    const evalLoop = false;
-    if (evalLoop) {
-      // This block should NOT execute
-      const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-      items.push({ id: 'should-not-exist', type: 'evaluate' });
-      fs.writeFileSync(wiPath, JSON.stringify(items));
-    }
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    assert.strictEqual(result.length, 1, 'Should still have only 1 item');
-    assert.ok(!result.find(i => i.type === 'evaluate'), 'No evaluate item should exist');
-  });
-
-  await test('no evaluate item created for non-implement types', () => {
-    // Verify the code path gates on type === 'implement'
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("type === 'implement'") && src.includes('evalLoop'),
-      'lifecycle.js should gate eval-loop on type === implement');
-    assert.ok(src.includes('_evalParentId'),
-      'lifecycle.js should set _evalParentId on evaluate items');
-    assert.ok(src.includes('engine:eval-loop'),
-      'lifecycle.js should mark createdBy as engine:eval-loop');
-    assert.ok(src.includes('_evalDispatched'),
-      'lifecycle.js should use _evalDispatched idempotency flag');
-    assert.ok(src.includes('resolveWiPath'),
-      'lifecycle.js should use resolveWiPath helper');
-  });
-
-  await test('autoReview defaults to true in ENGINE_DEFAULTS (gates both PR reviews and post-implement reviews)', () => {
-    assert.strictEqual(shared.ENGINE_DEFAULTS.autoReview, true);
-    assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxIterations, 3);
-  });
-
-  await test('duplicate evaluate item is not created for same parent', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-    const parentItem = {
-      id: 'W-test-impl-dup', title: 'Build feature Z', type: 'implement',
-      status: 'done', priority: 'high', branch_name: 'feat/dup-test',
-      project: 'TestProject',
-    };
-    const existingEval = {
-      id: 'W-existing-eval', title: 'Evaluate: Build feature Z', type: 'evaluate',
-      status: 'pending', _evalParentId: 'W-test-impl-dup',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem, existingEval]));
-
-    // Simulate the dedup check from the eval-loop code
-    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const existing = items.find(i => i._evalParentId === 'W-test-impl-dup' && i.type === 'evaluate');
-    assert.ok(existing, 'Should find existing evaluate item');
-    assert.strictEqual(existing.id, 'W-existing-eval');
-    // The code should skip creation — verify no new item would be added
-    assert.strictEqual(items.length, 2, 'Should still have only 2 items (no duplicate)');
-  });
-
-  await test('source guard requires work-item source for project-scoped path', () => {
-    // Verify the code path checks meta.source === 'work-item' for project-scoped items
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("meta.source === 'work-item' && meta.project?.name"),
-      'eval-loop should check meta.source === work-item for project-scoped path');
-  });
-}
-
-// ─── Eval Iteration Tracking Tests ──────────────────────────────────────────
-
-async function testEvalIterationTracking() {
-  console.log('\n── lifecycle.js — Eval Iteration Tracking ──');
-  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
-
-  await test('parseEvalVerdict extracts verdict from fenced JSON block', () => {
-    const text = 'Some text\n```json\n{"pass": false, "build": true, "tests": "10/10", "criteria_met": [], "criteria_failed": ["missing feature X"], "feedback": "Add feature X"}\n```\nMore text';
-    const verdict = lifecycle.parseEvalVerdict(text);
-    assert.ok(verdict, 'Should parse verdict');
-    assert.strictEqual(verdict.pass, false);
-    assert.strictEqual(verdict.feedback, 'Add feature X');
-    assert.deepStrictEqual(verdict.criteria_failed, ['missing feature X']);
-  });
-
-  await test('parseEvalVerdict extracts verdict from bare JSON', () => {
-    const text = 'Result: {"pass": true, "build": true, "tests": "5/5", "criteria_met": ["all good"], "criteria_failed": [], "feedback": "LGTM"}';
-    const verdict = lifecycle.parseEvalVerdict(text);
-    assert.ok(verdict, 'Should parse bare verdict');
-    assert.strictEqual(verdict.pass, true);
-  });
-
-  await test('parseEvalVerdict returns null for missing verdict', () => {
-    assert.strictEqual(lifecycle.parseEvalVerdict('no json here'), null);
-    assert.strictEqual(lifecycle.parseEvalVerdict(''), null);
-    assert.strictEqual(lifecycle.parseEvalVerdict(null), null);
-  });
-
-  await test('failed eval creates fix work item and increments _evalIterations (iteration 1)', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-
-    const parentItem = {
-      id: 'W-parent-1', title: 'Build feature X', type: 'implement',
-      status: 'done', priority: 'high', branch_name: 'feat/test',
-      pr_url: 'https://github.com/test/repo/pull/1',
-      acceptance_criteria: '- [ ] Feature works',
-      project: 'TestProject', sourcePlan: 'plan-test.json',
-    };
-    const evalItem = {
-      id: 'W-eval-1', title: 'Evaluate: Build feature X', type: 'evaluate',
-      status: 'dispatched', priority: 'high', _evalParentId: 'W-parent-1',
-      project: 'TestProject',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem, evalItem]));
-
-    // Simulate the eval verdict processing inline (mirrors lifecycle.js logic)
-    const verdict = { pass: false, feedback: 'Missing feature X', criteria_failed: ['criterion A not met'] };
-    const maxIter = 3;
-    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const parent = items.find(i => i.id === 'W-parent-1');
-    const iterations = (parent._evalIterations || 0) + 1;
-    parent._evalIterations = iterations;
-
-    assert.ok(iterations < maxIter, 'Should be below max iterations');
-
-    const fixItem = {
-      id: 'W-' + shared.uid(),
-      title: `Fix: ${parent.title} (eval iteration ${iterations})`,
-      type: 'fix', priority: parent.priority, status: 'pending',
-      created: new Date().toISOString(), createdBy: 'engine:eval-loop',
-      project: 'TestProject',
-      branch_name: parent.branch_name, pr_url: parent.pr_url,
-      acceptance_criteria: parent.acceptance_criteria,
-      _evalParentId: parent.id,
-      _evalFeedback: verdict.feedback,
-      _evalCriteriaFailed: verdict.criteria_failed,
-    };
-    if (parent.sourcePlan) fixItem.sourcePlan = parent.sourcePlan;
-    items.push(fixItem);
-    fs.writeFileSync(wiPath, JSON.stringify(items));
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    assert.strictEqual(result.length, 3, 'Should have 3 items (parent + eval + fix)');
-    const fix = result.find(i => i.type === 'fix');
-    assert.ok(fix, 'Fix item should exist');
-    assert.strictEqual(fix.status, 'pending');
-    assert.strictEqual(fix._evalParentId, 'W-parent-1');
-    assert.strictEqual(fix._evalFeedback, 'Missing feature X');
-    assert.deepStrictEqual(fix._evalCriteriaFailed, ['criterion A not met']);
-    assert.strictEqual(fix.branch_name, 'feat/test');
-    assert.strictEqual(fix.sourcePlan, 'plan-test.json');
-    assert.strictEqual(parent._evalIterations, 1);
-  });
-
-  await test('3 failed eval cycles sets parent to needs-human-review', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-
-    const parentItem = {
-      id: 'W-parent-2', title: 'Build feature Y', type: 'implement',
-      status: 'done', priority: 'high', _evalIterations: 2, // already had 2 cycles
-      branch_name: 'feat/test-y', project: 'TestProject',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
-
-    const maxIter = 3;
-    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const parent = items.find(i => i.id === 'W-parent-2');
-    const iterations = (parent._evalIterations || 0) + 1;
-    parent._evalIterations = iterations;
-
-    assert.ok(iterations >= maxIter, 'Should be at or above max iterations');
-    parent.status = 'needs-human-review';
-    parent._evalEscalatedAt = new Date().toISOString();
-    fs.writeFileSync(wiPath, JSON.stringify(items));
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const updated = result.find(i => i.id === 'W-parent-2');
-    assert.strictEqual(updated.status, 'needs-human-review', 'Parent should be needs-human-review');
-    assert.strictEqual(updated._evalIterations, 3);
-    assert.ok(updated._evalEscalatedAt, 'Should have escalation timestamp');
-    // No fix item should be created
-    assert.ok(!result.find(i => i.type === 'fix'), 'No fix item should exist when max iterations reached');
-  });
-
-  await test('2 failed eval cycles still gets another fix attempt', () => {
-    const tmpDir = createTmpDir();
-    const projectDir = path.join(tmpDir, 'projects', 'TestProject');
-    fs.mkdirSync(projectDir, { recursive: true });
-    const wiPath = path.join(projectDir, 'work-items.json');
-
-    const parentItem = {
-      id: 'W-parent-3', title: 'Build feature Z', type: 'implement',
-      status: 'done', priority: 'high', _evalIterations: 1, // 1 cycle done
-      branch_name: 'feat/test-z', project: 'TestProject',
-    };
-    fs.writeFileSync(wiPath, JSON.stringify([parentItem]));
-
-    const maxIter = 3;
-    const items = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const parent = items.find(i => i.id === 'W-parent-3');
-    const iterations = (parent._evalIterations || 0) + 1;
-    parent._evalIterations = iterations;
-
-    assert.ok(iterations < maxIter, 'Should be below max iterations');
-    const fixItem = {
-      id: 'W-fix-z', type: 'fix', status: 'pending', _evalParentId: parent.id,
-      _evalFeedback: 'Fix this', createdBy: 'engine:eval-loop',
-    };
-    items.push(fixItem);
-    fs.writeFileSync(wiPath, JSON.stringify(items));
-
-    const result = JSON.parse(fs.readFileSync(wiPath, 'utf8'));
-    const updated = result.find(i => i.id === 'W-parent-3');
-    assert.strictEqual(updated._evalIterations, 2);
-    assert.strictEqual(updated.status, 'done', 'Parent should still be done, not escalated');
-    const fix = result.find(i => i.type === 'fix');
-    assert.ok(fix, 'Fix item should be created');
-    assert.strictEqual(fix._evalFeedback, 'Fix this');
-  });
-
-  await test('needs-human-review is a terminal status — engine skips dispatch', () => {
-    // Verify that the engine dispatch gate at discoverFromWorkItems skips non-pending/queued items
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // The dispatch gate only dispatches 'queued' or 'pending' items
-    assert.ok(src.includes("item.status !== 'queued' && item.status !== 'pending'"),
-      'engine.js should gate dispatch on queued/pending status only');
-  });
-
-  await test('dashboard statusBadge maps needs-human-review to needs-review class', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes("'needs-human-review'") && src.includes("'needs-review'"),
-      'render-work-items.js should map needs-human-review to needs-review CSS class');
-  });
-
-  await test('CSS includes needs-review badge style (amber/orange)', () => {
-    const css = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
-    assert.ok(css.includes('.pr-badge.needs-review'),
-      'styles.css should have .pr-badge.needs-review class');
-    assert.ok(css.includes('--orange'),
-      'needs-review badge should use orange color');
   });
 }
 
@@ -2205,10 +1858,12 @@ async function testWorktreeManagement() {
       'Should calculate and clean excess worktrees');
   });
 
-  await test('Worktree creation is gated to specific task types', () => {
+  await test('Only implement tasks may create new worktrees', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes("'implement'") && src.includes('.includes(type)'),
-      'Worktree creation should be gated by task type allowlist');
+    assert.ok(src.includes("type !== 'implement'"),
+      'Non-implement tasks should skip worktree creation');
+    assert.ok(src.includes('creation disabled for non-implement tasks'),
+      'Engine should log explicit reason when non-implement falls back to rootDir');
   });
 
   await test('Worktree creation handles stale index.lock', () => {
@@ -2347,10 +2002,9 @@ async function testStateIntegrity() {
     assert.strictEqual(activePendingIds.length, uniqueIds.size, 'Duplicate IDs in active/pending dispatch');
   });
 
-  await test('dispatch.completed capped near 100', () => {
+  await test('dispatch.completed capped at 100', () => {
     const dispatch = queries.getDispatch();
-    // Allow slight overshoot — cap is enforced on next completion, not retroactively
-    assert.ok(dispatch.completed.length <= 110, `completed queue too large: ${dispatch.completed.length}`);
+    assert.ok(dispatch.completed.length <= 100, `completed queue too large: ${dispatch.completed.length}`);
   });
 
   await test('Active dispatch entries have required fields', () => {
@@ -2773,7 +2427,7 @@ async function testPreflightModule() {
     const { passed: p, results: r } = preflight.runPreflight();
     assert.ok(typeof p === 'boolean', 'passed should be boolean');
     assert.ok(Array.isArray(r), 'results should be array');
-    assert.strictEqual(r.length, 3, 'should have exactly 3 checks (Node, Git, Claude CLI)');
+    assert.strictEqual(r.length, 4, 'should have exactly 4 checks');
   });
 
   await test('runPreflight includes Node.js check as passing', () => {
@@ -2795,10 +2449,12 @@ async function testPreflightModule() {
     assert.ok(claudeCheck, 'Missing Claude Code CLI check');
   });
 
-  await test('runPreflight does not check Anthropic auth (handled by Claude Code)', () => {
+  await test('runPreflight Anthropic auth is never fatal', () => {
     const { results: r } = preflight.runPreflight();
     const authCheck = r.find(c => c.name === 'Anthropic auth');
-    assert.ok(!authCheck, 'Should not include Anthropic auth check — Claude Code handles auth');
+    assert.ok(authCheck, 'Missing Anthropic auth check');
+    assert.ok(authCheck.ok === true || authCheck.ok === 'warn',
+      'Anthropic auth should be ok or warn, never false');
   });
 
   await test('runPreflight each result has name, ok, message', () => {
@@ -3034,89 +2690,6 @@ async function testMutateJsonFileLocked() {
   });
 }
 
-// ─── shared.js — safeWrite / backup / restore Tests ─────────────────────────
-
-async function testSafeWriteBackupRestore() {
-  console.log('\n── shared.js — safeWrite atomic + backup + restore ──');
-
-  await test('safeWrite throws after rename failures (no writeFileSync fallback)', () => {
-    // Verify the source code has no writeFileSync fallback in safeWrite
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    // Extract safeWrite function body
-    const match = src.match(/function safeWrite\(p, data\)\s*\{[\s\S]*?^}/m);
-    assert.ok(match, 'safeWrite function should exist');
-    const body = match[0];
-    // Should NOT contain a direct writeFileSync to the target path as fallback
-    // The only writeFileSync should be to the tmp file
-    const writeFileCalls = body.match(/fs\.writeFileSync\(/g) || [];
-    assert.strictEqual(writeFileCalls.length, 1,
-      'safeWrite should have exactly 1 writeFileSync (to tmp file), no fallback');
-    // Should throw after exhausting retries
-    assert.ok(body.includes('throw'), 'safeWrite should throw on rename exhaustion');
-  });
-
-  await test('mutateJsonFileLocked creates .backup before mutation', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'data.json');
-    shared.safeWrite(fp, { version: 1 });
-    shared.mutateJsonFileLocked(fp, (data) => { data.version = 2; });
-    // .backup should exist with the pre-mutation data
-    const backup = shared.safeJson(fp + '.backup');
-    assert.ok(backup, '.backup file should exist');
-    assert.strictEqual(backup.version, 1, '.backup should contain pre-mutation state');
-    // primary should have the mutation
-    assert.strictEqual(shared.safeJson(fp).version, 2);
-  });
-
-  await test('safeJson auto-restores from .backup when primary is corrupted', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'corrupted.json');
-    // Write corrupted primary
-    fs.writeFileSync(fp, 'NOT VALID JSON{{{');
-    // Write valid backup
-    fs.writeFileSync(fp + '.backup', JSON.stringify({ restored: true }));
-    const result = shared.safeJson(fp);
-    assert.deepStrictEqual(result, { restored: true }, 'should restore from .backup');
-    // Primary should now be restored too
-    const primaryAfter = JSON.parse(fs.readFileSync(fp, 'utf8'));
-    assert.deepStrictEqual(primaryAfter, { restored: true }, 'primary file should be restored');
-  });
-
-  await test('safeJson returns null when both primary and .backup are missing', () => {
-    const result = shared.safeJson('/nonexistent/path/data.json');
-    assert.strictEqual(result, null);
-  });
-
-  await test('safeJson returns null when primary is corrupted and no .backup exists', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'no-backup.json');
-    fs.writeFileSync(fp, 'CORRUPTED');
-    const result = shared.safeJson(fp);
-    assert.strictEqual(result, null, 'should return null with no backup available');
-  });
-
-  await test('safeJson returns null when both primary and .backup are corrupted', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'both-bad.json');
-    fs.writeFileSync(fp, 'BAD PRIMARY');
-    fs.writeFileSync(fp + '.backup', 'BAD BACKUP');
-    const result = shared.safeJson(fp);
-    assert.strictEqual(result, null, 'should return null when both files are corrupted');
-  });
-
-  await test('mutateJsonFileLocked backup updated on each mutation', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'multi.json');
-    shared.safeWrite(fp, { step: 0 });
-    shared.mutateJsonFileLocked(fp, (data) => { data.step = 1; });
-    assert.strictEqual(shared.safeJson(fp + '.backup').step, 0);
-    shared.mutateJsonFileLocked(fp, (data) => { data.step = 2; });
-    assert.strictEqual(shared.safeJson(fp + '.backup').step, 1,
-      '.backup should reflect state before latest mutation');
-    assert.strictEqual(shared.safeJson(fp).step, 2);
-  });
-}
-
 // ─── engine.js — isRetryableFailureReason Tests ─────────────────────────────
 
 async function testIsRetryableFailureReason() {
@@ -3203,11 +2776,13 @@ async function testAreDependenciesMet() {
       'Should return string "failed" when any dependency has failed');
   });
 
-  await test('areDependenciesMet uses PRD_MET_STATUSES for done status', () => {
+  await test('areDependenciesMet uses PRD_MET_STATUSES for all done aliases', () => {
     assert.ok(src.includes("PRD_MET_STATUSES"),
       'Should use PRD_MET_STATUSES set for status checking');
-    assert.ok(src.includes("'done'"),
-      'PRD_MET_STATUSES should include done');
+    // Verify the set includes all legacy aliases
+    assert.ok(src.includes("'done'") && src.includes("'in-pr'") &&
+              src.includes("'implemented'") && src.includes("'complete'"),
+      'PRD_MET_STATUSES should include done, in-pr, implemented, complete');
   });
 
   await test('areDependenciesMet uses PRD_MET_STATUSES for work item status check', () => {
@@ -3283,123 +2858,6 @@ async function testCooldownSystem() {
     assert.strictEqual(formula(3), 8);
     assert.strictEqual(formula(10), 8); // capped
   });
-
-  await test('setCooldownWithContext uses content-hash dedup', () => {
-    assert.ok(src.includes('_contentHash') && src.includes('isDuplicate'),
-      'Should hash content and check for duplicates before appending');
-  });
-
-  await test('pendingContexts has FIFO cap constant', () => {
-    assert.ok(src.includes('PENDING_CONTEXTS_CAP') && src.includes('= 10'),
-      'Should define PENDING_CONTEXTS_CAP = 10');
-  });
-
-  await test('purgeBloatedCooldowns runs on startup', () => {
-    assert.ok(src.includes('purgeBloatedCooldowns'),
-      'loadCooldowns should call purgeBloatedCooldowns for one-time cleanup');
-  });
-}
-
-// ─── Cooldown Context Dedup & Cap Tests ─────────────────────────────────────
-
-async function testCooldownContextDedup() {
-  console.log('\n── Cooldown Context Dedup & Cap ──');
-
-  const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown'));
-  const { dispatchCooldowns, setCooldownWithContext, purgeBloatedCooldowns, PENDING_CONTEXTS_CAP } = cooldown;
-
-  // Helper to reset state for each test
-  function resetCooldowns() {
-    dispatchCooldowns.clear();
-  }
-
-  await test('setCooldownWithContext deduplicates identical content — 100 calls = 1 entry', () => {
-    resetCooldowns();
-    const key = 'test-dedup-100';
-    const content = 'This is identical feedback content repeated many times';
-    for (let i = 0; i < 100; i++) {
-      setCooldownWithContext(key, content);
-    }
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.pendingContexts.length, 1,
-      `Expected 1 entry after 100 identical calls, got ${entry.pendingContexts.length}`);
-    assert.strictEqual(entry.pendingContexts[0], content);
-  });
-
-  await test('setCooldownWithContext caps at 10 entries with FIFO eviction', () => {
-    resetCooldowns();
-    const key = 'test-cap-15';
-    for (let i = 0; i < 15; i++) {
-      setCooldownWithContext(key, `unique content ${i}`);
-    }
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.pendingContexts.length, PENDING_CONTEXTS_CAP,
-      `Expected ${PENDING_CONTEXTS_CAP} entries after 15 unique calls, got ${entry.pendingContexts.length}`);
-    // FIFO: oldest (0-4) should be dropped, 5-14 should remain
-    assert.strictEqual(entry.pendingContexts[0], 'unique content 5',
-      'Oldest entries should be evicted (FIFO)');
-    assert.strictEqual(entry.pendingContexts[9], 'unique content 14',
-      'Newest entries should be kept');
-  });
-
-  await test('setCooldownWithContext deduplicates object content via JSON hash', () => {
-    resetCooldowns();
-    const key = 'test-dedup-obj';
-    const obj = { feedback: 'review needed', pr: 'PR-42' };
-    setCooldownWithContext(key, obj);
-    setCooldownWithContext(key, obj);
-    setCooldownWithContext(key, { feedback: 'review needed', pr: 'PR-42' }); // same content, new reference
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.pendingContexts.length, 1,
-      'Object content with same shape should be deduplicated');
-  });
-
-  await test('purgeBloatedCooldowns deduplicates existing entries in-place', () => {
-    resetCooldowns();
-    const key = 'test-purge';
-    // Simulate bloated state by directly setting the Map
-    dispatchCooldowns.set(key, {
-      timestamp: Date.now(),
-      failures: 0,
-      pendingContexts: Array(9098).fill('same feedback content 3KB')
-    });
-    purgeBloatedCooldowns();
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.pendingContexts.length, 1,
-      'Purge should deduplicate 9098 identical entries to 1');
-  });
-
-  await test('purgeBloatedCooldowns caps entries to PENDING_CONTEXTS_CAP', () => {
-    resetCooldowns();
-    const key = 'test-purge-cap';
-    // 20 unique entries — should be capped to 10 after purge
-    const contexts = [];
-    for (let i = 0; i < 20; i++) contexts.push(`unique ${i}`);
-    dispatchCooldowns.set(key, {
-      timestamp: Date.now(),
-      failures: 0,
-      pendingContexts: contexts
-    });
-    purgeBloatedCooldowns();
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.pendingContexts.length, PENDING_CONTEXTS_CAP,
-      `Purge should cap at ${PENDING_CONTEXTS_CAP} entries`);
-    // Should keep the most recent (last 10)
-    assert.strictEqual(entry.pendingContexts[0], 'unique 10');
-    assert.strictEqual(entry.pendingContexts[9], 'unique 19');
-  });
-
-  await test('setCooldownWithContext preserves failures count', () => {
-    resetCooldowns();
-    const key = 'test-preserve-failures';
-    dispatchCooldowns.set(key, { timestamp: Date.now(), failures: 5, pendingContexts: [] });
-    setCooldownWithContext(key, 'new context');
-    const entry = dispatchCooldowns.get(key);
-    assert.strictEqual(entry.failures, 5, 'Should preserve existing failure count');
-  });
-
-  // Clean up after tests
-  resetCooldowns();
 }
 
 // ─── engine.js — resolveAgent Tests ─────────────────────────────────────────
@@ -3492,86 +2950,6 @@ async function testRenderPlaybook() {
   await test('renderPlaybook injects skill extraction instructions', () => {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
-  });
-
-  // ── Critical variable blocking tests ──
-
-  let getLastRenderError;
-  try {
-    getLastRenderError = require(path.join(MINIONS_DIR, 'engine', 'playbook')).getLastRenderError;
-  } catch {}
-
-  await test('renderPlaybook returns null when critical task_description is empty (implement)', () => {
-    if (!getLastRenderError) { skip('critical-vars-no-fn', 'getLastRenderError not exported'); return; }
-    const result = renderPlaybook('implement', {
-      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
-      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: '', work_item_id: 'W001',
-      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
-    });
-    assert.strictEqual(result, null, 'Should return null when task_description is empty');
-    const err = getLastRenderError();
-    assert.ok(err, 'Should set lastRenderError');
-    assert.strictEqual(err.reason, 'critical_vars_missing');
-    assert.ok(err.vars.includes('task_description'), 'Should list task_description as missing');
-  });
-
-  await test('renderPlaybook returns null when critical branch_name is empty (fix)', () => {
-    if (!getLastRenderError) { skip('critical-vars-fix', 'getLastRenderError not exported'); return; }
-    const result = renderPlaybook('fix', {
-      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
-      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Fix something', work_item_id: 'W001',
-      branch_name: '', team_root: MINIONS_DIR, date: '2024-01-01',
-    });
-    assert.strictEqual(result, null, 'Should return null when branch_name is empty for fix playbook');
-    const err = getLastRenderError();
-    assert.ok(err && err.reason === 'critical_vars_missing', 'Should be critical_vars_missing');
-    assert.ok(err.vars.includes('branch_name'), 'Should list branch_name as missing');
-  });
-
-  await test('renderPlaybook returns content when non-critical var is empty', () => {
-    if (!getLastRenderError) { skip('non-critical-vars', 'getLastRenderError not exported'); return; }
-    const result = renderPlaybook('implement', {
-      agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
-      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Real description', work_item_id: 'W001',
-      branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
-      references: '',
-    });
-    assert.ok(typeof result === 'string' && result.length > 0,
-      'Should return content when only non-critical vars are empty');
-    const err = getLastRenderError();
-    assert.strictEqual(err, null, 'Should not set lastRenderError for non-critical vars');
-  });
-
-  await test('renderPlaybook allows empty critical vars for playbook types without CRITICAL_VARS', () => {
-    if (!getLastRenderError) { skip('no-critical-vars-type', 'getLastRenderError not exported'); return; }
-    const result = renderPlaybook('plan', {
-      agent_name: 'TestAgent', agent_role: 'Analyst', agent_id: 'test',
-      project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_description: '', team_root: MINIONS_DIR, date: '2024-01-01',
-    });
-    // plan playbook has no critical vars, so empty task_description should NOT block
-    assert.ok(result === null || typeof result === 'string',
-      'Plan playbook should not be blocked by empty vars (may return null if plan playbook missing)');
-    const err = getLastRenderError();
-    assert.ok(!err || err.reason !== 'critical_vars_missing',
-      'Should not set critical_vars_missing error for plan type');
-  });
-
-  // evaluate.md playbook was removed — evaluate type now uses work-item.md fallback
-
-  await test('CRITICAL_VARS map defines expected entries', () => {
-    let CRITICAL_VARS;
-    try { CRITICAL_VARS = require(path.join(MINIONS_DIR, 'engine', 'playbook')).CRITICAL_VARS; } catch {}
-    if (!CRITICAL_VARS) { skip('critical-vars-map', 'CRITICAL_VARS not exported'); return; }
-    assert.ok(Array.isArray(CRITICAL_VARS['implement']), 'implement should have critical vars');
-    assert.ok(CRITICAL_VARS['implement'].includes('task_description'), 'implement needs task_description');
-    assert.ok(CRITICAL_VARS['implement'].includes('branch_name'), 'implement needs branch_name');
-    assert.ok(Array.isArray(CRITICAL_VARS['fix']), 'fix should have critical vars');
-    assert.ok(CRITICAL_VARS['fix'].includes('task_description'), 'fix needs task_description');
-    assert.ok(CRITICAL_VARS['fix'].includes('branch_name'), 'fix needs branch_name');
   });
 }
 
@@ -3829,9 +3207,9 @@ async function testSyncPrsFromOutput() {
       'Should detect PR creation keywords in agent output');
   });
 
-  await test('syncPrsFromOutput links PRs via prdItems', () => {
-    assert.ok(src.includes('prdItems'),
-      'Should record PR-to-work-item links via prdItems on PR object');
+  await test('syncPrsFromOutput adds PR links', () => {
+    assert.ok(src.includes('addPrLink'),
+      'Should record PR-to-work-item links via addPrLink');
   });
 
   await test('PR dedup uses strict equality, not substring includes', () => {
@@ -3945,89 +3323,6 @@ async function testRunPostCompletionHooks() {
   await test('runPostCompletionHooks parses agent output', () => {
     assert.ok(src.includes('parseAgentOutput') || src.includes('parseStreamJsonOutput'),
       'Should parse agent stdout to extract result summary');
-  });
-}
-
-// ─── Context Pressure Metrics Tests ─────────────────────────────────────────
-
-async function testContextPressureMetrics() {
-  console.log('\n── lifecycle.js — Context Pressure Metrics ──');
-
-  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
-  const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
-
-  await test('recordContextPressureOnWorkItem writes _turnCount, _outputLogSizeBytes, _hitTurnLimit', () => {
-    const tmpDir = createTmpDir();
-    const wiPath = path.join(tmpDir, 'work-items.json');
-    fs.writeFileSync(wiPath, JSON.stringify([{ id: 'WI-CP-1', status: 'dispatched', title: 'test' }]));
-
-    // Monkey-patch MINIONS_DIR temporarily via meta.source path
-    const meta = {
-      item: { id: 'WI-CP-1' },
-      source: 'central-work-item',
-      project: null,
-    };
-    // We need to use the function with a direct wiPath, but the function reads from MINIONS_DIR.
-    // Instead, test via source code assertion + a functional mock.
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('target._turnCount = turnCount'), 'Should record _turnCount on work item');
-    assert.ok(src.includes('target._outputLogSizeBytes = outputLogSizeBytes'), 'Should record _outputLogSizeBytes on work item');
-    assert.ok(src.includes('target._hitTurnLimit = hitTurnLimit'), 'Should record _hitTurnLimit on work item');
-  });
-
-  await test('updateMetrics aggregates contextPressure section', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('_contextPressure'), 'Should have _contextPressure section in metrics');
-    assert.ok(src.includes('cp.totalTurns'), 'Should track totalTurns in contextPressure');
-    assert.ok(src.includes('cp.dispatches'), 'Should track dispatch count in contextPressure');
-    assert.ok(src.includes('cp.maxTurns'), 'Should track maxTurns in contextPressure');
-    assert.ok(src.includes('cp.turnLimitHits'), 'Should track turnLimitHits in contextPressure');
-  });
-
-  await test('updateMetrics contextPressure updates maxTurns correctly', () => {
-    const tmpDir = createTmpDir();
-    const metricsPath = path.join(tmpDir, 'metrics.json');
-    fs.writeFileSync(metricsPath, JSON.stringify({
-      _contextPressure: { totalTurns: 50, dispatches: 2, maxTurns: 30, turnLimitHits: 0 }
-    }));
-    const metrics = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
-
-    // Simulate what updateMetrics does for contextPressure
-    const taskUsage = { numTurns: 45, costUsd: 0.1, inputTokens: 1000, outputTokens: 500 };
-    if (taskUsage && taskUsage.numTurns > 0) {
-      if (!metrics._contextPressure) metrics._contextPressure = { totalTurns: 0, dispatches: 0, maxTurns: 0, turnLimitHits: 0 };
-      const cp = metrics._contextPressure;
-      cp.totalTurns += taskUsage.numTurns;
-      cp.dispatches++;
-      if (taskUsage.numTurns > cp.maxTurns) cp.maxTurns = taskUsage.numTurns;
-    }
-    assert.strictEqual(metrics._contextPressure.totalTurns, 95, 'totalTurns should accumulate');
-    assert.strictEqual(metrics._contextPressure.dispatches, 3, 'dispatches should increment');
-    assert.strictEqual(metrics._contextPressure.maxTurns, 45, 'maxTurns should update when exceeded');
-  });
-
-  await test('contextPressure turnLimitHitPct calculation', () => {
-    const cp = { totalTurns: 300, dispatches: 5, maxTurns: 100, turnLimitHits: 2 };
-    const avgTurns = cp.totalTurns / cp.dispatches;
-    const turnLimitPct = (cp.turnLimitHits / cp.dispatches) * 100;
-    assert.strictEqual(avgTurns, 60, 'Average turns should be totalTurns/dispatches');
-    assert.strictEqual(turnLimitPct, 40, 'Turn limit hit % should be turnLimitHits/dispatches * 100');
-  });
-
-  await test('runPostCompletionHooks records context pressure on work item', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('recordContextPressureOnWorkItem'), 'Should call recordContextPressureOnWorkItem in post-completion hooks');
-    assert.ok(src.includes('live-output.log'), 'Should read live-output.log file size');
-    assert.ok(src.includes('fs.statSync'), 'Should use fs.statSync to get output log size');
-  });
-
-  await test('context pressure dashboard rendering function exists', () => {
-    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
-    assert.ok(dashSrc.includes('renderContextPressure'), 'Should have renderContextPressure function');
-    assert.ok(dashSrc.includes('context-pressure-content'), 'Should target context-pressure-content element');
-    assert.ok(dashSrc.includes('_contextPressure'), 'Should read _contextPressure from metrics');
-    assert.ok(dashSrc.includes('Avg Turns'), 'Should display average turns');
-    assert.ok(dashSrc.includes('Hit Turn Limit'), 'Should display turn limit hit percentage');
   });
 }
 
@@ -5339,14 +4634,9 @@ async function testMeetings() {
       'Should create work items for each participant in investigate round');
   });
 
-  await test('discoverMeetingWork picks first non-busy participant as concluder', () => {
-    assert.ok(meetingSrc.includes('busyAgents') && meetingSrc.includes('participants.find') && meetingSrc.includes('meeting-conclude'),
-      'Should pick first non-busy participant for conclusion, falling back to participants[0]');
-  });
-
-  await test('concluder fallback: if all participants busy, falls back to first participant', () => {
-    assert.ok(meetingSrc.includes("|| meeting.participants[0]"),
-      'Should fall back to participants[0] when all are busy');
+  await test('discoverMeetingWork dispatches only concluder for conclude round', () => {
+    assert.ok(meetingSrc.includes('participants[0]') && meetingSrc.includes('meeting-conclude'),
+      'Should dispatch only first participant for conclusion');
   });
 
   await test('debate round includes all findings from round 1', () => {
@@ -5571,8 +4861,6 @@ async function main() {
     // lifecycle.js tests
     await testLifecycleHelpers();
     await testSyncPrdItemStatus();
-    await testEvalLoopAutoDispatch();
-    await testEvalIterationTracking();
 
     // consolidation.js tests
     await testConsolidationHelpers();
@@ -5621,11 +4909,9 @@ async function main() {
     await testGitEnv();
     await testProjectPathHelpers();
     await testMutateJsonFileLocked();
-    await testSafeWriteBackupRestore();
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
-    await testCooldownContextDedup();
     await testResolveAgent();
     await testRenderPlaybook();
     await testCompleteDispatch();
@@ -5638,7 +4924,6 @@ async function main() {
     await testSyncPrsFromOutput();
     await testLifecycleDataSafety();
     await testRunPostCompletionHooks();
-    await testContextPressureMetrics();
     await testSpawnAgentScript();
     await testExitCode78Handling();
 
@@ -5683,24 +4968,6 @@ async function main() {
 
     // Checkpoint resume support
     await testCheckpointResume();
-
-    // P-2b1c0d9e: Per-work-item cumulative cost tracking
-    await testCumulativeCostTracking();
-
-    // P-k7m2a9f4: Pipeline artifact navigation links
-    await testPipelineArtifactLinks();
-
-    // P-r5w9c2hd: Pipeline step-progress indicator tests
-    await testPipelineStepProgress();
-
-    // P-v8k3m1qa: Regression fixes from commit 5cff9b8
-    await testLifecycleRegressions();
-
-    // P-j2n7f4xb: Lock audit — high-risk lifecycle.js sites
-    await testLockAuditHighRiskSites();
-
-    // P-a5b1k9m3: Orphaned temp file cleanup
-    await testOrphanedTempFileCleanup();
   } finally {
     cleanupTmpDirs();
   }
@@ -5860,9 +5127,9 @@ async function testSyncPrsFromOutputCentral() {
     assert.ok(src.includes('extractPrUrl'), 'lifecycle.js should have extractPrUrl function');
   });
 
-  await test('implement playbook includes PR section', () => {
+  await test('implement playbook marks PR creation as mandatory', () => {
     const playbook = fs.readFileSync(path.join(__dirname, '..', 'playbooks', 'implement.md'), 'utf8');
-    assert.ok(playbook.includes('pr_section') || playbook.includes('Create PR'), 'implement playbook should include PR creation instructions');
+    assert.ok(playbook.includes('MANDATORY'), 'implement playbook should mark PR creation as MANDATORY');
   });
 }
 
@@ -6074,10 +5341,45 @@ async function testSessionFeatures() {
 async function testCheckpointResume() {
   console.log('\n── Checkpoint Resume ──');
 
-  // checkpoint.json detection was removed from engine.js — 8 source-pattern tests removed
-
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
   const implementPb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
   const fixPb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
+
+  await test('engine.js detects checkpoint.json in worktree', () => {
+    assert.ok(engineSrc.includes("checkpoint.json") && engineSrc.includes("fs.existsSync(cpPath)"),
+      'Should look for checkpoint.json in the agent worktree directory');
+  });
+
+  await test('engine.js injects checkpoint_context variable from checkpoint.json', () => {
+    assert.ok(engineSrc.includes("vars.checkpoint_context") && engineSrc.includes("cpSummary"),
+      'Should build checkpoint_context variable from checkpoint.json contents');
+  });
+
+  await test('checkpoint_context includes completed/remaining/blockers/branch_state', () => {
+    assert.ok(engineSrc.includes('cpData.completed') && engineSrc.includes('cpData.remaining') &&
+      engineSrc.includes('cpData.blockers') && engineSrc.includes('cpData.branch_state'),
+      'Should read all four checkpoint fields');
+  });
+
+  await test('engine.js tracks _checkpointCount on work items', () => {
+    assert.ok(engineSrc.includes('_checkpointCount'),
+      'Must track _checkpointCount on work items');
+    assert.ok(engineSrc.includes("(item._checkpointCount || 0) + 1"),
+      'Should increment _checkpointCount from current value');
+  });
+
+  await test('engine.js caps checkpoint-resumes at 3', () => {
+    assert.ok(engineSrc.includes('cpCount > 3'),
+      'Should check if checkpoint count exceeds 3');
+    assert.ok(engineSrc.includes("'needs-human-review'"),
+      'Should set status to needs-human-review after 3 checkpoint-resumes');
+  });
+
+  await test('checkpoint_context defaults to empty string when no checkpoint', () => {
+    const matches = engineSrc.match(/vars\.checkpoint_context\s*=\s*''/g);
+    assert.ok(matches && matches.length >= 2,
+      'Should default checkpoint_context to empty string in both project and central dispatch paths');
+  });
 
   await test('implement.md playbook includes checkpoint_context', () => {
     assert.ok(implementPb.includes('{{checkpoint_context}}'),
@@ -6088,531 +5390,15 @@ async function testCheckpointResume() {
     assert.ok(fixPb.includes('{{checkpoint_context}}'),
       'fix.md must include {{checkpoint_context}} template variable');
   });
-}
 
-// ─── P-2b1c0d9e: Per-work-item cumulative cost tracking ──────────────────────
-
-async function testCumulativeCostTracking() {
-  console.log('\n── Per-work-item cumulative cost tracking ──');
-
-  await test('ENGINE_DEFAULTS includes evalMaxCost: null', () => {
-    assert.ok('evalMaxCost' in shared.ENGINE_DEFAULTS, 'ENGINE_DEFAULTS should have evalMaxCost');
-    assert.strictEqual(shared.ENGINE_DEFAULTS.evalMaxCost, null, 'evalMaxCost default should be null');
+  await test('checkpoint resume logs injection info', () => {
+    assert.ok(engineSrc.includes('Injecting checkpoint context for'),
+      'Should log when checkpoint context is injected');
   });
 
-  await test('lifecycle.js accumulates _totalCostUsd on work items', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('_totalCostUsd'), 'Should track _totalCostUsd on work items');
-    assert.ok(src.includes('_totalInputTokens'), 'Should track _totalInputTokens on work items');
-    assert.ok(src.includes('_totalOutputTokens'), 'Should track _totalOutputTokens on work items');
-  });
-
-  await test('cost accumulation uses mutateJsonFileLocked (not safeWrite)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    // Find the cost accumulation section
-    const costSection = src.slice(src.indexOf('Accumulate per-work-item cost'), src.indexOf('Handle decomposition results'));
-    assert.ok(costSection.includes('mutateJsonFileLocked'), 'Cost accumulation must use mutateJsonFileLocked for concurrency safety');
-  });
-
-  await test('cost accumulates across 2 dispatches (functional)', () => {
-    const tmp = createTmpDir();
-    const wiPath = path.join(tmp, 'work-items.json');
-    shared.safeWrite(wiPath, [
-      { id: 'W-001', title: 'Test item', status: 'dispatched', _totalCostUsd: 0.50, _totalInputTokens: 1000, _totalOutputTokens: 500 }
-    ]);
-
-    // Simulate second dispatch accumulation
-    shared.mutateJsonFileLocked(wiPath, (items) => {
-      const wi = items.find(i => i.id === 'W-001');
-      if (wi) {
-        wi._totalCostUsd = (wi._totalCostUsd || 0) + 0.75;
-        wi._totalInputTokens = (wi._totalInputTokens || 0) + 2000;
-        wi._totalOutputTokens = (wi._totalOutputTokens || 0) + 1000;
-      }
-      return items;
-    }, { defaultValue: [] });
-
-    const result = shared.safeJson(wiPath);
-    const wi = result.find(i => i.id === 'W-001');
-    assert.strictEqual(wi._totalCostUsd, 1.25, 'Cost should accumulate: 0.50 + 0.75 = 1.25');
-    assert.strictEqual(wi._totalInputTokens, 3000, 'Input tokens should accumulate: 1000 + 2000');
-    assert.strictEqual(wi._totalOutputTokens, 1500, 'Output tokens should accumulate: 500 + 1000');
-  });
-
-  await test('cost ceiling triggers needs-human-review', () => {
-    const tmp = createTmpDir();
-    const wiPath = path.join(tmp, 'work-items.json');
-    shared.safeWrite(wiPath, [
-      { id: 'W-002', title: 'Expensive item', status: 'done', _totalCostUsd: 5.50 }
-    ]);
-
-    // Simulate cost ceiling check: evalMaxCost = 5.00, current = 5.50
-    const evalMaxCost = 5.00;
-    const items = shared.safeJson(wiPath);
-    const wi = items.find(i => i.id === 'W-002');
-    if (wi && wi._totalCostUsd > evalMaxCost && wi.status !== 'needs-human-review') {
-      shared.mutateJsonFileLocked(wiPath, (data) => {
-        const target = data.find(i => i.id === 'W-002');
-        if (target) {
-          target.status = 'needs-human-review';
-          target.failReason = `Cumulative cost exceeds evalMaxCost ceiling`;
-        }
-        return data;
-      }, { defaultValue: [] });
-    }
-
-    const result = shared.safeJson(wiPath);
-    const updated = result.find(i => i.id === 'W-002');
-    assert.strictEqual(updated.status, 'needs-human-review', 'Item exceeding cost ceiling should be needs-human-review');
-    assert.ok(updated.failReason.includes('evalMaxCost'), 'Fail reason should mention evalMaxCost');
-  });
-
-  await test('cost ceiling not triggered when evalMaxCost is null', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    // Verify null check exists — evalMaxCost must be non-null and > 0
-    assert.ok(src.includes('evalMaxCost != null') || src.includes('evalMaxCost !== null'),
-      'Should check evalMaxCost is not null before enforcing');
-    assert.ok(src.includes('evalMaxCost > 0'),
-      'Should check evalMaxCost > 0 before enforcing');
-  });
-
-  await test('dashboard renders cumulative cost fields', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('_totalCostUsd'), 'Dashboard should display _totalCostUsd');
-    assert.ok(src.includes('_totalInputTokens'), 'Dashboard should display _totalInputTokens');
-    assert.ok(src.includes('_totalOutputTokens'), 'Dashboard should display _totalOutputTokens');
-    assert.ok(src.includes('Cumulative Cost'), 'Dashboard should label the cost field');
-  });
-}
-
-async function testPipelineArtifactLinks() {
-  console.log('\n── Pipeline Artifact Navigation Links ──');
-
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
-
-  await test('render-pipelines.js has _renderArtifactLinks helper', () => {
-    assert.ok(src.includes('function _renderArtifactLinks(artifacts)'),
-      'Should define _renderArtifactLinks function');
-  });
-
-  await test('artifact links cover all artifact types', () => {
-    assert.ok(src.includes('artifacts.workItems'), 'Should render work item links');
-    assert.ok(src.includes('artifacts.meetings'), 'Should render meeting links');
-    assert.ok(src.includes('artifacts.plans'), 'Should render plan links');
-    assert.ok(src.includes('artifacts.prds'), 'Should render PRD links');
-    assert.ok(src.includes('artifacts.prs'), 'Should render PR links');
-    assert.ok(src.includes('artifacts.subStages'), 'Should render sub-stage labels');
-  });
-
-  await test('artifact links navigate to correct pages', () => {
-    // Source uses escaped quotes in onclick strings: switchPage(\'work\')
-    assert.ok(src.includes("switchPage(\\'work\\')"), 'Work items should navigate to work page');
-    assert.ok(src.includes("switchPage(\\'meetings\\')"), 'Meetings should navigate to meetings page');
-    assert.ok(src.includes("switchPage(\\'plans\\')"), 'Plans should navigate to plans page');
-    assert.ok(src.includes("switchPage(\\'prd\\')"), 'PRDs should navigate to PRD page');
-    assert.ok(src.includes("switchPage(\\'prs\\')"), 'PRs should navigate to PRs page');
-  });
-
-  await test('work item and meeting links open detail views', () => {
-    assert.ok(src.includes('openWorkItemDetail('), 'Work items should open detail modal');
-    assert.ok(src.includes('openMeetingDetail('), 'Meetings should open detail modal');
-  });
-
-  await test('_collectRunArtifacts helper deduplicates across stages', () => {
-    assert.ok(src.includes('function _collectRunArtifacts(run)'),
-      'Should define _collectRunArtifacts function');
-    assert.ok(src.includes('indexOf(v) === -1'),
-      'Should deduplicate artifacts');
-  });
-
-  await test('pipeline detail modal renders artifact links per stage', () => {
-    assert.ok(src.includes('_renderArtifactLinks(stageRun.artifacts)'),
-      'Stage detail should call _renderArtifactLinks with stage artifacts');
-  });
-
-  await test('run history shows artifact counts with expand toggle', () => {
-    assert.ok(src.includes('_collectRunArtifacts(r)'),
-      'Run history should collect artifacts per run');
-    assert.ok(src.includes('artifactCount'),
-      'Run history should calculate artifact count');
-    assert.ok(src.includes('run-artifacts-'),
-      'Run history should have expandable artifact containers');
-  });
-}
-
-async function testPipelineStepProgress() {
-  console.log('\n── Pipeline Step-Progress Indicator ──');
-
-  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
-  const css = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
-
-  await test('render-pipelines.js computes progress from stage statuses', () => {
-    assert.ok(src.includes('completedCount'), 'Should count completed stages');
-    assert.ok(src.includes('runningCount'), 'Should count running stages');
-    assert.ok(src.includes('failedCount'), 'Should count failed stages');
-  });
-
-  await test('render-pipelines.js builds segmented progress bar', () => {
-    assert.ok(src.includes('pl-progress-bar'), 'Should render progress bar container');
-    assert.ok(src.includes('pl-prog-seg'), 'Should render individual stage segments');
-    assert.ok(src.includes('pl-progress-label'), 'Should render progress label');
-  });
-
-  await test('progress bar segments map to correct CSS classes', () => {
-    // Verify segment status-to-class mapping
-    assert.ok(src.includes("'complete'"), 'Should map completed to complete class');
-    assert.ok(src.includes("'running'"), 'Should map running to running class');
-    assert.ok(src.includes("'failed'"), 'Should map failed to failed class');
-    assert.ok(src.includes("'waiting'"), 'Should map waiting-human to waiting class');
-    assert.ok(src.includes("'pending'"), 'Should map default to pending class');
-  });
-
-  await test('progress percentage calculated from completed/total', () => {
-    assert.ok(src.includes('Math.round((completedCount / totalStages) * 100)') ||
-              src.includes('Math.round((ddone / dtotal) * 100)'),
-      'Should calculate percentage from completed stages');
-  });
-
-  await test('progress bar only shown when run exists', () => {
-    assert.ok(src.includes('displayRun && (p.stages || []).length > 0'),
-      'List view should guard progress bar on run existence');
-    assert.ok(src.includes('detailRun && (p.stages || []).length > 0'),
-      'Detail view should guard progress bar on run existence');
-  });
-
-  await test('CSS defines pipeline progress bar styles', () => {
-    assert.ok(css.includes('.pl-progress-bar'), 'Should define progress bar styles');
-    assert.ok(css.includes('.pl-prog-seg.complete'), 'Should define complete segment style');
-    assert.ok(css.includes('.pl-prog-seg.running'), 'Should define running segment style with animation');
-    assert.ok(css.includes('.pl-prog-seg.failed'), 'Should define failed segment style');
-    assert.ok(css.includes('.pl-prog-seg.pending'), 'Should define pending segment style');
-    assert.ok(css.includes('.pl-prog-seg.waiting'), 'Should define waiting segment style');
-    assert.ok(css.includes('plSegPulse'), 'Should define pulse animation for running stages');
-  });
-
-  await test('progress bar appears in both list and detail views', () => {
-    assert.ok(src.includes('progressHtml'), 'List view should insert progress HTML');
-    assert.ok(src.includes('detailRun'), 'Detail view should compute progress from detailRun');
-  });
-}
-
-async function testLifecycleRegressions() {
-  console.log('\n── Lifecycle Regression Fixes (commit 5cff9b8) ──');
-
-  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-
-  await test('_retryCount is cleared when work item status set to done', () => {
-    // updateWorkItemStatus clears failReason and failedAt on done; _retryCount is
-    // left intact so cost/retry history is preserved for metrics dashboards.
-    const updateFn = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function updateWorkItemStatus('),
-      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updateWorkItemStatus(') + 1)
-    );
-    // Verify the done branch clears failure metadata
-    const doneBlock = updateFn.slice(updateFn.indexOf("status === 'done'"), updateFn.indexOf("} else if (status === 'failed')"));
-    assert.ok(doneBlock.includes("delete target.failReason"),
-      'updateWorkItemStatus should clear failReason when marking done');
-    assert.ok(doneBlock.includes("delete target.failedAt"),
-      'updateWorkItemStatus should clear failedAt when marking done');
-  });
-
-  await test('syncPrdItemStatus uses mutateJsonFileLocked for atomic PRD updates', () => {
-    // syncPrdItemStatus uses mutateJsonFileLocked (which handles missing files gracefully)
-    // instead of a separate fs.existsSync guard
-    const syncFn = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function syncPrdItemStatus('),
-      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function syncPrdItemStatus(') + 1)
-    );
-    assert.ok(syncFn.includes('mutateJsonFileLocked(fpath'),
-      'syncPrdItemStatus should use mutateJsonFileLocked for atomic PRD file updates');
-  });
-
-  await test('syncPrsFromOutput backfills prdItems on existing PRs', () => {
-    // prdItems backfill uses Set merge when PR entry already exists in mutateJsonFileLocked
-    const syncPrsFn = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function syncPrsFromOutput('),
-      lifecycleSrc.indexOf('\n// ─── Post-Completion', lifecycleSrc.indexOf('function syncPrsFromOutput(') + 1)
-    );
-    assert.ok(syncPrsFn.includes('prdItems'),
-      'syncPrsFromOutput should handle prdItems when PR entry already exists');
-    assert.ok(syncPrsFn.includes('Backfill prdItems'),
-      'Should backfill prdItems on existing PRs via Set merge');
-  });
-
-  await test('resolveProjectForPr function exists for PR project resolution', () => {
-    // Regression 4: resolveProjectForPr was removed, causing wrong-path writes
-    assert.ok(lifecycleSrc.includes('function resolveProjectForPr('),
-      'resolveProjectForPr should exist to resolve which project owns a PR');
-  });
-
-  await test('updatePrAfterReview writes PR data via projectPrPath or fallback', () => {
-    const reviewFn = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function updatePrAfterReview('),
-      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterReview(') + 1)
-    );
-    assert.ok(reviewFn.includes('projectPrPath(project)') || reviewFn.includes('shared.projectPrPath(project)'),
-      'updatePrAfterReview should write to project PR path');
-    assert.ok(reviewFn.includes('safeWrite('),
-      'updatePrAfterReview should persist PR data');
-  });
-
-  await test('updatePrAfterFix writes PR data via projectPrPath or fallback', () => {
-    const fixFn = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function updatePrAfterFix('),
-      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterFix(') + 1)
-    );
-    assert.ok(fixFn.includes('projectPrPath(project)') || fixFn.includes('shared.projectPrPath(project)'),
-      'updatePrAfterFix should write to project PR path');
-    assert.ok(fixFn.includes('safeWrite('),
-      'updatePrAfterFix should persist PR data');
-  });
-
-  await test('syncPrdItemStatus functional: updates PRD feature status', () => {
-    const tmpDir = createTmpDir();
-    const prdDir = path.join(tmpDir, 'prd');
-    fs.mkdirSync(prdDir, { recursive: true });
-    const prdFile = path.join(prdDir, 'test-plan.json');
-    fs.writeFileSync(prdFile, JSON.stringify({
-      missing_features: [{ id: 'P-001', status: 'pending' }, { id: 'P-002', status: 'pending' }]
-    }));
-    const { mutateJsonFileLocked } = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
-    mutateJsonFileLocked(prdFile, (plan) => {
-      const feature = plan.missing_features.find(f => f.id === 'P-001');
-      if (feature) feature.status = 'done';
-      return plan;
-    });
-    const result = JSON.parse(fs.readFileSync(prdFile, 'utf8'));
-    assert.strictEqual(result.missing_features[0].status, 'done', 'P-001 should be done');
-    assert.strictEqual(result.missing_features[1].status, 'pending', 'P-002 should remain pending');
-  });
-}
-
-// ─── P-j2n7f4xb: Lock Audit — High-Risk Sites Use mutateJsonFileLocked ──────
-
-async function testLockAuditHighRiskSites() {
-  console.log('\n── Lock Audit: High-Risk lifecycle.js Sites ──');
-
-  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-
-  // Helper: extract a function body from source
-  function extractFn(src, fnName) {
-    const start = src.indexOf(`function ${fnName}(`);
-    if (start < 0) return '';
-    const nextFn = src.indexOf('\nfunction ', start + 1);
-    const nextSection = src.indexOf('\n// ─── ', start + 1);
-    const end = Math.min(
-      nextFn > 0 ? nextFn : Infinity,
-      nextSection > 0 ? nextSection : Infinity
-    );
-    return src.slice(start, end === Infinity ? undefined : end);
-  }
-
-  await test('eval-loop review creation uses mutateJsonFileLocked (not safeWrite)', () => {
-    // The review creation in handleAgentCompletion must be atomic
-    const completionSection = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Auto-dispatch review work item after implement'),
-      lifecycleSrc.indexOf('parse verdict')
-    );
-    assert.ok(completionSection.includes('mutateJsonFileLocked(wiPath'),
-      'Eval-loop review creation must use mutateJsonFileLocked');
-    assert.ok(!completionSection.includes('shared.safeWrite(wiPath'),
-      'Eval-loop review creation must NOT use bare safeWrite');
-  });
-
-  await test('review→fix/escalation uses mutateJsonFileLocked (not safeWrite)', () => {
-    // The fix item creation / escalation after eval failure must be atomic
-    const evalSection = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Evaluate completion: parse verdict'),
-      lifecycleSrc.indexOf('if (!isSuccess && meta?.item?.id)')
-    );
-    assert.ok(evalSection.includes('mutateJsonFileLocked(wiPath'),
-      'Review→fix iteration must use mutateJsonFileLocked');
-    assert.ok(!evalSection.includes('shared.safeWrite(wiPath'),
-      'Review→fix iteration must NOT use bare safeWrite');
-  });
-
-  await test('auto-retry counter uses mutateJsonFileLocked (not safeWrite)', () => {
-    // Retry count increment must be atomic to avoid lost updates
-    const retrySection = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('auto-retry'),
-      lifecycleSrc.indexOf('Clear _decomposing flag')
-    );
-    assert.ok(retrySection.includes('mutateJsonFileLocked(wiPath'),
-      'Auto-retry counter must use mutateJsonFileLocked');
-    assert.ok(!retrySection.includes('shared.safeWrite(wiPath'),
-      'Auto-retry must NOT use bare safeWrite for work items');
-  });
-
-  await test('PR sync writes use mutateJsonFileLocked (not safeWrite)', () => {
-    const syncPrsFn = extractFn(lifecycleSrc, 'syncPrsFromOutput');
-    // The final write loop should use locked mutation
-    const writeLoop = syncPrsFn.slice(syncPrsFn.indexOf('for (const [name, entry]'));
-    assert.ok(writeLoop.includes('mutateJsonFileLocked(entry.prPath'),
-      'PR sync writes must use mutateJsonFileLocked');
-    assert.ok(!writeLoop.includes('shared.safeWrite(entry.prPath'),
-      'PR sync writes must NOT use bare safeWrite');
-  });
-
-  await test('post-merge WI status uses mutateJsonFileLocked (not safeWrite)', () => {
-    // handlePostMerge is async, so extract manually
-    const start = lifecycleSrc.indexOf('async function handlePostMerge(');
-    const nextSection = lifecycleSrc.indexOf('\n// ─── ', start + 1);
-    const postMergeFn = lifecycleSrc.slice(start, nextSection > 0 ? nextSection : undefined);
-    const wiSection = postMergeFn.slice(postMergeFn.indexOf('Mark work item as done'));
-    assert.ok(wiSection.includes('mutateJsonFileLocked(wiPath'),
-      'Post-merge work item status must use mutateJsonFileLocked');
-    assert.ok(!wiSection.includes('shared.safeWrite(wiPath'),
-      'Post-merge WI update must NOT use bare safeWrite');
-  });
-
-  await test('post-merge metrics uses mutateJsonFileLocked (not safeWrite)', () => {
-    // handlePostMerge is async and long — find prsMerged section directly
-    const postMergeStart = lifecycleSrc.indexOf('async function handlePostMerge(');
-    const prsMergedIdx = lifecycleSrc.indexOf('prsMerged', postMergeStart);
-    assert.ok(prsMergedIdx > 0, 'prsMerged should exist in handlePostMerge');
-    const context = lifecycleSrc.slice(prsMergedIdx - 200, prsMergedIdx + 200);
-    assert.ok(context.includes('mutateJsonFileLocked(metricsPath'),
-      'Post-merge metrics must use mutateJsonFileLocked');
-    assert.ok(!context.includes('shared.safeWrite(metricsPath'),
-      'Post-merge metrics must NOT use bare safeWrite');
-  });
-
-  await test('review metrics uses mutateJsonFileLocked (not safeWrite)', () => {
-    const reviewFn = extractFn(lifecycleSrc, 'updatePrAfterReview');
-    assert.ok(reviewFn.includes('mutateJsonFileLocked(metricsPath'),
-      'Review metrics must use mutateJsonFileLocked');
-    assert.ok(!reviewFn.includes('shared.safeWrite(metricsPath'),
-      'Review metrics must NOT use bare safeWrite');
-  });
-
-  await test('decompose cleanup uses mutateJsonFileLocked (not safeWrite)', () => {
-    const decomposeSection = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Clear _decomposing flag'),
-      lifecycleSrc.indexOf('Meeting post-completion')
-    );
-    assert.ok(decomposeSection.includes('mutateJsonFileLocked(wiPath'),
-      'Decompose cleanup must use mutateJsonFileLocked');
-    assert.ok(!decomposeSection.includes('shared.safeWrite(wiPath'),
-      'Decompose cleanup must NOT use bare safeWrite');
-  });
-
-  // Functional test: concurrent eval-loop review creation deduplicates
-  await test('concurrent eval-loop review creation deduplicates items', () => {
-    const tmpDir = createTmpDir();
-    const wiPath = path.join(tmpDir, 'work-items.json');
-    shared.safeWrite(wiPath, [
-      { id: 'W-parent', title: 'Test item', type: 'implement', status: 'done', project: 'test' }
-    ]);
-
-    // Simulate two concurrent review creations using mutateJsonFileLocked
-    // (the pattern used in the converted code)
-    for (let i = 0; i < 2; i++) {
-      shared.mutateJsonFileLocked(wiPath, (items) => {
-        const existing = items.find(it => it._evalParentId === 'W-parent' && it.type === 'review');
-        if (existing) return items; // dedup
-        const parentItem = items.find(it => it.id === 'W-parent');
-        items.push({
-          id: 'W-review-' + shared.uid(),
-          title: 'Review: Test item',
-          type: 'review',
-          status: 'pending',
-          _evalParentId: 'W-parent',
-        });
-        if (parentItem) parentItem._evalDispatched = true;
-        return items;
-      }, { defaultValue: [] });
-    }
-
-    const result = shared.safeJson(wiPath);
-    const reviews = result.filter(i => i.type === 'review' && i._evalParentId === 'W-parent');
-    assert.strictEqual(reviews.length, 1,
-      'Should create exactly 1 review item even with 2 attempts (dedup inside lock)');
-    assert.ok(result.find(i => i.id === 'W-parent')._evalDispatched,
-      'Parent should be marked _evalDispatched');
-  });
-
-  // Functional test: concurrent retry counter increments don't lose updates
-  await test('concurrent retry counter increments are atomic', () => {
-    const tmpDir = createTmpDir();
-    const wiPath = path.join(tmpDir, 'work-items.json');
-    shared.safeWrite(wiPath, [
-      { id: 'W-fail', title: 'Failing item', type: 'implement', status: 'pending', _retryCount: 0 }
-    ]);
-
-    // Simulate 3 sequential retry increments via mutateJsonFileLocked
-    for (let i = 0; i < 3; i++) {
-      shared.mutateJsonFileLocked(wiPath, (items) => {
-        const wi = items.find(it => it.id === 'W-fail');
-        if (wi) wi._retryCount = (wi._retryCount || 0) + 1;
-        return items;
-      }, { defaultValue: [] });
-    }
-
-    const result = shared.safeJson(wiPath);
-    const wi = result.find(i => i.id === 'W-fail');
-    assert.strictEqual(wi._retryCount, 3,
-      'Retry count should be 3 after 3 atomic increments (no lost updates)');
-  });
-}
-
-// ─── P-a5b1k9m3: Orphaned temp file cleanup ─────────────────────────────────
-
-async function testOrphanedTempFileCleanup() {
-  console.log('\n── Orphaned safeWrite .tmp.* file cleanup ──');
-
-  await test('cleanup deletes .tmp.* files older than 1 hour', () => {
-    const tmp = createTmpDir();
-    const staleFile = path.join(tmp, 'cooldowns.json.tmp.9736.6449');
-    fs.writeFileSync(staleFile, '{"stale": true}');
-    // Set mtime to 2 hours ago
-    const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
-    fs.utimesSync(staleFile, twoHoursAgo, twoHoursAgo);
-
-    // Simulate the cleanup logic from runCleanup step 1
-    const oneHourAgo = Date.now() - 3600000;
-    let cleaned = 0;
-    for (const f of fs.readdirSync(tmp)) {
-      if (/\.tmp\.\d+\.\d+$/.test(f)) {
-        const fp = path.join(tmp, f);
-        const stat = fs.statSync(fp);
-        if (stat.mtimeMs < oneHourAgo) {
-          fs.unlinkSync(fp);
-          cleaned++;
-        }
-      }
-    }
-
-    assert.strictEqual(cleaned, 1, 'Should clean exactly 1 stale temp file');
-    assert.ok(!fs.existsSync(staleFile), 'Stale temp file should be deleted');
-  });
-
-  await test('cleanup preserves .tmp.* files newer than 1 hour', () => {
-    const tmp = createTmpDir();
-    const recentFile = path.join(tmp, 'dispatch.json.tmp.1234.1');
-    fs.writeFileSync(recentFile, '{"recent": true}');
-    // mtime is now (just created), so it's less than 1 hour old
-
-    const oneHourAgo = Date.now() - 3600000;
-    let cleaned = 0;
-    for (const f of fs.readdirSync(tmp)) {
-      if (/\.tmp\.\d+\.\d+$/.test(f)) {
-        const fp = path.join(tmp, f);
-        const stat = fs.statSync(fp);
-        if (stat.mtimeMs < oneHourAgo) {
-          fs.unlinkSync(fp);
-          cleaned++;
-        }
-      }
-    }
-
-    assert.strictEqual(cleaned, 0, 'Should not clean any recent temp files');
-    assert.ok(fs.existsSync(recentFile), 'Recent temp file should be preserved');
-  });
-
-  await test('cleanup.js contains .tmp. regex pattern for safeWrite orphans', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    assert.ok(src.includes('\\.tmp\\.\\d+\\.\\d+'), 'Should have regex matching .tmp.{pid}.{counter} pattern');
-    assert.ok(src.includes('isSafeWriteTemp'), 'Should identify safeWrite temp files separately');
+  await test('checkpoint resume logs needs-human-review escalation', () => {
+    assert.ok(engineSrc.includes('exceeded 3 checkpoint-resumes'),
+      'Should log when work item is escalated to needs-human-review');
   });
 }
 

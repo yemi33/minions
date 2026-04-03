@@ -206,25 +206,9 @@ function resolveTaskContext(item, config) {
   return resolved;
 }
 
-// ─── Critical Variable Definitions ─────────────────────────────────────────
-// Variables that MUST resolve to non-empty values for dispatch to proceed.
-// If any critical variable is empty or unresolved, renderPlaybook returns null.
-const CRITICAL_VARS = {
-  'implement': ['task_description', 'branch_name'],
-  'implement-shared': ['task_description', 'branch_name'],
-  'fix': ['task_description', 'branch_name'],
-  'work-item': ['task_description'],
-};
-
-// Module-level error state — callers check via getLastRenderError() after null return
-let _lastRenderError = null;
-
-function getLastRenderError() { return _lastRenderError; }
-
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
-  _lastRenderError = null;
   const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
@@ -296,12 +280,9 @@ function renderPlaybook(type, vars) {
   };
   const allVars = { ...projectVars, ...vars };
 
-  // Substitute variables — two passes to resolve nested templates
-  // (e.g. pr_section contains {{pr_create_instructions}}, {{branch_name}}, etc.)
-  for (let pass = 0; pass < 2; pass++) {
-    for (const [key, val] of Object.entries(allVars)) {
-      content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
-    }
+  // Substitute variables
+  for (const [key, val] of Object.entries(allVars)) {
+    content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
   }
 
   // Warn on variables that resolved to empty string
@@ -316,20 +297,6 @@ function renderPlaybook(type, vars) {
   const unresolved = [...new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)))];
   if (unresolved.length > 0) {
     log('warn', `Playbook "${type}": unresolved template variables: ${unresolved.join(', ')}`);
-  }
-
-  // Block dispatch if critical variables are empty or unresolved
-  const criticalVars = CRITICAL_VARS[type] || [];
-  if (criticalVars.length > 0) {
-    const emptySet = new Set(emptyVars);
-    const unresolvedSet = new Set(unresolved);
-    const criticalMissing = criticalVars.filter(v => emptySet.has(v) || unresolvedSet.has(v));
-    if (criticalMissing.length > 0) {
-      const msg = `Playbook "${type}": critical variables empty or unresolved: ${criticalMissing.join(', ')} — blocking dispatch`;
-      log('warn', msg);
-      _lastRenderError = { reason: 'critical_vars_missing', vars: criticalMissing, message: msg };
-      return null;
-    }
   }
 
   return content;
@@ -503,8 +470,6 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 
 module.exports = {
   renderPlaybook,
-  getLastRenderError,
-  CRITICAL_VARS,
   buildSystemPrompt,
   buildAgentContext,
   selectPlaybook,
