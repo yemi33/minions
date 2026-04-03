@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, safeReadDir, execSilent, projectPrPath, getPrLinks, addPrLink,
   mutateJsonFileLocked, log, ts, dateStamp } = shared;
@@ -200,11 +201,12 @@ function checkPlanCompletion(meta, config) {
 
     // Build per-project checkout commands: one worktree, merge all PR branches into it
     const checkoutBlocks = Object.entries(projectPrs).map(([name, { project: p, prs, mainBranch }]) => {
-      const wtPath = `${p.localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
+      const localPath = p.localPath.replace(/\\/g, '/');
+      const wtPath = `${localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
       const branches = prs.map(pr => pr.branch).filter(Boolean);
       const lines = [
         `# ${name} — merge ${branches.length} PR branch(es) into one worktree`,
-        `cd "${p.localPath}"`,
+        `cd "${localPath}"`,
         `git fetch origin ${branches.map(b => `"${b}"`).join(' ')} "${mainBranch}"`,
         `git worktree add "${wtPath}" "origin/${mainBranch}" 2>/dev/null || (cd "${wtPath}" && git checkout "${mainBranch}" && git pull origin "${mainBranch}")`,
         `cd "${wtPath}"`,
@@ -901,7 +903,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
       }
     } else {
       // Write in Claude Code native format: ~/.claude/skills/<name>/SKILL.md
-      const claudeSkillsDir = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+      const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills');
       const skillDir = path.join(claudeSkillsDir, name.replace(/[^a-z0-9-]/g, '-'));
       const skillPath = path.join(skillDir, 'SKILL.md');
       if (!fs.existsSync(skillPath)) {

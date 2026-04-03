@@ -72,7 +72,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
     proc.stdout.on('data', d => { stdout += d.toString(); });
     proc.stderr.on('data', d => { stderr += d.toString(); });
 
-    const timer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch { /* process may be dead */ } }, timeout);
+    const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
     proc.on('close', (code) => {
       clearTimeout(timer);
@@ -180,7 +180,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
     });
     proc.stderr.on('data', d => { stderr += d.toString(); });
 
-    const timer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, timeout);
+    const timer = setTimeout(() => { shared.killImmediate(proc); }, timeout);
 
     proc.on('close', (code) => {
       clearTimeout(timer);

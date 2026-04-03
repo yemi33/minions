@@ -72,7 +72,7 @@ function checkSteering(config) {
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
     // Kill current process
-    try { info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+    shared.killImmediate(info.proc);
 
     // Store steering context for re-spawn on close
     info._steeringMessage = message;
@@ -97,10 +97,7 @@ function checkTimeouts(config) {
     const elapsed = Date.now() - new Date(info.startedAt).getTime();
     if (elapsed > itemTimeout) {
       log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${Math.round(elapsed / 1000)}s — killing`);
-      try { info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
-      setTimeout(() => {
-        try { info.proc.kill('SIGKILL'); } catch { /* process may be dead */ }
-      }, 5000);
+      shared.killGracefully(info.proc, 5000);
     }
   }
 
@@ -149,7 +146,7 @@ function checkTimeouts(config) {
         runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
 
         if (hasProcess) {
-          try { activeProcesses.get(item.id)?.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+          shared.killImmediate(activeProcesses.get(item.id)?.proc);
           activeProcesses.delete(item.id);
         }
         continue; // Skip orphan/hung detection — we handled it
@@ -208,8 +205,7 @@ function checkTimeouts(config) {
       log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
-        try { procInfo.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
-        setTimeout(() => { try { procInfo.proc.kill('SIGKILL'); } catch { /* process may be dead */ } }, 5000);
+        shared.killGracefully(procInfo.proc, 5000);
         activeProcesses.delete(item.id);
       }
       deadItems.push({ item, reason: `Hung — no output for ${silentSec}s` });

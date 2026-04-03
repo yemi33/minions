@@ -163,7 +163,7 @@ function getEngineState() { return queries.getControl(); }
 
 function getMcpServers() {
   try {
-    const home = process.env.USERPROFILE || process.env.HOME || '';
+    const home = os.homedir();
     const claudeJsonPath = path.join(home, '.claude.json');
     const data = JSON.parse(safeRead(claudeJsonPath) || '{}');
     const servers = data.mcpServers || {};
@@ -2736,7 +2736,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }
     if (!content) {
       // Fallback: search Claude Code skills, then project skills
-      const home = process.env.HOME || process.env.USERPROFILE || '';
+      const home = os.homedir();
       const claudePath = path.join(home, '.claude', 'skills', file.replace('.md', '').replace('SKILL', ''), 'SKILL.md');
       content = safeRead(claudePath) || '';
       if (!content) {

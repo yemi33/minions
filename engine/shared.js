@@ -536,6 +536,32 @@ function addPrLink(prId, itemId) {
   safeWrite(PR_LINKS_PATH, links);
 }
 
+// ─── Cross-Platform Process Kill Helpers ─────────────────────────────────────
+
+function killGracefully(proc, graceMs = 5000) {
+  if (!proc || !proc.pid) return;
+  if (process.platform === 'win32') {
+    try { _execSync(`taskkill /PID ${proc.pid} /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+    setTimeout(() => {
+      try { _execSync(`taskkill /PID ${proc.pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+    }, graceMs);
+  } else {
+    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+    setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
+    }, graceMs);
+  }
+}
+
+function killImmediate(proc) {
+  if (!proc || !proc.pid) return;
+  if (process.platform === 'win32') {
+    try { _execSync(`taskkill /PID ${proc.pid} /F /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true }); } catch { /* process may be dead */ }
+  } else {
+    try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
+  }
+}
+
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
@@ -580,6 +606,8 @@ module.exports = {
   validatePid,
   parseSkillFrontmatter,
   sleepMs,
+  killGracefully,
+  killImmediate,
   LOCK_STALE_MS,
 };
 

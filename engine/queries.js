@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
@@ -19,7 +20,7 @@ const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 const INBOX_DIR = path.join(MINIONS_DIR, 'notes', 'inbox');
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
 const PRD_DIR = path.join(MINIONS_DIR, 'prd');
-const SKILLS_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+const SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 const KNOWLEDGE_DIR = path.join(MINIONS_DIR, 'knowledge');
 const ARCHIVE_DIR = path.join(MINIONS_DIR, 'notes', 'archive');
 
@@ -332,7 +333,7 @@ function collectSkillFiles(config) {
   const seen = new Set(); // dedup by name
 
   // 1. Claude Code native skills: ~/.claude/skills/<name>/SKILL.md
-  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const homeDir = os.homedir();
   const claudeSkillsDir = path.join(homeDir, '.claude', 'skills');
   try {
     const dirs = fs.readdirSync(claudeSkillsDir).filter(d => {

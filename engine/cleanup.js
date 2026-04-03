@@ -230,7 +230,7 @@ function runCleanup(config, verbose = false) {
     const activeIds = new Set((dispatch.active || []).map(d => d.id));
     for (const [id, info] of activeProcesses.entries()) {
       if (!activeIds.has(id)) {
-        try { if (info.proc) info.proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+        shared.killImmediate(info.proc);
         activeProcesses.delete(id);
         cleaned.zombies++;
       }

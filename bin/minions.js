@@ -666,7 +666,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   // 2. Remove minions-authored skills from ~/.claude/skills/
   try {
-    const claudeSkills = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+    const claudeSkills = path.join(os.homedir(), '.claude', 'skills');
     if (fs.existsSync(claudeSkills)) {
       for (const dir of fs.readdirSync(claudeSkills)) {
         const skillFile = path.join(claudeSkills, dir, 'SKILL.md');

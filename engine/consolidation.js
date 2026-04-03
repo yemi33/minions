@@ -179,10 +179,8 @@ function consolidateWithLLM(items, existingNotes, files, config) {
 
   const timeout = setTimeout(() => {
     log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
-    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
-    // Escalate to SIGKILL after 10s if process doesn't exit
+    shared.killGracefully(proc, 10000);
     setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch { /* process may be dead */ }
       if (_consolidationInFlight) {
         _consolidationInFlight = false;
         _processingFiles.clear();
