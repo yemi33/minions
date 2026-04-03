@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.269 (2026-04-03)
+
+### Features
+-  CC streaming shows cumulative tool list with loading dots
+
+### Fixes
+-  streaming CC was popping user messages from _ccMessages
+-  process remaining SSE buffer after stream ends + fallback finalization
+-  Thinking... indicator shows alongside tool calls until text arrives
+-  use safeJson instead of JSON.parse(safeRead()) in trigger-verify handler
+
 ## 0.1.265 (2026-04-03)
 
 ### Features
