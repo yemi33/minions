@@ -845,9 +845,9 @@ const server = http.createServer(async (req, res) => {
 
       // Check if verify was created
       const project = PROJECTS.find(p => {
-        const plan = JSON.parse(safeRead(activePath) || safeRead(prdPath) || '{}');
-        return p.name?.toLowerCase() === (plan.project || '').toLowerCase();
-      }) || PROJECTS[0];
+        const plan = safeJson(activePath) || safeJson(prdPath);
+        return plan && p.name?.toLowerCase() === (plan.project || '').toLowerCase();
+      }) || PROJECTS[0] || null;
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
         const items = JSON.parse(safeRead(wiPath) || '[]');
@@ -1037,6 +1037,7 @@ const server = http.createServer(async (req, res) => {
       if (body.project) {
         // Write to project-specific queue
         const targetProject = PROJECTS.find(p => p.name === body.project) || PROJECTS[0];
+        if (!targetProject) return jsonReply(res, 400, { error: 'No projects configured' });
         wiPath = shared.projectWorkItemsPath(targetProject);
       } else {
         // Write to central queue — agent decides which project

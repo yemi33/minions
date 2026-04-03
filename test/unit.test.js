@@ -6290,6 +6290,36 @@ async function testAuxModuleBugFixes() {
     assert.ok(src.includes('w.length <= 200'), 'Should cap word length at 200 chars');
   });
 
+  // P-d8n3x5q1: dashboard.js null guards for PROJECTS[0] and safeJson results
+  await test('dashboard.js: handleWorkItemsCreate guards PROJECTS[0] with null check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The handleWorkItemsCreate function should guard PROJECTS[0] fallback
+    assert.ok(src.includes("No projects configured"), 'Should return error when no projects configured');
+    // Find the targetProject = ... || PROJECTS[0] line and verify guard follows
+    const createIdx = src.indexOf('handleWorkItemsCreate');
+    const guardIdx = src.indexOf("if (!targetProject)", createIdx);
+    assert.ok(guardIdx > createIdx, 'Should have !targetProject guard after PROJECTS[0] fallback in create handler');
+  });
+
+  await test('dashboard.js: PRD completion handler uses safeJson instead of JSON.parse for plan reading', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The verify-was-created block should use safeJson (null-safe) not JSON.parse
+    const verifyBlock = src.indexOf('Check if verify was created');
+    assert.ok(verifyBlock > 0, 'Should have verify-was-created comment');
+    const nextJsonParse = src.indexOf('JSON.parse(safeRead(activePath)', verifyBlock);
+    const nextSafeJson = src.indexOf('safeJson(activePath)', verifyBlock);
+    // safeJson should appear before (or instead of) JSON.parse for activePath in this block
+    assert.ok(nextSafeJson > verifyBlock, 'Should use safeJson for activePath in verify block');
+    if (nextJsonParse > 0) {
+      assert.ok(nextSafeJson < nextJsonParse, 'safeJson should replace JSON.parse for activePath');
+    }
+  });
+
+  await test('dashboard.js: PROJECTS[0] at line 1159 uses optional chaining', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('PROJECTS[0]?.name'), 'Should use optional chaining for PROJECTS[0].name');
+  });
+
   // Bug #38: notes.md truncation on section boundary
   await test('consolidation.js: truncation scans for section boundary', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
