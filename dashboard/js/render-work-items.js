@@ -52,7 +52,7 @@ function wiRow(item) {
     '<td>' +
       (item.completedAgents && item.completedAgents.length > 0
         ? '<span class="pr-agent">' + escHtml(item.completedAgents.join(', ')) + '</span>'
-        : '<span class="pr-agent">' + escHtml(item.dispatched_to || '—') + '</span>') +
+        : '<span class="pr-agent">' + escHtml(item.dispatched_to || item.agent || '—') + '</span>') +
       (item.failReason ? '<span style="display:block;font-size:9px;color:var(--red)" title="' + escHtml(item.failReason) + '">' + escHtml(item.failReason.slice(0, 30)) + '</span>' : '') +
     '</td>' +
     '<td>' + prLink + '</td>' +
