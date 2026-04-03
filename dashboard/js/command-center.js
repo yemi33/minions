@@ -72,13 +72,20 @@ function ccRestoreMessages() {
   } catch {}
 }
 
+let _ccSaveDebounce = null;
 function ccSaveState() {
-  try {
-    if (_ccSessionId) localStorage.setItem('cc-session-id', _ccSessionId);
-    // Keep last 30 messages for display
-    const toSave = _ccMessages.slice(-30);
-    localStorage.setItem('cc-messages', JSON.stringify(toSave));
-  } catch { /* localStorage might be full */ }
+  // Trim in-memory array to prevent unbounded growth
+  if (_ccMessages.length > 100) _ccMessages = _ccMessages.slice(-100);
+  // Debounce localStorage writes — no need to serialize on every message during streaming
+  if (_ccSaveDebounce) return;
+  _ccSaveDebounce = setTimeout(() => {
+    _ccSaveDebounce = null;
+    try {
+      if (_ccSessionId) localStorage.setItem('cc-session-id', _ccSessionId);
+      const toSave = _ccMessages.slice(-30);
+      localStorage.setItem('cc-messages', JSON.stringify(toSave));
+    } catch { /* localStorage might be full */ }
+  }, 500);
 }
 
 function ccUpdateSessionIndicator() {
@@ -104,7 +111,7 @@ function ccAddMessage(role, html, skipSave) {
     (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
   div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
   el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
+  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
   if (!skipSave) {
     _ccMessages.push({ role, html });
     ccSaveState();
