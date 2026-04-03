@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.335 (2026-04-03)
+
+### Fixes
+-  clear stale buildStatus when PRs are merged or abandoned
+
 ## 0.1.334 (2026-04-03)
 
 ### Features
