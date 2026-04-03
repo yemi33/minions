@@ -113,7 +113,7 @@ function isResumeSessionStillValid(result) {
  * Returns the same result object as callLLM when the process completes.
  * onChunk(text) is called for each assistant text block as it arrives.
  */
-function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {} } = {}) {
+function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null } = {}) {
   return new Promise((resolve) => {
     const id = uid();
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
@@ -162,18 +162,21 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
           }
         } catch { /* incomplete JSON or non-JSON line */ }
       }
-      // Also try to extract partial text from incomplete line buffer (real-time streaming)
-      // Claude CLI writes large JSON objects incrementally — extract "text":"..." as it grows
-      try {
-        const textMatch = lineBuf.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)$/);
-        if (textMatch && textMatch[1].length > 20 && textMatch[1] !== lastTextSent) {
-          // Unescape basic JSON escapes for display
-          const partial = textMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-          if (partial.length > lastTextSent.length) {
-            onChunk(partial);
+      // Also emit tool_use events so the frontend can show "Using tool: Read..."
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('{')) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj.type === 'assistant' && obj.message?.content) {
+            for (const block of obj.message.content) {
+              if (block.type === 'tool_use' && block.name && onToolUse) {
+                onToolUse(block.name, block.input);
+              }
+            }
           }
-        }
-      } catch { /* best-effort partial extraction */ }
+        } catch {}
+      }
     });
     proc.stderr.on('data', d => { stderr += d.toString(); });
 

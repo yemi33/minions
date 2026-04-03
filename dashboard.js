@@ -3013,6 +3013,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           sessionId,
           onChunk: (text) => {
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
+          },
+          onToolUse: (name, input) => {
+            try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
           }
         });
         trackUsage('command-center', result.usage);

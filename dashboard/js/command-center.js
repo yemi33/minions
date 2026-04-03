@@ -217,6 +217,9 @@ async function _ccDoSend(message, skipUserMsg) {
             streamedText = evt.text;
             streamDiv.innerHTML = renderMd(streamedText);
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'tool') {
+            streamDiv.innerHTML = '<span style="color:var(--blue);font-size:11px">\uD83D\uDD27 Using ' + escHtml(evt.name) + '...</span>';
+            if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
             // Replace streaming div with a proper ccAddMessage
             streamDiv.remove();
