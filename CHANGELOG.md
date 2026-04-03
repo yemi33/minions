@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.264 (2026-04-03)
+
+### Fixes
+-  clean up remaining evaluate references in comments and log messages
+
 ## 0.1.263 (2026-04-03)
 
 ### Features
