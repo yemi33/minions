@@ -2993,6 +2993,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightSince = Date.now();
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+      // Clear ccInFlight if client disconnects mid-stream
+      req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; });
 
       try {
         // Session management — same as non-streaming path

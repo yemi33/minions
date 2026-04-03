@@ -192,7 +192,7 @@ async function _ccDoSend(message, skipUserMsg) {
 
     // Create streaming message bubble
     clearInterval(ccTimer);
-    thinking.remove();
+    try { thinking.remove(); } catch { /* may already be removed */ }
     const streamDiv = document.createElement('div');
     streamDiv.className = 'cc-msg assistant';
     streamDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Thinking...</span>';
@@ -236,7 +236,7 @@ async function _ccDoSend(message, skipUserMsg) {
     }
   } catch (e) {
     clearInterval(ccTimer);
-    thinking.remove();
+    try { thinking.remove(); } catch { /* may already be removed */ }
     const retryId = 'cc-retry-' + Date.now();
     ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
       '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
