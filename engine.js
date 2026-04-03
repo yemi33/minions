@@ -1373,6 +1373,7 @@ function discoverFromWorkItems(config, project) {
   let needsWrite = false;
 
   for (const item of items) {
+    try {
     // Re-evaluate failed items: if deps have recovered, reset to pending
     if (item.status === 'failed' && item.failReason === 'Dependency failed — cannot proceed') {
       const depStatus = areDependenciesMet(item, config);
@@ -1562,6 +1563,7 @@ function discoverFromWorkItems(config, project) {
     });
 
     setCooldown(key);
+    } catch (err) { log('warn', `discoverFromWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
   // Write back updated statuses (always, since we mark items dispatched before newWork check)
@@ -1768,6 +1770,7 @@ function discoverCentralWorkItems(config) {
   const newWork = [];
 
   for (const item of items) {
+    try {
     if (item.status !== 'queued' && item.status !== 'pending') continue;
 
     const key = `central-work-${item.id}`;
@@ -2001,6 +2004,7 @@ function discoverCentralWorkItems(config) {
       item.dispatched_to = agentId;
       setCooldown(key);
     }
+    } catch (err) { log('warn', `discoverCentralWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
   if (newWork.length > 0) safeWrite(centralPath, items);
