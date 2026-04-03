@@ -37,8 +37,9 @@ function handleCommand(cmd, args) {
     console.log('  spawn <a> <p>    Manually spawn agent with prompt');
     console.log('  work <title> [o] Add to work-items.json queue');
     console.log('  plan <src> [p]   Generate PRD from a plan (file or text)');
-    console.log('  complete <id>    Mark dispatch as done');
-    console.log('  cleanup           Clean temp files, worktrees, zombies');
+    console.log('  kill             Kill all active agents, reset to pending');
+    console.log('  complete <id>    Mark a dispatch as done');
+    console.log('  cleanup          Clean temp files, worktrees, zombies');
     console.log('  mcp-sync         Sync MCP servers from ~/.claude.json');
     console.log('  doctor           Check prerequisites and runtime health');
     process.exit(1);
@@ -567,11 +568,19 @@ const commands = {
 
   complete(id) {
     if (!id) {
-      console.log('Usage: node .minions/engine.js complete <dispatch-id>');
+      console.log('Usage: minions complete <dispatch-id>');
+      return;
+    }
+    const dispatch = getDispatch();
+    const found = (dispatch.active || []).some(d => d.id === id);
+    if (!found) {
+      console.log(`  Dispatch "${id}" not found in active queue.`);
+      const pending = (dispatch.pending || []).some(d => d.id === id);
+      if (pending) console.log('  (It is in pending — it hasn\'t started yet.)');
       return;
     }
     engine().completeDispatch(id, 'success');
-    console.log(`Marked ${id} as completed.`);
+    console.log(`  Marked ${id} as completed.`);
   },
 
   dispatch() {

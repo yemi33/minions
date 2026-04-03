@@ -431,6 +431,7 @@ const engineCmds = new Set([
   'start', 'stop', 'status', 'pause', 'resume',
   'queue', 'sources', 'discover', 'dispatch',
   'spawn', 'work', 'cleanup', 'mcp-sync', 'plan',
+  'kill', 'complete',
 ]);
 
 if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
@@ -454,9 +455,13 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions pause / resume           Pause/resume dispatching
     minions dispatch                 Force a dispatch cycle
     minions discover                 Dry-run work discovery
+    minions queue                    Show dispatch queue (pending/active/completed)
+    minions sources                  Show work source status per project
     minions work <title> [opts]      Add a work item
     minions spawn <agent> <prompt>   Manually spawn an agent
     minions plan <file|text> [proj]  Run a plan
+    minions kill                     Kill all active agents and reset to pending
+    minions complete <dispatch-id>   Manually mark a dispatch as completed
     minions cleanup                  Clean temp files, worktrees, zombies
     minions nuke --confirm           Factory reset (delete state, reset config to defaults)
 
@@ -484,8 +489,22 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 } else if (cmd === 'up' || cmd === 'restart') {
   // Start both engine and dashboard — the go-to command after a reboot
   ensureInstalled();
-  // Stop engine if running (ignore errors)
+  // Stop engine if running
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
+  // Kill existing dashboard
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      for (const line of out.split('\n')) {
+        if (line.includes('dashboard.js') && line.includes('minions')) {
+          const pid = line.split(',').pop()?.trim();
+          if (pid && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
+        }
+      }
+    } else {
+      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
+    }
+  } catch {}
   const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start'], {
     cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
   });
