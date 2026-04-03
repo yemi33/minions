@@ -441,7 +441,7 @@ function runCleanup(config, verbose = false) {
       let migrated = 0;
       for (const item of items) {
         if (LEGACY_DONE_ALIASES.has(item.status)) {
-          item.status = 'done';
+          item.status = shared.WI_STATUS.DONE;
           delete item._pendingReason;
           migrated++;
         }
@@ -459,7 +459,7 @@ function runCleanup(config, verbose = false) {
     let migrated = 0;
     for (const item of centralItems) {
       if (LEGACY_DONE_ALIASES.has(item.status)) {
-        item.status = 'done';
+        item.status = shared.WI_STATUS.DONE;
         delete item._pendingReason;
         migrated++;
       }
@@ -486,7 +486,7 @@ function runCleanup(config, verbose = false) {
       let migrated = 0;
       for (const feat of prd.missing_features) {
         if (LEGACY_DONE_ALIASES.has(feat.status)) {
-          feat.status = 'done';
+          feat.status = shared.WI_STATUS.DONE;
           migrated++;
         }
       }

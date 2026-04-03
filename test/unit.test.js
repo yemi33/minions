@@ -2393,8 +2393,8 @@ async function testLegacyStatusMigration() {
   await test('engine.js runCleanup contains legacy status migration code', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
     assert.ok(src.includes("LEGACY_DONE_ALIASES") || src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define legacy status migration set');
-    assert.ok(src.includes("item.status = 'done'"), 'Should migrate work items to done');
-    assert.ok(src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
+    assert.ok(src.includes("item.status = shared.WI_STATUS.DONE") || src.includes("item.status = 'done'"), 'Should migrate work items to done');
+    assert.ok(src.includes("feat.status = shared.WI_STATUS.DONE") || src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
   });
 }
 
@@ -5913,7 +5913,7 @@ async function testCheckpointResume() {
   await test('engine.js caps checkpoint-resumes at 3', () => {
     assert.ok(engineSrc.includes('cpCount > 3'),
       'Should check if checkpoint count exceeds 3');
-    assert.ok(engineSrc.includes("'needs-human-review'"),
+    assert.ok(engineSrc.includes("WI_STATUS.NEEDS_REVIEW") || engineSrc.includes("'needs-human-review'"),
       'Should set status to needs-human-review after 3 checkpoint-resumes');
   });
 

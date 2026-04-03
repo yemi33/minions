@@ -1182,7 +1182,7 @@ function materializePlansAsWorkItems(config) {
         for (const wi of existingItems) {
           if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
           if (!currentPrdIds.has(wi.id)) {
-            wi.status = 'cancelled';
+            wi.status = WI_STATUS.CANCELLED;
             wi.cancelledAt = ts();
             wi.cancelReason = `PRD item removed from ${file}`;
             cancelled++;
@@ -1504,7 +1504,7 @@ function discoverFromWorkItems(config, project) {
         const cpCount = (item._checkpointCount || 0) + 1;
         if (cpCount > 3) {
           log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-          item.status = 'needs-human-review';
+          item.status = WI_STATUS.NEEDS_REVIEW;
           item._checkpointCount = cpCount;
           needsWrite = true;
           continue;
@@ -1918,7 +1918,7 @@ function discoverCentralWorkItems(config) {
           const cpCount = (item._checkpointCount || 0) + 1;
           if (cpCount > 3) {
             log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-            item.status = 'needs-human-review';
+            item.status = WI_STATUS.NEEDS_REVIEW;
             item._checkpointCount = cpCount;
             continue;
           }
@@ -2425,7 +2425,7 @@ async function tickInner() {
               const wi = items.find(i => i.id === item.meta.item.id);
               if (wi && wi.status === WI_STATUS.DISPATCHED) {
                 // completeDispatch didn't update the work item — re-queue manually
-                wi.status = 'pending';
+                wi.status = WI_STATUS.PENDING;
                 wi._retryCount = (wi._retryCount || 0) + 1;
                 wi._lastRetryReason = 'spawnAgent returned null';
                 wi._lastRetryAt = ts();

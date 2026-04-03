@@ -806,9 +806,9 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const items = safeJson(wiPath);
         if (!items) continue;
         const item = items.find(i => i.id === mergedItemId);
-        if (item && item.status !== 'done') {
+        if (item && item.status !== WI_STATUS.DONE) {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          item.status = 'done';
+          item.status = WI_STATUS.DONE;
           item.completedAt = ts();
           item._mergedVia = pr.id;
           shared.safeWrite(wiPath, items);
@@ -1070,7 +1070,7 @@ function handleDecompositionResult(stdout, meta, config) {
     if (!parent) continue;
 
     // Mark parent as decomposed
-    parent.status = 'decomposed';
+    parent.status = WI_STATUS.DECOMPOSED;
     parent._decomposed = true;
     delete parent._decomposing;
     parent._subItemIds = subItems.map(s => s.id);

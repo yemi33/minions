@@ -393,7 +393,8 @@ const ENGINE_DEFAULTS = {
 
 const WI_STATUS = {
   PENDING: 'pending', DISPATCHED: 'dispatched', DONE: 'done', FAILED: 'failed',
-  PAUSED: 'paused', QUEUED: 'queued', NEEDS_REVIEW: 'needs-human-review', DECOMPOSED: 'decomposed',
+  PAUSED: 'paused', QUEUED: 'queued', NEEDS_REVIEW: 'needs-human-review',
+  DECOMPOSED: 'decomposed', CANCELLED: 'cancelled',
 };
 // Read-side: accept legacy aliases for backward compat with old data/clients.
 // Write-side: only WI_STATUS.DONE is written (cleanup.js migrates old values on each run).
