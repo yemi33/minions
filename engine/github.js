@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -71,7 +71,14 @@ async function forEachActiveGhPr(config, callback) {
     }
 
     if (projectUpdated > 0) {
-      safeWrite(projectPrPath(project), prs);
+      mutateJsonFileLocked(projectPrPath(project), (currentPrs) => {
+        for (const updatedPr of prs) {
+          const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
+          if (idx >= 0) currentPrs[idx] = updatedPr;
+          else currentPrs.push(updatedPr);
+        }
+        return currentPrs;
+      }, { defaultValue: [] });
       totalUpdated += projectUpdated;
     }
   }
@@ -105,7 +112,14 @@ async function forEachActiveGhPr(config, callback) {
     }
   }
   if (centralUpdated > 0) {
-    safeWrite(centralPath, centralPrs);
+    mutateJsonFileLocked(centralPath, (currentPrs) => {
+      for (const updatedPr of centralPrs) {
+        const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
+        if (idx >= 0) currentPrs[idx] = updatedPr;
+        else currentPrs.push(updatedPr);
+      }
+      return currentPrs;
+    }, { defaultValue: [] });
     totalUpdated += centralUpdated;
   }
 
@@ -182,11 +196,11 @@ async function pollPrStatus(config) {
           if (authorId) {
             try {
               const metricsPath = path.join(__dirname, 'metrics.json');
-              const metrics = shared.safeJson(metricsPath) || {};
-              if (!metrics[authorId]) metrics[authorId] = {};
-              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-              shared.safeWrite(metricsPath, metrics);
+              mutateJsonFileLocked(metricsPath, (metrics) => {
+                if (!metrics[authorId]) metrics[authorId] = {};
+                if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+                else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+              });
             } catch (err) { log('warn', `Metrics update: ${err.message}`); }
           }
         }
@@ -258,7 +272,8 @@ async function pollPrHumanComments(config) {
       return true;
     });
 
-    const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const cutoffMs = new Date(cutoffStr).getTime() || 0;
 
     // Collect ALL human comments for full context, track new ones for triggering
     const allCommentEntries = [];
@@ -275,7 +290,8 @@ async function pollPrHumanComments(config) {
       allCommentEntries.push(entry);
 
       // Any new comment triggers a fix — no @minions filter needed
-      if (date > cutoff) {
+      const dateMs = date ? new Date(date).getTime() : 0;
+      if (dateMs && dateMs > cutoffMs) {
         newComments.push(entry);
       }
     }
@@ -290,7 +306,7 @@ async function pollPrHumanComments(config) {
     // Provide ALL comments as context — the agent needs full thread context to fix properly
     const feedbackContent = allCommentEntries
       .map(c => {
-        const isNew = c.date > cutoff;
+        const isNew = (new Date(c.date).getTime() || 0) > cutoffMs;
         return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@minions\s*/gi, '').trim()}`;
       })
       .join('\n\n---\n\n');
@@ -397,7 +413,14 @@ async function reconcilePrs(config) {
     }
 
     if (projectAdded > 0 || backfilled > 0) {
-      safeWrite(prPath, existingPrs);
+      mutateJsonFileLocked(prPath, (currentPrs) => {
+        for (const pr of existingPrs) {
+          const idx = currentPrs.findIndex(p => p.id === pr.id);
+          if (idx >= 0) currentPrs[idx] = pr;
+          else currentPrs.push(pr);
+        }
+        return currentPrs;
+      }, { defaultValue: [] });
       totalAdded += projectAdded;
     }
   }

@@ -7,6 +7,7 @@ const path = require('path');
 const shared = require('./shared');
 const { exec, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
+const { mutateJsonFileLocked } = shared;
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
 let _engine = null;
@@ -99,7 +100,15 @@ async function forEachActivePr(config, token, callback) {
     }
 
     if (projectUpdated > 0) {
-      shared.safeWrite(shared.projectPrPath(project), prs);
+      mutateJsonFileLocked(shared.projectPrPath(project), (currentPrs) => {
+        // Merge updated PRs into the locked copy by ID
+        for (const updatedPr of prs) {
+          const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
+          if (idx >= 0) currentPrs[idx] = updatedPr;
+          else currentPrs.push(updatedPr);
+        }
+        return currentPrs;
+      }, { defaultValue: [] });
       totalUpdated += projectUpdated;
     }
   }
@@ -174,11 +183,11 @@ async function pollPrStatus(config) {
         if (authorId) {
           try {
             const metricsPath = path.join(__dirname, 'metrics.json');
-            const metrics = shared.safeJson(metricsPath) || {};
-            if (!metrics[authorId]) metrics[authorId] = {};
-            if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-            else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-            shared.safeWrite(metricsPath, metrics);
+            mutateJsonFileLocked(metricsPath, (metrics) => {
+              if (!metrics[authorId]) metrics[authorId] = {};
+              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+            });
           } catch (err) { log('warn', `Metrics update: ${err.message}`); }
         }
       }
@@ -196,8 +205,8 @@ async function pollPrStatus(config) {
 
     const buildStatuses = [...latest.values()].filter(s => {
       const ctx = ((s.context?.genre || '') + '/' + (s.context?.name || '')).toLowerCase();
-      return ctx.includes('codecoverage') || ctx.includes('build') ||
-             ctx.includes('deploy') || ctx.includes('ci/');
+      return /\bcodecoverage\b/.test(ctx) || /\bbuild\b/.test(ctx) ||
+             /\bdeploy\b/.test(ctx) || /(?:^|\/)ci(?:\/|$)/.test(ctx);
     });
 
     let buildStatus = 'none';
@@ -248,7 +257,8 @@ async function pollPrHumanComments(config) {
     const threadsData = await adoFetch(threadsUrl, token);
     const threads = threadsData.value || [];
 
-    const cutoff = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
+    const cutoffMs = new Date(cutoffStr).getTime() || 0;
 
     // Collect ALL human comments on the PR for full context
     const allHumanComments = [];
@@ -269,7 +279,8 @@ async function pollPrHumanComments(config) {
         allHumanComments.push(entry);
 
         // Track which comments are new (for triggering — any new comment triggers a fix)
-        if (comment.publishedDate && comment.publishedDate > cutoff) {
+        const commentMs = comment.publishedDate ? new Date(comment.publishedDate).getTime() : 0;
+        if (commentMs && commentMs > cutoffMs) {
           newHumanComments.push(entry);
         }
       }
@@ -285,7 +296,7 @@ async function pollPrHumanComments(config) {
     // Provide ALL comments as context — the agent needs full thread context to fix properly
     const feedbackContent = allHumanComments
       .map(c => {
-        const isNew = c.date > cutoff;
+        const isNew = (new Date(c.date).getTime() || 0) > cutoffMs;
         return `${isNew ? '**[NEW]** ' : ''}**${c.author}** (${c.date}):\n${c.content.replace(/@minions\s*/gi, '').trim()}`;
       })
       .join('\n\n---\n\n');
@@ -412,7 +423,15 @@ async function reconcilePrs(config) {
     }
 
     if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
-      shared.safeWrite(prPath, existingPrs);
+      mutateJsonFileLocked(prPath, (currentPrs) => {
+        // Merge reconciled PRs into the locked copy by ID
+        for (const pr of existingPrs) {
+          const idx = currentPrs.findIndex(p => p.id === pr.id);
+          if (idx >= 0) currentPrs[idx] = pr;
+          else currentPrs.push(pr);
+        }
+        return currentPrs;
+      }, { defaultValue: [] });
       totalAdded += projectAdded;
       if (projectUpdated > 0) log('info', `PR reconciliation: linked ${projectUpdated} existing PR(s) to PRD items in ${project.name}`);
     }
