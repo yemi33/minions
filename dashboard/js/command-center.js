@@ -5,6 +5,8 @@ let _ccMessages = JSON.parse(localStorage.getItem('cc-messages') || '[]');
 let _ccOpen = false;
 let _ccSending = false;
 let _ccQueue = [];
+// Clear stale sending state on page load — SSE streams don't survive refresh
+try { localStorage.removeItem('cc-sending'); } catch {}
 
 function toggleCommandCenter() {
   _ccOpen = !_ccOpen;
@@ -40,7 +42,8 @@ function ccRestoreMessages() {
   // Restore "thinking" indicator if CC was mid-request when page refreshed
   try {
     const sendingState = JSON.parse(localStorage.getItem('cc-sending') || 'null');
-    if (sendingState?.sending && (Date.now() - sendingState.startedAt) < 300000) {
+    // Only restore sending state if very recent (< 10s) — page refresh kills the SSE stream
+    if (sendingState?.sending && (Date.now() - sendingState.startedAt) < 10000) {
       _ccSending = true;
       const elapsed = Date.now() - sendingState.startedAt;
       const thinking = document.createElement('div');
