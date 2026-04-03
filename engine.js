@@ -2182,16 +2182,16 @@ async function tickInner() {
   const config = getConfig();
   tickCount++;
 
+  // Helper: run a phase, log + continue on error
+  const safe = (label, fn) => { try { fn(); } catch (e) { log('warn', `${label}: ${e.message}`); } };
+
   // 1. Check for timed-out agents, steering messages, and idle threshold
-  try { checkTimeouts(config); } catch (e) { log('warn', 'checkTimeouts: ' + e.message); }
-  try { checkSteering(config); } catch (e) { log('warn', 'checkSteering: ' + e.message); }
-  try { checkIdleThreshold(config); } catch (e) { log('warn', 'checkIdleThreshold: ' + e.message); }
+  safe('checkTimeouts', () => checkTimeouts(config));
+  safe('checkSteering', () => checkSteering(config));
+  safe('checkIdleThreshold', () => checkIdleThreshold(config));
 
   // 1b. Check for meeting round timeouts
-  try {
-    const { checkMeetingTimeouts } = require('./engine/meeting');
-    checkMeetingTimeouts(config);
-  } catch (e) { log('warn', 'check meeting timeouts: ' + e.message); }
+  safe('meetingTimeouts', () => { const { checkMeetingTimeouts } = require('./engine/meeting'); checkMeetingTimeouts(config); });
 
   // In stopping state, only track agent completions — skip discovery and dispatch
   if (control.state === 'stopping') {
@@ -2200,11 +2200,11 @@ async function tickInner() {
   }
 
   // 2. Consolidate inbox
-  try { consolidateInbox(config); } catch (e) { log('warn', 'consolidateInbox: ' + e.message); }
+  safe('consolidateInbox', () => consolidateInbox(config));
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    try { runCleanup(config); } catch (e) { log('warn', 'runCleanup: ' + e.message); }
+    safe('runCleanup', () => runCleanup(config));
   }
 
   // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
@@ -2335,13 +2335,18 @@ async function tickInner() {
   }
 
   // 3. Discover new work from sources
-  try { discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); }
+  let discoveryOk = true;
+  try { discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); discoveryOk = false; }
 
   // 4. Update snapshot
-  try { updateSnapshot(config); } catch (e) { log('warn', 'updateSnapshot: ' + e.message); }
+  safe('updateSnapshot', () => updateSnapshot(config));
+
+  if (!discoveryOk) {
+    log('warn', 'Skipping dispatch — discovery failed, stale data risk');
+    return;
+  }
 
   // 5. Process pending dispatches — auto-spawn agents
-  try {
   const dispatch = getDispatch();
   const activeCount = (dispatch.active || []).length;
   const maxConcurrent = config.engine?.maxConcurrent || 5;
@@ -2392,7 +2397,11 @@ async function tickInner() {
   const dispatched = new Set();
   for (const item of toDispatch) {
     if (!dispatched.has(item.id)) {
-      const proc = spawnAgent(item, config);
+      let proc;
+      try { proc = spawnAgent(item, config); } catch (spawnErr) {
+        log('error', `spawnAgent exception for ${item.id}: ${spawnErr.message}`);
+        proc = null;
+      }
       if (proc === null) {
         // spawnAgent failed (e.g., worktree creation error). It already called
         // completeDispatch internally which handles retry logic, but log at the
@@ -2449,7 +2458,6 @@ async function tickInner() {
   if (skipReasonChanged) {
     mutateDispatch((dp) => { dp.pending = postDispatch.pending; return dp; });
   }
-  } catch (e) { log('warn', 'dispatch: ' + e.message); }
 }
 
 // ─── Exports (for engine/cli.js and other modules) ──────────────────────────

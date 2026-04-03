@@ -2100,8 +2100,8 @@ async function testStateIntegrity() {
 
   await test('spawnAgent null return is handled in dispatch loop', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('const proc = spawnAgent(item, config)'),
-      'dispatch loop must capture spawnAgent return value');
+    assert.ok(src.includes('spawnAgent(item, config)'),
+      'dispatch loop must call spawnAgent');
     assert.ok(src.includes('proc === null'),
       'dispatch loop must check for null return from spawnAgent');
     assert.ok(src.includes('_retryCount') && src.includes("'pending'"),
