@@ -7,10 +7,12 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
+const { createHash } = require('crypto');
 const { safeJson, safeWrite, log } = shared;
 const { ENGINE_DIR } = queries;
 
 const COOLDOWN_PATH = path.join(ENGINE_DIR, 'cooldowns.json');
+const PENDING_CONTEXTS_CAP = 10;
 const dispatchCooldowns = new Map(); // key → { timestamp, failures }
 
 function loadCooldowns() {
@@ -24,6 +26,35 @@ function loadCooldowns() {
     }
   }
   log('info', `Loaded ${dispatchCooldowns.size} cooldowns from disk`);
+  // One-time purge of bloated pendingContexts on startup
+  purgeBloatedCooldowns();
+}
+
+/** Deduplicate and cap pendingContexts in all loaded cooldown entries. */
+function purgeBloatedCooldowns() {
+  let totalRemoved = 0;
+  for (const [k, v] of dispatchCooldowns) {
+    if (!Array.isArray(v.pendingContexts) || v.pendingContexts.length <= 1) continue;
+    const seen = new Set();
+    const deduped = [];
+    for (const ctx of v.pendingContexts) {
+      const hash = _contentHash(ctx);
+      if (!seen.has(hash)) {
+        seen.add(hash);
+        deduped.push(ctx);
+      }
+    }
+    const before = v.pendingContexts.length;
+    // Apply FIFO cap after dedup — keep the most recent entries
+    v.pendingContexts = deduped.length > PENDING_CONTEXTS_CAP
+      ? deduped.slice(deduped.length - PENDING_CONTEXTS_CAP)
+      : deduped;
+    totalRemoved += before - v.pendingContexts.length;
+  }
+  if (totalRemoved > 0) {
+    log('info', `Purged ${totalRemoved} duplicate/excess pendingContexts entries from cooldowns`);
+    saveCooldowns();
+  }
 }
 
 let _cooldownWriteTimer = null;
@@ -55,10 +86,26 @@ function setCooldown(key) {
   saveCooldowns();
 }
 
+function _contentHash(content) {
+  const str = typeof content === 'string' ? content : JSON.stringify(content);
+  return createHash('sha256').update(str).digest('hex');
+}
+
 function setCooldownWithContext(key, context) {
   const existing = dispatchCooldowns.get(key);
   const pendingContexts = existing?.pendingContexts || [];
-  if (context) pendingContexts.push(context);
+  if (context) {
+    // Dedup: only append if content differs from all existing entries
+    const newHash = _contentHash(context);
+    const isDuplicate = pendingContexts.some(c => _contentHash(c) === newHash);
+    if (!isDuplicate) {
+      pendingContexts.push(context);
+      // FIFO cap: drop oldest entries when exceeding cap
+      while (pendingContexts.length > PENDING_CONTEXTS_CAP) {
+        pendingContexts.shift();
+      }
+    }
+  }
   dispatchCooldowns.set(key, {
     timestamp: Date.now(),
     failures: existing?.failures || 0,
@@ -101,13 +148,16 @@ function isAlreadyDispatched(key) {
 
 module.exports = {
   COOLDOWN_PATH,
+  PENDING_CONTEXTS_CAP,
   dispatchCooldowns,
   loadCooldowns,
   saveCooldowns,
+  purgeBloatedCooldowns,
   isOnCooldown,
   setCooldown,
   setCooldownWithContext,
   getCoalescedContexts,
   setCooldownFailure,
   isAlreadyDispatched,
+  _contentHash,
 };
