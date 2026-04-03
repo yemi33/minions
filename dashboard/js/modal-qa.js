@@ -6,8 +6,22 @@ let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
 function showModalQa() {
   document.getElementById('modal-qa').style.display = '';
 }
+
+function _qaNotifySidebar(filePath) {
+  if (!filePath) return;
+  let page = '';
+  if (/^plans\//.test(filePath) || /^prd\//.test(filePath)) page = 'plans';
+  else if (/^knowledge\//.test(filePath) || /^notes/.test(filePath) || /^pinned/.test(filePath)) page = 'inbox';
+  else if (/^meetings\//.test(filePath)) page = 'inbox';
+  else return;
+  // Don't badge if user is already on that page
+  const currentPage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
+  if (currentPage === page) return;
+  const link = document.querySelector('.sidebar-link[data-page="' + page + '"]');
+  if (link && !link.querySelector('.notif-badge')) showNotifBadge(link);
+}
 let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{role:'assistant',text:''}]
-let _qaProcessing = false; // true while waiting for Haiku response
+let _qaProcessing = false; // true while waiting for response
 let _qaQueue = []; // queued messages while processing
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
@@ -199,12 +213,15 @@ async function _processQaMessage(message, selection) {
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
       const suffix = data.edited ? '\n\n\u2713 Document saved.' : '';
       const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
-      const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsed + 's</div>';
+      const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;padding-right:24px">' + qaElapsed + 's</div>';
       thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + renderMd(data.answer + suffix) + qaTimeLabel + '</div>';
 
       // Track conversation history
       _qaHistory.push({ role: 'user', text: message });
       _qaHistory.push({ role: 'assistant', text: data.answer });
+
+      // Notify sidebar page link
+      _qaNotifySidebar(capturedFilePath);
 
       // Execute any CC actions (dispatch, note, etc.)
       if (data.actions && data.actions.length > 0) {
@@ -267,7 +284,7 @@ async function _processQaMessage(message, selection) {
       filePath: sessionFilePath,
     });
     _saveQaSessions();
-    // If modal was closed while processing, show notification badge on source card
+    // Show notification badge on source card when modal was closed during processing
     if (!modalIsOpen) {
       const card = findCardForFile(sessionFilePath);
       if (card) showNotifBadge(card);
