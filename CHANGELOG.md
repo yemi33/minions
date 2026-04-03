@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.319 (2026-04-03)
+
+### Other
+- refactor: replace magic strings in engine.js with constants
+
 ## 0.1.318 (2026-04-03)
 
 ### Fixes
