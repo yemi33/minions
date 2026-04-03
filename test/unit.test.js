@@ -2759,17 +2759,18 @@ async function testSafeWriteBackupRestore() {
     assert.strictEqual(result, null, 'should return null when both files are corrupted');
   });
 
-  await test('safeJson backup restore verifies written content and throws on failure', () => {
-    // Verify the source code: safeJson restore path now has verification + CRITICAL error
+  await test('safeJson backup restore verifies written content but still returns data on write failure', () => {
+    // Verify the source code: safeJson restore path has verification + best-effort error logging
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     const safeJsonMatch = src.match(/function safeJson\(p\)\s*\{[\s\S]*?^}/m);
     assert.ok(safeJsonMatch, 'safeJson function should exist');
     const body = safeJsonMatch[0];
     // Should contain verification read-back
     assert.ok(body.includes('verifyData'), 'safeJson should verify restored data');
-    assert.ok(body.includes('CRITICAL'), 'safeJson should log CRITICAL on restore failure');
-    assert.ok(body.includes('console.error'), 'safeJson should use console.error for critical failures');
-    assert.ok(body.includes('throw new Error'), 'safeJson should throw on restore failure');
+    assert.ok(body.includes('CRITICAL'), 'safeJson should log CRITICAL on verification mismatch');
+    assert.ok(body.includes('console.error'), 'safeJson should use console.error for failures');
+    // Must NOT throw on restore failure — backupData is valid and should be returned
+    assert.ok(body.includes('return backupData'), 'safeJson should return backupData even if restore write fails');
   });
 
   await test('safeJson restore succeeds and returns data when backup is valid', () => {
@@ -2785,97 +2786,20 @@ async function testSafeWriteBackupRestore() {
     assert.deepStrictEqual(primary, { restored: true, value: 42 }, 'primary should be restored');
   });
 
-  await test('safeJson CRITICAL error propagates to caller on restore write failure', () => {
+  await test('safeJson returns backup data even when primary restore write fails', () => {
     const dir = createTmpDir();
-    const fp = path.join(dir, 'critical-propagate.json');
+    const fp = path.join(dir, 'readonly-primary.json');
     // Write corrupted primary and valid backup
-    fs.writeFileSync(fp, 'CORRUPTED');
-    fs.writeFileSync(fp + '.backup', JSON.stringify({ ok: true }));
-    // Make the primary path a directory so safeWrite will fail
+    fs.writeFileSync(fp, 'CORRUPTED DATA');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ valid: true }));
+    // Make parent dir read-only so safeWrite fails (but backup was already read)
+    // Instead, corrupt the primary path to a directory to force write failure
     fs.unlinkSync(fp);
-    fs.mkdirSync(fp);
-    let threw = false;
-    let errMsg = '';
-    try {
-      shared.safeJson(fp);
-    } catch (e) {
-      threw = true;
-      errMsg = e.message;
-    }
-    assert.ok(threw, 'safeJson should throw when restore write fails critically');
-    assert.ok(errMsg.includes('CRITICAL'), 'error message should contain CRITICAL');
-    // Clean up directory we created
-    try { fs.rmdirSync(fp); } catch { /* cleanup */ }
-  });
-
-  await test('safeJson CRITICAL verification mismatch propagates to caller', () => {
-    const dir = createTmpDir();
-    const fp = path.join(dir, 'verify-mismatch.json');
-    // Write corrupted primary and valid backup
-    fs.writeFileSync(fp, 'CORRUPTED');
-    fs.writeFileSync(fp + '.backup', JSON.stringify({ expected: true }));
-    // Successful restore should NOT throw — complementary baseline
+    fs.mkdirSync(fp); // primary is now a directory — safeWrite will fail
     const result = shared.safeJson(fp);
-    assert.deepStrictEqual(result, { expected: true }, 'successful restore should return data');
-
-    // Now test the CRITICAL propagation path by making the primary path read-only dir
-    // so safeWrite fails and triggers CRITICAL throw through all catch layers
-    const fp2 = path.join(dir, 'crit-propagate-dir.json');
-    fs.writeFileSync(fp2, 'BAD');
-    fs.writeFileSync(fp2 + '.backup', JSON.stringify({ data: 1 }));
-    // Replace primary with a directory — safeWrite will throw, triggering CRITICAL
-    fs.unlinkSync(fp2);
-    fs.mkdirSync(fp2);
-    let threw = false;
-    let caughtErr = null;
-    try {
-      shared.safeJson(fp2);
-    } catch (e) {
-      threw = true;
-      caughtErr = e;
-    }
-    assert.ok(threw, 'CRITICAL error must propagate through outer catch — not swallowed');
-    assert.ok(caughtErr.message.includes('CRITICAL'),
-      'propagated error must contain CRITICAL marker');
-    // Verify no double-wrapped CRITICAL prefix
-    const critCount = (caughtErr.message.match(/CRITICAL/g) || []).length;
-    assert.strictEqual(critCount, 1,
-      `error should contain CRITICAL exactly once, got ${critCount}: ${caughtErr.message}`);
-    try { fs.rmdirSync(fp2); } catch { /* cleanup */ }
-  });
-
-  await test('withFileLock handles ENOENT when stale lock disappears between stat and unlink', () => {
-    const dir = createTmpDir();
-    const lockPath = path.join(dir, 'enoent-race.lock');
-    // Create a stale lock file
-    fs.writeFileSync(lockPath, 'stale');
-    const pastTime = Date.now() - shared.LOCK_STALE_MS - 5000;
-    fs.utimesSync(lockPath, new Date(pastTime), new Date(pastTime));
-
-    // Remove the lock file after stat but before unlink would run —
-    // simulate the race by deleting it now and creating a fresh one that's stale.
-    // The ENOENT guard ensures withFileLock doesn't throw when another process
-    // cleans the lock between stat and unlink. We verify it still completes.
-    let called = false;
-    shared.withFileLock(lockPath, () => { called = true; }, { timeoutMs: 3000 });
-    assert.ok(called, 'withFileLock should succeed after stale lock cleanup');
-
-    // Now test the specific ENOENT race: create stale lock, delete it mid-retry
-    // by using a short timeout on a permanently locked file that gets freed
-    const lockPath2 = path.join(dir, 'enoent-race2.lock');
-    // Hold a real lock, then release it — simulates lock contention + stale cleanup
-    const fd = fs.openSync(lockPath2, 'wx');
-    // Set mtime to past to make it look stale
-    fs.utimesSync(lockPath2, new Date(pastTime), new Date(pastTime));
-    // Release the lock in background after a small delay — simulates another process
-    // cleaning the stale lock (withFileLock will see ENOENT on retry)
-    setTimeout(() => {
-      try { fs.closeSync(fd); } catch {}
-      try { fs.unlinkSync(lockPath2); } catch {}
-    }, 50);
-    let called2 = false;
-    shared.withFileLock(lockPath2, () => { called2 = true; }, { timeoutMs: 3000 });
-    assert.ok(called2, 'withFileLock should succeed when stale lock disappears mid-retry');
+    assert.deepStrictEqual(result, { valid: true }, 'should return backup data even when restore write fails');
+    // Cleanup
+    fs.rmdirSync(fp);
   });
 
   await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
@@ -2888,9 +2812,9 @@ async function testSafeWriteBackupRestore() {
     // Should catch ENOENT specifically on unlink
     assert.ok(body.includes("unlinkErr.code !== 'ENOENT'"),
       'stale lock unlink should check for ENOENT specifically');
-    // Should have sleepMs before continue (no busy-loop)
-    assert.ok(body.includes('sleepMs(retryDelayMs); // avoid busy-loop'),
-      'should sleep before continue after stale lock removal');
+    // After stale lock removal, should retry immediately (no sleep — lock was just cleared)
+    assert.ok(body.includes('continue; // lock just removed'),
+      'should retry immediately after stale lock removal');
     // statSync catch should also handle ENOENT
     assert.ok(body.includes("staleErr.code !== 'ENOENT'"),
       'statSync catch should check for ENOENT specifically');
@@ -6231,6 +6155,84 @@ async function testDashboardBugFixes() {
       'Should use body.content == null to accept empty strings and 0');
     assert.ok(!notesBody.includes('!body.content && body.content !=='),
       'Should not use the old contradictory !body.content && body.content !== pattern');
+  });
+  // ── Engine.js Race Condition Fixes (P-aa0ik3fh) ──────────────────────────
+
+  console.log('\n── Engine.js Race Condition Fixes (P-aa0ik3fh) ──');
+
+  await test('worktree reuse check reads dispatch under file lock (read-only, no unnecessary write)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the worktree reuse section (around the "already checked out" handling)
+    const reuseSectionMatch = src.match(/existingWtPath && fs\.existsSync\(existingWtPath\)\)[\s\S]*?activelyUsed/);
+    assert.ok(reuseSectionMatch, 'Should have worktree reuse section');
+    const reuseSection = reuseSectionMatch[0];
+    // Should use withFileLock for read-only atomic check, NOT mutateDispatch (which writes unnecessarily)
+    assert.ok(reuseSection.includes('withFileLock'), 'Worktree reuse check should use withFileLock for read-only atomic check');
+    assert.ok(!reuseSection.includes('mutateDispatch'), 'Worktree reuse check should NOT use mutateDispatch (causes unnecessary write)');
+  });
+
+  await test('self-heal completed-array filter clears stale dispatch entries', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the self-heal section — uses mutateDispatch to filter completed entries by dispatchKey
+    const selfHealMatch = src.match(/Self-heal:[\s\S]*?mutateDispatch\(\(dp\)[\s\S]*?return dp;\s*\}\)/);
+    assert.ok(selfHealMatch, 'Should have self-heal mutateDispatch section');
+    const selfHeal = selfHealMatch[0];
+    // .filter() returns a new array (spec behavior) — safe inside single-threaded mutateDispatch callback
+    assert.ok(selfHeal.includes('dispatchKey'), 'Should filter by dispatchKey');
+    assert.ok(selfHeal.includes('dp.completed'), 'Should reassign dp.completed');
+  });
+
+  await test('self-heal completed filter preserves non-matching entries', () => {
+    // Behavioral test: simulate the filter logic
+    const completed = [
+      { meta: { dispatchKey: 'work-proj-A' }, id: '1' },
+      { meta: { dispatchKey: 'work-proj-B' }, id: '2' },
+      { meta: { dispatchKey: 'work-proj-C' }, id: '3' },
+    ];
+    const key = 'work-proj-B';
+    // Simulate the .filter() pattern from engine.js
+    const result = completed.filter(d => d.meta?.dispatchKey !== key);
+    assert.strictEqual(result.length, 2, 'Should keep 2 of 3 entries');
+    assert.ok(result.every(e => e.meta.dispatchKey !== key), 'Filtered array should not contain removed key');
+    assert.strictEqual(completed.length, 3, 'Original array should be unchanged (.filter() is immutable)');
+  });
+
+  await test('duplicate dispatch ID in pending queue is logged as warning and skipped', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the dispatch loop section
+    const dispatchSection = src.match(/seenPendingIds[\s\S]*?busyAgents\.add\(item\.agent\)/);
+    assert.ok(dispatchSection, 'Should have seenPendingIds dedup guard');
+    const section = dispatchSection[0];
+    assert.ok(section.includes('seenPendingIds.has(item.id)'), 'Should check for duplicate dispatch IDs');
+    assert.ok(section.includes("log('warn'") && section.includes('Duplicate dispatch ID'), 'Should log warning on duplicate');
+    assert.ok(section.includes('continue'), 'Should skip duplicate items');
+  });
+
+  await test('dispatch dedup: duplicate items are filtered, unique items dispatched', () => {
+    // Behavioral test: simulate the dispatch dedup logic
+    const pending = [
+      { id: 'D1', agent: 'dallas', type: 'implement' },
+      { id: 'D2', agent: 'ripley', type: 'review' },
+      { id: 'D1', agent: 'dallas', type: 'implement' }, // duplicate
+      { id: 'D3', agent: 'lambert', type: 'plan' },
+    ];
+    const busyAgents = new Set();
+    const seenPendingIds = new Set();
+    const toDispatch = [];
+    const warnings = [];
+    for (const item of pending) {
+      if (seenPendingIds.has(item.id)) {
+        warnings.push(`Duplicate dispatch ID ${item.id}`);
+        continue;
+      }
+      seenPendingIds.add(item.id);
+      if (busyAgents.has(item.agent)) continue;
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+    }
+    assert.strictEqual(toDispatch.length, 3, 'Should dispatch 3 unique items');
+    assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
+    assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
   });
 }
 

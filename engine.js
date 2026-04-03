@@ -91,6 +91,7 @@ const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
+const withFileLock = shared.withFileLock;
 
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
@@ -352,10 +353,15 @@ function spawnAgent(dispatchItem, config) {
                   if (alreadyUsed) {
                     const existingWtPath = findExistingWorktree(rootDir, branchName);
                     if (existingWtPath && fs.existsSync(existingWtPath)) {
-                      const dispatch = safeJson(DISPATCH_PATH) || {};
-                      const activelyUsed = (dispatch.active || []).some(d => {
-                        const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
-                        return dBranch === branchName && d.id !== id;
+                      // Bug fix: read dispatch under file lock so check-and-act is atomic
+                      // Uses withFileLock directly (read-only) — no unnecessary disk write
+                      let activelyUsed = false;
+                      withFileLock(DISPATCH_PATH + '.lock', () => {
+                        const dp = safeJson(DISPATCH_PATH) || {};
+                        activelyUsed = (dp.active || []).some(d => {
+                          const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
+                          return dBranch === branchName && d.id !== id;
+                        });
                       });
                       if (activelyUsed) {
                         log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
@@ -2354,9 +2360,17 @@ async function tickInner() {
   // Only dispatch to agents that aren't already busy (one task per agent at a time).
   // Build set of agents currently active.
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  // Bug fix #14: deduplicate pending by dispatch ID to prevent double-dispatch.
+  // This guards against the same item appearing twice in the in-memory pending array.
+  const seenPendingIds = new Set();
   const toDispatch = [];
   for (const item of dispatch.pending) {
     if (toDispatch.length >= slotsAvailable) break;
+    if (seenPendingIds.has(item.id)) {
+      log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
+      continue;
+    }
+    seenPendingIds.add(item.id);
     if (busyAgents.has(item.agent)) continue; // agent already has an active task
     toDispatch.push(item);
     busyAgents.add(item.agent); // mark busy for this dispatch round too

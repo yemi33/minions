@@ -57,16 +57,12 @@ function safeJson(p) {
         // Verify the restored file matches expected content
         const verifyData = JSON.parse(fs.readFileSync(p, 'utf8'));
         if (JSON.stringify(verifyData) !== JSON.stringify(backupData)) {
-          const errMsg = `[safeJson] CRITICAL: backup restore verification failed for ${p} — written data does not match backup`;
-          console.error(errMsg);
-          throw new Error(errMsg);
+          console.error(`[safeJson] CRITICAL: backup restore verification failed for ${p} — written data does not match backup`);
         }
       } catch (restoreErr) {
-        // Re-throw CRITICAL errors so they propagate to callers
-        if (restoreErr.message && restoreErr.message.includes('CRITICAL')) throw restoreErr;
-        const errMsg = `[safeJson] CRITICAL: backup restore failed for ${p}: ${restoreErr.message}`;
-        console.error(errMsg);
-        throw new Error(errMsg);
+        // Restore-to-primary is best-effort — backupData is already parsed and valid.
+        // Don't throw: disk-full / permission errors should not discard valid data.
+        console.error(`[safeJson] restore write failed for ${p}: ${restoreErr.message}`);
       }
       return backupData;
     } catch (outerErr) {
@@ -158,8 +154,7 @@ function withFileLock(lockPath, fn, {
             // ENOENT: another process deleted the lock between stat and unlink — safe to retry
             if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
           }
-          sleepMs(retryDelayMs); // avoid busy-loop on contention
-          continue;
+          continue; // lock just removed — retry immediately
         }
       } catch (staleErr) {
         // ENOENT from statSync: lock file disappeared between EEXIST and stat — retry will succeed
