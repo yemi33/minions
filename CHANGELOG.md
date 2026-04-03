@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.284 (2026-04-03)
+
+### Fixes
+-  render proper thinking layout immediately — no flash of unstyled text
+-  thinking indicator layout — text ... dots ... elapsed time right-aligned
+-  thinking indicator shows immediately when user sends message
+
 ## 0.1.281 (2026-04-03)
 
 ### Other
