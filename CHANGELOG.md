@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.287 (2026-04-03)
+
+### Features
+-  all doc-chats use Sonnet with full tools (agent change)
+
+### Fixes
+-  engine sidebar badge only triggers on new dispatch errors
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
