@@ -1277,7 +1277,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             const parentItem = items.find(i => i.id === evalTargetId);
             const evalItem = {
               id: 'W-' + shared.uid(),
-              title: `Evaluate: ${parentItem?.title || meta.item.title || evalTargetId}`,
+              title: `Review: ${parentItem?.title || meta.item.title || evalTargetId}`,
               type: 'review',
               priority: meta.item.priority || 'high',
               status: 'pending',

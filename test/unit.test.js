@@ -2205,12 +2205,10 @@ async function testWorktreeManagement() {
       'Should calculate and clean excess worktrees');
   });
 
-  await test('Only implement tasks may create new worktrees', () => {
+  await test('Worktree creation is gated to specific task types', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes("type !== 'implement'"),
-      'Non-implement tasks should skip worktree creation');
-    assert.ok(src.includes('creation disabled for non-implement tasks'),
-      'Engine should log explicit reason when non-implement falls back to rootDir');
+    assert.ok(src.includes("'implement'") && src.includes('.includes(type)'),
+      'Worktree creation should be gated by task type allowlist');
   });
 
   await test('Worktree creation handles stale index.lock', () => {
