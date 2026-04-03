@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.323 (2026-04-03)
+
+### Fixes
+-  scan skips NugetCache, OneDrive, .vs, packages + validates .git/HEAD
+
+### Other
+- refactor: final magic string replacements in engine, lifecycle, cleanup
+
 ## 0.1.321 (2026-04-03)
 
 ### Fixes
