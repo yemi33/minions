@@ -12,6 +12,7 @@ const path = require('path');
 const llm = require('./engine/llm');
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
+const audit = require('./engine/audit');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
@@ -962,6 +963,7 @@ const server = http.createServer(async (req, res) => {
         if (cleaned) safeWrite(cooldownPath, cooldowns);
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
+      audit.auditMutation('work_item_delete', os.userInfo().username, id, `Deleted work item: ${item.title || id}`);
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -1057,6 +1059,7 @@ const server = http.createServer(async (req, res) => {
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       items.push(item);
       safeWrite(wiPath, items);
+      audit.auditMutation('work_item_create', body.author || os.userInfo().username, id, `Created work item: ${body.title}`);
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1100,6 +1103,7 @@ const server = http.createServer(async (req, res) => {
       item.updatedAt = new Date().toISOString();
 
       safeWrite(wiPath, items);
+      audit.auditMutation('work_item_update', os.userInfo().username, id, `Updated work item: ${item.title}`);
       return jsonReply(res, 200, { ok: true, item });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1321,6 +1325,9 @@ const server = http.createServer(async (req, res) => {
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
+      for (const c of cancelled) {
+        audit.auditAdmin('agent_cancel', os.userInfo().username, `Cancelled agent ${c.agent}: ${c.task}`);
+      }
       return jsonReply(res, 200, { ok: true, cancelled });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1804,6 +1811,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
+      audit.auditAdmin('plan_approve', plan.approvedBy || os.userInfo().username, `Approved plan: ${body.file}`, { file: body.file, resumed });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -3632,6 +3640,27 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, message: 'Wakeup signal sent' });
     }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
+
+    // Audit log
+    { method: 'GET', path: '/api/audit', desc: 'Search audit log with filters', params: 'user?, action?, category?, resource?, q?, from?, to?, limit?, offset?', handler: async (req, res) => {
+      const qs = Object.fromEntries(new URL(req.url, 'http://localhost').searchParams);
+      return jsonReply(res, 200, audit.searchAuditLog(qs));
+    }},
+    { method: 'GET', path: '/api/audit/summary', desc: 'Audit log summary stats (totals by category/action, recent entries)', handler: async (req, res) => {
+      return jsonReply(res, 200, audit.getAuditSummary());
+    }},
+    { method: 'POST', path: '/api/audit', desc: 'Record an audit event manually', params: 'action, user?, category?, resource?, details?, meta?', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.action) return jsonReply(res, 400, { error: 'action is required' });
+      const entry = audit.auditLog(body.action, {
+        user: body.user || os.userInfo().username,
+        category: body.category || 'mutation',
+        resource: body.resource,
+        details: body.details,
+        meta: body.meta,
+      });
+      return jsonReply(res, 200, { ok: true, entry });
+    }},
 
     // Settings
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
