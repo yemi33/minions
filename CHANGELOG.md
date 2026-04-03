@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.231 (2026-04-03)
+
+### Fixes
+-  log CC failures to engine log for debugging
+
 ## 0.1.230 (2026-04-03)
 
 ### Fixes
