@@ -277,8 +277,17 @@ let ccInFlight = false;
 let ccInFlightSince = 0; // timestamp — auto-release stuck guard
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 
+// Hash the system prompt so we can detect changes and invalidate stale sessions
+const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
+
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
+  // Invalidate session if system prompt changed (e.g. after code update + restart)
+  if (ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
+    console.log('[CC] System prompt changed — invalidating stale session');
+    ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+    return false;
+  }
   const age = Date.now() - new Date(ccSession.lastActiveAt || 0).getTime();
   return age < CC_SESSION_EXPIRY_MS && ccSession.turnCount < CC_SESSION_MAX_TURNS;
 }
@@ -553,6 +562,7 @@ function updateSession(store, key, sessionId, existing) {
       createdAt: existing ? ccSession.createdAt : now,
       lastActiveAt: now,
       turnCount: (existing ? ccSession.turnCount : 0) + 1,
+      _promptHash: _ccPromptHash,
     };
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
   } else if (key) {
@@ -3052,7 +3062,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Update session
         const now = Date.now();
         if (result.sessionId) {
-          ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1 };
+          ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1, _promptHash: _ccPromptHash };
           safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
         }
 
