@@ -1263,15 +1263,16 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           wi.noPr = true;
           wi.failReason = 'Completed without creating a pull request';
           const retries = wi._retryCount || 0;
-          if (retries < 3) {
-            wi.status = 'pending';
+          const maxR = ENGINE_DEFAULTS.maxRetries;
+          if (retries < maxR) {
+            wi.status = WI_STATUS.PENDING;
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            e.log('info', `Auto-retry ${retries + 1}/3 for ${meta.item.id} (no PR created)`);
+            e.log('info', `Auto-retry ${retries + 1}/${maxR} for ${meta.item.id} (no PR created)`);
           } else {
-            wi.status = 'failed';
-            e.log('warn', `${meta.item.id} failed after 3 retries — no PR created`);
+            wi.status = WI_STATUS.FAILED;
+            e.log('warn', `${meta.item.id} failed after ${maxR} retries — no PR created`);
           }
           shared.safeWrite(wiPath, items);
         }

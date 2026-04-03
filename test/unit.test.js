@@ -2128,7 +2128,7 @@ async function testStateIntegrity() {
 
   await test('Hung timeout path uses normal auto-retry flow', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes("completeDispatch(item.id, 'error', reason);"),
+    assert.ok(src.includes("completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);"),
       'Hung/orphan cleanup should route through normal completeDispatch retry handling');
     assert.ok(!src.includes("completeDispatch(item.id, 'error', reason, '', { processWorkItemFailure: false })"),
       'Hung/orphan cleanup should not bypass work item retry handling');
@@ -5067,9 +5067,9 @@ async function testDispatchCycleIntegration() {
       'Completion must update work item status');
   });
 
-  await test('Completion auto-retries on retryable failure when retries < 3', () => {
-    assert.ok(engineSrc.includes('retries < 3') || lifecycleSrc.includes('retries < 3'),
-      'Must check retries < 3 for auto-retry');
+  await test('Completion auto-retries on retryable failure when retries < maxRetries', () => {
+    assert.ok(engineSrc.includes('retries < maxRetries') || lifecycleSrc.includes('retries < maxRetries') || engineSrc.includes('retries < 3') || lifecycleSrc.includes('retries < 3'),
+      'Must check retries < maxRetries for auto-retry');
     assert.ok(engineSrc.includes('_retryCount') || lifecycleSrc.includes('_retryCount'),
       'Must track _retryCount on work items');
     assert.ok(engineSrc.includes('auto-retry') || lifecycleSrc.includes('auto-retry'),

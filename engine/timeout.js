@@ -8,7 +8,8 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeRead, safeWrite, safeJson, getProjects, projectWorkItemsPath, log, ts, ENGINE_DEFAULTS: DEFAULTS } = shared;
+const { safeRead, safeWrite, safeJson, getProjects, projectWorkItemsPath, log, ts,
+  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -140,7 +141,7 @@ function checkTimeouts(config) {
           safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
-        completeDispatch(item.id, isSuccess ? 'success' : 'error', 'Completed (detected from output)');
+        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, 'Completed (detected from output)');
 
         // Run post-completion hooks via shared helper
         runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
@@ -215,7 +216,7 @@ function checkTimeouts(config) {
 
   // Clean up dead items
   for (const { item, reason } of deadItems) {
-    completeDispatch(item.id, 'error', reason);
+    completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);
   }
 
   // Agent status is now derived from dispatch.json at read time (getAgentStatus).
@@ -232,7 +233,7 @@ function checkTimeouts(config) {
     if (!items || !Array.isArray(items)) continue;
     let changed = false;
     for (const item of items) {
-      if (item.status !== 'dispatched') continue;
+      if (item.status !== WI_STATUS.DISPATCHED) continue;
       // Check if any active dispatch references this item
       // Dispatch keys include project name: work-{project}-{id} or central-work-{id}
       const projectNames = getProjects(config).map(p => p.name);
@@ -244,19 +245,20 @@ function checkTimeouts(config) {
         (dispatchData.active || []).some(d => d.meta?.item?.id === item.id);
       if (!isActive) {
         // Don't revive items that were explicitly failed for non-retryable reasons
-        if (item.status === 'failed' && item.failReason && !item.failReason.includes('Agent died')) continue;
+        if (item.status === WI_STATUS.FAILED && item.failReason && !item.failReason.includes('Agent died')) continue;
         const retries = (item._retryCount || 0);
-        if (retries < 3) {
-          log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/3`);
-          item.status = 'pending';
+        const maxRetries = DEFAULTS.maxRetries;
+        if (retries < maxRetries) {
+          log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/${maxRetries}`);
+          item.status = WI_STATUS.PENDING;
           item._retryCount = retries + 1;
           delete item.dispatched_at;
           delete item.dispatched_to;
           delete item._pendingReason;
         } else {
           log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
-          item.status = 'failed';
-          item.failReason = 'Agent died or was killed (3 retries exhausted)';
+          item.status = WI_STATUS.FAILED;
+          item.failReason = `Agent died or was killed (${maxRetries} retries exhausted)`;
           item.failedAt = ts();
           delete item._pendingReason;
         }
