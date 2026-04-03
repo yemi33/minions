@@ -475,8 +475,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     console.error('  npm update failed:', e.message);
     process.exit(1);
   }
-  force = true;
-  init();
+  // Re-exec the NEW binary (just installed) so the updated code runs init --force
+  execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list') {
