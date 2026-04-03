@@ -293,7 +293,7 @@ async function scanAndAdd({ root, depth } = {}) {
   if (root) {
     scanRoots = [path.resolve(root)];
   } else {
-    const homeDir = process.env.USERPROFILE || process.env.HOME || '';
+    const homeDir = require('os').homedir();
     const answer = await ask('Where are your projects? (comma-separate for multiple)', homeDir);
     scanRoots = answer.split(',').map(s => path.resolve(s.trim())).filter(Boolean);
   }
