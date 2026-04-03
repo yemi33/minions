@@ -6412,8 +6412,8 @@ async function testLockAuditHighRiskSites() {
   await test('eval-loop review creation uses mutateJsonFileLocked (not safeWrite)', () => {
     // The review creation in handleAgentCompletion must be atomic
     const completionSection = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Auto-dispatch evaluate work item after implement'),
-      lifecycleSrc.indexOf('Evaluate completion: parse verdict')
+      lifecycleSrc.indexOf('Auto-dispatch review work item after implement'),
+      lifecycleSrc.indexOf('parse verdict')
     );
     assert.ok(completionSection.includes('mutateJsonFileLocked(wiPath'),
       'Eval-loop review creation must use mutateJsonFileLocked');

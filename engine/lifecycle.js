@@ -1075,7 +1075,7 @@ function resolveWiPath(meta) {
 }
 
 /**
- * Parse structured eval verdict from evaluate agent output.
+ * Parse structured eval verdict from review agent output.
  * Looks for a JSON block with { pass, build, tests, criteria_met, criteria_failed, feedback }.
  * Returns parsed object or null if not found.
  */
@@ -1256,7 +1256,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch evaluate work item after implement or fix completes successfully
+  // Auto-dispatch review work item after implement or fix completes successfully
   if (isSuccess && !skipDoneStatus && (type === 'implement' || (type === 'fix' && meta?.item?._evalParentId)) && meta?.item?.id) {
     const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
     if (evalLoop) {
@@ -1269,7 +1269,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             // Dedup: skip if a review item already exists for this parent
             const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'review' && i.status === 'pending');
             if (existing) {
-              log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
+              log('info', `Eval loop: review item ${existing.id} already exists for ${evalTargetId}, skipping`);
               return items;
             }
             const parentItem = items.find(i => i.id === evalTargetId);
