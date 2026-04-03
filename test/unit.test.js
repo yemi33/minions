@@ -5567,6 +5567,27 @@ async function main() {
 
     // Checkpoint resume support
     await testCheckpointResume();
+
+    // P-2b1c0d9e: Per-work-item cumulative cost tracking
+    await testCumulativeCostTracking();
+
+    // P-k7m2a9f4: Pipeline artifact navigation links
+    await testPipelineArtifactLinks();
+
+    // P-r5w9c2hd: Pipeline step-progress indicator tests
+    await testPipelineStepProgress();
+
+    // P-v8k3m1qa: Regression fixes from commit 5cff9b8
+    await testLifecycleRegressions();
+
+    // P-j2n7f4xb: Lock audit — high-risk lifecycle.js sites
+    await testLockAuditHighRiskSites();
+
+    // P-a5b1k9m3: Orphaned temp file cleanup
+    await testOrphanedTempFileCleanup();
+
+    // P-t8822idp: Dashboard bug fixes — tail clamping, notes validation, watcher cleanup, atomic PRD updates
+    await testDashboardBugFixes();
   } finally {
     cleanupTmpDirs();
   }
@@ -6146,6 +6167,70 @@ async function testCheckpointResume() {
       'PRD migration should assign readdirSync to variable for individual error handling');
     assert.ok(src.includes('migrate PRD statuses: failed to read'),
       'PRD migration should log warning on readdirSync failure');
+  });
+}
+
+async function testDashboardBugFixes() {
+  console.log('\n── Dashboard Bug Fixes (P-t8822idp) ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Bug #17: handlePrdItemsUpdate uses mutateJsonFileLocked
+  await test('handlePrdItemsUpdate uses mutateJsonFileLocked for atomic read-modify-write', () => {
+    // Find the handlePrdItemsUpdate function
+    const fnStart = src.indexOf('async function handlePrdItemsUpdate');
+    const fnEnd = src.indexOf('\n  async function', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 2000);
+    assert.ok(fnBody.includes('mutateJsonFileLocked(planPath'),
+      'handlePrdItemsUpdate should use mutateJsonFileLocked on planPath');
+    // Should NOT have the old safeWrite(planPath pattern
+    assert.ok(!fnBody.includes('safeWrite(planPath'),
+      'handlePrdItemsUpdate should not use safeWrite(planPath) — use mutateJsonFileLocked instead');
+  });
+
+  // Bug #18: dispatch PID read inside mutateJsonFileLocked
+  await test('plan pause reads dispatch inside mutateJsonFileLocked callback', () => {
+    // The old pattern was: const dispatch = JSON.parse(safeRead(dispatchPath)...) followed by mutateJsonFileLocked
+    // New pattern: all dispatch reads happen inside the mutateJsonFileLocked callback
+    const pauseSection = src.slice(src.indexOf('kill any active agent process'));
+    const nextFn = pauseSection.indexOf('\n  async function');
+    const pauseBody = pauseSection.slice(0, nextFn > -1 ? nextFn : 1500);
+    // Should NOT have standalone dispatch read before the lock
+    assert.ok(!pauseBody.includes('const dispatch = JSON.parse(safeRead(dispatchPath)'),
+      'Should not read dispatch.json outside the lock — read inside mutateJsonFileLocked callback');
+  });
+
+  // Bug #24: watcher cleanup in try-finally
+  await test('SSE live-stream watchers have cleanup helper to prevent handle leaks', () => {
+    const sseSection = src.slice(src.indexOf('handleAgentLiveStream') || 0);
+    const nextFn = sseSection.indexOf('\n  async function', 100);
+    const sseBody = sseSection.slice(0, nextFn > -1 ? nextFn : 2000);
+    assert.ok(sseBody.includes('const cleanup = ()'),
+      'Should have a cleanup helper function for watcher teardown');
+    assert.ok(sseBody.includes("req.on('close', cleanup)"),
+      'Client disconnect should call cleanup helper');
+  });
+
+  // Bug #31: tail parameter clamping
+  await test('tail parameter rejects NaN with 400 response', () => {
+    assert.ok(src.includes('isNaN(rawTail)') && src.includes("'tail must be a number'"),
+      'Should check for NaN tail values and return 400');
+  });
+
+  await test('tail parameter is clamped to [1, 10000]', () => {
+    assert.ok(src.includes('Math.max(1, Math.min(10000'),
+      'Should clamp tail to [1, 10000] range');
+  });
+
+  // Bug #32: body.content validation
+  await test('notes save validates content with null check instead of contradictory logic', () => {
+    const notesFn = src.slice(src.indexOf('async function handleNotesSave'));
+    const notesFnEnd = notesFn.indexOf('\n  async function', 50);
+    const notesBody = notesFn.slice(0, notesFnEnd > -1 ? notesFnEnd : 500);
+    assert.ok(notesBody.includes('body.content == null'),
+      'Should use body.content == null to accept empty strings and 0');
+    assert.ok(!notesBody.includes('!body.content && body.content !=='),
+      'Should not use the old contradictory !body.content && body.content !== pattern');
   });
 }
 
