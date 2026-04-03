@@ -52,7 +52,20 @@ function safeJson(p) {
       const backupData = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
       // Backup is valid — restore it to the primary file (atomic via safeWrite)
       console.log(`[safeJson] restored ${path.basename(p)} from .backup sidecar`);
-      try { safeWrite(p, backupData); } catch { /* best-effort restore */ }
+      try {
+        safeWrite(p, backupData);
+        // Verify the restored file matches expected content
+        const verifyData = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (JSON.stringify(verifyData) !== JSON.stringify(backupData)) {
+          const errMsg = `[safeJson] CRITICAL: backup restore verification failed for ${p} — written data does not match backup`;
+          console.error(errMsg);
+          throw new Error(errMsg);
+        }
+      } catch (restoreErr) {
+        const errMsg = `[safeJson] CRITICAL: backup restore failed for ${p}: ${restoreErr.message}`;
+        console.error(errMsg);
+        throw new Error(errMsg);
+      }
       return backupData;
     } catch {
       return null;
@@ -60,6 +73,12 @@ function safeJson(p) {
   }
 }
 
+/**
+ * Monotonic counter for generating unique temp file names within this process.
+ * Assumes single-thread execution (no worker_threads). If worker_threads are
+ * introduced, this must be replaced with an atomic or thread-safe counter to
+ * avoid temp file name collisions.
+ */
 let _tmpCounter = 0;
 
 function safeWrite(p, data) {
@@ -129,10 +148,19 @@ function withFileLock(lockPath, fn, {
       try {
         const stat = fs.statSync(lockPath);
         if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try { fs.unlinkSync(lockPath); } catch { /* race: another process removed it */ }
-          continue; // retry immediately after removing stale lock
+          try {
+            fs.unlinkSync(lockPath);
+          } catch (unlinkErr) {
+            // ENOENT: another process deleted the lock between stat and unlink — safe to retry
+            if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
+          }
+          sleepMs(retryDelayMs); // avoid busy-loop on contention
+          continue;
         }
-      } catch { /* lock file disappeared between EEXIST and stat — retry will succeed */ }
+      } catch (staleErr) {
+        // ENOENT from statSync: lock file disappeared between EEXIST and stat — retry will succeed
+        if (staleErr.code !== 'ENOENT') throw staleErr;
+      }
       sleepMs(retryDelayMs);
     }
   }
