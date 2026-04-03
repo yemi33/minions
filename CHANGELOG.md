@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.320 (2026-04-03)
+
+### Fixes
+-  project scan finds git repos — .git was in skipDirs
+
 ## 0.1.319 (2026-04-03)
 
 ### Other
