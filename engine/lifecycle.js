@@ -142,7 +142,8 @@ function checkPlanCompletion(meta, config) {
   if (wrote) log('info', `PRD completion summary written to notes/inbox/`);
 
   // Persist status and _completionNotified atomically BEFORE creating work items
-  plan._completionNotified = true;
+  // NOTE: Do NOT set plan._completionNotified in-memory before persist —
+  // if persist fails, the in-memory flag would prevent retry on next tick.
   mutateJsonFileLocked(planPath, (data) => {
     data.status = 'completed';
     data.completedAt = plan.completedAt;
@@ -624,47 +625,51 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   const agentName = config.agents?.[agentId]?.name || agentId;
   let added = 0;
   const centralPrPath = path.join(MINIONS_DIR, 'pull-requests.json');
-  // Track which PR files need writing — keyed by target name
-  const dirtyTargets = new Map(); // name -> { prs, prPath }
 
+  // Group PR matches by target file so we take one lock per target
+  const targetPrIds = new Map(); // targetName -> { prPath, prIds: [{ prId, fullId }] }
   for (const prId of prMatches) {
     const fullId = `PR-${prId}`;
     const targetProject = useCentral ? null : resolveProjectForPr(prId);
     const targetName = targetProject ? targetProject.name : '_central';
     const prPath = targetProject ? shared.projectPrPath(targetProject) : centralPrPath;
-
-    // Load PRs for this target (cache per target)
-    if (!dirtyTargets.has(targetName)) {
-      dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
+    if (!targetPrIds.has(targetName)) {
+      targetPrIds.set(targetName, { prPath, prIds: [] });
     }
-    const entry = dirtyTargets.get(targetName);
-    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
-
-    let title = meta?.item?.title || '';
-    const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
-    if (titleMatch) title = titleMatch[1].trim();
-    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120) {
-      title = meta?.item?.title || '';
-    }
-    entry.prs.push({
-      id: fullId,
-      title: (title || `PR created by ${agentName}`).slice(0, 120),
-      agent: agentName,
-      branch: meta?.branch || '',
-      reviewStatus: 'pending',
-      status: 'active',
-      created: dateStamp(),
-      url: extractPrUrl(prId),
-      prdItems: meta?.item?.id ? [meta.item.id] : [],
-      sourcePlan: meta?.item?.sourcePlan || '',
-      itemType: meta?.item?.itemType || ''
-    });
-    if (meta?.item?.id) addPrLink(fullId, meta.item.id);
-    added++;
+    targetPrIds.get(targetName).prIds.push({ prId, fullId });
   }
 
-  for (const [name, entry] of dirtyTargets) {
-    shared.safeWrite(entry.prPath, entry.prs);
+  // For each target, read+modify+write inside a single locked callback
+  for (const [name, { prPath, prIds }] of targetPrIds) {
+    mutateJsonFileLocked(prPath, (prs) => {
+      if (!Array.isArray(prs)) prs = [];
+      for (const { prId, fullId } of prIds) {
+        if (prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
+
+        let title = meta?.item?.title || '';
+        const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
+        if (titleMatch) title = titleMatch[1].trim();
+        if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120) {
+          title = meta?.item?.title || '';
+        }
+        prs.push({
+          id: fullId,
+          title: (title || `PR created by ${agentName}`).slice(0, 120),
+          agent: agentName,
+          branch: meta?.branch || '',
+          reviewStatus: 'pending',
+          status: 'active',
+          created: dateStamp(),
+          url: extractPrUrl(prId),
+          prdItems: meta?.item?.id ? [meta.item.id] : [],
+          sourcePlan: meta?.item?.sourcePlan || '',
+          itemType: meta?.item?.itemType || ''
+        });
+        if (meta?.item?.id) addPrLink(fullId, meta.item.id);
+        added++;
+      }
+      return prs;
+    }, { defaultValue: [] });
     log('info', `Synced PR(s) from ${agentName}'s output to ${name === '_central' ? 'central' : name}/pull-requests.json`);
   }
   return added;

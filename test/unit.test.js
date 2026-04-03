@@ -3461,11 +3461,19 @@ async function testRunPostCompletionHooks() {
     assert.ok(!inboxSection.includes('uniquePath'), 'Should NOT use uniquePath for inbox summary');
   });
 
-  await test('checkPlanCompletion sets _completionNotified on in-memory plan object', () => {
-    // The flag must be set on the local `plan` variable too so later safeWrite(planPath, plan)
-    // does not overwrite the persisted flag
-    assert.ok(lifecycleSrc.includes('plan._completionNotified = true'),
-      'Should set _completionNotified on in-memory plan object (not just in mutateJsonFileLocked)');
+  await test('checkPlanCompletion does NOT set _completionNotified on in-memory plan before persist', () => {
+    // P-r7w2k9m4: The flag must NOT be set on the in-memory plan before mutateJsonFileLocked —
+    // if persist fails, the in-memory flag would prevent retry on the next tick.
+    // It should only be set inside the mutateJsonFileLocked callback on the persisted data.
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function checkPlanCompletion'),
+      lifecycleSrc.indexOf('function archivePlan')
+    );
+    const inMemorySet = fnBody.indexOf('plan._completionNotified = true');
+    assert.strictEqual(inMemorySet, -1,
+      'Should NOT set _completionNotified on in-memory plan object before persist');
+    assert.ok(fnBody.includes('data._completionNotified = true'),
+      '_completionNotified should be set inside the mutateJsonFileLocked callback');
   });
 
   await test('checkPlanCompletion crash recovery: completed plan without _completionNotified falls through', () => {
@@ -5500,6 +5508,9 @@ async function main() {
 
     // P-j4f6v8a2: Empty projects[] guards in lifecycle.js
     await testEmptyProjectsGuards();
+
+    // P-r7w2k9m4: PR write race condition fixes
+    await testPrWriteRaceConditions();
   } finally {
     cleanupTmpDirs();
   }
@@ -6427,6 +6438,138 @@ async function testEmptyProjectsGuards() {
 
     const result = lifecycle.syncPrsFromOutput(output, 'test-agent', meta, config);
     assert.strictEqual(result, 0, 'Should return 0 when projects is empty and no meta project');
+  });
+}
+
+// ─── P-r7w2k9m4: PR write race condition fixes ─────────────────────────────
+async function testPrWriteRaceConditions() {
+  console.log('\n── P-r7w2k9m4: PR write race condition fixes ──');
+
+  const lifecycle = require('../engine/lifecycle');
+  const shared = require('../engine/shared');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('syncPrsFromOutput uses mutateJsonFileLocked instead of safeWrite for PR files', () => {
+    // The old pattern: safeWrite(entry.prPath, entry.prs) should be gone
+    // The new pattern: mutateJsonFileLocked(prPath, ...) should be present
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    assert.ok(!fnBody.includes('shared.safeWrite(entry.prPath'),
+      'syncPrsFromOutput should NOT use safeWrite for PR files');
+    assert.ok(fnBody.includes('mutateJsonFileLocked(prPath'),
+      'syncPrsFromOutput should use mutateJsonFileLocked for atomic PR writes');
+  });
+
+  await test('syncPrsFromOutput reads PR data inside lock callback, not before', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Old pattern cached reads outside lock: dirtyTargets.set(targetName, { prs: safeJson(prPath) })
+    assert.ok(!fnBody.includes('safeJson(prPath) || []') || fnBody.indexOf('safeJson(prPath) || []') > fnBody.indexOf('mutateJsonFileLocked'),
+      'PR data should be read inside the lock callback, not cached from an unlocked read');
+  });
+
+  await test('_completionNotified is NOT set on in-memory plan before mutateJsonFileLocked', () => {
+    // Find the checkPlanCompletion function body
+    const fnStart = lifecycleSrc.indexOf('function checkPlanCompletion');
+    const fnBody = lifecycleSrc.slice(fnStart, lifecycleSrc.indexOf('function archivePlan'));
+    // The old bug: plan._completionNotified = true was set BEFORE the mutateJsonFileLocked call
+    const inMemorySet = fnBody.indexOf('plan._completionNotified = true');
+    const lockCall = fnBody.indexOf('mutateJsonFileLocked(planPath');
+    // Either the in-memory set doesn't exist, or it comes AFTER the lock call
+    assert.ok(inMemorySet === -1 || inMemorySet > lockCall,
+      '_completionNotified must NOT be set on in-memory object before mutateJsonFileLocked persist');
+  });
+
+  await test('_completionNotified is set inside mutateJsonFileLocked callback', () => {
+    const fnStart = lifecycleSrc.indexOf('function checkPlanCompletion');
+    const fnBody = lifecycleSrc.slice(fnStart, lifecycleSrc.indexOf('function archivePlan'));
+    // Inside the callback: data._completionNotified = true
+    assert.ok(fnBody.includes('data._completionNotified = true'),
+      '_completionNotified should be set inside the lock callback on the persisted data');
+  });
+
+  // Functional test: concurrent syncPrsFromOutput calls don't lose PR entries
+  await test('concurrent syncPrsFromOutput calls preserve all PR entries', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    // Mock config with a project pointing to our tmp PR file
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: {
+        agent1: { name: 'Agent1' },
+        agent2: { name: 'Agent2' }
+      }
+    };
+
+    // Override projectPrPath to return our tmp file
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = (p) => prFile;
+
+    // Override getProjects to return our mock
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Simulate agent1 found PR 100 and agent2 found PR 200
+      // Output must be JSONL with type:result for PR matching to work
+      const output1 = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/100 — Feature A"}';
+      const output2 = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/200 — Feature B"}';
+      const meta1 = { item: { id: 'W-001', title: 'Feature A' }, project: mockProject };
+      const meta2 = { item: { id: 'W-002', title: 'Feature B' }, project: mockProject };
+
+      // Call both — since Node is single-threaded the lock serializes them
+      lifecycle.syncPrsFromOutput(output1, 'agent1', meta1, mockConfig);
+      lifecycle.syncPrsFromOutput(output2, 'agent2', meta2, mockConfig);
+
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-100'), 'PR-100 from agent1 should be present');
+      assert.ok(ids.includes('PR-200'), 'PR-200 from agent2 should be present');
+      assert.strictEqual(result.length, 2, 'Both PRs should be preserved, not overwritten');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  // Idempotency: calling syncPrsFromOutput twice with same PR doesn't duplicate
+  await test('syncPrsFromOutput deduplicates same PR on repeated calls', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = (p) => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/300 — Feature C"}';
+      const meta = { item: { id: 'W-003', title: 'Feature C' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+
+      const result = shared.safeJson(prFile) || [];
+      const pr300s = result.filter(p => p.id === 'PR-300');
+      assert.strictEqual(pr300s.length, 1, 'PR-300 should appear exactly once despite two calls');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
   });
 }
 
