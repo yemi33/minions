@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.291 (2026-04-03)
+
+### Features
+-  all doc-chats use Sonnet with full tools (agent change)
+
+### Fixes
+-  defer plan archiving until verify completes, add 20 verify tests
+-  enforce worktree isolation — 4 code paths fixed
+- ' not 'Evaluate:'
+-  cross-platform compatibility — signal handling, paths, home dir
+-  engine sidebar badge only triggers on new dispatch errors
+
+### Other
+- resolve merge conflicts — accept agent changes, keep worktree isolation fix
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
