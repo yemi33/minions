@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.256 (2026-04-03)
+
+### Features
+-  streaming CC responses — text appears as it arrives via SSE
+
+### Fixes
+-  remove dead 'data.actions' code from streaming CC path — caused ReferenceError
+-  CC messages no longer show as "queued" after page refresh
+
 ## 0.1.253 (2026-04-03)
 
 ### Fixes
