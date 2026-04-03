@@ -258,6 +258,38 @@ async function _ccDoSend(message, skipUserMsg) {
         } catch { /* incomplete JSON */ }
       }
     }
+    // Process any remaining buffered data after stream ends
+    if (buf.trim()) {
+      for (const line of buf.split('\n')) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === 'done') {
+            streamDiv.remove();
+            _ccMessages.pop();
+            const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
+            const rendered = renderMd(evt.text || streamedText || '');
+            ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
+            if (evt.sessionId) { _ccSessionId = evt.sessionId; ccSaveState(); ccUpdateSessionIndicator(); }
+            if (evt.actions && evt.actions.length > 0) {
+              for (const action of evt.actions) { await ccExecuteAction(action); }
+            }
+          } else if (evt.type === 'chunk') {
+            streamedText = evt.text;
+            updateStreamDiv();
+          }
+        } catch {}
+      }
+    }
+    // If stream ended without a 'done' event, finalize with whatever we have
+    if (streamDiv.parentNode) {
+      streamDiv.remove();
+      _ccMessages.pop();
+      if (streamedText) {
+        const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
+        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
+      }
+    }
   } catch (e) {
     clearInterval(ccTimer);
     try { thinking.remove(); } catch { /* may already be removed */ }
