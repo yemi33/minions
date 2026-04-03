@@ -153,17 +153,6 @@ async function _ccDoSend(message, skipUserMsg) {
   var existingQueueEl = document.getElementById('cc-queue-indicator');
   if (existingQueueEl) existingQueueEl.remove();
 
-  // Show thinking indicator with timer + queue count
-  const queueCount = _ccQueue.length;
-  const queueBadge = queueCount > 0 ? ' <span style="font-size:9px;background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + queueCount + ' queued</span>' : '';
-  const thinking = document.createElement('div');
-  thinking.id = 'cc-thinking';
-  thinking.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:11px;color:var(--muted);align-self:flex-start;display:flex;align-items:center;gap:8px';
-  thinking.innerHTML = '<span class="dot-pulse" style="display:inline-flex;gap:3px"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span> <span id="cc-thinking-text">Thinking...</span> <span id="cc-thinking-time" style="font-size:10px;color:var(--border)"></span>' + queueBadge;
-  document.getElementById('cc-messages').appendChild(thinking);
-  const ccMsgs = document.getElementById('cc-messages');
-  ccMsgs.scrollTop = ccMsgs.scrollHeight;
-
   const ccStartTime = Date.now();
   const phases = [
     [0, 'Thinking...'],
@@ -175,18 +164,6 @@ async function _ccDoSend(message, skipUserMsg) {
     [180000, 'Still going (this is unusually long)...'],
     [300000, 'Timing out soon...'],
   ];
-  const ccTimer = setInterval(() => {
-    const elapsed = Date.now() - ccStartTime;
-    const secs = Math.floor(elapsed / 1000);
-    const timeEl = document.getElementById('cc-thinking-time');
-    const textEl = document.getElementById('cc-thinking-text');
-    if (timeEl) timeEl.textContent = secs + 's';
-    if (textEl) {
-      for (let i = phases.length - 1; i >= 0; i--) {
-        if (elapsed >= phases[i][0]) { textEl.textContent = phases[i][1]; break; }
-      }
-    }
-  }, 500);
 
   try {
     // Stream response via SSE — shows text as it arrives
@@ -197,8 +174,6 @@ async function _ccDoSend(message, skipUserMsg) {
     });
 
     if (!res.ok) {
-      clearInterval(ccTimer);
-      thinking.remove();
       const errText = await res.text();
       ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
         (errText.includes('busy') ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
@@ -206,8 +181,6 @@ async function _ccDoSend(message, skipUserMsg) {
     }
 
     // Use a temporary streaming div for live updates, then replace with ccAddMessage on completion
-    clearInterval(ccTimer);
-    try { thinking.remove(); } catch { /* may already be removed */ }
     // Add a temporary placeholder via ccAddMessage so it gets proper styling
     ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
     const msgs = document.getElementById('cc-messages');
@@ -318,8 +291,6 @@ async function _ccDoSend(message, skipUserMsg) {
       }
     }
   } catch (e) {
-    clearInterval(ccTimer);
-    try { thinking.remove(); } catch { /* may already be removed */ }
     const retryId = 'cc-retry-' + Date.now();
     ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
       '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
