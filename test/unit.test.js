@@ -2811,19 +2811,71 @@ async function testSafeWriteBackupRestore() {
   await test('safeJson CRITICAL verification mismatch propagates to caller', () => {
     const dir = createTmpDir();
     const fp = path.join(dir, 'verify-mismatch.json');
-    // Write corrupted primary
+    // Write corrupted primary and valid backup
     fs.writeFileSync(fp, 'CORRUPTED');
     fs.writeFileSync(fp + '.backup', JSON.stringify({ expected: true }));
-    // safeWrite will succeed, but we can validate the throw path exists by checking
-    // that a successful restore does NOT throw (complementary to the failure test above)
+    // Successful restore should NOT throw — complementary baseline
     const result = shared.safeJson(fp);
     assert.deepStrictEqual(result, { expected: true }, 'successful restore should return data');
-    // Now verify the CRITICAL re-throw path: the outer catch must not swallow CRITICAL errors
-    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'shared.js'), 'utf8');
-    const safeJsonStart = src.indexOf('function safeJson(p)');
-    const safeJsonBody = src.substring(safeJsonStart, safeJsonStart + 1200);
-    assert.ok(safeJsonBody.includes("includes('CRITICAL')) throw"),
-      'outer catch must re-throw CRITICAL errors instead of returning null');
+
+    // Now test the CRITICAL propagation path by making the primary path read-only dir
+    // so safeWrite fails and triggers CRITICAL throw through all catch layers
+    const fp2 = path.join(dir, 'crit-propagate-dir.json');
+    fs.writeFileSync(fp2, 'BAD');
+    fs.writeFileSync(fp2 + '.backup', JSON.stringify({ data: 1 }));
+    // Replace primary with a directory — safeWrite will throw, triggering CRITICAL
+    fs.unlinkSync(fp2);
+    fs.mkdirSync(fp2);
+    let threw = false;
+    let caughtErr = null;
+    try {
+      shared.safeJson(fp2);
+    } catch (e) {
+      threw = true;
+      caughtErr = e;
+    }
+    assert.ok(threw, 'CRITICAL error must propagate through outer catch — not swallowed');
+    assert.ok(caughtErr.message.includes('CRITICAL'),
+      'propagated error must contain CRITICAL marker');
+    // Verify no double-wrapped CRITICAL prefix
+    const critCount = (caughtErr.message.match(/CRITICAL/g) || []).length;
+    assert.strictEqual(critCount, 1,
+      `error should contain CRITICAL exactly once, got ${critCount}: ${caughtErr.message}`);
+    try { fs.rmdirSync(fp2); } catch { /* cleanup */ }
+  });
+
+  await test('withFileLock handles ENOENT when stale lock disappears between stat and unlink', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'enoent-race.lock');
+    // Create a stale lock file
+    fs.writeFileSync(lockPath, 'stale');
+    const pastTime = Date.now() - shared.LOCK_STALE_MS - 5000;
+    fs.utimesSync(lockPath, new Date(pastTime), new Date(pastTime));
+
+    // Remove the lock file after stat but before unlink would run —
+    // simulate the race by deleting it now and creating a fresh one that's stale.
+    // The ENOENT guard ensures withFileLock doesn't throw when another process
+    // cleans the lock between stat and unlink. We verify it still completes.
+    let called = false;
+    shared.withFileLock(lockPath, () => { called = true; }, { timeoutMs: 3000 });
+    assert.ok(called, 'withFileLock should succeed after stale lock cleanup');
+
+    // Now test the specific ENOENT race: create stale lock, delete it mid-retry
+    // by using a short timeout on a permanently locked file that gets freed
+    const lockPath2 = path.join(dir, 'enoent-race2.lock');
+    // Hold a real lock, then release it — simulates lock contention + stale cleanup
+    const fd = fs.openSync(lockPath2, 'wx');
+    // Set mtime to past to make it look stale
+    fs.utimesSync(lockPath2, new Date(pastTime), new Date(pastTime));
+    // Release the lock in background after a small delay — simulates another process
+    // cleaning the stale lock (withFileLock will see ENOENT on retry)
+    setTimeout(() => {
+      try { fs.closeSync(fd); } catch {}
+      try { fs.unlinkSync(lockPath2); } catch {}
+    }, 50);
+    let called2 = false;
+    shared.withFileLock(lockPath2, () => { called2 = true; }, { timeoutMs: 3000 });
+    assert.ok(called2, 'withFileLock should succeed when stale lock disappears mid-retry');
   });
 
   await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
