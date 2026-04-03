@@ -6616,6 +6616,243 @@ async function testOrphanedTempFileCleanup() {
     assert.ok(src.includes('\\.tmp\\.\\d+\\.\\d+'), 'Should have regex matching .tmp.{pid}.{counter} pattern');
     assert.ok(src.includes('isSafeWriteTemp'), 'Should identify safeWrite temp files separately');
   });
+  // ─── RBAC Tests ─────────────────────────────────────────────────────────────
+
+  console.log('\n── RBAC (Role-Based Access Control) ──');
+
+  const rbac = require(path.join(MINIONS_DIR, 'engine', 'rbac'));
+
+  await test('rbac: ROLES contains viewer, editor, admin in hierarchy order', () => {
+    assert.deepStrictEqual(rbac.ROLES, ['viewer', 'editor', 'admin']);
+  });
+
+  await test('rbac: roleAtLeast correctly compares roles', () => {
+    assert.ok(rbac.roleAtLeast('admin', 'admin'));
+    assert.ok(rbac.roleAtLeast('admin', 'editor'));
+    assert.ok(rbac.roleAtLeast('admin', 'viewer'));
+    assert.ok(rbac.roleAtLeast('editor', 'editor'));
+    assert.ok(rbac.roleAtLeast('editor', 'viewer'));
+    assert.ok(rbac.roleAtLeast('viewer', 'viewer'));
+    assert.ok(!rbac.roleAtLeast('viewer', 'editor'));
+    assert.ok(!rbac.roleAtLeast('viewer', 'admin'));
+    assert.ok(!rbac.roleAtLeast('editor', 'admin'));
+  });
+
+  await test('rbac: roleAtLeast returns false for unknown roles', () => {
+    assert.ok(!rbac.roleAtLeast('unknown', 'viewer'));
+    assert.ok(!rbac.roleAtLeast('viewer', 'superadmin'));
+  });
+
+  await test('rbac: requiredRole returns admin for engine control routes', () => {
+    assert.strictEqual(rbac.requiredRole('POST', '/api/engine/wakeup'), 'admin');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/engine/restart'), 'admin');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/settings'), 'admin');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/rbac/users'), 'admin');
+  });
+
+  await test('rbac: requiredRole returns editor for write routes', () => {
+    assert.strictEqual(rbac.requiredRole('POST', '/api/work-items'), 'editor');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/plan'), 'editor');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/notes'), 'editor');
+    assert.strictEqual(rbac.requiredRole('POST', '/api/knowledge'), 'editor');
+  });
+
+  await test('rbac: requiredRole returns viewer for read routes', () => {
+    assert.strictEqual(rbac.requiredRole('GET', '/api/status'), 'viewer');
+    assert.strictEqual(rbac.requiredRole('GET', '/api/health'), 'viewer');
+    assert.strictEqual(rbac.requiredRole('GET', '/api/rbac'), 'viewer');
+  });
+
+  await test('rbac: loadRbac returns defaults when no file exists', () => {
+    const state = rbac.loadRbac();
+    assert.strictEqual(typeof state.enabled, 'boolean');
+    assert.ok(rbac.ROLES.includes(state.defaultRole));
+    assert.strictEqual(typeof state.users, 'object');
+  });
+
+  await test('rbac: saveRbac and loadRbac round-trip', () => {
+    const original = rbac.loadRbac();
+    const testState = {
+      enabled: true,
+      defaultRole: 'viewer',
+      users: { testuser: { role: 'admin', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' } },
+    };
+    rbac.saveRbac(testState);
+    const loaded = rbac.loadRbac();
+    assert.strictEqual(loaded.enabled, true);
+    assert.strictEqual(loaded.defaultRole, 'viewer');
+    assert.strictEqual(loaded.users.testuser.role, 'admin');
+    // Restore original
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: resolveUser reads X-Minions-User header', () => {
+    const req = { headers: { 'x-minions-user': 'Alice' }, url: '/api/status' };
+    assert.strictEqual(rbac.resolveUser(req), 'alice');
+  });
+
+  await test('rbac: resolveUser reads user query param', () => {
+    const req = { headers: {}, url: '/api/status?user=Bob' };
+    assert.strictEqual(rbac.resolveUser(req), 'bob');
+  });
+
+  await test('rbac: resolveUser prefers header over query param', () => {
+    const req = { headers: { 'x-minions-user': 'Alice' }, url: '/api/status?user=Bob' };
+    assert.strictEqual(rbac.resolveUser(req), 'alice');
+  });
+
+  await test('rbac: resolveUser returns null when no user identified', () => {
+    const req = { headers: {}, url: '/api/status' };
+    assert.strictEqual(rbac.resolveUser(req), null);
+  });
+
+  await test('rbac: getUserRole returns user role from state', () => {
+    const state = { defaultRole: 'viewer', users: { alice: { role: 'admin' } } };
+    assert.strictEqual(rbac.getUserRole('alice', state), 'admin');
+  });
+
+  await test('rbac: getUserRole returns defaultRole for unknown users', () => {
+    const state = { defaultRole: 'editor', users: {} };
+    assert.strictEqual(rbac.getUserRole('unknown', state), 'editor');
+  });
+
+  await test('rbac: getUserRole returns defaultRole when username is null', () => {
+    const state = { defaultRole: 'viewer', users: {} };
+    assert.strictEqual(rbac.getUserRole(null, state), 'viewer');
+  });
+
+  await test('rbac: checkAccess returns null when RBAC is disabled', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: false, defaultRole: 'viewer', users: {} });
+    const req = { headers: {}, url: '/api/engine/restart' };
+    const result = rbac.checkAccess(req, 'POST', '/api/engine/restart');
+    assert.strictEqual(result, null);
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: checkAccess denies viewer on admin route when RBAC enabled', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: {} });
+    const req = { headers: {}, url: '/api/engine/restart' };
+    const result = rbac.checkAccess(req, 'POST', '/api/engine/restart');
+    assert.ok(result !== null, 'Should deny access');
+    assert.strictEqual(result.code, 403);
+    assert.ok(result.error.includes('admin'));
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: checkAccess allows admin on admin route when RBAC enabled', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: { admin1: { role: 'admin' } } });
+    const req = { headers: { 'x-minions-user': 'admin1' }, url: '/api/engine/restart' };
+    const result = rbac.checkAccess(req, 'POST', '/api/engine/restart');
+    assert.strictEqual(result, null, 'Admin should be allowed');
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: checkAccess allows editor on write route', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: { editor1: { role: 'editor' } } });
+    const req = { headers: { 'x-minions-user': 'editor1' }, url: '/api/work-items' };
+    const result = rbac.checkAccess(req, 'POST', '/api/work-items');
+    assert.strictEqual(result, null);
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: checkAccess denies viewer on write route', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: {} });
+    const req = { headers: {}, url: '/api/work-items' };
+    const result = rbac.checkAccess(req, 'POST', '/api/work-items');
+    assert.ok(result !== null);
+    assert.strictEqual(result.code, 403);
+    assert.ok(result.error.includes('editor'));
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: checkAccess allows viewer on read route', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: {} });
+    const req = { headers: {}, url: '/api/status' };
+    const result = rbac.checkAccess(req, 'GET', '/api/status');
+    assert.strictEqual(result, null);
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: admin can access all route types', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'viewer', users: { superuser: { role: 'admin' } } });
+    const req = { headers: { 'x-minions-user': 'superuser' }, url: '' };
+    // Admin route
+    req.url = '/api/engine/restart';
+    assert.strictEqual(rbac.checkAccess(req, 'POST', '/api/engine/restart'), null);
+    // Editor route
+    req.url = '/api/work-items';
+    assert.strictEqual(rbac.checkAccess(req, 'POST', '/api/work-items'), null);
+    // Viewer route
+    req.url = '/api/status';
+    assert.strictEqual(rbac.checkAccess(req, 'GET', '/api/status'), null);
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: WRITE_ROUTES covers all POST mutation endpoints', () => {
+    // Sanity check — write routes should include key mutation paths
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/work-items'));
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/plan'));
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/notes'));
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/schedules'));
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/pipelines'));
+    assert.ok(rbac.WRITE_ROUTES.has('POST /api/meetings'));
+  });
+
+  await test('rbac: ADMIN_ROUTES covers engine and settings control', () => {
+    assert.ok(rbac.ADMIN_ROUTES.has('POST /api/engine/wakeup'));
+    assert.ok(rbac.ADMIN_ROUTES.has('POST /api/engine/restart'));
+    assert.ok(rbac.ADMIN_ROUTES.has('POST /api/settings'));
+    assert.ok(rbac.ADMIN_ROUTES.has('POST /api/settings/routing'));
+    assert.ok(rbac.ADMIN_ROUTES.has('POST /api/rbac/users'));
+  });
+
+  await test('rbac: checkAccess attaches _rbacUser and _rbacRole to request', () => {
+    const original = rbac.loadRbac();
+    rbac.saveRbac({ enabled: true, defaultRole: 'editor', users: { dev1: { role: 'editor' } } });
+    const req = { headers: { 'x-minions-user': 'dev1' }, url: '/api/status' };
+    rbac.checkAccess(req, 'GET', '/api/status');
+    assert.strictEqual(req._rbacUser, 'dev1');
+    assert.strictEqual(req._rbacRole, 'editor');
+    rbac.saveRbac(original);
+  });
+
+  await test('rbac: source file exports all expected functions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'rbac.js'), 'utf8');
+    assert.ok(src.includes('module.exports'));
+    assert.ok(src.includes('function checkAccess'));
+    assert.ok(src.includes('function roleAtLeast'));
+    assert.ok(src.includes('function requiredRole'));
+    assert.ok(src.includes('function resolveUser'));
+    assert.ok(src.includes('function getUserRole'));
+    assert.ok(src.includes('function loadRbac'));
+    assert.ok(src.includes('function saveRbac'));
+    assert.ok(src.includes('handleRbacStatus'));
+    assert.ok(src.includes('handleRbacToggle'));
+    assert.ok(src.includes('handleRbacUsersCreate'));
+    assert.ok(src.includes('handleRbacUsersDelete'));
+  });
+
+  await test('rbac: dashboard.js integrates RBAC middleware', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes("require('./engine/rbac')"), 'Should import rbac module');
+    assert.ok(dashSrc.includes('rbac.checkAccess'), 'Should call checkAccess in middleware');
+    assert.ok(dashSrc.includes('/api/rbac'), 'Should have RBAC API routes');
+    assert.ok(dashSrc.includes('/api/rbac/toggle'), 'Should have toggle endpoint');
+    assert.ok(dashSrc.includes('/api/rbac/users'), 'Should have users endpoint');
+    assert.ok(dashSrc.includes('/api/rbac/default-role'), 'Should have default-role endpoint');
+  });
+
+  await test('rbac: role hierarchy is strict ordered (viewer < editor < admin)', () => {
+    assert.ok(rbac.ROLE_RANK.viewer < rbac.ROLE_RANK.editor);
+    assert.ok(rbac.ROLE_RANK.editor < rbac.ROLE_RANK.admin);
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

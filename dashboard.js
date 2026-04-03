@@ -14,6 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
+const rbac = require('./engine/rbac');
 const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
@@ -808,6 +809,15 @@ const server = http.createServer(async (req, res) => {
     res.statusCode = 204;
     res.end();
     return;
+  }
+
+  // ── RBAC Middleware ───────────────────────────────────────────────────────
+  const _pathname = req.url.split('?')[0];
+  if (_pathname.startsWith('/api/')) {
+    const denied = rbac.checkAccess(req, req.method, _pathname);
+    if (denied) {
+      return jsonReply(res, denied.code, { error: denied.error, user: denied.user, role: denied.role, required: denied.required }, req);
+    }
   }
 
   // ── Route Handler Functions ───────────────────────────────────────────────
@@ -3637,6 +3647,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
+
+    // RBAC (Role-Based Access Control)
+    { method: 'GET', path: '/api/rbac', desc: 'RBAC status: enabled, roles, users', handler: (req, res) => rbac.handleRbacStatus(req, res, {}, jsonReply) },
+    { method: 'POST', path: '/api/rbac/toggle', desc: 'Enable or disable RBAC', params: 'enabled', handler: (req, res) => rbac.handleRbacToggle(req, res, {}, jsonReply, readBody) },
+    { method: 'POST', path: '/api/rbac/default-role', desc: 'Set the default role for unknown users', params: 'role', handler: (req, res) => rbac.handleRbacDefaultRole(req, res, {}, jsonReply, readBody) },
+    { method: 'POST', path: '/api/rbac/users', desc: 'Create or update a user role assignment', params: 'username, role', handler: (req, res) => rbac.handleRbacUsersCreate(req, res, {}, jsonReply, readBody) },
+    { method: 'POST', path: '/api/rbac/users/update', desc: 'Update a user role assignment', params: 'username, role', handler: (req, res) => rbac.handleRbacUsersUpdate(req, res, {}, jsonReply, readBody) },
+    { method: 'POST', path: '/api/rbac/users/delete', desc: 'Delete a user role assignment', params: 'username', handler: (req, res) => rbac.handleRbacUsersDelete(req, res, {}, jsonReply, readBody) },
   ];
 
   // Expose routes to CC preamble builder (once, on first request)
