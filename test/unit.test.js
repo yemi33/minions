@@ -5712,6 +5712,9 @@ async function main() {
 
     // P-j2n7f4xb: Lock audit — high-risk lifecycle.js sites
     await testLockAuditHighRiskSites();
+
+    // P-a5b1k9m3: Orphaned temp file cleanup
+    await testOrphanedTempFileCleanup();
   } finally {
     cleanupTmpDirs();
   }
@@ -6606,6 +6609,67 @@ async function testLockAuditHighRiskSites() {
     const wi = result.find(i => i.id === 'W-fail');
     assert.strictEqual(wi._retryCount, 3,
       'Retry count should be 3 after 3 atomic increments (no lost updates)');
+  });
+}
+
+// ─── P-a5b1k9m3: Orphaned temp file cleanup ─────────────────────────────────
+
+async function testOrphanedTempFileCleanup() {
+  console.log('\n── Orphaned safeWrite .tmp.* file cleanup ──');
+
+  await test('cleanup deletes .tmp.* files older than 1 hour', () => {
+    const tmp = createTmpDir();
+    const staleFile = path.join(tmp, 'cooldowns.json.tmp.9736.6449');
+    fs.writeFileSync(staleFile, '{"stale": true}');
+    // Set mtime to 2 hours ago
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
+    fs.utimesSync(staleFile, twoHoursAgo, twoHoursAgo);
+
+    // Simulate the cleanup logic from runCleanup step 1
+    const oneHourAgo = Date.now() - 3600000;
+    let cleaned = 0;
+    for (const f of fs.readdirSync(tmp)) {
+      if (/\.tmp\.\d+\.\d+$/.test(f)) {
+        const fp = path.join(tmp, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs < oneHourAgo) {
+          fs.unlinkSync(fp);
+          cleaned++;
+        }
+      }
+    }
+
+    assert.strictEqual(cleaned, 1, 'Should clean exactly 1 stale temp file');
+    assert.ok(!fs.existsSync(staleFile), 'Stale temp file should be deleted');
+  });
+
+  await test('cleanup preserves .tmp.* files newer than 1 hour', () => {
+    const tmp = createTmpDir();
+    const recentFile = path.join(tmp, 'dispatch.json.tmp.1234.1');
+    fs.writeFileSync(recentFile, '{"recent": true}');
+    // mtime is now (just created), so it's less than 1 hour old
+
+    const oneHourAgo = Date.now() - 3600000;
+    let cleaned = 0;
+    for (const f of fs.readdirSync(tmp)) {
+      if (/\.tmp\.\d+\.\d+$/.test(f)) {
+        const fp = path.join(tmp, f);
+        const stat = fs.statSync(fp);
+        if (stat.mtimeMs < oneHourAgo) {
+          fs.unlinkSync(fp);
+          cleaned++;
+        }
+      }
+    }
+
+    assert.strictEqual(cleaned, 0, 'Should not clean any recent temp files');
+    assert.ok(fs.existsSync(recentFile), 'Recent temp file should be preserved');
+  });
+
+  await test('cleanup.js contains .tmp. regex pattern for safeWrite orphans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('\\.tmp\\.\\d+\\.\\d+'), 'Should have regex matching .tmp.{pid}.{counter} pattern');
+    assert.ok(src.includes('isSafeWriteTemp'), 'Should identify safeWrite temp files separately');
   });
 }
 

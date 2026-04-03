@@ -48,8 +48,26 @@ function renderMetrics(metrics) {
     renderContextPressure(metrics);
     return;
   }
+  // Consolidate temp-* agents into one row
+  var permanent = agents.filter(function(a) { return !a[0].startsWith('temp-'); });
+  var temps = agents.filter(function(a) { return a[0].startsWith('temp-'); });
+  var rows = permanent.slice();
+  if (temps.length > 0) {
+    var merged = { tasksCompleted: 0, tasksErrored: 0, prsCreated: 0, prsApproved: 0, prsRejected: 0, reviewsDone: 0 };
+    for (var t = 0; t < temps.length; t++) {
+      var tm = temps[t][1];
+      merged.tasksCompleted += tm.tasksCompleted || 0;
+      merged.tasksErrored += tm.tasksErrored || 0;
+      merged.prsCreated += tm.prsCreated || 0;
+      merged.prsApproved += tm.prsApproved || 0;
+      merged.prsRejected += tm.prsRejected || 0;
+      merged.reviewsDone += tm.reviewsDone || 0;
+    }
+    rows.push(['Temp Agents (' + temps.length + ')', merged]);
+  }
+
   let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th></tr></thead><tbody>';
-  for (const [id, m] of agents) {
+  for (const [id, m] of rows) {
     const rate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
     const rateColor = m.prsCreated > 0 ? (m.prsApproved / m.prsCreated >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
     html += '<tr>' +
@@ -141,8 +159,25 @@ function renderTokenUsage(metrics) {
     html += '</div>';
   }
 
-  // Per-agent token table
-  const agentsWithUsage = agents.filter(([, m]) => (m.totalCostUsd || 0) > 0);
+  // Per-agent token table (consolidate temp agents)
+  var permAgents = agents.filter(function(a) { return !a[0].startsWith('temp-'); });
+  var tempAgents = agents.filter(function(a) { return a[0].startsWith('temp-'); });
+  var tokenRows = permAgents.slice();
+  if (tempAgents.length > 0) {
+    var tempMerged = { totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, tasksCompleted: 0, tasksErrored: 0, model: '' };
+    for (var ti = 0; ti < tempAgents.length; ti++) {
+      var tm = tempAgents[ti][1];
+      tempMerged.totalCostUsd += tm.totalCostUsd || 0;
+      tempMerged.totalInputTokens += tm.totalInputTokens || 0;
+      tempMerged.totalOutputTokens += tm.totalOutputTokens || 0;
+      tempMerged.totalCacheRead += tm.totalCacheRead || 0;
+      tempMerged.tasksCompleted += tm.tasksCompleted || 0;
+      tempMerged.tasksErrored += tm.tasksErrored || 0;
+      if (!tempMerged.model && tm.model) tempMerged.model = tm.model;
+    }
+    tokenRows.push(['Temp Agents (' + tempAgents.length + ')', tempMerged]);
+  }
+  var agentsWithUsage = tokenRows.filter(function(a) { return (a[1].totalCostUsd || 0) > 0; });
   if (agentsWithUsage.length > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Agent Usage</div>';
     html += '<table class="token-agent-table"><thead><tr><th>Agent</th><th>Model</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/task</th></tr></thead><tbody>';
