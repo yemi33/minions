@@ -6,7 +6,7 @@ let _mtgPage = 0;
 
 function renderMeetings(meetings) {
   meetings = (meetings || []).filter(function(m) { return !isDeleted('mtg:' + m.id); });
-  meetings.sort((a, b) => (b.created || b.startedAt || '').localeCompare(a.created || a.startedAt || ''));
+  meetings.sort((a, b) => (b.createdAt || b.completedAt || '').localeCompare(a.createdAt || a.completedAt || ''));
   const el = document.getElementById('meetings-content');
   const countEl = document.getElementById('meetings-count');
   if (!meetings || meetings.length === 0) {
