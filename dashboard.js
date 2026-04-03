@@ -2904,8 +2904,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         let entries;
         try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
         for (const e of entries) {
-          if (!e.isDirectory() || (e.name.startsWith('.') && e.name !== '.git') || skipDirs.has(e.name)) continue;
+          if (!e.isDirectory()) continue;
           if (e.name === '.git') { repos.push(dir); return; }
+          if (e.name.startsWith('.') || skipDirs.has(e.name)) continue;
           walk(path.join(dir, e.name), depth + 1);
         }
       }
