@@ -364,6 +364,7 @@ function runCleanup(config, verbose = false) {
       for (const item of items) {
         if (LEGACY_DONE_STATUSES.has(item.status)) {
           item.status = 'done';
+          delete item._pendingReason;
           migrated++;
         }
       }
@@ -381,6 +382,7 @@ function runCleanup(config, verbose = false) {
     for (const item of centralItems) {
       if (LEGACY_DONE_STATUSES.has(item.status)) {
         item.status = 'done';
+        delete item._pendingReason;
         migrated++;
       }
     }

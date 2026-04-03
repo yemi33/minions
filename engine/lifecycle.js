@@ -284,23 +284,33 @@ function checkPlanCompletion(meta, config) {
     shared.safeWrite(planPath, plan);
   }
 
-  // Also archive the source .md plan if it exists
+  // Also archive the source .md plan if it exists (use source_plan field, not content matching)
   const planArchiveDir = path.join(PLANS_DIR, 'archive');
   if (!fs.existsSync(planArchiveDir)) fs.mkdirSync(planArchiveDir, { recursive: true });
-  try {
-    const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
-    for (const md of mdFiles) {
-      const mdContent = shared.safeRead(path.join(PLANS_DIR, md)) || '';
-      // Match by project name or plan summary appearing in the .md content
-      if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
-        try {
-          fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
-          log('info', `Archived source plan: plans/archive/${md}`);
-        } catch (err) { log('warn', `Failed to archive plan ${md}: ${err.message}`); }
-        break;
-      }
+  if (plan.source_plan) {
+    const mdPath = path.join(PLANS_DIR, plan.source_plan);
+    if (fs.existsSync(mdPath)) {
+      try {
+        fs.renameSync(mdPath, path.join(planArchiveDir, plan.source_plan));
+        log('info', `Archived source plan: plans/archive/${plan.source_plan}`);
+      } catch (err) { log('warn', `Failed to archive source plan ${plan.source_plan}: ${err.message}`); }
     }
-  } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
+  } else {
+    // Fallback: scan for matching .md files (legacy PRDs without source_plan)
+    try {
+      const mdFiles = fs.readdirSync(PLANS_DIR).filter(f => f.endsWith('.md'));
+      for (const md of mdFiles) {
+        const mdContent = shared.safeRead(path.join(PLANS_DIR, md)) || '';
+        if (mdContent.includes(projectName) || mdContent.includes(plan.plan_summary?.slice(0, 40) || '___nomatch___')) {
+          try {
+            fs.renameSync(path.join(PLANS_DIR, md), path.join(planArchiveDir, md));
+            log('info', `Archived source plan: plans/archive/${md}`);
+          } catch (err) { log('warn', `Failed to archive plan ${md}: ${err.message}`); }
+          break;
+        }
+      }
+    } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
+  }
 
   // 6. Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
   try {
@@ -791,6 +801,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
             log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
             item.status = 'done';
             item.completedAt = ts();
+            delete item._pendingReason;
             item._mergedVia = pr.id;
             found = true;
           }
