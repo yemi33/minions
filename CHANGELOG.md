@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.328 (2026-04-03)
+
+### Fixes
+-  import PR_STATUS in engine.js — was causing discoverWork to fail
+
 ## 0.1.327 (2026-04-03)
 
 ### Fixes
