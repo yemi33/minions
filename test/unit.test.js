@@ -5497,6 +5497,9 @@ async function main() {
 
     // P-e9y7xcp5: Auxiliary module bug fixes
     await testAuxModuleBugFixes();
+
+    // P-j4f6v8a2: Empty projects[] guards in lifecycle.js
+    await testEmptyProjectsGuards();
   } finally {
     cleanupTmpDirs();
   }
@@ -6330,6 +6333,100 @@ async function testAuxModuleBugFixes() {
     const regexPath = src.indexOf('lastBoundary');
     assert.ok(llmPath > 0, 'LLM consolidation path should have section-boundary truncation');
     assert.ok(regexPath > 0, 'Regex fallback path should have section-boundary truncation');
+  });
+}
+
+// ─── P-j4f6v8a2: Empty projects[] guards in lifecycle.js ─────────────────────
+
+async function testEmptyProjectsGuards() {
+  console.log('\n── lifecycle.js — empty projects[] guards (P-j4f6v8a2) ──');
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // ── Source-level checks ──
+
+  await test('checkPlanCompletion guards empty projects with early return', () => {
+    // After resolving primaryProject, there must be a !primaryProject guard before accessing .name
+    const fnBody = src.slice(src.indexOf('function checkPlanCompletion'), src.indexOf('function archivePlan'));
+    assert.ok(fnBody.includes('if (!primaryProject)'),
+      'Should have an explicit !primaryProject guard');
+    assert.ok(fnBody.includes('return;'),
+      'Should return early when no project available');
+  });
+
+  await test('chainPlanToPrd guards empty projects array before accessing projects[0]', () => {
+    const fnBody = src.slice(src.indexOf('function chainPlanToPrd'), src.indexOf('function syncPrsFromOutput'));
+    assert.ok(fnBody.includes('projects.length === 0'),
+      'Should check for empty projects array before accessing projects[0]');
+  });
+
+  await test('syncPrsFromOutput guards empty projects with early return 0', () => {
+    const fnBody = src.slice(src.indexOf('function syncPrsFromOutput'));
+    assert.ok(fnBody.includes('projects.length === 0'),
+      'Should check for empty projects array');
+    assert.ok(fnBody.includes('return 0'),
+      'Should return 0 when no projects available');
+  });
+
+  // ── Functional: checkPlanCompletion with empty projects ──
+
+  const testPlanFile = '_test-empty-proj.json';
+  const prdDir = path.join(MINIONS_DIR, 'prd');
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+  fs.mkdirSync(prdDir, { recursive: true });
+  fs.mkdirSync(inboxDir, { recursive: true });
+
+  await test('checkPlanCompletion: empty projects[] does not crash, skips PR/verify creation', () => {
+    // Write a PRD with all items done
+    const prd = {
+      plan_summary: 'Empty proj test',
+      project: null,
+      branch_strategy: 'parallel',
+      missing_features: [
+        { id: 'EP-001', title: 'Feature A', acceptance_criteria: ['AC1'] },
+      ],
+    };
+    shared.safeWrite(path.join(prdDir, testPlanFile), prd);
+
+    // Write matching work items to central location (no project dir)
+    const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
+    shared.safeWrite(centralWiPath, [
+      { id: 'EP-001', title: 'Implement: Feature A', type: 'implement', status: 'done',
+        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
+    ]);
+
+    const meta = { item: { sourcePlan: testPlanFile } };
+    const config = { projects: [] };
+
+    // Should not throw
+    lifecycle.checkPlanCompletion(meta, config);
+
+    // The completion summary inbox IS written (before project resolution), but
+    // no verify work item should be created since there's no project for it.
+    // The _completionNotified flag is set before the project guard (to prevent re-runs).
+    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+    assert.strictEqual(completedPlan._completionNotified, true,
+      '_completionNotified should still be set even with empty projects');
+    assert.strictEqual(completedPlan.status, 'completed',
+      'Plan status should be marked completed');
+
+    // Cleanup
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-empty-proj'));
+    for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
+    try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(centralWiPath); } catch {}
+  });
+
+  // ── Functional: syncPrsFromOutput with empty projects ──
+
+  await test('syncPrsFromOutput: empty projects[] returns 0 without crash', () => {
+    const output = '{"type":"result","message":{"content":[{"type":"tool_result","content":"https://github.com/org/repo/pull/999"}]}}';
+    const config = { projects: [] };
+    const meta = {};
+
+    const result = lifecycle.syncPrsFromOutput(output, 'test-agent', meta, config);
+    assert.strictEqual(result, 0, 'Should return 0 when projects is empty and no meta project');
   });
 }
 
