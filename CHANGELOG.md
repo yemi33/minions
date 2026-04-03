@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.223 (2026-04-03)
+
+### Fixes
+-  changelog uses commit messages instead of file lists
+
 ## 0.1.222 (2026-04-03)
 
 ### Other
