@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.230 (2026-04-03)
+
+### Fixes
+-  remove all 'evaluate' work type — eval loop uses 'review' exclusively
+
 ## 0.1.229 (2026-04-03)
 
 ### Fixes
