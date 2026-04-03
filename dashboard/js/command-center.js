@@ -110,10 +110,10 @@ async function ccSend() {
   if (!message) return;
   input.value = '';
 
-  // If already processing, queue the message — don't show user bubble yet
+  // If already processing, queue the message
   if (_ccSending) {
     _ccQueue.push(message);
-    ccAddMessage('user', '<span class="cc-queued-pill" style="opacity:0.6;font-size:11px">' + escHtml(message) + '<br><span style="font-size:9px;font-style:italic">queued</span></span>');
+    _renderQueueIndicator();
     return;
   }
   await _ccDoSend(message);
@@ -121,15 +121,24 @@ async function ccSend() {
   // Drain queue — show each as a fresh user message + process
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
-    // Remove the "Queued" pill
-    const msgs = document.getElementById('cc-messages');
-    const queuedPills = msgs.querySelectorAll('.cc-queued-pill');
-    for (const pill of queuedPills) {
-      if (pill.closest('div')) { pill.closest('div').remove(); break; }
-    }
-    // Show as a normal user message being sent now
+    _renderQueueIndicator(); // update or remove indicator
     await _ccDoSend(next);
   }
+}
+
+function _renderQueueIndicator() {
+  var existing = document.getElementById('cc-queue-indicator');
+  if (existing) existing.remove();
+  if (_ccQueue.length === 0) return;
+  var msgs = document.getElementById('cc-messages');
+  var el = document.createElement('div');
+  el.id = 'cc-queue-indicator';
+  el.style.cssText = 'padding:6px 12px;border-radius:8px;font-size:11px;max-width:95%;align-self:flex-end;background:rgba(88,166,255,0.1);border:1px dashed var(--blue);color:var(--blue);opacity:0.7';
+  el.innerHTML = _ccQueue.map(function(m) {
+    return '<div>' + escHtml(m.length > 50 ? m.slice(0, 50) + '...' : m) + '</div>';
+  }).join('') + '<div style="font-size:9px;color:var(--muted);font-style:italic;margin-top:2px">' + _ccQueue.length + ' queued</div>';
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
 }
 
 async function _ccDoSend(message, skipUserMsg) {
@@ -138,6 +147,10 @@ async function _ccDoSend(message, skipUserMsg) {
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
   if (!skipUserMsg) ccAddMessage('user', escHtml(message));
+
+  // Remove queue indicator before processing (it'll be re-added if more queued)
+  var existingQueueEl = document.getElementById('cc-queue-indicator');
+  if (existingQueueEl) existingQueueEl.remove();
 
   // Show thinking indicator with timer + queue count
   const queueCount = _ccQueue.length;
