@@ -220,9 +220,10 @@ async function _ccDoSend(message, skipUserMsg) {
             const msgs = document.getElementById('cc-messages');
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
-            // Final result — replace with rendered markdown + actions
+            // Final result — replace with rendered markdown + copy button + timer
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-            streamDiv.innerHTML = renderMd(evt.text || streamedText || '') +
+            const finalHtml = renderMd(evt.text || streamedText || '');
+            streamDiv.innerHTML = llmCopyBtn() + finalHtml +
               '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>';
             _ccMessages.push({ role: 'assistant', html: streamDiv.innerHTML });
             if (evt.sessionId) { _ccSessionId = evt.sessionId; ccSaveState(); ccUpdateSessionIndicator(); }
