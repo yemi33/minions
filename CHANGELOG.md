@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.251 (2026-04-03)
+
+### Features
+-  add 'pin' action to CC — pin critical context to all agents
+-  mandatory test validation before PR creation in implement and fix playbooks
+
+### Fixes
+-  don't hardcode npm test — agents must read project conventions
+
 ## 0.1.248 (2026-04-03)
 
 ### Fixes
