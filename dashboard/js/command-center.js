@@ -113,7 +113,7 @@ async function ccSend() {
   // If already processing, queue the message — don't show user bubble yet
   if (_ccSending) {
     _ccQueue.push(message);
-    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(message.length > 40 ? message.slice(0, 40) + '...' : message) + '"</span>');
+    ccAddMessage('user', '<span class="cc-queued-pill" style="opacity:0.6;font-size:11px">' + escHtml(message) + '<br><span style="font-size:9px;font-style:italic">queued</span></span>');
     return;
   }
   await _ccDoSend(message);
