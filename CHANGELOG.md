@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.233 (2026-04-03)
+
+### Fixes
+-  combine nuke and reset into single 'minions nuke --confirm'
+
 ## 0.1.232 (2026-04-03)
 
 ### Fixes
