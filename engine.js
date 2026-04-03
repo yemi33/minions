@@ -352,10 +352,14 @@ function spawnAgent(dispatchItem, config) {
                   if (alreadyUsed) {
                     const existingWtPath = findExistingWorktree(rootDir, branchName);
                     if (existingWtPath && fs.existsSync(existingWtPath)) {
-                      const dispatch = safeJson(DISPATCH_PATH) || {};
-                      const activelyUsed = (dispatch.active || []).some(d => {
-                        const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
-                        return dBranch === branchName && d.id !== id;
+                      // Bug fix: read dispatch inside mutateDispatch so check-and-act is atomic
+                      let activelyUsed = false;
+                      mutateDispatch((dp) => {
+                        activelyUsed = (dp.active || []).some(d => {
+                          const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
+                          return dBranch === branchName && d.id !== id;
+                        });
+                        return dp; // read-only — no mutation needed
                       });
                       if (activelyUsed) {
                         log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
@@ -1402,7 +1406,14 @@ function discoverFromWorkItems(config, project) {
     // This protects against persisted state drift from old runtime versions.
     try {
       mutateDispatch((dp) => {
-        dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== key) : [];
+        // Bug fix: use immutable filter — build new array, then assign, so concurrent
+        // callers cannot interleave mid-filter and lose entries.
+        const prev = Array.isArray(dp.completed) ? dp.completed : [];
+        const next = [];
+        for (let i = 0; i < prev.length; i++) {
+          if (prev[i].meta?.dispatchKey !== key) next.push(prev[i]);
+        }
+        dp.completed = next;
         return dp;
       });
       dispatchCooldowns.delete(key);
@@ -2354,9 +2365,17 @@ async function tickInner() {
   // Only dispatch to agents that aren't already busy (one task per agent at a time).
   // Build set of agents currently active.
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  // Bug fix #14: deduplicate pending by dispatch ID to prevent double-dispatch.
+  // This guards against the same item appearing twice in the in-memory pending array.
+  const seenPendingIds = new Set();
   const toDispatch = [];
   for (const item of dispatch.pending) {
     if (toDispatch.length >= slotsAvailable) break;
+    if (seenPendingIds.has(item.id)) {
+      log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
+      continue;
+    }
+    seenPendingIds.add(item.id);
     if (busyAgents.has(item.agent)) continue; // agent already has an active task
     toDispatch.push(item);
     busyAgents.add(item.agent); // mark busy for this dispatch round too
