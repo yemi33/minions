@@ -174,14 +174,14 @@ async function _ccDoSend(message, skipUserMsg) {
   const msgs = document.getElementById('cc-messages');
   const streamDiv = msgs.lastElementChild;
     const dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
-    function _getThinkingPhase() {
+    function _getThinkingHtml() {
       var elapsed = Date.now() - ccStartTime;
       var label = 'Thinking...';
       for (var pi = phases.length - 1; pi >= 0; pi--) {
         if (elapsed >= phases[pi][0]) { label = phases[pi][1]; break; }
       }
       var secs = Math.floor(elapsed / 1000);
-      return label + ' <span style="font-size:9px;color:var(--border)">' + secs + 's</span>';
+      return '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted);font-size:11px">' + label + '</span>' + dotPulse + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">' + secs + 's</span></div>';
     }
     function updateStreamDiv() {
       var html = '';
@@ -195,7 +195,7 @@ async function _ccDoSend(message, skipUserMsg) {
       if (streamedText) {
         html += renderMd(streamedText);
       }
-      html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '"><span style="color:var(--muted);font-size:11px">' + _getThinkingPhase() + dotPulse + '</span></div>';
+      html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '">' + _getThinkingHtml() + '</div>';
       streamDiv.innerHTML = html;
       // Re-append queue indicators so they stay below the streaming content
       if (_ccQueue.length > 0) _renderQueueIndicator();
