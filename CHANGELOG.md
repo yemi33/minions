@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.325 (2026-04-03)
+
+### Fixes
+-  guard retry-counter write path against unreadable work items file
+-  7 bugs from engine audit — runtime crashes, race conditions, stale state
+-  scan skips NugetCache, OneDrive, .vs, packages + validates .git/HEAD
+
+### Other
+- refactor: final magic string replacements in engine, lifecycle, cleanup
+
 ## 0.1.321 (2026-04-03)
 
 ### Fixes
