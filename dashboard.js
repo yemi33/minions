@@ -645,23 +645,14 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson }) {
   const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
 
-  // Plans + meetings: Sonnet with tools for multi-turn codebase-aware Q&A
-  // Everything else: Haiku, 1 turn, no tools — fast
-  const isPlan = filePath && /^plans\//.test(filePath);
-  const isMeeting = filePath && /^meetings\//.test(filePath);
-  const isRich = isPlan || isMeeting;
+  // All doc-chats use Sonnet with full tools and minions state — same brain as Command Center
   const result = await ccCall(message, {
     store: 'doc', sessionKey: filePath || title,
     extraContext: docContext, label: 'doc-chat',
-    timeout: isRich ? 300000 : 60000,
-    maxTurns: isRich ? 50 : 1,
-    model: isRich ? 'sonnet' : 'haiku',
-    allowedTools: isRich ? 'Read,Glob,Grep' : '',
-    skipStatePreamble: !isRich,
   });
 
   if (result.code !== 0 || !result.text) {
-    console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, model=${isRich ? 'sonnet' : 'haiku'}, stderr=${(result.stderr || '').slice(0, 200)}`);
+    console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
   }
 
