@@ -1482,6 +1482,30 @@ function discoverFromWorkItems(config, project) {
       try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
     }
 
+    // Checkpoint resume: detect checkpoint.json in worktree for interrupted agents
+    vars.checkpoint_context = '';
+    try {
+      const cpPath = path.join(vars.worktree_path, 'checkpoint.json');
+      if (fs.existsSync(cpPath)) {
+        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+        const cpSummary = [
+          cpData.completed ? `**Completed:** ${cpData.completed}` : '',
+          cpData.remaining ? `**Remaining:** ${cpData.remaining}` : '',
+          cpData.blockers ? `**Blockers:** ${cpData.blockers}` : '',
+          cpData.branch_state ? `**Branch state:** ${cpData.branch_state}` : '',
+        ].filter(Boolean).join('\n');
+        vars.checkpoint_context = cpSummary;
+        const cpCount = (item._checkpointCount || 0) + 1;
+        item._checkpointCount = cpCount;
+        if (cpCount > 3) {
+          item.status = 'needs-human-review';
+          log('warn', `Checkpoint resume: ${item.id} exceeded 3 checkpoint-resumes — escalating`);
+        } else {
+          log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+        }
+      }
+    } catch (err) { /* checkpoint read is best-effort */ }
+
     // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
     const resolvedCtx = resolveTaskContext(item, config);
     if (resolvedCtx.additionalContext) {
@@ -1776,6 +1800,31 @@ function discoverCentralWorkItems(config) {
           try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
         }
 
+        // Checkpoint resume: detect checkpoint.json in worktree for interrupted agents
+        vars.checkpoint_context = '';
+        try {
+          const wtPath = vars.worktree_path || vars.project_path;
+          const cpPath = path.join(wtPath, 'checkpoint.json');
+          if (fs.existsSync(cpPath)) {
+            const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+            const cpSummary = [
+              cpData.completed ? `**Completed:** ${cpData.completed}` : '',
+              cpData.remaining ? `**Remaining:** ${cpData.remaining}` : '',
+              cpData.blockers ? `**Blockers:** ${cpData.blockers}` : '',
+              cpData.branch_state ? `**Branch state:** ${cpData.branch_state}` : '',
+            ].filter(Boolean).join('\n');
+            vars.checkpoint_context = cpSummary;
+            const cpCount = (item._checkpointCount || 0) + 1;
+            item._checkpointCount = cpCount;
+            if (cpCount > 3) {
+              item.status = 'needs-human-review';
+              log('warn', `Checkpoint resume: ${item.id} exceeded 3 checkpoint-resumes — escalating`);
+            } else {
+              log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+            }
+          }
+        } catch (err) { /* checkpoint read is best-effort */ }
+
         const resolvedCtx = resolveTaskContext(item, config);
         if (resolvedCtx.additionalContext) {
           vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
@@ -2047,7 +2096,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
     }
   }
 

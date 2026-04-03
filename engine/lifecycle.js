@@ -479,6 +479,7 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAt = ts();
       } else if (status === 'failed') {
         if (reason) target.failReason = reason;
@@ -501,6 +502,7 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      if (!fs.existsSync(fpath)) continue;
       mutateJsonFileLocked(fpath, (plan) => {
         if (!plan?.missing_features) return plan;
         const feature = plan.missing_features.find(f => f.id === itemId);
@@ -636,9 +638,12 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         const idx = existingPrs.findIndex(p => p.id === pr.id);
         if (idx >= 0) {
           // Backfill prdItems if needed
+          const existing = existingPrs[idx];
           if (pr.prdItems?.length) {
-            const merged = new Set([...(existingPrs[idx].prdItems || []), ...pr.prdItems]);
-            existingPrs[idx].prdItems = [...merged];
+            if (!existing.prdItems) existing.prdItems = [];
+            for (const metaId of pr.prdItems) {
+              if (!existing.prdItems?.includes(metaId)) existing.prdItems.push(metaId);
+            }
           }
         } else {
           existingPrs.push(pr);
@@ -652,6 +657,18 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
+
+// Resolve which project owns a PR by scanning per-project pull-requests.json files
+function resolveProjectForPr(prId) {
+  const config = getConfig();
+  const projects = config.projects || [];
+  for (const p of projects) {
+    const prPath = shared.projectPrPath(p);
+    const prs = safeJson(prPath) || [];
+    if (prs.find(pr => pr.id === prId)) return p;
+  }
+  return projects[0] || null;
+}
 
 function updatePrAfterReview(agentId, pr, project) {
 
@@ -691,7 +708,12 @@ function updatePrAfterReview(agentId, pr, project) {
     });
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  mutateJsonFileLocked(shared.projectPrPath(resolvedProject), (existing) => {
+    const t = existing.find(p => p.id === pr.id);
+    if (t) Object.assign(t, target);
+    return existing;
+  }, { defaultValue: prs });
   log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
@@ -714,7 +736,12 @@ function updatePrAfterFix(pr, project, source) {
     log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  const resolvedProject = project || resolveProjectForPr(pr.id);
+  mutateJsonFileLocked(shared.projectPrPath(resolvedProject), (existing) => {
+    const t = existing.find(p => p.id === pr.id);
+    if (t) Object.assign(t, target);
+    return existing;
+  }, { defaultValue: prs });
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -1247,10 +1274,11 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch evaluate work item after implement or fix completes successfully
+  // Auto-dispatch review work item after implement or fix completes successfully (evaluate loop)
+  const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
   if (isSuccess && !skipDoneStatus && (type === 'implement' || (type === 'fix' && meta?.item?._evalParentId)) && meta?.item?.id) {
     const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
-    if (evalLoop) {
+    if (evalLoop && autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
@@ -1258,7 +1286,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             // For fix items, target the original implement parent; for implement, target self
             const evalTargetId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
             // Dedup: skip if an evaluate item already exists for this parent
-            const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'evaluate' && i.status === 'pending');
+            const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'review' && i.status === 'pending');
             if (existing) {
               log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
               return items;
@@ -1266,8 +1294,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             const parentItem = items.find(i => i.id === evalTargetId);
             const evalItem = {
               id: 'W-' + shared.uid(),
-              title: `Evaluate: ${parentItem?.title || meta.item.title || evalTargetId}`,
-              type: 'evaluate',
+              title: `Review: ${parentItem?.title || meta.item.title || evalTargetId}`,
+              type: 'review',
               priority: meta.item.priority || 'high',
               status: 'pending',
               created: ts(),
@@ -1292,8 +1320,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  // Evaluate completion: parse verdict and handle eval→fix iteration loop
-  if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
+  // Review completion: parse verdict and handle eval→fix iteration loop
+  if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
       const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
