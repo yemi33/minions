@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.303 (2026-04-03)
+
+### Fixes
+-  meeting sort uses createdAt field (not created)
+-  sort team meetings by timestamp descending (newest first)
+-  PR dedup strict equality, work-items parse logging, undefined minionsVerdict
+
 ## 0.1.300 (2026-04-03)
 
 ### Fixes
