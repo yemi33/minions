@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.302 (2026-04-03)
+
+### Fixes
+-  sort team meetings by timestamp descending (newest first)
+-  PR dedup strict equality, work-items parse logging, undefined minionsVerdict
+
 ## 0.1.300 (2026-04-03)
 
 ### Fixes
