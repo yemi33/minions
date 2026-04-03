@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.254 (2026-04-03)
+
+### Features
+-  streaming CC responses — text appears as it arrives via SSE
+
 ## 0.1.253 (2026-04-03)
 
 ### Fixes
