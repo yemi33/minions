@@ -10,8 +10,8 @@ Minions is a multi-agent orchestration engine that dispatches Claude Code instan
 
 ```bash
 # Start
-node engine.js          # Start the engine (ticks every 60s)
-node dashboard.js       # Start dashboard on :7331
+minions start           # Start the engine (ticks every 60s)
+minions dash            # Start dashboard on :7331
 
 # Tests
 npm test                # Unit tests (node test/unit.test.js)
