@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.292 (2026-04-03)
+
+### Features
+- harden shared.js — backup verification, lock TOCTOU, docs
+-  all doc-chats use Sonnet with full tools (agent change)
+
+### Fixes
+-  add behavioral tests for CRITICAL propagation and stale lock ENOENT
+-  CRITICAL errors in safeJson now propagate to callers
+-  defer plan archiving until verify completes, add 20 verify tests
+-  enforce worktree isolation — 4 code paths fixed
+- ' not 'Evaluate:'
+-  cross-platform compatibility — signal handling, paths, home dir
+-  engine sidebar badge only triggers on new dispatch errors
+
+### Other
+- resolve merge conflicts — accept agent changes, keep worktree isolation fix
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
