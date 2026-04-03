@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.301 (2026-04-03)
+
+### Fixes
+-  PR dedup strict equality, work-items parse logging, undefined minionsVerdict
+
 ## 0.1.300 (2026-04-03)
 
 ### Fixes
