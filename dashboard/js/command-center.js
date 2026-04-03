@@ -9,6 +9,13 @@ let _ccAbortController = null;
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
+function ccAbort() {
+  if (_ccAbortController) {
+    _ccAbortController.abort();
+    _ccAbortController = null;
+  }
+}
+
 function toggleCommandCenter() {
   _ccOpen = !_ccOpen;
   const drawer = document.getElementById('cc-drawer');
@@ -181,7 +188,8 @@ async function _ccDoSend(message, skipUserMsg) {
         if (elapsed >= phases[pi][0]) { label = phases[pi][1]; break; }
       }
       var secs = Math.floor(elapsed / 1000);
-      return '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted);font-size:11px">' + label + '</span>' + dotPulse + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">' + secs + 's</span></div>';
+      return '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted);font-size:11px">' + label + '</span>' + dotPulse + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">' + secs + 's</span>' +
+        '<button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:4px">Stop</button></div>';
     }
     function updateStreamDiv() {
       var html = '';
@@ -293,9 +301,19 @@ async function _ccDoSend(message, skipUserMsg) {
       }
     }
   } catch (e) {
-    const retryId = 'cc-retry-' + Date.now();
-    ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
-      '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
+    if (streamDiv?.parentNode) { clearInterval(phaseTimer); streamDiv.remove(); }
+    if (e.name === 'AbortError') {
+      if (streamedText) {
+        const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
+        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px">Stopped after ' + ccElapsed + 's</div>');
+      } else {
+        ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Stopped</span>');
+      }
+    } else {
+      const retryId = 'cc-retry-' + Date.now();
+      ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
+        '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
+    }
   } finally {
     _ccSending = false;
     _ccAbortController = null;
@@ -718,4 +736,4 @@ if (document.readyState === 'loading') {
   ccInitResize();
 }
 
-window.MinionsCC = { toggleCommandCenter, ccNewSession, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccExecuteAction };
+window.MinionsCC = { toggleCommandCenter, ccNewSession, ccRestoreMessages, ccSaveState, ccUpdateSessionIndicator, ccAddMessage, ccSend, ccAbort, ccExecuteAction };

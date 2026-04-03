@@ -22,6 +22,7 @@ function _qaNotifySidebar(filePath) {
 }
 let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{role:'assistant',text:''}]
 let _qaProcessing = false; // true while waiting for response
+let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
@@ -172,10 +173,12 @@ async function _processQaMessage(message, selection) {
 
   const loadingId = 'chat-loading-' + Date.now();
   const qaQueueBadge = _qaQueue.length > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + _qaQueue.length + ' queued</span>' : '';
+  _qaAbortController = new AbortController();
   thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '">' +
     '<div class="dot-pulse"><span></span><span></span><span></span></div> ' +
     '<span id="' + loadingId + '-text">Thinking...</span> ' +
     '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)"></span>' +
+    ' <button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
     qaQueueBadge + '</div>';
   thread.scrollTop = thread.scrollHeight;
 
@@ -196,6 +199,7 @@ async function _processQaMessage(message, selection) {
     const res = await fetch('/api/doc-chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: _qaAbortController ? _qaAbortController.signal : undefined,
       body: JSON.stringify({
         message,
         document: capturedDocContext.content,
@@ -265,10 +269,15 @@ async function _processQaMessage(message, selection) {
     const loadingEl = document.getElementById(loadingId);
     if (loadingEl) loadingEl.remove();
     const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
-    thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
+    if (e.name === 'AbortError') {
+      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--muted)">Stopped<div style="font-size:9px;margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
+    } else {
+      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
+    }
   }
 
   _qaProcessing = false;
+  _qaAbortController = null;
   thread.scrollTop = thread.scrollHeight;
 
   // Save session (persists even if modal was closed during processing)
@@ -305,4 +314,11 @@ async function _processQaMessage(message, selection) {
   }
 }
 
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend };
+function qaAbort() {
+  if (_qaAbortController) {
+    _qaAbortController.abort();
+    _qaAbortController = null;
+  }
+}
+
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort };
