@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.228 (2026-04-03)
+
+### Features
+-  scan for projects UI — modal with checkbox multi-select
+
+### Fixes
+-  CC system prompt now defaults to delegating work to agents
+
 ## 0.1.226 (2026-04-03)
 
 ### Features
