@@ -465,105 +465,6 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
   }
 }
 
-function nukeMinions() {
-  console.log('\n  Minions Factory Reset');
-  console.log('  ===================\n');
-
-  // 1. Kill engine process
-  const controlPath = path.join(MINIONS_HOME, 'engine', 'control.json');
-  try {
-    const control = JSON.parse(fs.readFileSync(controlPath, 'utf8'));
-    if (control.pid) {
-      try {
-        process.kill(control.pid);
-        console.log(`  Killed engine (PID: ${control.pid})`);
-      } catch { console.log(`  Engine process ${control.pid} already dead`); }
-    }
-  } catch {}
-
-  // 2. Kill dashboard (port 7331)
-  try {
-    if (process.platform === 'win32') {
-      const { execSync } = require('child_process');
-      const out = execSync('netstat -ano | findstr :7331 | findstr LISTENING', { encoding: 'utf8', timeout: 5000, windowsHide: true });
-      const pids = [...new Set(out.split('\n').map(l => l.trim().split(/\s+/).pop()).filter(p => p && p !== '0'))];
-      for (const pid of pids) {
-        try { execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, timeout: 5000 }); console.log(`  Killed dashboard (PID: ${pid})`); } catch {}
-      }
-    } else {
-      const { execSync } = require('child_process');
-      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); console.log('  Killed dashboard'); } catch {}
-    }
-  } catch {}
-
-  // 3. Kill all agent processes (PID files in engine/tmp/)
-  const pidDir = path.join(MINIONS_HOME, 'engine', 'tmp');
-  try {
-    const pidFiles = fs.readdirSync(pidDir).filter(f => f.endsWith('.pid'));
-    for (const f of pidFiles) {
-      try {
-        const pid = parseInt(fs.readFileSync(path.join(pidDir, f), 'utf8').trim());
-        if (pid) { try { process.kill(pid); console.log(`  Killed agent process (PID: ${pid})`); } catch {} }
-      } catch {}
-    }
-  } catch {}
-
-  // 4. Kill any remaining minions-related node processes
-  try {
-    const { execSync } = require('child_process');
-    if (process.platform === 'win32') {
-      // Find node processes with minions in their command line
-      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      for (const line of out.split('\n')) {
-        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
-          const pid = line.split(',').pop()?.trim();
-          if (pid && pid !== String(process.pid)) {
-            try { execSync(`taskkill /F /PID ${pid}`, { windowsHide: true, timeout: 5000 }); console.log(`  Killed minions process (PID: ${pid})`); } catch {}
-          }
-        }
-      }
-    }
-  } catch {}
-
-  // 5. Delete runtime state (NOT the source code)
-  console.log('\n  Cleaning runtime state...');
-  const runtimeDirs = ['projects', 'plans', 'prd', 'knowledge', 'skills', 'notes', 'identity'];
-  const runtimeFiles = ['config.json', 'work-items.json', 'notes.md', 'routing.md'];
-  const engineRuntimeFiles = ['control.json', 'dispatch.json', 'log.json', 'metrics.json', 'cooldowns.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json'];
-
-  for (const dir of runtimeDirs) {
-    const p = path.join(MINIONS_HOME, dir);
-    if (fs.existsSync(p)) { try { fs.rmSync(p, { recursive: true, force: true }); console.log(`  Deleted ${dir}/`); } catch {} }
-  }
-  for (const f of runtimeFiles) {
-    const p = path.join(MINIONS_HOME, f);
-    if (fs.existsSync(p)) { try { fs.unlinkSync(p); console.log(`  Deleted ${f}`); } catch {} }
-  }
-  const engineDir = path.join(MINIONS_HOME, 'engine');
-  for (const f of engineRuntimeFiles) {
-    const p = path.join(engineDir, f);
-    if (fs.existsSync(p)) { try { fs.unlinkSync(p); console.log(`  Deleted engine/${f}`); } catch {} }
-  }
-  // Clean engine/tmp/
-  const tmpDir = path.join(engineDir, 'tmp');
-  if (fs.existsSync(tmpDir)) { try { fs.rmSync(tmpDir, { recursive: true, force: true }); console.log('  Deleted engine/tmp/'); } catch {} }
-  // Clean agent history and output logs (preserve charters)
-  const agentsDir = path.join(MINIONS_HOME, 'agents');
-  if (fs.existsSync(agentsDir)) {
-    for (const agent of fs.readdirSync(agentsDir)) {
-      const agentDir = path.join(agentsDir, agent);
-      try { if (!fs.statSync(agentDir).isDirectory()) continue; } catch { continue; }
-      for (const f of fs.readdirSync(agentDir)) {
-        if (f === 'charter.md') continue; // preserve charters
-        try { fs.unlinkSync(path.join(agentDir, f)); } catch {}
-      }
-    }
-    console.log('  Cleaned agent state (charters preserved)');
-  }
-
-  console.log('  Factory reset complete. Run "minions init" to start fresh.\n');
-  rl.close();
-}
 
 const commands = {
   init: () => {
@@ -586,7 +487,6 @@ const commands = {
   list: () => listProjects(),
   scan: () => scanAndAdd({ root: rest[0], depth: rest[1] })
     .catch(e => { console.error(e); process.exit(1); }),
-  nuke: () => nukeMinions(),
 };
 
 if (cmd && commands[cmd]) {
@@ -599,7 +499,6 @@ if (cmd && commands[cmd]) {
   console.log('    scan [dir] [depth]      Scan for git repos and multi-select to add');
   console.log('    add <project-dir>       Link a single project');
   console.log('    remove <project-dir>    Unlink a project');
-  console.log('    list                    List linked projects');
-  console.log('    nuke                    Factory reset — kill all processes, delete ~/.minions/\n');
+  console.log('    list                    List linked projects\n');
 }
 

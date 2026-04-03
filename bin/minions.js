@@ -458,7 +458,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions spawn <agent> <prompt>   Manually spawn an agent
     minions plan <file|text> [proj]  Run a plan
     minions cleanup                  Clean temp files, worktrees, zombies
-    minions reset --confirm          Factory reset (delete all state, keep config)
+    minions nuke --confirm           Factory reset (delete state, reset config to defaults)
 
   Dashboard:
     minions dash                     Start web dashboard (default :7331)
@@ -497,68 +497,114 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   dashProc.unref();
   console.log(`  Dashboard started (PID: ${dashProc.pid})`);
   console.log('  Dashboard: http://localhost:7331\n');
-} else if (cmd === 'reset') {
+} else if (cmd === 'nuke') {
   ensureInstalled();
   if (!rest.includes('--confirm')) {
     console.log(`
-  This will DELETE all runtime state:
-    - Work items, dispatch queue, PRDs, plans
+  Factory reset — kills all processes and deletes all runtime state.
+
+  DELETED:
+    - Work items, dispatch queue, PRDs, plans, pipelines
     - Agent history, sessions, output logs
     - Notes, knowledge base, pinned notes
-    - Metrics, cooldowns, schedules
+    - Metrics, cooldowns, schedules, meetings
+    - Project state (PR tracking, per-project work items)
 
-  Config.json and agent charters are PRESERVED.
+  RESET to defaults:
+    - config.json (engine settings, agents — project links removed)
+    - routing.md
 
-  Run: minions reset --confirm
+  PRESERVED:
+    - Agent charters
+    - Playbooks
+
+  Run: minions nuke --confirm
 `);
     process.exit(0);
   }
-  // Stop engine + dashboard
+
+  console.log('\n  Minions Factory Reset\n');
+
+  // 1. Kill all processes
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
+  // Kill dashboard
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      for (const line of out.split('\n')) {
+        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
+          const pid = line.split(',').pop()?.trim();
+          if (pid && pid !== String(process.pid)) {
+            try { process.kill(parseInt(pid)); } catch {}
+          }
+        }
+      }
+    } else {
+      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
+    }
+  } catch {}
+  console.log('  Killed all processes');
+
+  // 2. Delete runtime state
   const glob = (dir, pattern) => { try { return fs.readdirSync(dir).filter(f => pattern.test(f)).map(f => path.join(dir, f)); } catch { return []; } };
   const rm = (f) => { try { fs.unlinkSync(f); } catch {} };
   const rmDir = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} };
   const engineDir = path.join(MINIONS_HOME, 'engine');
+
   // Engine state
-  for (const f of ['dispatch.json', 'control.json', 'log.json', 'metrics.json', 'cooldowns.json', 'schedule-runs.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json']) rm(path.join(engineDir, f));
+  for (const f of ['dispatch.json', 'control.json', 'log.json', 'metrics.json', 'cooldowns.json', 'schedule-runs.json', 'kb-checkpoint.json', 'cc-session.json', 'doc-sessions.json', 'pipeline-runs.json']) rm(path.join(engineDir, f));
   glob(engineDir, /^pid-.*\.pid$/).forEach(rm);
   rmDir(path.join(engineDir, 'tmp'));
+
   // Work items + PRs
   rm(path.join(MINIONS_HOME, 'work-items.json'));
   rm(path.join(MINIONS_HOME, 'work-items-archive.json'));
   rm(path.join(MINIONS_HOME, 'pull-requests.json'));
-  // Plans + PRDs
-  glob(path.join(MINIONS_HOME, 'plans'), /\.md$/).forEach(rm);
-  glob(path.join(MINIONS_HOME, 'prd'), /\.json$/).forEach(rm);
-  rmDir(path.join(MINIONS_HOME, 'prd', 'archive'));
-  rmDir(path.join(MINIONS_HOME, 'prd', 'guides'));
+
+  // Plans + PRDs + Pipelines + Meetings
+  rmDir(path.join(MINIONS_HOME, 'plans'));
+  rmDir(path.join(MINIONS_HOME, 'prd'));
+  rmDir(path.join(MINIONS_HOME, 'pipelines'));
+  rmDir(path.join(MINIONS_HOME, 'meetings'));
+  fs.mkdirSync(path.join(MINIONS_HOME, 'plans'), { recursive: true });
+  fs.mkdirSync(path.join(MINIONS_HOME, 'prd'), { recursive: true });
+
   // Notes + KB
   rm(path.join(MINIONS_HOME, 'notes.md'));
   rm(path.join(MINIONS_HOME, 'pinned.md'));
-  rmDir(path.join(MINIONS_HOME, 'notes', 'inbox'));
-  rmDir(path.join(MINIONS_HOME, 'notes', 'archive'));
+  rmDir(path.join(MINIONS_HOME, 'notes'));
+  rmDir(path.join(MINIONS_HOME, 'knowledge'));
   fs.mkdirSync(path.join(MINIONS_HOME, 'notes', 'inbox'), { recursive: true });
-  fs.mkdirSync(path.join(MINIONS_HOME, 'notes', 'archive'), { recursive: true });
-  for (const cat of ['architecture', 'conventions', 'project-notes', 'build-reports', 'reviews']) {
-    const catDir = path.join(MINIONS_HOME, 'knowledge', cat);
-    glob(catDir, /\.md$/).forEach(rm);
-  }
+
   // Agent state (preserve charters)
   const agentsDir = path.join(MINIONS_HOME, 'agents');
   try {
     for (const agent of fs.readdirSync(agentsDir)) {
       const agentDir = path.join(agentsDir, agent);
       if (!fs.statSync(agentDir).isDirectory()) continue;
-      for (const f of ['live-output.log', 'session.json', 'history.md', 'steer.md', 'status.json']) rm(path.join(agentDir, f));
-      glob(agentDir, /^output.*\.log$/).forEach(rm);
+      for (const f of fs.readdirSync(agentDir)) {
+        if (f === 'charter.md') continue;
+        rm(path.join(agentDir, f));
+      }
     }
   } catch {}
+
   // Projects state
   rmDir(path.join(MINIONS_HOME, 'projects'));
   fs.mkdirSync(path.join(MINIONS_HOME, 'projects'), { recursive: true });
 
-  console.log('\n  Reset complete. Config and charters preserved.');
-  console.log('  Run: minions up\n');
+  // 3. Reset config.json and routing.md to defaults
+  const tmplPath = path.join(MINIONS_HOME, 'config.template.json');
+  const configPath = path.join(MINIONS_HOME, 'config.json');
+  if (fs.existsSync(tmplPath)) {
+    fs.copyFileSync(tmplPath, configPath);
+  } else {
+    fs.writeFileSync(configPath, JSON.stringify({ projects: [], engine: {}, claude: {}, agents: {} }, null, 2));
+  }
+  // Re-run init to populate defaults (agents, engine settings)
+  try { execSync(`node "${path.join(MINIONS_HOME, 'minions.js')}" init --skip-scan`, { stdio: 'inherit' }); } catch {}
+
+  console.log('\n  Factory reset complete. Run "minions init" to link projects and start fresh.\n');
 } else if (cmd === 'doctor') {
   ensureInstalled();
   const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
