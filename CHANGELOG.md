@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.266 (2026-04-03)
+
+### Features
+-  CC streaming shows cumulative tool list with loading dots
+
 ## 0.1.265 (2026-04-03)
 
 ### Features
