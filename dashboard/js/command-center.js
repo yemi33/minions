@@ -203,16 +203,15 @@ async function _ccDoSend(message, skipUserMsg) {
     function updateStreamDiv() {
       var html = '';
       if (toolsUsed.length > 0) {
-        html += '<div style="margin-bottom:' + (streamedText ? '6px' : '0') + '">';
-        toolsUsed.forEach(function(t, i) {
-          var isLast = i === toolsUsed.length - 1 && !streamedText;
-          html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + (isLast ? dotPulse : '') + '</div>';
+        html += '<div style="margin-bottom:6px">';
+        toolsUsed.forEach(function(t) {
+          html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + '</div>';
         });
         html += '</div>';
       }
       if (streamedText) {
         html += renderMd(streamedText);
-      } else if (toolsUsed.length === 0) {
+      } else {
         html += '<span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span>';
       }
       streamDiv.innerHTML = html;
