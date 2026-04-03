@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.299 (2026-04-03)
+
+### Fixes
+-  work item agent column falls back to item.agent field
+-  CC workType descriptions restored + verify for maintenance/merge tasks
+
+### Other
+- resolve lifecycle.js conflict — accept agent changes
+
 ## 0.1.297 (2026-04-03)
 
 ### Features
