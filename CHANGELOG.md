@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.313 (2026-04-03)
+
+### Other
+- perf: CC message handling — debounce localStorage, cap array, batch scroll
+
 ## 0.1.312 (2026-04-03)
 
 ### Fixes
