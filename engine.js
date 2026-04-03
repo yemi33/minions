@@ -2183,9 +2183,9 @@ async function tickInner() {
   tickCount++;
 
   // 1. Check for timed-out agents, steering messages, and idle threshold
-  checkTimeouts(config);
-  checkSteering(config);
-  checkIdleThreshold(config);
+  try { checkTimeouts(config); } catch (e) { log('warn', 'checkTimeouts: ' + e.message); }
+  try { checkSteering(config); } catch (e) { log('warn', 'checkSteering: ' + e.message); }
+  try { checkIdleThreshold(config); } catch (e) { log('warn', 'checkIdleThreshold: ' + e.message); }
 
   // 1b. Check for meeting round timeouts
   try {
@@ -2200,11 +2200,11 @@ async function tickInner() {
   }
 
   // 2. Consolidate inbox
-  consolidateInbox(config);
+  try { consolidateInbox(config); } catch (e) { log('warn', 'consolidateInbox: ' + e.message); }
 
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
-    runCleanup(config);
+    try { runCleanup(config); } catch (e) { log('warn', 'runCleanup: ' + e.message); }
   }
 
   // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
@@ -2335,12 +2335,13 @@ async function tickInner() {
   }
 
   // 3. Discover new work from sources
-  discoverWork(config);
+  try { discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); }
 
   // 4. Update snapshot
-  updateSnapshot(config);
+  try { updateSnapshot(config); } catch (e) { log('warn', 'updateSnapshot: ' + e.message); }
 
   // 5. Process pending dispatches — auto-spawn agents
+  try {
   const dispatch = getDispatch();
   const activeCount = (dispatch.active || []).length;
   const maxConcurrent = config.engine?.maxConcurrent || 5;
@@ -2448,6 +2449,7 @@ async function tickInner() {
   if (skipReasonChanged) {
     mutateDispatch((dp) => { dp.pending = postDispatch.pending; return dp; });
   }
+  } catch (e) { log('warn', 'dispatch: ' + e.message); }
 }
 
 // ─── Exports (for engine/cli.js and other modules) ──────────────────────────
