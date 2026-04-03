@@ -47,8 +47,8 @@ If you encounter merge conflicts (e.g., during `git pull` or when the PR shows c
 
 Before pushing your fix, run the project's test suite:
 
-1. Find the test command (check `package.json` scripts, CLAUDE.md, or README — usually `npm test`)
-2. Run the full test suite
+1. Find the test command by reading the project's own documentation — check CLAUDE.md, agent.md, README, or package.json scripts in the project root. Every project defines its own conventions.
+2. Run the full test suite using whatever command the project specifies
 3. If any tests fail due to your changes, fix them before pushing
 4. Do NOT push code that breaks existing tests
 

@@ -73,8 +73,8 @@ After building, verify the build succeeded. If the build fails:
 
 Before creating a PR, you MUST run the project's test suite and ensure all existing tests pass:
 
-1. Find the test command (check `package.json` scripts, CLAUDE.md, or README — usually `npm test`)
-2. Run the full test suite
+1. Find the test command by reading the project's own documentation — check CLAUDE.md, agent.md, README, or package.json scripts in the project root. Every project defines its own conventions.
+2. Run the full test suite using whatever command the project specifies
 3. If any tests fail:
    - Determine if YOUR changes caused the failure (compare with the failing test's assertions)
    - Fix any regressions you introduced
