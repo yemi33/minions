@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.289 (2026-04-03)
+
+### Features
+-  all doc-chats use Sonnet with full tools (agent change)
+
+### Fixes
+- ' not 'Evaluate:'
+-  cross-platform compatibility — signal handling, paths, home dir
+-  engine sidebar badge only triggers on new dispatch errors
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
