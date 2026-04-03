@@ -152,6 +152,12 @@ async function pollPrStatus(config) {
           pr.reviewStatus = newStatus === PR_STATUS.MERGED ? 'approved' : 'pending';
           log('info', `PR ${pr.id} reviewStatus: waiting → ${pr.reviewStatus} (${newStatus})`);
         }
+        // Clear stale build status — checks won't be polled after close
+        if (pr.buildStatus && pr.buildStatus !== 'none') {
+          delete pr.buildStatus;
+          delete pr.buildFailReason;
+          delete pr._buildFailNotified;
+        }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
     }
