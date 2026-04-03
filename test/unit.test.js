@@ -3478,7 +3478,7 @@ async function testRunPostCompletionHooks() {
   await test('checkPlanCompletion crash recovery: completed plan without _completionNotified falls through', () => {
     // When plan.status === 'completed' but _completionNotified is NOT set, the function must
     // NOT return early — it should fall through to create verify/PR items (crash recovery path)
-    const guardSection = lifecycleSrc.split("plan.status === 'completed'")[1]?.split('const projects')[0] || '';
+    const guardSection = (lifecycleSrc.split("plan.status === 'completed'")[1] || lifecycleSrc.split("plan.status === PLAN_STATUS.COMPLETED")[1] || '').split('const projects')[0] || '';
     assert.ok(guardSection.includes('if (plan._completionNotified) return'),
       'Should only return early within the completed guard when _completionNotified is set');
     // Verify the guard is INSIDE the status === completed block, not standalone
