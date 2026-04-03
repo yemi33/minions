@@ -226,9 +226,8 @@ async function _ccDoSend(message, skipUserMsg) {
       }
       if (streamedText) {
         html += renderMd(streamedText);
-      } else {
-        html += '<span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span>';
       }
+      html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '"><span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span></div>';
       streamDiv.innerHTML = html;
       // Re-append queue indicators so they stay below the streaming content
       if (_ccQueue.length > 0) _renderQueueIndicator();
