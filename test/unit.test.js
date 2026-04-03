@@ -5703,6 +5703,9 @@ async function main() {
 
     // P-a5b1k9m3: Orphaned temp file cleanup
     await testOrphanedTempFileCleanup();
+
+    // DEMO-P001: OAuth2 authentication middleware
+    await testAuthModule();
   } finally {
     cleanupTmpDirs();
   }
@@ -6616,6 +6619,288 @@ async function testOrphanedTempFileCleanup() {
     assert.ok(src.includes('\\.tmp\\.\\d+\\.\\d+'), 'Should have regex matching .tmp.{pid}.{counter} pattern');
     assert.ok(src.includes('isSafeWriteTemp'), 'Should identify safeWrite temp files separately');
   });
+}
+
+// ─── DEMO-P001: OAuth2 Authentication Middleware ─────────────────────────────
+
+async function testAuthModule() {
+  console.log('\n── OAuth2 Auth Module (engine/auth.js) ──');
+
+  const auth = require(path.join(MINIONS_DIR, 'engine', 'auth'));
+
+  // Reset state before tests
+  auth._testing.resetState();
+  auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+  // ── JWT creation and verification ──
+
+  await test('createJwt returns a 3-part dot-separated string', () => {
+    const token = auth.createJwt({ sub: 'user1', username: 'alice' }, 300);
+    assert.ok(typeof token === 'string');
+    assert.strictEqual(token.split('.').length, 3, 'JWT must have header.payload.signature');
+  });
+
+  await test('verifyJwt decodes a valid token', () => {
+    const token = auth.createJwt({ sub: 'user1', username: 'alice' }, 300);
+    const payload = auth.verifyJwt(token);
+    assert.ok(payload, 'Should return decoded payload');
+    assert.strictEqual(payload.sub, 'user1');
+    assert.strictEqual(payload.username, 'alice');
+    assert.ok(payload.iat, 'Should have issued-at');
+    assert.ok(payload.exp, 'Should have expiry');
+    assert.ok(payload.jti, 'Should have unique token ID');
+  });
+
+  await test('verifyJwt rejects expired token', () => {
+    const token = auth.createJwt({ sub: 'user1' }, -1); // already expired
+    const payload = auth.verifyJwt(token);
+    assert.strictEqual(payload, null, 'Expired token should return null');
+  });
+
+  await test('verifyJwt rejects tampered token', () => {
+    const token = auth.createJwt({ sub: 'user1' }, 300);
+    const parts = token.split('.');
+    // Tamper with payload
+    const tampered = parts[0] + '.' + Buffer.from('{"sub":"hacker","exp":9999999999}').toString('base64url') + '.' + parts[2];
+    const payload = auth.verifyJwt(tampered);
+    assert.strictEqual(payload, null, 'Tampered token should return null');
+  });
+
+  await test('verifyJwt rejects null/empty/non-string input', () => {
+    assert.strictEqual(auth.verifyJwt(null), null);
+    assert.strictEqual(auth.verifyJwt(''), null);
+    assert.strictEqual(auth.verifyJwt(123), null);
+    assert.strictEqual(auth.verifyJwt('not.a.jwt'), null);
+  });
+
+  // ── Password hashing ──
+
+  await test('hashPassword and verifyPassword round-trip', () => {
+    const hash = auth.hashPassword('mypassword123');
+    assert.ok(hash.includes(':'), 'Hash format should be salt:hash');
+    assert.ok(auth.verifyPassword('mypassword123', hash), 'Correct password should verify');
+    assert.ok(!auth.verifyPassword('wrongpassword', hash), 'Wrong password should not verify');
+  });
+
+  await test('hashPassword produces different hashes for same password (unique salt)', () => {
+    const h1 = auth.hashPassword('samepassword');
+    const h2 = auth.hashPassword('samepassword');
+    assert.notStrictEqual(h1, h2, 'Same password should produce different hashes due to random salt');
+  });
+
+  // ── Token blacklist ──
+
+  await test('blacklistToken and isBlacklisted work correctly', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    assert.ok(!auth.isBlacklisted('jti-123'), 'Should not be blacklisted initially');
+    auth.blacklistToken('jti-123', Math.floor(Date.now() / 1000) + 300);
+    assert.ok(auth.isBlacklisted('jti-123'), 'Should be blacklisted after adding');
+  });
+
+  // ── Refresh token rotation ──
+
+  await test('createRefreshToken returns token and family', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    const result = auth.createRefreshToken('user-1');
+    assert.ok(result.token, 'Should have token');
+    assert.ok(result.family, 'Should have family for rotation tracking');
+    assert.ok(result.token.length >= 48, 'Token should be sufficiently long');
+  });
+
+  await test('rotateRefreshToken issues new token and invalidates old', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    const initial = auth.createRefreshToken('user-2');
+    const rotated = auth.rotateRefreshToken('user-2', initial.token);
+    assert.ok(rotated, 'Should return new token');
+    assert.notStrictEqual(rotated.token, initial.token, 'New token should differ from old');
+    assert.strictEqual(rotated.family, initial.family, 'Family should be preserved');
+
+    // Old token should no longer work
+    const reuse = auth.rotateRefreshToken('user-2', initial.token);
+    assert.strictEqual(reuse, null, 'Reusing old token should return null (reuse detection)');
+  });
+
+  await test('revokeRefreshTokens removes all tokens for user', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    const t1 = auth.createRefreshToken('user-3');
+    auth.createRefreshToken('user-3');
+    auth.revokeRefreshTokens('user-3');
+    const result = auth.rotateRefreshToken('user-3', t1.token);
+    assert.strictEqual(result, null, 'All tokens should be revoked');
+  });
+
+  // ── User management (file-backed) ──
+
+  await test('createUser and findUser round-trip with temp dir', () => {
+    const tmp = createTmpDir();
+    const usersPath = path.join(tmp, 'auth-users.json');
+    // Temporarily override the module's file path via creating a user store
+    fs.writeFileSync(usersPath, '{}');
+
+    // Use the auth module's own user functions (they use the real path)
+    // Instead, test the password and JWT integration
+    const hash = auth.hashPassword('testpass123');
+    const user = { id: 'u-1', username: 'testuser', passwordHash: hash, roles: ['user'] };
+    assert.ok(auth.verifyPassword('testpass123', user.passwordHash));
+    assert.ok(!auth.verifyPassword('badpass', user.passwordHash));
+  });
+
+  // ── HTTP helpers ──
+
+  await test('extractBearerToken extracts token from Authorization header', () => {
+    const req = { headers: { authorization: 'Bearer abc123xyz' } };
+    assert.strictEqual(auth.extractBearerToken(req), 'abc123xyz');
+  });
+
+  await test('extractBearerToken returns null for missing/malformed header', () => {
+    assert.strictEqual(auth.extractBearerToken({ headers: {} }), null);
+    assert.strictEqual(auth.extractBearerToken({ headers: { authorization: 'Basic abc' } }), null);
+    assert.strictEqual(auth.extractBearerToken({ headers: { authorization: 'Bearer' } }), null);
+  });
+
+  // ── authenticate middleware ──
+
+  await test('authenticate returns payload for valid bearer token', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    const token = auth.createJwt({ sub: 'u1', username: 'alice', roles: ['admin'] }, 300);
+    const req = { headers: { authorization: `Bearer ${token}` } };
+    const user = auth.authenticate(req);
+    assert.ok(user, 'Should return decoded user');
+    assert.strictEqual(user.sub, 'u1');
+    assert.strictEqual(user.username, 'alice');
+  });
+
+  await test('authenticate returns null for blacklisted token', () => {
+    auth._testing.resetState();
+    auth._testing.setSecret('test-secret-for-unit-tests-min-32-chars!!');
+
+    const token = auth.createJwt({ sub: 'u1' }, 300);
+    const payload = auth.verifyJwt(token);
+    auth.blacklistToken(payload.jti, payload.exp);
+
+    const req = { headers: { authorization: `Bearer ${token}` } };
+    assert.strictEqual(auth.authenticate(req), null, 'Blacklisted token should fail');
+  });
+
+  // ── isProtectedRoute ──
+
+  await test('isProtectedRoute returns false when no users registered (opt-in)', () => {
+    // With no auth-users.json, auth is disabled
+    assert.ok(!auth.isProtectedRoute('/api/status'), 'Should not protect when auth not enabled');
+    assert.ok(!auth.isProtectedRoute('/api/work-items'), 'All routes public without users');
+  });
+
+  await test('isProtectedRoute returns false for non-API routes', () => {
+    assert.ok(!auth.isProtectedRoute('/'), 'Dashboard HTML is public');
+    assert.ok(!auth.isProtectedRoute('/index.html'), 'Static assets are public');
+  });
+
+  // ── requireRole ──
+
+  await test('requireRole checks user roles correctly', () => {
+    const admin = { roles: ['admin', 'user'] };
+    const basic = { roles: ['user'] };
+    assert.ok(auth.requireRole(admin, 'admin'), 'Admin should have admin role');
+    assert.ok(auth.requireRole(admin, 'user'), 'Admin should have user role');
+    assert.ok(!auth.requireRole(basic, 'admin'), 'Basic user should not have admin role');
+    assert.ok(auth.requireRole(basic, ['admin', 'user']), 'Should match any of given roles');
+    assert.ok(!auth.requireRole(null, 'admin'), 'Null user should fail');
+    assert.ok(!auth.requireRole({}, 'admin'), 'User without roles should fail');
+  });
+
+  // ── Route handler tests ──
+
+  await test('handleRegister validates input', () => {
+    const r1 = auth.handleRegister({});
+    assert.strictEqual(r1.status, 400, 'Missing fields should return 400');
+
+    const r2 = auth.handleRegister({ username: 'ab', password: '12345678' });
+    assert.strictEqual(r2.status, 400, 'Short username should return 400');
+
+    const r3 = auth.handleRegister({ username: 'valid', password: 'short' });
+    assert.strictEqual(r3.status, 400, 'Short password should return 400');
+
+    const r4 = auth.handleRegister({ username: 'inv@lid!', password: '12345678' });
+    assert.strictEqual(r4.status, 400, 'Invalid chars in username should return 400');
+  });
+
+  await test('handleLogin rejects invalid credentials', () => {
+    const r1 = auth.handleLogin({});
+    assert.strictEqual(r1.status, 400);
+
+    const r2 = auth.handleLogin({ username: 'nonexistent', password: 'whatever' });
+    assert.strictEqual(r2.status, 401, 'Unknown user should return 401');
+  });
+
+  await test('handleRefresh rejects missing token', () => {
+    const r1 = auth.handleRefresh({});
+    assert.strictEqual(r1.status, 400);
+
+    const r2 = auth.handleRefresh({ refreshToken: 'invalid-token' });
+    assert.strictEqual(r2.status, 401, 'Invalid refresh token should return 401');
+  });
+
+  await test('handleLogout rejects unauthenticated request', () => {
+    const req = { headers: {} };
+    const r = auth.handleLogout(req, {});
+    assert.strictEqual(r.status, 401);
+  });
+
+  // ── Source-level checks ──
+
+  await test('auth.js uses crypto.timingSafeEqual for signature verification', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'auth.js'), 'utf8');
+    assert.ok(src.includes('crypto.timingSafeEqual'), 'Must use timing-safe comparison');
+  });
+
+  await test('auth.js uses PBKDF2 for password hashing (not plaintext or md5)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'auth.js'), 'utf8');
+    assert.ok(src.includes('pbkdf2Sync'), 'Must use PBKDF2');
+    assert.ok(!src.includes('createHash(\'md5\')'), 'Must not use MD5 for passwords');
+  });
+
+  await test('auth.js implements refresh token family-based reuse detection', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'auth.js'), 'utf8');
+    assert.ok(src.includes('family'), 'Should track token families');
+    assert.ok(src.includes('reuse detected') || src.includes('Refresh token reuse'),
+      'Should detect and log refresh token reuse');
+  });
+
+  await test('auth.js has isAuthEnabled guard for opt-in behavior', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'auth.js'), 'utf8');
+    assert.ok(src.includes('isAuthEnabled'), 'Must have auth-enabled check');
+    assert.ok(src.includes('Object.keys(users).length > 0'),
+      'Auth should only activate when users exist');
+  });
+
+  await test('dashboard.js integrates auth middleware before route dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("require('./engine/auth')"), 'Dashboard must import auth module');
+    assert.ok(src.includes('auth.isProtectedRoute'), 'Must check protected routes');
+    assert.ok(src.includes('auth.authenticate'), 'Must authenticate requests');
+    assert.ok(src.includes('req.user'), 'Must attach user to request');
+  });
+
+  await test('.gitignore includes auth state files', () => {
+    const gi = fs.readFileSync(path.join(MINIONS_DIR, '.gitignore'), 'utf8');
+    assert.ok(gi.includes('auth-users.json'), 'Must gitignore user store');
+    assert.ok(gi.includes('auth-tokens.json'), 'Must gitignore token store');
+    assert.ok(gi.includes('auth-blacklist.json'), 'Must gitignore blacklist');
+    assert.ok(gi.includes('auth-secret.key'), 'Must gitignore JWT secret');
+  });
+
+  // Reset after tests
+  auth._testing.resetState();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

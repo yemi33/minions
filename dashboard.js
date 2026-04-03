@@ -13,6 +13,7 @@ const llm = require('./engine/llm');
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
+const auth = require('./engine/auth');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
@@ -3215,6 +3216,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   // Order matters: specific routes before general ones (e.g., /api/plans/approve before /api/plans/:file)
 
   const ROUTES = [
+    // ── Auth routes ──────────────────────────────────────────────────────────
+    { method: 'POST', path: '/api/auth/register', desc: 'Register a new user', params: 'username, password, roles?', handler: async (req, res) => {
+      const body = await readBody(req);
+      const result = auth.handleRegister(body);
+      return jsonReply(res, result.status, result.body, req);
+    }},
+    { method: 'POST', path: '/api/auth/login', desc: 'Login and receive JWT + refresh token', params: 'username, password', handler: async (req, res) => {
+      const body = await readBody(req);
+      const result = auth.handleLogin(body);
+      return jsonReply(res, result.status, result.body, req);
+    }},
+    { method: 'POST', path: '/api/auth/refresh', desc: 'Refresh access token using refresh token', params: 'refreshToken', handler: async (req, res) => {
+      const body = await readBody(req);
+      const result = auth.handleRefresh(body);
+      return jsonReply(res, result.status, result.body, req);
+    }},
+    { method: 'POST', path: '/api/auth/logout', desc: 'Logout — blacklist token and revoke refresh tokens', handler: async (req, res) => {
+      const body = await readBody(req).catch(() => ({}));
+      const result = auth.handleLogout(req, body);
+      return jsonReply(res, result.status, result.body, req);
+    }},
+    { method: 'GET', path: '/api/auth/me', desc: 'Get current user info from JWT', handler: (req, res) => {
+      const user = auth.authenticate(req);
+      if (!user) return auth.unauthorized(res);
+      return jsonReply(res, 200, { user: { id: user.sub, username: user.username, roles: user.roles } }, req);
+    }},
+
     // Routes endpoint (self-describing API)
     { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
       const list = ROUTES.map(r => ({
@@ -3642,9 +3670,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   // Expose routes to CC preamble builder (once, on first request)
   if (!_apiRoutesRef) _apiRoutesRef = ROUTES;
 
-  // ── Route Dispatcher ────────────────────────────────────────────────────────
+  // ── Auth Middleware ─────────────────────────────────────────────────────────
+  // When auth is enabled (auth-users.json exists with at least one user),
+  // protected API routes require a valid JWT Bearer token.
 
   const pathname = req.url.split('?')[0];
+
+  if (auth.isProtectedRoute(pathname)) {
+    const user = auth.authenticate(req);
+    if (!user) {
+      return auth.unauthorized(res);
+    }
+    req.user = user; // attach decoded JWT claims to request
+  }
+
+  // ── Route Dispatcher ────────────────────────────────────────────────────────
+
   const _reqStart = Date.now();
   for (const route of ROUTES) {
     if (route.method !== req.method) continue;
@@ -3692,6 +3733,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     res.end(HTML);
   }
 });
+
+// Initialize auth module (loads persisted state)
+auth.init();
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n  Minions Mission Control`);
