@@ -154,7 +154,11 @@ function checkPlanCompletion(meta, config) {
   // Resolve the primary project for writing new work items (PR, verify)
   const projectName = plan.project;
   const primaryProject = projectName
-    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
+    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : (projects[0] || null);
+  if (!primaryProject) {
+    log('warn', `checkPlanCompletion: no project available (projects array ${projects.length === 0 ? 'empty' : 'no match for ' + projectName}) — skipping PR/verify creation for ${planFile}`);
+    return;
+  }
   const wiPath = primaryProject ? shared.projectWorkItemsPath(primaryProject) : null;
   const workItems = wiPath ? (safeJson(wiPath) || []) : [];
 
@@ -424,6 +428,10 @@ function chainPlanToPrd(dispatchItem, meta, config) {
 
   const projectName = meta?.item?.project || meta?.project?.name;
   const projects = shared.getProjects(config);
+  if (projects.length === 0) {
+    log('error', 'Plan chaining: no projects configured — cannot chain plan to PRD');
+    return;
+  }
   const targetProject = projectName
     ? projects.find(p => p.name === projectName) || projects[0]
     : projects[0];
@@ -584,7 +592,11 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   if (prMatches.size === 0) return 0;
 
   const projects = shared.getProjects(config);
-  const defaultProject = (meta?.project?.name && projects.find(p => p.name === meta.project.name)) || projects[0];
+  if (projects.length === 0 && !meta?.project?.name) {
+    log('warn', `syncPrsFromOutput: no projects configured and no project in meta — cannot sync PRs`);
+    return 0;
+  }
+  const defaultProject = (meta?.project?.name && projects.find(p => p.name === meta.project.name)) || (projects[0] || null);
   const useCentral = !defaultProject;
 
   // Match each PR to its correct project by finding which repo URL appears near the PR number in output
