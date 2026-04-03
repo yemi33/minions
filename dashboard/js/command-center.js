@@ -110,31 +110,27 @@ async function ccSend() {
   if (!message) return;
   input.value = '';
 
-  // If already processing, abort current and send the new one immediately
+  // If already processing, queue the message
   if (_ccSending) {
-    if (_ccAbortController) {
-      _ccAbortController.abort();
-      _ccAbortController = null;
-    }
-    _ccSending = false;
-    // Mark current streaming message as interrupted
-    var lastEl = document.getElementById('cc-messages').lastElementChild;
-    if (lastEl && (lastEl.innerHTML.includes('Thinking') || lastEl.innerHTML.includes('\uD83D\uDD27'))) {
-      lastEl.innerHTML += '<div style="font-size:9px;color:var(--muted);margin-top:4px;font-style:italic">(interrupted)</div>';
-    }
+    _ccQueue.push(message);
+    ccAddMessage('user', escHtml(message));
+    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued — will send after current request</span>');
+    return;
   }
   await _ccDoSend(message);
 
-  // Drain queue
+  // Drain queue — process queued messages one by one
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
-    // Remove the "Queued" placeholder for this message
+    // Remove the "Queued" pill for this message (user message bubble stays)
     const msgs = document.getElementById('cc-messages');
     const queuedPills = msgs.querySelectorAll('.cc-queued-pill');
     for (const pill of queuedPills) {
       if (pill.closest('div')) { pill.closest('div').remove(); break; }
     }
-    await _ccDoSend(next, true); // skipUserMsg=true since already shown when queued
+    // Scroll to make the queued user message visible before processing
+    msgs.scrollTop = msgs.scrollHeight;
+    await _ccDoSend(next, true); // user message already shown when queued
   }
 }
 
