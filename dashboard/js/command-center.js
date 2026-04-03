@@ -242,7 +242,7 @@ async function _ccDoSend(message, skipUserMsg) {
           } else if (evt.type === 'done') {
             // Replace streaming div with a proper ccAddMessage
             streamDiv.remove();
-            _ccMessages.pop(); // remove the placeholder we pushed
+            // placeholder was added with skipSave=true — nothing to pop
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             const rendered = renderMd(evt.text || streamedText || '');
             ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
@@ -252,7 +252,7 @@ async function _ccDoSend(message, skipUserMsg) {
             }
           } else if (evt.type === 'error') {
             streamDiv.remove();
-            _ccMessages.pop();
+            // placeholder was skipSave — no pop needed
             ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
           }
         } catch { /* incomplete JSON */ }
@@ -266,7 +266,7 @@ async function _ccDoSend(message, skipUserMsg) {
           const evt = JSON.parse(line.slice(6));
           if (evt.type === 'done') {
             streamDiv.remove();
-            _ccMessages.pop();
+            // placeholder was skipSave — no pop needed
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             const rendered = renderMd(evt.text || streamedText || '');
             ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
@@ -284,7 +284,6 @@ async function _ccDoSend(message, skipUserMsg) {
     // If stream ended without a 'done' event, finalize with whatever we have
     if (streamDiv.parentNode) {
       streamDiv.remove();
-      _ccMessages.pop();
       if (streamedText) {
         const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
         ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
