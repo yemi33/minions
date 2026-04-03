@@ -203,15 +203,16 @@ function renderTokenUsage(metrics) {
   if (engineEntries.length > 0) {
     const labels = { 'consolidation': 'Consolidation', 'command-center': 'Command Center', 'doc-chat': 'Doc Chat', 'kb-sweep': 'KB Sweep', 'schedule-parse': 'Schedule Parse' };
     html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Engine Usage</div>';
-    html += '<table class="token-agent-table"><thead><tr><th>Operation</th><th>Cost</th><th>Calls</th><th>Input</th><th>Output</th><th>$/call</th></tr></thead><tbody>';
+    html += '<table class="token-agent-table"><thead><tr><th>Operation</th><th>Calls</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/call</th></tr></thead><tbody>';
     for (const [cat, e] of engineEntries.sort((a, b) => (b[1].costUsd || 0) - (a[1].costUsd || 0))) {
       const perCall = (e.calls || 0) > 0 ? fmtCost((e.costUsd || 0) / e.calls) : '-';
       html += '<tr>' +
         '<td style="font-weight:600">' + escHtml(labels[cat] || cat) + '</td>' +
-        '<td>' + fmtCost(e.costUsd || 0) + '</td>' +
         '<td>' + (e.calls || 0) + '</td>' +
+        '<td>' + fmtCost(e.costUsd || 0) + '</td>' +
         '<td>' + fmtTokens(e.inputTokens || 0) + '</td>' +
         '<td>' + fmtTokens(e.outputTokens || 0) + '</td>' +
+        '<td>' + fmtTokens(e.cacheRead || 0) + '</td>' +
         '<td style="color:var(--muted)">' + perCall + '</td>' +
       '</tr>';
     }
