@@ -2994,36 +2994,57 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
 
-      const sessionId = ccSessionValid() ? ccSession.sessionId : null;
-      const preamble = buildCCStatePreamble();
-      const prompt = preamble + '\n\n---\n\n' + body.message;
-
-      const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
-      const result = await callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-        timeout: 900000, label: 'command-center', model: 'sonnet', maxTurns: 50,
-        allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-        sessionId,
-        onChunk: (text) => {
-          try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
+      try {
+        // Session management — same as non-streaming path
+        if (body.sessionId && body.sessionId !== ccSession.sessionId) {
+          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
         }
-      });
-      trackUsage('command-center', result.usage);
+        const wasResume = !!(ccSessionValid() && ccSession.sessionId);
+        const sessionId = wasResume ? ccSession.sessionId : null;
+        const preamble = buildCCStatePreamble();
+        const prompt = preamble + '\n\n---\n\n' + body.message;
 
-      // Update session
-      const now = Date.now();
-      if (result.sessionId) {
-        ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1 };
-        safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+        const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
+        const result = await callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
+          timeout: 900000, label: 'command-center', model: 'sonnet', maxTurns: 50,
+          allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+          sessionId,
+          onChunk: (text) => {
+            try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
+          }
+        });
+        trackUsage('command-center', result.usage);
+
+        // Handle failure — same error reporting as non-streaming
+        if (result.code !== 0 || !result.text) {
+          const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
+          const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
+          const retryHint = ccSession.sessionId
+            ? 'Your session is still active — just send your message again to retry.'
+            : 'Try clicking **New Session** and sending your message again.';
+          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: ccSession.sessionId }) + '\n\n');
+          res.end();
+          return;
+        }
+
+        // Update session
+        const now = Date.now();
+        if (result.sessionId) {
+          ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1 };
+          safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+        }
+
+        // Send final result with actions
+        const { text: displayText, actions } = parseCCActions(result.text);
+        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId, newSession: !wasResume }) + '\n\n');
+        res.end();
+      } finally {
+        ccInFlight = false;
+        ccInFlightSince = 0;
       }
-
-      // Send final result with actions
-      const { text: displayText, actions } = parseCCActions(result.text);
-      res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId }) + '\n\n');
-      res.end();
-      ccInFlight = false;
-      ccInFlightSince = 0;
     } catch (e) {
       ccInFlight = false;
+      ccInFlightSince = 0;
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
       try { res.end(); } catch {}
     }
