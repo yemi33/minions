@@ -218,7 +218,7 @@ For each project worktree:
 - If a project doesn't build, still document what SHOULD be testable once fixed
 - Do NOT fix code — only report issues
 - Leave all worktrees in place for the user to inspect
-- The application MUST be started **detached** so it keeps running after your process exits
+- Start the application **detached** so it keeps running after your process exits
 - Use absolute paths everywhere so the user can copy-paste commands
 - E2E PRs are for review only — do NOT auto-complete or merge them
 

@@ -58,7 +58,7 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## Build and Demo Rule
 
-After implementation, you MUST:
+After implementation:
 1. Build the project using the repo's build system (check CLAUDE.md, package.json, README)
 2. Start if applicable
 3. Include the browser URL and run instructions in the PR description
@@ -71,7 +71,7 @@ After building, verify the build succeeded. If the build fails:
 
 ## Test Validation (MANDATORY before PR)
 
-Before creating a PR, you MUST run the project's test suite and ensure all existing tests pass:
+Before creating a PR, run the project's test suite and ensure all existing tests pass:
 
 1. Find the test command by reading the project's own documentation — check CLAUDE.md, agent.md, README, or package.json scripts in the project root. Every project defines its own conventions.
 2. Run the full test suite using whatever command the project specifies

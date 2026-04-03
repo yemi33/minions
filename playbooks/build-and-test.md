@@ -102,7 +102,7 @@ Structure your report exactly like this:
 
 ## Auto-file Work Items on Failure
 
-If the build OR tests fail, you MUST create a work item so another agent can fix it. Write a JSON entry to the project's work queue:
+If the build or tests fail, create a work item so another agent can fix it. Write a JSON entry to the project's work queue:
 
 ```bash
 # Read existing items, append new one, write back
