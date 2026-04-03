@@ -108,8 +108,81 @@ function isResumeSessionStillValid(result) {
   return false;
 }
 
+/**
+ * Streaming variant of callLLM — emits text chunks via onChunk callback.
+ * Returns the same result object as callLLM when the process completes.
+ * onChunk(text) is called for each assistant text block as it arrives.
+ */
+function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {} } = {}) {
+  return new Promise((resolve) => {
+    const id = uid();
+    const tmpDir = path.join(ENGINE_DIR, 'tmp');
+    if (!require('fs').existsSync(tmpDir)) require('fs').mkdirSync(tmpDir, { recursive: true });
+    const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
+    const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
+    safeWrite(promptPath, promptText);
+    safeWrite(sysPath, sysPromptText || '');
+
+    const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+    const args = [
+      spawnScript, promptPath, sysPath,
+      '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
+      '--verbose',
+    ];
+    if (allowedTools) args.push('--allowedTools', allowedTools);
+    args.push('--permission-mode', 'bypassPermissions');
+    if (sessionId) args.push('--resume', sessionId);
+
+    const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+
+    let stdout = '';
+    let stderr = '';
+    let lineBuf = '';
+
+    proc.stdout.on('data', d => {
+      const chunk = d.toString();
+      stdout += chunk;
+      lineBuf += chunk;
+      // Parse complete lines for streaming text
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop(); // keep incomplete line in buffer
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('{')) continue;
+        try {
+          const obj = JSON.parse(trimmed);
+          if (obj.type === 'assistant' && obj.message?.content) {
+            for (const block of obj.message.content) {
+              if (block.type === 'text' && block.text) onChunk(block.text);
+            }
+          }
+        } catch { /* incomplete JSON or non-JSON line */ }
+      }
+    });
+    proc.stderr.on('data', d => { stderr += d.toString(); });
+
+    const timer = setTimeout(() => { try { proc.kill('SIGTERM'); } catch {} }, timeout);
+
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      safeUnlink(promptPath);
+      safeUnlink(sysPath);
+      const parsed = parseStreamJsonOutput(stdout);
+      resolve({ text: parsed.text || '', usage: parsed.usage, sessionId: parsed.sessionId || null, code, stderr, raw: stdout });
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      safeUnlink(promptPath);
+      safeUnlink(sysPath);
+      resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
+    });
+  });
+}
+
 module.exports = {
   callLLM,
+  callLLMStreaming,
   trackEngineUsage,
   isResumeSessionStillValid,
 };

@@ -171,44 +171,66 @@ async function _ccDoSend(message, skipUserMsg) {
   }, 500);
 
   try {
-    const ccAbort = AbortSignal.timeout(960000);
-    const res = await fetch('/api/command-center', {
+    // Stream response via SSE — shows text as it arrives
+    const res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, sessionId: _ccSessionId }),
-      signal: ccAbort
+      body: JSON.stringify({ message }),
+      signal: AbortSignal.timeout(960000)
     });
-    const data = await res.json();
 
-    clearInterval(ccTimer);
-    thinking.remove();
-
-    if (data.error) {
-      const isBusy = data.error.includes('busy');
-      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(data.error) + '</span>' +
-        (isBusy ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
+    if (!res.ok) {
+      clearInterval(ccTimer);
+      thinking.remove();
+      const errText = await res.text();
+      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
+        (errText.includes('busy') ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
       return;
     }
 
-    // Track session — if server started a new session, clear stale frontend messages
-    if (data.sessionId) {
-      if (data.newSession && _ccSessionId && _ccSessionId !== data.sessionId) {
-        // Session was silently reset (expired/turn limit) — clear old messages except the current one
-        const el = document.getElementById('cc-messages');
-        // Keep only the user message we just added (last child)
-        const lastMsg = el.lastElementChild;
-        el.innerHTML = '';
-        if (lastMsg) el.appendChild(lastMsg);
-        _ccMessages = _ccMessages.slice(-1); // Keep only the message we just sent
-      }
-      _ccSessionId = data.sessionId;
-      ccSaveState();
-      ccUpdateSessionIndicator();
-    }
+    // Create streaming message bubble
+    clearInterval(ccTimer);
+    thinking.remove();
+    const streamDiv = document.createElement('div');
+    streamDiv.className = 'cc-msg assistant';
+    streamDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Thinking...</span>';
+    document.getElementById('cc-messages').appendChild(streamDiv);
+    let streamedText = '';
 
-    // Render markdown response
-    const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-    const rendered = renderMd(data.text || '');
-    ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          if (evt.type === 'chunk') {
+            streamedText = evt.text; // each chunk is the full text so far for this turn
+            streamDiv.innerHTML = renderMd(streamedText);
+            const msgs = document.getElementById('cc-messages');
+            if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+          } else if (evt.type === 'done') {
+            // Final result — replace with rendered markdown + actions
+            const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
+            streamDiv.innerHTML = renderMd(evt.text || streamedText || '') +
+              '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>';
+            _ccMessages.push({ role: 'assistant', html: streamDiv.innerHTML });
+            if (evt.sessionId) { _ccSessionId = evt.sessionId; ccSaveState(); ccUpdateSessionIndicator(); }
+            if (evt.actions && evt.actions.length > 0) {
+              for (const action of evt.actions) { await ccExecuteAction(action); }
+            }
+          } else if (evt.type === 'error') {
+            streamDiv.innerHTML = '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>';
+          }
+        } catch { /* incomplete JSON */ }
+      }
+    }
 
     // Execute actions
     if (data.actions && data.actions.length > 0) {

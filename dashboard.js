@@ -2980,6 +2980,55 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
   }
 
+  async function handleCommandCenterStream(req, res) {
+    if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
+    try {
+      const body = await readBody(req);
+      if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
+      if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
+        res.statusCode = 429; res.end('CC busy'); return;
+      }
+      if (ccInFlight) console.log('[CC-stream] Auto-releasing stuck guard');
+      ccInFlight = true;
+      ccInFlightSince = Date.now();
+
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+
+      const sessionId = ccSessionValid() ? ccSession.sessionId : null;
+      const preamble = buildCCStatePreamble();
+      const prompt = preamble + '\n\n---\n\n' + body.message;
+
+      const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
+      const result = await callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
+        timeout: 900000, label: 'command-center', model: 'sonnet', maxTurns: 50,
+        allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+        sessionId,
+        onChunk: (text) => {
+          try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
+        }
+      });
+      trackUsage('command-center', result.usage);
+
+      // Update session
+      const now = Date.now();
+      if (result.sessionId) {
+        ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1 };
+        safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+      }
+
+      // Send final result with actions
+      const { text: displayText, actions } = parseCCActions(result.text);
+      res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId }) + '\n\n');
+      res.end();
+      ccInFlight = false;
+      ccInFlightSince = 0;
+    } catch (e) {
+      ccInFlight = false;
+      try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
+      try { res.end(); } catch {}
+    }
+  }
+
   async function handleSchedulesList(req, res) {
     reloadConfig();
     const schedules = CONFIG.schedules || [];
@@ -3473,6 +3522,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
+    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message', handler: handleCommandCenterStream },
 
     // Schedules
     { method: 'POST', path: '/api/schedules/parse-natural', desc: 'Parse natural language schedule text into cron expression', params: 'text', handler: handleSchedulesParseNatural },
