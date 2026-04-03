@@ -1225,7 +1225,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // Auto-dispatch evaluate work item after implement or fix completes successfully
   if (isSuccess && !skipDoneStatus && (type === 'implement' || (type === 'fix' && meta?.item?._evalParentId)) && meta?.item?.id) {
     const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
-    if (evalLoop) {
+    const autoReview = config.engine?.autoReview ?? shared.ENGINE_DEFAULTS.autoReview;
+    if (evalLoop && autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {

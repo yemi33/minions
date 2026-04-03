@@ -1499,6 +1499,11 @@ function discoverFromWorkItems(config, project) {
       vars.task_description = vars.task_description + resolvedCtx.additionalContext;
     }
 
+    // Checkpoint resume — inject context from previous agent run
+    vars.checkpoint_context = '';
+    const cpCtx = resolveCheckpointContext(vars.worktree_path, item);
+    if (cpCtx) vars.checkpoint_context = cpCtx;
+
     const playbookName = selectPlaybook(workType, item);
     if (playbookName === 'work-item' && workType === 'review') {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
@@ -1544,6 +1549,36 @@ function discoverFromWorkItems(config, project) {
   }
 
   return newWork;
+}
+
+/**
+ * Resolve checkpoint context from a worktree's checkpoint.json file.
+ * Returns a summary string for injection into playbooks, or '' if no checkpoint exists.
+ */
+function resolveCheckpointContext(worktreePath, item) {
+  const cpPath = path.join(worktreePath, 'checkpoint.json');
+  if (!fs.existsSync(cpPath)) return '';
+  try {
+    const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+    const cpCount = (item._checkpointCount || 0) + 1;
+    item._checkpointCount = cpCount;
+    if (cpCount > 3) {
+      log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — escalating to needs-human-review`);
+      item.status = 'needs-human-review';
+      return '';
+    }
+    const cpSummary = [
+      cpData.completed ? `**Completed:** ${cpData.completed}` : '',
+      cpData.remaining ? `**Remaining:** ${cpData.remaining}` : '',
+      cpData.blockers ? `**Blockers:** ${cpData.blockers}` : '',
+      cpData.branch_state ? `**Branch State:** ${cpData.branch_state}` : '',
+    ].filter(Boolean).join('\n');
+    log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+    return cpSummary ? `## Checkpoint Resume (attempt ${cpCount})\n\n${cpSummary}` : '';
+  } catch (e) {
+    log('warn', `Failed to read checkpoint.json for ${item.id}: ${e.message}`);
+    return '';
+  }
 }
 
 /**
@@ -1791,6 +1826,11 @@ function discoverCentralWorkItems(config) {
           vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
         }
 
+        // Checkpoint resume — inject context from previous agent run
+        vars.checkpoint_context = '';
+        const fanCpCtx = resolveCheckpointContext(vars.project_path || '', item);
+        if (fanCpCtx) vars.checkpoint_context = fanCpCtx;
+
         const playbookName = selectPlaybook(workType, item);
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) {
@@ -1902,6 +1942,11 @@ function discoverCentralWorkItems(config) {
         vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
         vars.task_description = vars.task_description + resolvedCtx.additionalContext;
       }
+
+      // Checkpoint resume — inject context from previous agent run
+      vars.checkpoint_context = '';
+      const normCpCtx = resolveCheckpointContext(vars.project_path || '', item);
+      if (normCpCtx) vars.checkpoint_context = normCpCtx;
 
       const playbookName = selectPlaybook(workType, item);
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -2057,7 +2102,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
     }
   }
 
