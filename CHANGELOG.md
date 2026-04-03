@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.327 (2026-04-03)
+
+### Fixes
+-  eliminate all legacy done-status writers, add CANCELLED to WI_STATUS
+-  stop writing legacy done aliases, add migration, keep read compat
+
 ## 0.1.325 (2026-04-03)
 
 ### Fixes
