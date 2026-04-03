@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.260 (2026-04-03)
+
+### Features
+-  real-time token streaming for CC via partial JSON extraction
+
+### Fixes
+-  CC stream clears ccInFlight on client disconnect + defensive thinking.remove
+-  remove last evaluate references — eval loop now creates review items
+
 ## 0.1.257 (2026-04-03)
 
 ### Features
