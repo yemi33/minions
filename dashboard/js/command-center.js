@@ -194,7 +194,8 @@ async function _ccDoSend(message, skipUserMsg) {
     clearInterval(ccTimer);
     try { thinking.remove(); } catch { /* may already be removed */ }
     const streamDiv = document.createElement('div');
-    streamDiv.className = 'cc-msg assistant';
+    streamDiv.className = 'cc-msg-assistant';
+    streamDiv.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative';
     streamDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Thinking...</span>';
     document.getElementById('cc-messages').appendChild(streamDiv);
     let streamedText = '';
