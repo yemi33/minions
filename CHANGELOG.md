@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.224 (2026-04-03)
+
+### Fixes
+-  route 'minions scan' command to minions.js (was missing from CLI router)
+
 ## 0.1.223 (2026-04-03)
 
 ### Fixes
