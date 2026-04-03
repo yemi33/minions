@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.295 (2026-04-03)
+
+### Features
+- fix engine.js race conditions — worktree TOCTOU, self-heal, dispatch dedup
+- fix dashboard.js race conditions, input validation, and watcher leaks
+- fix cleanup.js — worktree TOCTOU, readdirSync isolation, KB restore verify
+- harden shared.js — backup verification, lock TOCTOU, docs
+-  all doc-chats use Sonnet with full tools (agent change)
+
+### Fixes
+-  address PR-124 review feedback — safeJson regression, read-only lock, filter cleanup
+-  address review feedback on PR-122
+-  add behavioral tests for CRITICAL propagation and stale lock ENOENT
+-  CRITICAL errors in safeJson now propagate to callers
+-  defer plan archiving until verify completes, add 20 verify tests
+-  enforce worktree isolation — 4 code paths fixed
+- ' not 'Evaluate:'
+-  cross-platform compatibility — signal handling, paths, home dir
+-  engine sidebar badge only triggers on new dispatch errors
+
+### Other
+- resolve merge conflicts — accept agent changes, keep worktree isolation fix
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
