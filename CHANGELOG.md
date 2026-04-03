@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.322 (2026-04-03)
+
+### Other
+- refactor: final magic string replacements in engine, lifecycle, cleanup
+
 ## 0.1.321 (2026-04-03)
 
 ### Fixes
