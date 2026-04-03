@@ -198,6 +198,26 @@ async function _ccDoSend(message, skipUserMsg) {
     const msgs = document.getElementById('cc-messages');
     const streamDiv = msgs.lastElementChild; // the message we just added
     let streamedText = '';
+    let toolsUsed = [];
+    const dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
+    function updateStreamDiv() {
+      var html = '';
+      if (toolsUsed.length > 0) {
+        html += '<div style="margin-bottom:' + (streamedText ? '6px' : '0') + '">';
+        toolsUsed.forEach(function(t, i) {
+          var isLast = i === toolsUsed.length - 1 && !streamedText;
+          html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + (isLast ? dotPulse : '') + '</div>';
+        });
+        html += '</div>';
+      }
+      if (streamedText) {
+        html += renderMd(streamedText);
+      } else if (toolsUsed.length === 0) {
+        html += '<span style="color:var(--muted);font-size:11px">Thinking...' + dotPulse + '</span>';
+      }
+      streamDiv.innerHTML = html;
+      if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+    }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -215,10 +235,10 @@ async function _ccDoSend(message, skipUserMsg) {
           const evt = JSON.parse(line.slice(6));
           if (evt.type === 'chunk') {
             streamedText = evt.text;
-            streamDiv.innerHTML = renderMd(streamedText);
-            if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+            updateStreamDiv();
           } else if (evt.type === 'tool') {
-            streamDiv.innerHTML = '<span style="color:var(--blue);font-size:11px">\uD83D\uDD27 Using ' + escHtml(evt.name) + '...</span>';
+            toolsUsed.push(evt.name);
+            updateStreamDiv();
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
             // Replace streaming div with a proper ccAddMessage
