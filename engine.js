@@ -91,6 +91,7 @@ const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
+const withFileLock = shared.withFileLock;
 
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
@@ -352,14 +353,15 @@ function spawnAgent(dispatchItem, config) {
                   if (alreadyUsed) {
                     const existingWtPath = findExistingWorktree(rootDir, branchName);
                     if (existingWtPath && fs.existsSync(existingWtPath)) {
-                      // Bug fix: read dispatch inside mutateDispatch so check-and-act is atomic
+                      // Bug fix: read dispatch under file lock so check-and-act is atomic
+                      // Uses withFileLock directly (read-only) — no unnecessary disk write
                       let activelyUsed = false;
-                      mutateDispatch((dp) => {
+                      withFileLock(DISPATCH_PATH + '.lock', () => {
+                        const dp = safeJson(DISPATCH_PATH) || {};
                         activelyUsed = (dp.active || []).some(d => {
                           const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
                           return dBranch === branchName && d.id !== id;
                         });
-                        return dp; // read-only — no mutation needed
                       });
                       if (activelyUsed) {
                         log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
@@ -1406,14 +1408,7 @@ function discoverFromWorkItems(config, project) {
     // This protects against persisted state drift from old runtime versions.
     try {
       mutateDispatch((dp) => {
-        // Bug fix: use immutable filter — build new array, then assign, so concurrent
-        // callers cannot interleave mid-filter and lose entries.
-        const prev = Array.isArray(dp.completed) ? dp.completed : [];
-        const next = [];
-        for (let i = 0; i < prev.length; i++) {
-          if (prev[i].meta?.dispatchKey !== key) next.push(prev[i]);
-        }
-        dp.completed = next;
+        dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== key) : [];
         return dp;
       });
       dispatchCooldowns.delete(key);
