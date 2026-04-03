@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.314 (2026-04-03)
+
+### Fixes
+-  show reviewer names in dashboard Signed Off By column
+
+### Other
+- perf: CC message handling — debounce localStorage, cap array, batch scroll
+
 ## 0.1.312 (2026-04-03)
 
 ### Fixes
