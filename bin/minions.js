@@ -464,6 +464,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     minions complete <dispatch-id>   Manually mark a dispatch as completed
     minions cleanup                  Clean temp files, worktrees, zombies
     minions nuke --confirm           Factory reset (delete state, reset config to defaults)
+    minions uninstall --confirm      Remove everything + uninstall npm package
 
   Dashboard:
     minions dash                     Start web dashboard (default :7331)
@@ -624,6 +625,73 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   try { execSync(`node "${path.join(MINIONS_HOME, 'minions.js')}" init --skip-scan`, { stdio: 'inherit' }); } catch {}
 
   console.log('\n  Factory reset complete. Run "minions init" to link projects and start fresh.\n');
+} else if (cmd === 'uninstall') {
+  if (!rest.includes('--confirm')) {
+    console.log(`
+  Uninstall Minions — removes EVERYTHING.
+
+  This will:
+    1. Kill all running engine, dashboard, and agent processes
+    2. Delete the entire ${MINIONS_HOME} directory (all state, config, agents, knowledge)
+    3. Remove extracted skills from ~/.claude/skills/ (minions-authored only)
+    4. Uninstall the npm package (@yemi33/minions)
+
+  This is irreversible. Your project repos are NOT affected.
+
+  Run: minions uninstall --confirm
+`);
+    process.exit(0);
+  }
+
+  console.log('\n  Uninstalling Minions...\n');
+
+  // 1. Kill all processes
+  try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000 }); } catch {}
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      for (const line of out.split('\n')) {
+        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
+          const pid = line.split(',').pop()?.trim();
+          if (pid && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
+        }
+      }
+    } else {
+      try { execSync('pkill -f "minions.*engine.js" 2>/dev/null', { timeout: 5000 }); } catch {}
+      try { execSync('pkill -f "minions.*dashboard.js" 2>/dev/null', { timeout: 5000 }); } catch {}
+      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
+    }
+  } catch {}
+  console.log('  Killed all processes');
+
+  // 2. Remove minions-authored skills from ~/.claude/skills/
+  try {
+    const claudeSkills = path.join(process.env.HOME || process.env.USERPROFILE || '', '.claude', 'skills');
+    if (fs.existsSync(claudeSkills)) {
+      for (const dir of fs.readdirSync(claudeSkills)) {
+        const skillFile = path.join(claudeSkills, dir, 'SKILL.md');
+        try {
+          const content = fs.readFileSync(skillFile, 'utf8');
+          if (content.includes('Auto-extracted skill') || content.includes('author:')) {
+            fs.rmSync(path.join(claudeSkills, dir), { recursive: true, force: true });
+          }
+        } catch {}
+      }
+      console.log('  Cleaned minions skills from ~/.claude/skills/');
+    }
+  } catch {}
+
+  // 3. Delete ~/.minions entirely
+  if (fs.existsSync(MINIONS_HOME)) {
+    fs.rmSync(MINIONS_HOME, { recursive: true, force: true });
+    console.log('  Deleted ' + MINIONS_HOME);
+  }
+
+  // 4. Uninstall npm package
+  console.log('  Uninstalling npm package...');
+  try { execSync('npm uninstall -g @yemi33/minions', { stdio: 'inherit', timeout: 60000 }); } catch {}
+
+  console.log('\n  Minions uninstalled. Your project repos were not touched.\n');
 } else if (cmd === 'doctor') {
   ensureInstalled();
   const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
