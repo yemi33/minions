@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.248 (2026-04-03)
+
+### Fixes
+-  skip worktrees in project scan, make scan optional during init
+
 ## 0.1.245 (2026-04-03)
 
 ### Features
