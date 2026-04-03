@@ -203,6 +203,7 @@ async function _ccDoSend(message, skipUserMsg) {
     }
     // Start phase timer immediately so thinking text updates while waiting for SSE
     const phaseTimer = setInterval(updateStreamDiv, 1000);
+    updateStreamDiv(); // render proper layout immediately (not raw "Thinking..." text)
 
   try {
     // Stream response via SSE — shows text as it arrives
