@@ -165,28 +165,14 @@ async function _ccDoSend(message, skipUserMsg) {
     [300000, 'Timing out soon...'],
   ];
 
-  try {
-    // Stream response via SSE — shows text as it arrives
-    const res = await fetch('/api/command-center/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-      signal: _ccAbortController ? _ccAbortController.signal : AbortSignal.timeout(960000)
-    });
+  // Streaming state — declared before try so updateStreamDiv works during fetch
+  let streamedText = '';
+  let toolsUsed = [];
 
-    if (!res.ok) {
-      const errText = await res.text();
-      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
-        (errText.includes('busy') ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
-      return;
-    }
-
-    // Use a temporary streaming div for live updates, then replace with ccAddMessage on completion
-    // Add a temporary placeholder via ccAddMessage so it gets proper styling
-    ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
-    const msgs = document.getElementById('cc-messages');
-    const streamDiv = msgs.lastElementChild; // the message we just added
-    let streamedText = '';
-    let toolsUsed = [];
+  // Show thinking immediately — before fetch starts
+  ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
+  const msgs = document.getElementById('cc-messages');
+  const streamDiv = msgs.lastElementChild;
     const dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
     function _getThinkingPhase() {
       var elapsed = Date.now() - ccStartTime;
@@ -215,9 +201,24 @@ async function _ccDoSend(message, skipUserMsg) {
       if (_ccQueue.length > 0) _renderQueueIndicator();
       if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
     }
-
-    // Periodically update thinking phase text + timer
+    // Start phase timer immediately so thinking text updates while waiting for SSE
     const phaseTimer = setInterval(updateStreamDiv, 1000);
+
+  try {
+    // Stream response via SSE — shows text as it arrives
+    const res = await fetch('/api/command-center/stream', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+      signal: _ccAbortController ? _ccAbortController.signal : AbortSignal.timeout(960000)
+    });
+
+    if (!res.ok) {
+      clearInterval(phaseTimer); streamDiv.remove();
+      const errText = await res.text();
+      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
+        (errText.includes('busy') ? ' <button onclick="ccNewSession()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
+      return;
+    }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
