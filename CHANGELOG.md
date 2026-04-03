@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.310 (2026-04-03)
+
+### Fixes
+-  wrap all tickInner phases in try-catch for resilient dispatch
+
 ## 0.1.309 (2026-04-03)
 
 ### Fixes
