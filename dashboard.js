@@ -1172,28 +1172,25 @@ const server = http.createServer(async (req, res) => {
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJson(planPath);
-      const item = (plan.missing_features || []).find(f => f.id === body.itemId);
-      if (!item) return jsonReply(res, 404, { error: 'item not found in plan' });
+      // Pre-check: verify item exists before taking the lock
+      const preCheck = safeJson(planPath);
+      const preItem = (preCheck.missing_features || []).find(f => f.id === body.itemId);
+      if (!preItem) return jsonReply(res, 404, { error: 'item not found in plan' });
 
-      // Update allowed fields
-      if (body.name !== undefined) item.name = body.name;
-      if (body.description !== undefined) item.description = body.description;
-      if (body.priority !== undefined) item.priority = body.priority;
-      if (body.estimated_complexity !== undefined) item.estimated_complexity = body.estimated_complexity;
-      if (body.status !== undefined) item.status = body.status;
-
-      // Re-read plan before writing to minimize race window with engine
-      const freshPlan = safeJson(planPath) || plan;
-      const freshItem = (freshPlan.missing_features || []).find(f => f.id === body.itemId);
-      if (freshItem) {
-        if (body.name !== undefined) freshItem.name = body.name;
-        if (body.description !== undefined) freshItem.description = body.description;
-        if (body.priority !== undefined) freshItem.priority = body.priority;
-        if (body.estimated_complexity !== undefined) freshItem.estimated_complexity = body.estimated_complexity;
-        if (body.status !== undefined) freshItem.status = body.status;
-      }
-      safeWrite(planPath, freshPlan);
+      // Atomically read-modify-write under file lock
+      let item;
+      mutateJsonFileLocked(planPath, (plan) => {
+        const target = (plan.missing_features || []).find(f => f.id === body.itemId);
+        if (target) {
+          if (body.name !== undefined) target.name = body.name;
+          if (body.description !== undefined) target.description = body.description;
+          if (body.priority !== undefined) target.priority = body.priority;
+          if (body.estimated_complexity !== undefined) target.estimated_complexity = body.estimated_complexity;
+          if (body.status !== undefined) target.status = body.status;
+          item = target;
+        }
+        return plan;
+      }, { defaultValue: preCheck });
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
@@ -1365,24 +1362,31 @@ const server = http.createServer(async (req, res) => {
 
     fs.watchFile(liveLogPath, { interval: 500 }, watcher);
 
+    // Cleanup helper to prevent handle leaks
+    const cleanup = () => {
+      try { clearInterval(doneCheck); } catch { /* optional */ }
+      try { fs.unwatchFile(liveLogPath, watcher); } catch { /* optional */ }
+    };
+
     // Check if agent is still active (poll every 5s)
     const doneCheck = setInterval(() => {
-      const dispatch = getDispatchQueue();
-      const isActive = (dispatch.active || []).some(d => d.agent === agentId);
-      if (!isActive) {
-        watcher(); // flush final content
-        res.write(`event: done\ndata: complete\n\n`);
-        clearInterval(doneCheck);
-        fs.unwatchFile(liveLogPath, watcher);
-        res.end();
+      try {
+        const dispatch = getDispatchQueue();
+        const isActive = (dispatch.active || []).some(d => d.agent === agentId);
+        if (!isActive) {
+          watcher(); // flush final content
+          res.write(`event: done\ndata: complete\n\n`);
+          cleanup();
+          res.end();
+        }
+      } catch (e) {
+        cleanup();
+        try { res.end(); } catch { /* optional */ }
       }
     }, 5000);
 
     // Cleanup on client disconnect
-    req.on('close', () => {
-      clearInterval(doneCheck);
-      fs.unwatchFile(liveLogPath, watcher);
-    });
+    req.on('close', cleanup);
 
     return;
   }
@@ -1398,7 +1402,9 @@ const server = http.createServer(async (req, res) => {
     } else {
       // Return last N bytes via ?tail=N param (default last 8KB)
       const params = new URL(req.url, 'http://localhost').searchParams;
-      const tailBytes = parseInt(params.get('tail')) || 8192;
+      const rawTail = parseInt(params.get('tail'));
+      if (params.has('tail') && isNaN(rawTail)) return jsonReply(res, 400, { error: 'tail must be a number' });
+      const tailBytes = isNaN(rawTail) ? 8192 : Math.max(1, Math.min(10000, rawTail));
       res.end(content.length > tailBytes ? content.slice(-tailBytes) : content);
     }
     return;
@@ -1425,7 +1431,7 @@ const server = http.createServer(async (req, res) => {
   async function handleNotesSave(req, res) {
     try {
       const body = await readBody(req);
-      if (!body.content && body.content !== '') return jsonReply(res, 400, { error: 'content required' });
+      if (body.content == null) return jsonReply(res, 400, { error: 'content required' });
       const file = body.file || 'notes.md';
       // Only allow saving notes.md (prevent arbitrary file writes)
       if (file !== 'notes.md') return jsonReply(res, 400, { error: 'only notes.md can be edited' });
@@ -1819,74 +1825,72 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-      const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
       const killedAgents = new Set();
       const resetItemIds = new Set();
 
-      for (const wiPath of wiPaths) {
-        try {
-          const items = safeJson(wiPath);
-          if (!items) continue;
-          let changed = false;
-          for (const w of items) {
-            if (w.sourcePlan !== body.file) continue;
-            // Keep completed items as-is, reset everything else to pending.
-            if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+      // Read dispatch inside the lock so PID list is consistent with state being modified
+      mutateJsonFileLocked(dispatchPath, (dispatch) => {
+        for (const wiPath of wiPaths) {
+          try {
+            const items = safeJson(wiPath);
+            if (!items) continue;
+            let changed = false;
+            for (const w of items) {
+              if (w.sourcePlan !== body.file) continue;
+              // Keep completed items as-is, reset everything else to pending.
+              if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
 
-            if (w.status === 'dispatched') {
-              // Kill the agent working on this item, if any.
-              const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
-              if (activeEntry) {
-                const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
-                try {
-                  const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
-                  if (agentStatus.pid) {
-                    try {
-                      const safePid = shared.validatePid(agentStatus.pid);
-                      if (process.platform === 'win32') {
-                        require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-                      } else {
-                        process.kill(safePid, 'SIGTERM');
-                      }
-                    } catch { /* process may be dead or invalid PID */ }
-                  }
-                  agentStatus.status = 'idle';
-                  delete agentStatus.currentTask;
-                  delete agentStatus.dispatched;
-                  safeWrite(statusPath, agentStatus);
-                } catch (e) { console.error('agent reset:', e.message); }
-                killedAgents.add(activeEntry.agent);
+              if (w.status === 'dispatched') {
+                // Kill the agent working on this item, if any.
+                const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
+                if (activeEntry) {
+                  const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
+                  try {
+                    const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                    if (agentStatus.pid) {
+                      try {
+                        const safePid = shared.validatePid(agentStatus.pid);
+                        if (process.platform === 'win32') {
+                          require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+                        } else {
+                          process.kill(safePid, 'SIGTERM');
+                        }
+                      } catch { /* process may be dead or invalid PID */ }
+                    }
+                    agentStatus.status = 'idle';
+                    delete agentStatus.currentTask;
+                    delete agentStatus.dispatched;
+                    safeWrite(statusPath, agentStatus);
+                  } catch (e) { console.error('agent reset:', e.message); }
+                  killedAgents.add(activeEntry.agent);
+                }
               }
+
+              if (w.status !== 'pending') reset++;
+              w.status = 'pending';
+              delete w._pausedBy;
+              delete w._resumedAt;
+              delete w.dispatched_at;
+              delete w.dispatched_to;
+              delete w.failReason;
+              delete w.failedAt;
+              changed = true;
+              if (w.id) resetItemIds.add(w.id);
             }
+            if (changed) safeWrite(wiPath, items);
+          } catch (e) { console.error('reset work items:', e.message); }
+        }
 
-            if (w.status !== 'pending') reset++;
-            w.status = 'pending';
-            delete w._pausedBy;
-            delete w._resumedAt;
-            delete w.dispatched_at;
-            delete w.dispatched_to;
-            delete w.failReason;
-            delete w.failedAt;
-            changed = true;
-            if (w.id) resetItemIds.add(w.id);
-          }
-          if (changed) safeWrite(wiPath, items);
-        } catch (e) { console.error('reset work items:', e.message); }
-      }
-
-      // Remove dispatch active entries for reset items or killed agents.
-      if (resetItemIds.size > 0 || killedAgents.size > 0) {
-        mutateJsonFileLocked(dispatchPath, (dp) => {
-          dp.active = Array.isArray(dp.active) ? dp.active : [];
-          dp.active = dp.active.filter(d => {
-            const itemId = d.meta?.item?.id;
-            if (itemId && resetItemIds.has(itemId)) return false;
-            if (killedAgents.has(d.agent)) return false;
-            return true;
-          });
-          return dp;
-        }, { defaultValue: { pending: [], active: [], completed: [] } });
-      }
+        // Remove dispatch active entries for reset items or killed agents.
+        dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
+        dispatch.active = dispatch.active.filter(d => {
+          const itemId = d.meta?.item?.id;
+          if (itemId && resetItemIds.has(itemId)) return false;
+          if (killedAgents.has(d.agent)) return false;
+          return true;
+        });
+        return dispatch;
+      }, { defaultValue: { pending: [], active: [], completed: [] } });
 
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'paused', resetWorkItems: reset });
