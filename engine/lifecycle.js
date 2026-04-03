@@ -1175,9 +1175,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
           if (wi) {
-            wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to;
-            if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing; // clear so item can retry decomposition
-            shared.safeWrite(wiPath, items);
+            // Don't revert if already completed by another code path
+            if (wi.status === WI_STATUS.DONE || wi.completedAt) {
+              log('info', `Skip retry for ${meta.item.id} — already completed`);
+            } else {
+              wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to;
+              if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
+              shared.safeWrite(wiPath, items);
+            }
           }
         }
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
@@ -1261,7 +1266,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id) {
+  if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);

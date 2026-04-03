@@ -137,7 +137,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
             const items = safeJson(wiPath);
             if (!items || !Array.isArray(items)) throw new Error('work items unreadable');
             const wi = items.find(i => i.id === item.meta.item.id);
-            if (wi && wi.status !== WI_STATUS.PAUSED) {
+            if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
               wi._retryCount = retries + 1;
               wi.status = WI_STATUS.PENDING;
               wi._lastRetryReason = reason || '';
