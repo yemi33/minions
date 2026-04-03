@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.250 (2026-04-03)
+
+### Features
+-  mandatory test validation before PR creation in implement and fix playbooks
+
+### Fixes
+-  don't hardcode npm test — agents must read project conventions
+
 ## 0.1.248 (2026-04-03)
 
 ### Fixes
