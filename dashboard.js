@@ -378,7 +378,8 @@ If no actions are needed (just answering a question, or you handled it directly)
 
 Available action types:
 - **dispatch**: Create a work item for an agent. Fields: title, workType (ask/explore/fix/review/test/implement/verify), priority (low/medium/high), agents (array of IDs, optional), project, description. Use \`verify\` when the user wants to build PRs locally, merge branches together, start a dev server, and get a localhost URL to test.
-- **note**: Save a note/decision. Fields: title, content
+- **note**: Save a note/decision to the inbox. Fields: title, content
+- **pin**: Pin critical context visible to ALL agents on every task. Use when the user says "remember", "pin", "always", "from now on". Fields: title, content, level (optional: "critical" or "warning")
 - **plan**: Create a multi-step plan. Fields: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: Cancel a running agent. Fields: agent (agent ID), reason
 - **retry**: Retry failed work items. Fields: ids (array of work item IDs)

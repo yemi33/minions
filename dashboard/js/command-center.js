@@ -279,6 +279,16 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'pin': {
+        await fetch('/api/pinned', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: action.title, content: action.content || action.description, level: action.level || '' })
+        });
+        status.innerHTML = '&#x1F4CC; Pinned: <strong>' + escHtml(action.title) + '</strong> — visible to all agents';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
       case 'plan': {
         await fetch('/api/plan', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
