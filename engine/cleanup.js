@@ -111,7 +111,7 @@ function runCleanup(config, verbose = false) {
     const prs = safeJson(projectPrPath(project)) || [];
     const mergedBranches = new Set();
     for (const pr of prs) {
-      if (pr.status === 'merged' || pr.status === 'abandoned' || pr.status === 'completed') {
+      if (pr.status === shared.PR_STATUS.MERGED || pr.status === shared.PR_STATUS.ABANDONED || pr.status === shared.PLAN_STATUS.COMPLETED) {
         if (pr.branch) mergedBranches.add(pr.branch);
       }
     }
@@ -223,7 +223,7 @@ function runCleanup(config, verbose = false) {
       const freshPrs = safeJson(projectPrPath(project)) || [];
       const freshMergedBranches = new Set();
       for (const pr of freshPrs) {
-        if (pr.status === 'merged' || pr.status === 'abandoned' || pr.status === 'completed') {
+        if (pr.status === shared.PR_STATUS.MERGED || pr.status === shared.PR_STATUS.ABANDONED || pr.status === shared.PLAN_STATUS.COMPLETED) {
           if (pr.branch) freshMergedBranches.add(pr.branch);
         }
       }

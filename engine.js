@@ -1319,7 +1319,7 @@ function discoverFromPrs(config, project) {
     }
 
     // PRs with build failures — route to author (has session context from implementing)
-    if (pr.status === 'active' && pr.buildStatus === 'failing') {
+    if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -1638,7 +1638,7 @@ function materializeSpecsAsWorkItems(config, project) {
 
   const prs = getPrs(project);
   const mergedPrs = prs.filter(pr =>
-    (pr.status === 'merged' || pr.status === 'completed') &&
+    (pr.status === PR_STATUS.MERGED || pr.status === PLAN_STATUS.COMPLETED) &&
     !tracker.processedPrs[pr.id]
   );
 

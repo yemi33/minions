@@ -197,7 +197,7 @@ function checkPlanCompletion(meta, config) {
       const prs = (safeJson(shared.projectPrPath(p)) || [])
         .filter(pr => {
           const linkedId = prLinks[pr.id];
-          return pr.status === 'active' && linkedId && doneItems.find(w => w.id === linkedId);
+          return pr.status === PR_STATUS.ACTIVE && linkedId && doneItems.find(w => w.id === linkedId);
         });
       if (prs.length > 0) {
         projectPrs[p.name] = { project: p, prs, mainBranch: p.mainBranch || 'main' };
@@ -693,7 +693,7 @@ function updatePrAfterReview(agentId, pr, project) {
   // Record the reviewer — actual verdict comes from ADO/GitHub votes via pollPrStatus.
   // Set to 'waiting' so pollPrStatus updates it with the real vote on next cycle.
   const dispatch = getDispatch();
-  const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
+  const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === WORK_TYPE.REVIEW);
 
   // Set reviewStatus to 'waiting' (single source of truth — synced from ADO/GitHub votes on next poll)
   target.reviewStatus = 'waiting';
@@ -988,7 +988,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   if (result === DISPATCH_RESULT.SUCCESS) {
     m.tasksCompleted++;
     if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
-    if (dispatchItem.type === 'review') m.reviewsDone++;
+    if (dispatchItem.type === WORK_TYPE.REVIEW) m.reviewsDone++;
   } else if (result === 'retry') {
     // Auto-retry: count cost but not as a final outcome
     m.tasksRetried = (m.tasksRetried || 0) + 1;
@@ -1243,7 +1243,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === 'implement' || type === 'implement:large' || type === 'fix') && prsCreatedCount === 0 && meta?.item?.id) {
+  if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
@@ -1280,8 +1280,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  if (type === 'review') updatePrAfterReview(agentId, meta?.pr, meta?.project);
-  if (type === 'fix') updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+  if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project);
+  if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (isSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
   updateAgentHistory(agentId, dispatchItem, result);
@@ -1311,14 +1311,14 @@ function syncPrdFromPrs(config) {
     for (const project of allProjects) {
       const wiPath = projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
-      const hasPending = items.some(wi => wi.status === 'pending' && !wi._pr);
+      const hasPending = items.some(wi => wi.status === WI_STATUS.PENDING && !wi._pr);
       if (!hasPending) continue;
       const reconciled = reconcileItemsWithPrs(items, allPrs);
       if (reconciled > 0) {
         safeWrite(wiPath, items);
         // Sync done status to PRD JSON for each newly reconciled item
         for (const wi of items) {
-          if (wi.status === 'done') syncPrdItemStatus(wi.id, 'done', wi.sourcePlan);
+          if (wi.status === WI_STATUS.DONE) syncPrdItemStatus(wi.id, 'done', wi.sourcePlan);
         }
         totalReconciled += reconciled;
       }
