@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.334 (2026-04-03)
+
+### Features
+- Fix PR write races in ado.js and github.js
+
+### Fixes
+-  guarantee test cleanup via finally block in test harness
+
 ## 0.1.332 (2026-04-03)
 
 ### Fixes
