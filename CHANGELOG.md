@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.315 (2026-04-03)
+
+### Fixes
+-  show reviewer names in dashboard Signed Off By column
+
+### Other
+- cleanup: remove evaluate.md (re-created by agents), fix stale references
+- perf: CC message handling — debounce localStorage, cap array, batch scroll
+
 ## 0.1.312 (2026-04-03)
 
 ### Fixes
