@@ -224,12 +224,22 @@ function consolidateWithLLM(items, existingNotes, files, config) {
       let newContent = current + entry;
 
       if (newContent.length > 50000) {
-        const sections = newContent.split('\n---\n\n### ');
-        if (sections.length > 10) {
-          const header = sections[0];
-          const recent = sections.slice(-8);
-          newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
-          log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
+        // Truncate on section boundary — scan backward for last \n# before byte limit
+        // Never cut mid-section to preserve readability
+        const limit = 50000;
+        const lastSectionBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
+        if (lastSectionBoundary > 0) {
+          newContent = newContent.slice(0, lastSectionBoundary);
+          log('info', `Pruned notes.md at section boundary (pos ${lastSectionBoundary}) to stay under ${limit} bytes`);
+        } else {
+          // Fallback: use the old section-count approach
+          const sections = newContent.split('\n---\n\n### ');
+          if (sections.length > 10) {
+            const header = sections[0];
+            const recent = sections.slice(-8);
+            newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
+            log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
+          }
         }
       }
 
@@ -312,8 +322,9 @@ function consolidateWithRegex(items, files) {
   const seen = new Map();
   const deduped = [];
   for (const insight of allInsights) {
-    const fpWords = insight.fingerprint.split(' ').filter(w => w.length > 4).slice(0, 5);
+    const fpWords = insight.fingerprint.split(' ').filter(w => w.length > 4 && w.length <= 200).slice(0, 5);
     // Use word-boundary regex to avoid substring false positives (e.g. 'fix' matching 'prefix')
+    // Cap word length at 200 chars to prevent ReDoS on pathological input
     if (fpWords.length >= 3 && fpWords.every(w => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(existingNotes))) continue;
     const existing = seen.get(insight.fingerprint);
     if (existing) { if (!existing.sources.includes(insight.agent)) existing.sources.push(insight.agent); continue; }
@@ -355,8 +366,14 @@ function consolidateWithRegex(items, files) {
   const current = getNotes();
   let newContent = current + entry;
   if (newContent.length > 50000) {
-    const sections = newContent.split('\n---\n\n### ');
-    if (sections.length > 10) { newContent = sections[0] + '\n---\n\n### ' + sections.slice(-8).join('\n---\n\n### '); }
+    const limit = 50000;
+    const lastBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
+    if (lastBoundary > 0) {
+      newContent = newContent.slice(0, lastBoundary);
+    } else {
+      const sections = newContent.split('\n---\n\n### ');
+      if (sections.length > 10) { newContent = sections[0] + '\n---\n\n### ' + sections.slice(-8).join('\n---\n\n### '); }
+    }
   }
   safeWrite(NOTES_PATH, newContent);
   classifyToKnowledgeBase(items);

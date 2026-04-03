@@ -154,16 +154,30 @@ const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
 fs.writeFileSync(pidFile, String(proc.pid || ''));
 
 // Send prompt via stdin — if system prompt was truncated, prepend the full context
-if (!isResume && Buffer.byteLength(sysPrompt) >= 30000) {
-  // System prompt was too large for CLI — prepend full context to user prompt
-  proc.stdin.write(`## Full Agent Context\n\n${sysPrompt}\n\n---\n\n## Your Task\n\n${prompt}`);
-} else {
-  proc.stdin.write(prompt);
+try {
+  if (!isResume && Buffer.byteLength(sysPrompt) >= 30000) {
+    // System prompt was too large for CLI — prepend full context to user prompt
+    proc.stdin.write(`## Full Agent Context\n\n${sysPrompt}\n\n---\n\n## Your Task\n\n${prompt}`);
+  } else {
+    proc.stdin.write(prompt);
+  }
+  proc.stdin.end();
+} catch (err) {
+  console.error(`FATAL: stdin write failed (broken pipe): ${err.message}`);
+  fs.appendFileSync(debugPath, `STDIN ERROR: ${err.message}\n`);
+  try { proc.kill('SIGTERM'); } catch { /* process may already be dead */ }
+  process.exit(1);
 }
-proc.stdin.end();
 
 // Clean up temp file (only created for non-resume sessions)
 if (!isResume) setTimeout(() => { try { fs.unlinkSync(sysTmpPath); } catch { /* cleanup */ } }, 5000);
+
+// Register exit handler to clean up orphaned temp files (system prompt tmp)
+function _cleanupSpawnTempFiles() {
+  try { fs.unlinkSync(sysTmpPath); } catch { /* may already be cleaned */ }
+}
+process.on('exit', _cleanupSpawnTempFiles);
+process.on('SIGTERM', () => { _cleanupSpawnTempFiles(); process.exit(143); });
 
 // Capture stderr separately for debugging
 let stderrBuf = '';

@@ -38,7 +38,11 @@ function saveCooldowns() {
       if (now - v.timestamp > 24 * 60 * 60 * 1000) dispatchCooldowns.delete(k);
     }
     const obj = Object.fromEntries(dispatchCooldowns);
-    safeWrite(COOLDOWN_PATH, obj);
+    try {
+      safeWrite(COOLDOWN_PATH, obj);
+    } catch (err) {
+      log('warn', `saveCooldowns failed writing ${COOLDOWN_PATH}: ${err.message}`);
+    }
   }, 1000); // debounce — write at most once per second
 }
 

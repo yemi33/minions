@@ -114,7 +114,7 @@ function discoverScheduledWork(config) {
   mutateJsonFileLocked(SCHEDULE_RUNS_PATH, (runs) => {
     for (const sched of schedules) {
       if (!sched.id || !sched.cron || !sched.title) continue;
-      if (sched.enabled === false) continue;
+      if (sched.enabled !== true) continue; // explicit true required — undefined/null/false all skip
 
       const lastRun = runs[sched.id] || null;
       if (!shouldRunNow(sched, lastRun)) continue;

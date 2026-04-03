@@ -285,6 +285,14 @@ function renderPlaybook(type, vars) {
     content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
   }
 
+  // Warn when a substituted value itself contains {{...}} patterns (potential self-reference)
+  const selfRefVars = Object.entries(allVars)
+    .filter(([, val]) => /\{\{\w+\}\}/.test(String(val)))
+    .map(([key]) => key);
+  if (selfRefVars.length > 0) {
+    log('warn', `Playbook "${type}": substituted values contain unresolved {{...}} patterns (potential self-reference): ${selfRefVars.join(', ')}`);
+  }
+
   // Warn on variables that resolved to empty string
   const emptyVars = Object.entries(allVars)
     .filter(([, val]) => String(val) === '')
