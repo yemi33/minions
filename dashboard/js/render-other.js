@@ -249,7 +249,7 @@ async function openScanProjectsModal() {
     '<div style="display:flex;flex-direction:column;gap:12px">' +
       '<div style="display:flex;gap:8px;align-items:flex-end">' +
         '<label style="flex:1;color:var(--text);font-size:var(--text-md)">Directory to scan' +
-          '<input id="scan-path" value="' + escHtml((typeof os !== 'undefined' ? os.homedir() : '~') || '~') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' +
+          '<input id="scan-path" value="' + escHtml(window.__MINIONS_HOME || '~') + '" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' +
         '</label>' +
         '<label style="width:60px;color:var(--text);font-size:var(--text-md)">Depth' +
           '<input id="scan-depth" type="number" value="3" min="1" max="6" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md)">' +

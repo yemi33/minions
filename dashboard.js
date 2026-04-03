@@ -94,7 +94,7 @@ function buildDashboardHtml() {
   return layout
     .replace('/* __CSS__ */', () => css)
     .replace('<!-- __PAGES__ -->', () => pageHtml)
-    .replace('/* __JS__ */', () => jsHtml);
+    .replace('/* __JS__ */', () => `window.__MINIONS_HOME = ${JSON.stringify(os.homedir())};\n${jsHtml}`);
 }
 
 let HTML_RAW = buildDashboardHtml();
