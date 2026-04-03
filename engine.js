@@ -431,10 +431,11 @@ function spawnAgent(dispatchItem, config) {
   // Write prompt and system prompt to temp files (avoids shell escaping issues)
   const tmpDir = path.join(ENGINE_DIR, 'tmp');
   if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const promptPath = path.join(tmpDir, `prompt-${id}.md`);
+  const safeId = id.replace(/[:\\/*?"<>|]/g, '-');
+  const promptPath = path.join(tmpDir, `prompt-${safeId}.md`);
   safeWrite(promptPath, fullTaskPrompt);
 
-  const sysPromptPath = path.join(tmpDir, `sysprompt-${id}.md`);
+  const sysPromptPath = path.join(tmpDir, `sysprompt-${safeId}.md`);
   safeWrite(sysPromptPath, systemPrompt);
 
   // Build claude CLI args
@@ -555,7 +556,7 @@ function spawnAgent(dispatchItem, config) {
 
       // Write new prompt with steering message
       const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
-      const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${id}.md`);
+      const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${safeId}.md`);
       safeWrite(steerPromptPath, steerPrompt);
 
       // Build resume args
