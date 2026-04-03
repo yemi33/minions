@@ -1484,7 +1484,7 @@ function discoverFromWorkItems(config, project) {
       '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
     ).join('\n');
     vars.references = refs ? '## References\n\n' + refs : '';
-    const ac = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+    const ac = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
     vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
 
     // Inject checkpoint context if agent left a checkpoint.json from a prior run
@@ -1585,6 +1585,12 @@ function discoverFromWorkItems(config, project) {
  * Build the multi-project context section for central work items.
  * Inserted into the playbook via {{scope_section}}.
  */
+function normalizeAc(ac) {
+  if (Array.isArray(ac)) return ac;
+  if (typeof ac === 'string') return ac.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
+  return [];
+}
+
 function buildProjectContext(projects, assignedProject, isFanOut, agentName, agentRole) {
   const projectList = projects.map(p => {
     let line = `### ${p.name}\n`;
@@ -1811,7 +1817,7 @@ function discoverCentralWorkItems(config) {
           '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
         ).join('\n');
         vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
-        const fanAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+        const fanAc = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
         vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
 
         if (workType === 'ask') {
@@ -1887,7 +1893,7 @@ function discoverCentralWorkItems(config) {
         '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
       ).join('\n');
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
-      const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
+      const normAc = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
       vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
 
       // Inject checkpoint context if agent left a checkpoint.json from a prior run
