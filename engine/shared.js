@@ -395,7 +395,9 @@ const WI_STATUS = {
   PENDING: 'pending', DISPATCHED: 'dispatched', DONE: 'done', FAILED: 'failed',
   PAUSED: 'paused', QUEUED: 'queued', NEEDS_REVIEW: 'needs-human-review', DECOMPOSED: 'decomposed',
 };
-const DONE_STATUSES = new Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete']); // includes legacy aliases
+// Read-side: accept legacy aliases for backward compat with old data/clients.
+// Write-side: only WI_STATUS.DONE is written (cleanup.js migrates old values on each run).
+const DONE_STATUSES = new Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete']);
 const WORK_TYPE = {
   IMPLEMENT: 'implement', IMPLEMENT_LARGE: 'implement:large', FIX: 'fix', REVIEW: 'review',
   VERIFY: 'verify', PLAN: 'plan', PLAN_TO_PRD: 'plan-to-prd', DECOMPOSE: 'decompose',

@@ -2392,7 +2392,7 @@ async function testLegacyStatusMigration() {
 
   await test('engine.js runCleanup contains legacy status migration code', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    assert.ok(src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define LEGACY_DONE_STATUSES');
+    assert.ok(src.includes("LEGACY_DONE_ALIASES") || src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define legacy status migration set');
     assert.ok(src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
   });

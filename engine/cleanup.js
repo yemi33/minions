@@ -431,16 +431,16 @@ function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'KB watchdog check: ' + e.message); }
 
-  // 6. Migrate legacy work-item statuses to canonical values
+  // 6. Migrate legacy work-item statuses to canonical 'done'
   // in-pr, implemented, complete → done (one-time correction per item)
-  const LEGACY_DONE_STATUSES = shared.DONE_STATUSES;
+  const LEGACY_DONE_ALIASES = new Set(['in-pr', 'implemented', 'complete']);
   for (const project of projects) {
     try {
       const wiPath = projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
       let migrated = 0;
       for (const item of items) {
-        if (LEGACY_DONE_STATUSES.has(item.status)) {
+        if (LEGACY_DONE_ALIASES.has(item.status)) {
           item.status = 'done';
           delete item._pendingReason;
           migrated++;
@@ -458,7 +458,7 @@ function runCleanup(config, verbose = false) {
     const centralItems = safeJson(centralPath) || [];
     let migrated = 0;
     for (const item of centralItems) {
-      if (LEGACY_DONE_STATUSES.has(item.status)) {
+      if (LEGACY_DONE_ALIASES.has(item.status)) {
         item.status = 'done';
         delete item._pendingReason;
         migrated++;
@@ -485,7 +485,7 @@ function runCleanup(config, verbose = false) {
       if (!prd?.missing_features) continue;
       let migrated = 0;
       for (const feat of prd.missing_features) {
-        if (LEGACY_DONE_STATUSES.has(feat.status)) {
+        if (LEGACY_DONE_ALIASES.has(feat.status)) {
           feat.status = 'done';
           migrated++;
         }

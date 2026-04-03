@@ -789,13 +789,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
         const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
-        if (feature && feature.status !== 'implemented') {
-          feature.status = 'implemented';
+        if (feature && feature.status !== WI_STATUS.DONE) {
+          feature.status = WI_STATUS.DONE;
           shared.safeWrite(path.join(prdDir, pf), plan);
           updated++;
         }
       }
-      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as implemented for ${pr.id}`);
+      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done
