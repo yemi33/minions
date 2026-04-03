@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.333 (2026-04-03)
+
+### Fixes
+-  guarantee test cleanup via finally block in test harness
+
 ## 0.1.332 (2026-04-03)
 
 ### Fixes
