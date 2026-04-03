@@ -1489,6 +1489,34 @@ function discoverFromWorkItems(config, project) {
       vars.task_description = vars.task_description + resolvedCtx.additionalContext;
     }
 
+    // Checkpoint resume: detect checkpoint.json in agent worktree
+    vars.checkpoint_context = '';
+    const wtDir = vars.worktree_path || path.resolve(root, config.engine?.worktreeRoot || '../worktrees', branchName);
+    const cpPath = path.join(wtDir, 'checkpoint.json');
+    if (fs.existsSync(cpPath)) {
+      try {
+        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+        const cpSummary = [
+          cpData.completed ? `## Completed\n${cpData.completed}` : '',
+          cpData.remaining ? `## Remaining\n${cpData.remaining}` : '',
+          cpData.blockers ? `## Blockers\n${cpData.blockers}` : '',
+          cpData.branch_state ? `## Branch State\n${cpData.branch_state}` : '',
+        ].filter(Boolean).join('\n\n');
+        vars.checkpoint_context = cpSummary;
+        const cpCount = (item._checkpointCount || 0) + 1;
+        item._checkpointCount = cpCount;
+        if (cpCount > 3) {
+          log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — escalating to needs-human-review`);
+          item.status = 'needs-human-review';
+          item.failReason = 'Exceeded 3 checkpoint-resumes without completion';
+          continue;
+        }
+        log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+      } catch (e) {
+        log('warn', `Failed to read checkpoint.json for ${item.id}: ${e.message}`);
+      }
+    }
+
     const playbookName = selectPlaybook(workType, item);
     if (playbookName === 'work-item' && workType === 'review') {
       log('info', `Work item ${item.id} is type "review" but has no PR — using work-item playbook`);
@@ -1781,6 +1809,9 @@ function discoverCentralWorkItems(config) {
           vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
         }
 
+        // Checkpoint resume for fan-out path
+        vars.checkpoint_context = '';
+
         const playbookName = selectPlaybook(workType, item);
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
         if (!prompt) {
@@ -1892,6 +1923,9 @@ function discoverCentralWorkItems(config) {
         vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
         vars.task_description = vars.task_description + resolvedCtx.additionalContext;
       }
+
+      // Checkpoint resume: detect checkpoint.json in agent worktree
+      vars.checkpoint_context = '';
 
       const playbookName = selectPlaybook(workType, item);
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -2047,7 +2081,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
     }
   }
 
