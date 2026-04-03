@@ -27,7 +27,7 @@ function prRow(pr) {
     '<td>' + (sq.reviewer && sq.status !== 'waiting' ? '<span class="pr-agent" title="' + escHtml(sq.note || '') + '">' + escHtml(sq.reviewer) + '</span>' : sq.reviewer && sq.status === 'waiting' ? '<span class="pr-agent" style="color:var(--muted)" title="Vote pending confirmation">' + escHtml(sq.reviewer) + '…</span>' : pr.reviewedBy && pr.reviewedBy.length ? '<span class="pr-agent">' + escHtml(pr.reviewedBy.join(', ')) + '</span>' : '<span style="color:var(--muted);font-size:11px">—</span>') + '</td>' +
     '<td><span class="pr-badge ' + buildClass + '">' + escHtml(buildLabel) + '</span></td>' +
     '<td><span class="pr-badge ' + statusClass + '">' + escHtml(statusLabel) + '</span></td>' +
-    '<td><span class="pr-date">' + escHtml(pr.created || '—') + '</span></td>' +
+    '<td><span class="pr-date">' + escHtml((pr.created || '—').slice(0, 10)) + '</span></td>' +
     '</tr>';
 }
 

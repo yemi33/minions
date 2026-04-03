@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink, log, dateStamp, PR_STATUS } = shared;
+const { exec, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 
 // Lazy require to avoid circular dependency — only needed for engine().handlePostMerge
@@ -389,7 +389,7 @@ async function reconcilePrs(config) {
         branch,
         reviewStatus: 'pending',
         status: 'active',
-        created: (adoPr.creationDate || '').slice(0, 10) || dateStamp(),
+        created: adoPr.creationDate || ts(),
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });

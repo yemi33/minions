@@ -3458,7 +3458,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         branch: '',
         reviewStatus: autoObserve ? 'pending' : 'none',
         status: autoObserve ? 'active' : 'linked',
-        created: new Date().toISOString().slice(0, 10),
+        created: new Date().toISOString(),
         url,
         prdItems: [],
         _manual: true,

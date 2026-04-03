@@ -669,7 +669,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
         branch: meta?.branch || '',
         reviewStatus: 'pending',
         status: PR_STATUS.ACTIVE,
-        created: dateStamp(),
+        created: ts(),
         url: extractPrUrl(prId),
         prdItems: meta?.item?.id ? [meta.item.id] : [],
         sourcePlan: meta?.item?.sourcePlan || '',
@@ -681,6 +681,10 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   for (const [prPath, { name, entries }] of newPrsByPath) {
     mutateJsonFileLocked(prPath, (data) => {
       const prs = Array.isArray(data) ? data : [];
+      // Normalize legacy YYYY-MM-DD created dates to ISO
+      for (const p of prs) {
+        if (p.created && p.created.length === 10) p.created = p.created + 'T00:00:00.000Z';
+      }
       for (const { prId, fullId, entry } of entries) {
         if (prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
         prs.push(entry);

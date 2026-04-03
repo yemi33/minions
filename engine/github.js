@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, dateStamp, PR_STATUS } = shared;
+const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -373,7 +373,7 @@ async function reconcilePrs(config) {
         branch,
         reviewStatus: 'pending',
         status: 'active',
-        created: (ghPr.created_at || '').slice(0, 10) || dateStamp(),
+        created: ghPr.created_at || ts(),
         url: prUrl,
         prdItems: confirmedItemId ? [confirmedItemId] : [],
       });
