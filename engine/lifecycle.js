@@ -809,7 +809,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (item && item.status !== 'done') {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
           item.status = 'done';
-          item.completedAt = e.ts();
+          item.completedAt = ts();
           item._mergedVia = pr.id;
           shared.safeWrite(wiPath, items);
           break;
@@ -1221,7 +1221,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           return d.includes(branchSlug) && fs.statSync(path.join(worktreeRoot, d)).isDirectory();
         });
         // Only remove if no other active dispatch uses this branch
-        const dispatch = e.getDispatch();
+        const dispatch = getDispatch();
         const otherActive = ((dispatch.active || []).concat(dispatch.pending || [])).some(d =>
           d.id !== dispatchItem.id && d.meta?.branch && shared.sanitizeBranch && shared.sanitizeBranch(d.meta.branch) === branchSlug
         );
@@ -1229,7 +1229,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           for (const dir of dirs) {
             const wtPath = path.join(worktreeRoot, dir);
             try {
-              shared.exec(`git worktree remove "${wtPath}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 15000, windowsHide: true });
+              execSilent(`git worktree remove "${wtPath}" --force`, { cwd: rootDir, timeout: 15000 });
               log('info', `Post-completion: removed worktree ${dir}`);
             } catch (err) {
               log('warn', `Post-completion: failed to remove worktree ${dir}: ${err.message}`);
@@ -1269,10 +1269,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            e.log('info', `Auto-retry ${retries + 1}/${maxR} for ${meta.item.id} (no PR created)`);
+            log('info', `Auto-retry ${retries + 1}/${maxR} for ${meta.item.id} (no PR created)`);
           } else {
             wi.status = WI_STATUS.FAILED;
-            e.log('warn', `${meta.item.id} failed after ${maxR} retries — no PR created`);
+            log('warn', `${meta.item.id} failed after ${maxR} retries — no PR created`);
           }
           shared.safeWrite(wiPath, items);
         }

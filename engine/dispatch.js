@@ -108,9 +108,11 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           ? path.join(MINIONS_DIR, 'work-items.json')
           : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
         if (wiPath) {
-          const items = safeJson(wiPath) || [];
-          const wi = items.find(i => i.id === item.meta.item.id);
-          if (wi) retries = wi._retryCount || 0;
+          const items = safeJson(wiPath);
+          if (items && Array.isArray(items)) {
+            const wi = items.find(i => i.id === item.meta.item.id);
+            if (wi) retries = wi._retryCount || 0;
+          }
         }
       } catch (e) { log('warn', 'read retry count: ' + e.message); }
       const maxRetries = ENGINE_DEFAULTS.maxRetries;

@@ -591,6 +591,11 @@ function spawnAgent(dispatchItem, config) {
       // Re-attach to existing tracking
       activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId });
 
+      // Reset output buffers so post-completion parsing only sees the resumed session
+      stdout = '';
+      stderr = '';
+      lastOutputAt = Date.now();
+
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {
         const chunk = data.toString();

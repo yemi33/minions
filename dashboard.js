@@ -878,18 +878,22 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const item = items.find(i => i.id === id);
-      if (!item) return jsonReply(res, 404, { error: 'item not found' });
-
-      item.status = 'pending';
-      item._retryCount = 0; // Reset retry counter on manual retry
-      delete item.dispatched_at;
-      delete item.dispatched_to;
-      delete item.failReason;
-      delete item.failedAt;
-      delete item.fanOutAgents;
-      safeWrite(wiPath, items);
+      let found = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) return items;
+        found = true;
+        item.status = 'pending';
+        item._retryCount = 0; // Reset retry counter on manual retry
+        delete item.dispatched_at;
+        delete item.dispatched_to;
+        delete item.failReason;
+        delete item.failedAt;
+        delete item.fanOutAgents;
+        return items;
+      });
+      if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
