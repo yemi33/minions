@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.316 (2026-04-03)
+
+### Fixes
+-  deduplicate PRs in pull-requests.json on write
+-  show reviewer names in dashboard Signed Off By column
+
+### Other
+- refactor: extract status/type/result constants to shared.js
+- cleanup: remove evaluate.md (re-created by agents), fix stale references
+- perf: CC message handling — debounce localStorage, cap array, batch scroll
+
 ## 0.1.312 (2026-04-03)
 
 ### Fixes
