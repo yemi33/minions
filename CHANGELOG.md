@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.282 (2026-04-03)
+
+### Fixes
+-  thinking indicator shows immediately when user sends message
+
 ## 0.1.281 (2026-04-03)
 
 ### Other
