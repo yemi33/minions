@@ -5,6 +5,7 @@ let _ccMessages = JSON.parse(localStorage.getItem('cc-messages') || '[]');
 let _ccOpen = false;
 let _ccSending = false;
 let _ccQueue = [];
+let _ccAbortController = null;
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
@@ -109,13 +110,18 @@ async function ccSend() {
   if (!message) return;
   input.value = '';
 
-  // If already processing, queue the message and show it — it'll send when current finishes
+  // If already processing, abort current and send the new one immediately
   if (_ccSending) {
-    _ccQueue.push(message);
-    ccAddMessage('user', escHtml(message));
-    const preview = message.split(/\s+/).slice(0, 6).join(' ') + (message.split(/\s+/).length > 6 ? '...' : '');
-    ccAddMessage('assistant', '<span class="cc-queued-pill" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(preview) + '" — will send after current request</span>');
-    return;
+    if (_ccAbortController) {
+      _ccAbortController.abort();
+      _ccAbortController = null;
+    }
+    _ccSending = false;
+    // Mark current streaming message as interrupted
+    var lastEl = document.getElementById('cc-messages').lastElementChild;
+    if (lastEl && (lastEl.innerHTML.includes('Thinking') || lastEl.innerHTML.includes('\uD83D\uDD27'))) {
+      lastEl.innerHTML += '<div style="font-size:9px;color:var(--muted);margin-top:4px;font-style:italic">(interrupted)</div>';
+    }
   }
   await _ccDoSend(message);
 
@@ -134,6 +140,7 @@ async function ccSend() {
 
 async function _ccDoSend(message, skipUserMsg) {
   _ccSending = true;
+  _ccAbortController = new AbortController();
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
   if (!skipUserMsg) ccAddMessage('user', escHtml(message));
@@ -178,7 +185,7 @@ async function _ccDoSend(message, skipUserMsg) {
     const res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message }),
-      signal: AbortSignal.timeout(960000)
+      signal: _ccAbortController ? _ccAbortController.signal : AbortSignal.timeout(960000)
     });
 
     if (!res.ok) {
@@ -297,6 +304,7 @@ async function _ccDoSend(message, skipUserMsg) {
       '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
   } finally {
     _ccSending = false;
+    _ccAbortController = null;
     try { localStorage.removeItem('cc-sending'); } catch {}
     // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
