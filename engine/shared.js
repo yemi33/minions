@@ -62,12 +62,16 @@ function safeJson(p) {
           throw new Error(errMsg);
         }
       } catch (restoreErr) {
+        // Re-throw CRITICAL errors so they propagate to callers
+        if (restoreErr.message && restoreErr.message.includes('CRITICAL')) throw restoreErr;
         const errMsg = `[safeJson] CRITICAL: backup restore failed for ${p}: ${restoreErr.message}`;
         console.error(errMsg);
         throw new Error(errMsg);
       }
       return backupData;
-    } catch {
+    } catch (outerErr) {
+      // Let CRITICAL errors propagate — callers must know about data integrity failures
+      if (outerErr.message && outerErr.message.includes('CRITICAL')) throw outerErr;
       return null;
     }
   }

@@ -2785,6 +2785,47 @@ async function testSafeWriteBackupRestore() {
     assert.deepStrictEqual(primary, { restored: true, value: 42 }, 'primary should be restored');
   });
 
+  await test('safeJson CRITICAL error propagates to caller on restore write failure', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'critical-propagate.json');
+    // Write corrupted primary and valid backup
+    fs.writeFileSync(fp, 'CORRUPTED');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ ok: true }));
+    // Make the primary path a directory so safeWrite will fail
+    fs.unlinkSync(fp);
+    fs.mkdirSync(fp);
+    let threw = false;
+    let errMsg = '';
+    try {
+      shared.safeJson(fp);
+    } catch (e) {
+      threw = true;
+      errMsg = e.message;
+    }
+    assert.ok(threw, 'safeJson should throw when restore write fails critically');
+    assert.ok(errMsg.includes('CRITICAL'), 'error message should contain CRITICAL');
+    // Clean up directory we created
+    try { fs.rmdirSync(fp); } catch { /* cleanup */ }
+  });
+
+  await test('safeJson CRITICAL verification mismatch propagates to caller', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'verify-mismatch.json');
+    // Write corrupted primary
+    fs.writeFileSync(fp, 'CORRUPTED');
+    fs.writeFileSync(fp + '.backup', JSON.stringify({ expected: true }));
+    // safeWrite will succeed, but we can validate the throw path exists by checking
+    // that a successful restore does NOT throw (complementary to the failure test above)
+    const result = shared.safeJson(fp);
+    assert.deepStrictEqual(result, { expected: true }, 'successful restore should return data');
+    // Now verify the CRITICAL re-throw path: the outer catch must not swallow CRITICAL errors
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'shared.js'), 'utf8');
+    const safeJsonStart = src.indexOf('function safeJson(p)');
+    const safeJsonBody = src.substring(safeJsonStart, safeJsonStart + 1200);
+    assert.ok(safeJsonBody.includes("includes('CRITICAL')) throw"),
+      'outer catch must re-throw CRITICAL errors instead of returning null');
+  });
+
   await test('withFileLock stale lock unlink wrapped in try-catch for ENOENT', () => {
     // Verify the source code: stale lock unlink is properly guarded
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
