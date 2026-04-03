@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.253 (2026-04-03)
+
+### Fixes
+-  sanitize dispatch ID in temp filenames for Windows compatibility
+
 ## 0.1.252 (2026-04-03)
 
 ### Features
