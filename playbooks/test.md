@@ -37,7 +37,7 @@ This is a **test/build/run task**. Your goal is to build, run, test, or verify s
 
 ## Run Command (IMPORTANT)
 
-When the build succeeds and the task involves running a server or app, you MUST output a ready-to-paste run command using **absolute paths** so the user can launch it from any terminal. Format it exactly like this:
+When the build succeeds and the task involves running a server or app, output a ready-to-paste run command using **absolute paths** so the user can launch it from any terminal. Format it exactly like this:
 
 ```
 ## Run Command

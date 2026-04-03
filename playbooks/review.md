@@ -38,7 +38,7 @@ Branch: `{{pr_branch}}`
 
 ## Post Review — Comment AND Vote on PR
 
-You MUST do both of the following:
+Do both of the following:
 
 ### Step 1: Leave a detailed review comment
 
@@ -61,7 +61,7 @@ This vote is visible to human reviewers in the PR UI and helps them understand t
 If you encounter merge conflicts (e.g., the PR shows conflicts):
 1. Note the conflict in your review comment. Do NOT attempt to resolve — flag it for the author.
 
-## CRITICAL: Do NOT run git checkout on the main working tree. Use `git diff` and `git show` only.
+## Do not run git checkout on the main working tree. Use `git diff` and `git show` only.
 
 ## Signal Completion
 

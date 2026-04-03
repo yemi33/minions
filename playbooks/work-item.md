@@ -53,7 +53,7 @@ Write your findings to: `{{team_root}}/notes/inbox/{{agent_id}}-{{item_id}}-{{da
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Rules
-- NEVER checkout branches in the main working tree — use worktrees
+- Do not checkout branches in the main working tree — use worktrees
 - Use the repo host's MCP tools for PR creation — check available MCP tools before starting
 - Use PowerShell for build commands on Windows if applicable
 - If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it to ~/.claude/skills/)

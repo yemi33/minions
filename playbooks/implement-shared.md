@@ -17,7 +17,7 @@ Implement PRD item **{{item_id}}: {{item_name}}**
 
 This is part of a **shared-branch plan**. Other agents may have already committed work to this branch before you. Your job is to build on top of their work.
 
-## Git Workflow (SHARED BRANCH — CRITICAL)
+## Git Workflow (Shared Branch)
 
 Your worktree is already set up. Pull latest before starting:
 
@@ -54,7 +54,7 @@ git push origin {{branch_name}}
 
 ## Build and Verify
 
-After implementation, you MUST:
+After implementation:
 1. Build the project using the repo's build system (check CLAUDE.md, package.json, README)
 2. Verify the build succeeds with your changes AND all prior commits on this branch
 3. If the build fails:
