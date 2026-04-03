@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.229 (2026-04-03)
+
+### Fixes
+- consolidate temp agent metrics into one row
+
 ## 0.1.228 (2026-04-03)
 
 ### Features
