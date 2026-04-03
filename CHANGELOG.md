@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.259 (2026-04-03)
+
+### Fixes
+-  CC stream clears ccInFlight on client disconnect + defensive thinking.remove
+-  remove last evaluate references — eval loop now creates review items
+
 ## 0.1.257 (2026-04-03)
 
 ### Features
