@@ -263,6 +263,14 @@ function findGitRepos(rootDir, maxDepth = 3) {
 
       const gitDir = path.join(dir, '.git');
       if (fs.existsSync(gitDir)) {
+        // Skip git worktrees — their .git is a file containing "gitdir: ..." pointing to the main repo
+        const stat = fs.statSync(gitDir);
+        if (stat.isFile()) {
+          try {
+            const content = fs.readFileSync(gitDir, 'utf8');
+            if (content.trimStart().startsWith('gitdir:')) return; // worktree, skip
+          } catch {}
+        }
         repos.push(dir);
         return; // Don't recurse into git repos (they may have nested submodules)
       }
@@ -459,9 +467,15 @@ async function initMinions({ skipScan = false, scanRoot, scanDepth } = {}) {
     console.log('  Run "minions scan" or "minions add <dir>" to link projects.\n');
     rl.close();
   } else {
-    // Auto-chain into scan (scanAndAdd closes rl)
-    console.log('  Now let\'s find your repos...\n');
-    await scanAndAdd({ root: scanRoot, depth: scanDepth });
+    // Offer to scan for repos (optional)
+    console.log('  You can link projects now or skip and add them later.\n');
+    const doScan = await ask('Scan for projects? (Y/n/skip)', 'Y');
+    if (doScan.toLowerCase() === 'n' || doScan.toLowerCase() === 'skip') {
+      console.log('  Skipped. Run "minions scan" or "minions add <dir>" to link projects later.\n');
+      rl.close();
+    } else {
+      await scanAndAdd({ root: scanRoot, depth: scanDepth });
+    }
   }
 }
 
