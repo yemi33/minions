@@ -315,7 +315,7 @@ function init() {
   Next steps:
     minions work "Explore the codebase"   Give your first task
     minions status                         Check engine state
-    http://localhost:7331                  Open the dashboard
+    minions dash                           Open the dashboard
     minions doctor                         Verify everything is working
     minions --help                         See all commands
 `);

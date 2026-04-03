@@ -10,6 +10,7 @@ jobs:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -109,13 +110,17 @@ jobs:
           # Publish
           npm publish --access public
 
-          # Commit version bump + changelog back to repo
+          # Commit version bump + changelog via PR
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
           git diff --cached --quiet && echo "No changes to commit" || {
+            BRANCH="chore/publish-$NEXT"
+            git checkout -b "$BRANCH"
             git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
-            git push
+            git push origin "$BRANCH"
+            gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
+            gh pr merge "$BRANCH" --merge --auto --delete-branch
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
