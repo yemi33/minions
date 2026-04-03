@@ -40,7 +40,7 @@ function wiRow(item) {
     : '<span style="color:var(--muted)">—</span>';
   return '<tr style="cursor:pointer" onclick="openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
-    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml(item.description || item.title || '') + '">' + escHtml(item.title || '') + '</td>' +
+    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml((item.title || '').slice(0, 200)) + '">' + escHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
       (item.scope === 'fan-out' ? ' <span class="pr-badge ' + (item.status === 'done' || item.status === 'failed' ? 'draft' : 'building') + '" style="font-size:8px">fan-out</span>' : '') + '</td>' +
     '<td>' + typeBadge(item.type) + '</td>' +
@@ -423,7 +423,7 @@ function openWorkItemDetail(id) {
     '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
     '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
     '</div>';
-  html += field('Description', '<div style="font-size:12px">' + renderMd(item.description || item.title || '—') + '</div>');
+  html += field('Description', '<div style="font-size:12px">' + renderMd((item.description || item.title || '—').slice(0, 3000)) + '</div>');
   html += field('Agent', escHtml(item.dispatched_to || item.agent || 'Auto'));
   html += field('Source', escHtml(item._source || 'central'));
   if (item.created) html += field('Created', escHtml(new Date(item.created).toLocaleString()));
