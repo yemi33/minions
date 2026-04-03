@@ -831,7 +831,8 @@ const server = http.createServer(async (req, res) => {
       // If archived, temporarily restore to active so checkPlanCompletion can find it
       const activePath = path.join(prdDir, body.file);
       if (fromArchive) {
-        const plan = JSON.parse(safeRead(prdPath));
+        const plan = safeJson(prdPath);
+        if (!plan) return jsonReply(res, 500, { error: 'Could not parse PRD file' });
         plan.status = 'approved';
         delete plan.completedAt;
         safeWrite(activePath, plan);
