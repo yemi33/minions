@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.286 (2026-04-03)
+
+### Features
+-  all doc-chats use Sonnet with full tools (agent change)
+
 ## 0.1.285 (2026-04-03)
 
 ### Fixes
