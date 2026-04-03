@@ -55,7 +55,9 @@ function getDispatch() {
 
 function getDispatchQueue() {
   const d = getDispatch();
-  d.completed = (d.completed || []).slice(-20);
+  const allCompleted = d.completed || [];
+  d.completedTotal = allCompleted.length;
+  d.completed = allCompleted.slice(-20);
   return d;
 }
 

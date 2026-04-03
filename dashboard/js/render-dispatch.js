@@ -75,7 +75,7 @@ function renderDispatch(dispatch) {
   stats.innerHTML =
     '<div class="dispatch-stat"><div class="dispatch-stat-num yellow">' + (dispatch.active || []).length + '</div><div class="dispatch-stat-label">Active</div></div>' +
     '<div class="dispatch-stat"><div class="dispatch-stat-num blue">' + (dispatch.pending || []).length + '</div><div class="dispatch-stat-label">Pending</div></div>' +
-    '<div class="dispatch-stat"><div class="dispatch-stat-num green">' + (dispatch.completed || []).length + '</div><div class="dispatch-stat-label">Completed</div></div>';
+    '<div class="dispatch-stat"><div class="dispatch-stat-num green">' + (dispatch.completedTotal || (dispatch.completed || []).length) + '</div><div class="dispatch-stat-label">Completed</div></div>';
 
   // Active
   const activeEl = document.getElementById('dispatch-active');
