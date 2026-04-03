@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, DISPATCH_RESULT } = shared;
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
