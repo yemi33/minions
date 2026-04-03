@@ -46,7 +46,7 @@ function wiRow(item) {
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
-      (item._pendingReason ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
       (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
     '<td>' +
@@ -430,7 +430,7 @@ function openWorkItemDetail(id) {
   if (item.dispatched_at) html += field('Dispatched', escHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escHtml(item.dispatched_to || '?'));
   if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
   if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
-  if (item._pendingReason) html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
   if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
   if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
   if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
