@@ -190,14 +190,13 @@ async function _ccDoSend(message, skipUserMsg) {
       return;
     }
 
-    // Create streaming message bubble
+    // Use a temporary streaming div for live updates, then replace with ccAddMessage on completion
     clearInterval(ccTimer);
     try { thinking.remove(); } catch { /* may already be removed */ }
-    const streamDiv = document.createElement('div');
-    streamDiv.className = 'cc-msg-assistant';
-    streamDiv.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative';
-    streamDiv.innerHTML = '<span style="color:var(--muted);font-size:11px">Thinking...</span>';
-    document.getElementById('cc-messages').appendChild(streamDiv);
+    // Add a temporary placeholder via ccAddMessage so it gets proper styling
+    ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
+    const msgs = document.getElementById('cc-messages');
+    const streamDiv = msgs.lastElementChild; // the message we just added
     let streamedText = '';
 
     const reader = res.body.getReader();
@@ -215,23 +214,24 @@ async function _ccDoSend(message, skipUserMsg) {
         try {
           const evt = JSON.parse(line.slice(6));
           if (evt.type === 'chunk') {
-            streamedText = evt.text; // each chunk is the full text so far for this turn
+            streamedText = evt.text;
             streamDiv.innerHTML = renderMd(streamedText);
-            const msgs = document.getElementById('cc-messages');
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
-            // Final result — replace with rendered markdown + copy button + timer
+            // Replace streaming div with a proper ccAddMessage
+            streamDiv.remove();
+            _ccMessages.pop(); // remove the placeholder we pushed
             const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-            const finalHtml = renderMd(evt.text || streamedText || '');
-            streamDiv.innerHTML = llmCopyBtn() + finalHtml +
-              '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>';
-            _ccMessages.push({ role: 'assistant', html: streamDiv.innerHTML });
+            const rendered = renderMd(evt.text || streamedText || '');
+            ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
             if (evt.sessionId) { _ccSessionId = evt.sessionId; ccSaveState(); ccUpdateSessionIndicator(); }
             if (evt.actions && evt.actions.length > 0) {
               for (const action of evt.actions) { await ccExecuteAction(action); }
             }
           } else if (evt.type === 'error') {
-            streamDiv.innerHTML = '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>';
+            streamDiv.remove();
+            _ccMessages.pop();
+            ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
           }
         } catch { /* incomplete JSON */ }
       }
