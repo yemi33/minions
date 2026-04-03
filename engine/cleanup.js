@@ -28,6 +28,17 @@ function engine() { if (!_engine) _engine = require('../engine'); return _engine
 let _dispatch = null;
 function dispatchModule() { if (!_dispatch) _dispatch = require('./dispatch'); return _dispatch; }
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Check if a worktree directory name matches a branch via sanitized slug comparison.
+ * Eliminates 3x duplication of the branch matching logic (review feedback: Rebecca).
+ */
+function worktreeDirMatchesBranch(dirLower, branch) {
+  const branchSlug = sanitizeBranch(branch).toLowerCase();
+  return dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug);
+}
+
 // ─── Cleanup Orchestrator ────────────────────────────────────────────────────
 
 function runCleanup(config, verbose = false) {
@@ -140,8 +151,7 @@ function runCleanup(config, verbose = false) {
         // Use sanitized exact match on the branch portion of the dir name (format: {slug}-{branch}-{suffix})
         const dirLower = dir.toLowerCase();
         for (const branch of mergedBranches) {
-          const branchSlug = sanitizeBranch(branch).toLowerCase();
-          if (dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug)) {
+          if (worktreeDirMatchesBranch(dirLower, branch)) {
             shouldClean = true;
             break;
           }
@@ -224,8 +234,7 @@ function runCleanup(config, verbose = false) {
           const entryDirLower = entry.dir.toLowerCase();
           let stillMerged = false;
           for (const branch of freshMergedBranches) {
-            const branchSlug = sanitizeBranch(branch).toLowerCase();
-            if (entryDirLower === branchSlug || entryDirLower.includes(branchSlug + '-') || entryDirLower.endsWith('-' + branchSlug)) {
+            if (worktreeDirMatchesBranch(entryDirLower, branch)) {
               stillMerged = true;
               break;
             }
@@ -233,10 +242,7 @@ function runCleanup(config, verbose = false) {
           // If originally marked due to merged branch but PR was reopened, skip deletion
           if (!stillMerged) {
             // Check if it was marked for age/cap cleanup (not branch-based) — those are still valid
-            const wasMarkedByBranch = [...mergedBranches].some(branch => {
-              const branchSlug = sanitizeBranch(branch).toLowerCase();
-              return entryDirLower === branchSlug || entryDirLower.includes(branchSlug + '-') || entryDirLower.endsWith('-' + branchSlug);
-            });
+            const wasMarkedByBranch = [...mergedBranches].some(branch => worktreeDirMatchesBranch(entryDirLower, branch));
             if (wasMarkedByBranch) {
               if (verbose) console.log(`  Skipping worktree ${entry.dir}: PR was reopened since initial check`);
               log('info', `Worktree deletion skipped — PR reopened: ${entry.dir}`);
@@ -352,7 +358,14 @@ function runCleanup(config, verbose = false) {
     const sweptDir = path.join(MINIONS_DIR, 'knowledge', '_swept');
     if (fs.existsSync(sweptDir)) {
       const sevenDaysAgo = Date.now() - 7 * 86400000;
-      for (const f of fs.readdirSync(sweptDir)) {
+      let sweptEntries;
+      try {
+        sweptEntries = fs.readdirSync(sweptDir);
+      } catch (e) {
+        log('warn', `cleanup swept KB: failed to read ${sweptDir} — ${e.message}`);
+        sweptEntries = [];
+      }
+      for (const f of sweptEntries) {
         try {
           const fp = path.join(sweptDir, f);
           if (fs.statSync(fp).mtimeMs < sevenDaysAgo) {
@@ -458,7 +471,14 @@ function runCleanup(config, verbose = false) {
   } catch (e) { log('warn', 'migrate central legacy statuses: ' + e.message); }
   // PRD items (missing_features[].status)
   try {
-    const prdFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json'));
+    let prdDirEntries;
+    try {
+      prdDirEntries = fs.readdirSync(PRD_DIR);
+    } catch (e) {
+      log('warn', `migrate PRD statuses: failed to read ${PRD_DIR} — ${e.message}`);
+      prdDirEntries = [];
+    }
+    const prdFiles = prdDirEntries.filter(f => f.endsWith('.json'));
     for (const pf of prdFiles) {
       const prdPath = path.join(PRD_DIR, pf);
       const prd = safeJson(prdPath);
@@ -484,4 +504,5 @@ function runCleanup(config, verbose = false) {
 
 module.exports = {
   runCleanup,
+  worktreeDirMatchesBranch,  // exported for testing
 };

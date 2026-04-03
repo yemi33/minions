@@ -6046,6 +6046,107 @@ async function testCheckpointResume() {
     assert.ok(src.includes('restore incomplete'),
       'Should warn when restore did not fully recover files');
   });
+
+  // ── worktreeDirMatchesBranch helper (extracted to eliminate 3x duplication) ──
+
+  await test('worktreeDirMatchesBranch correctly matches branch slugs', () => {
+    const cleanup = require(path.join(MINIONS_DIR, 'engine', 'cleanup'));
+    const { worktreeDirMatchesBranch } = cleanup;
+    assert.ok(typeof worktreeDirMatchesBranch === 'function',
+      'worktreeDirMatchesBranch should be exported');
+
+    // sanitizeBranch preserves slashes, so branch slug = 'work/p-abc123' after toLowerCase
+    // Exact match
+    assert.ok(worktreeDirMatchesBranch('work/p-abc123', 'work/P-abc123'),
+      'Should match exact sanitized branch slug');
+    // Slug as prefix with suffix
+    assert.ok(worktreeDirMatchesBranch('work/p-abc123-mnxyz', 'work/P-abc123'),
+      'Should match when dir includes branchSlug + hyphen suffix');
+    // Slug as suffix
+    assert.ok(worktreeDirMatchesBranch('prefix-work/p-abc123', 'work/P-abc123'),
+      'Should match when dir ends with hyphen + branchSlug');
+    // No match
+    assert.ok(!worktreeDirMatchesBranch('totally-different-dir', 'work/P-abc123'),
+      'Should not match unrelated directory names');
+    // Partial overlap should not match
+    assert.ok(!worktreeDirMatchesBranch('work/p-abc', 'work/P-abc123'),
+      'Should not match partial branch slugs');
+    // Simple branch names (no slash)
+    assert.ok(worktreeDirMatchesBranch('feat-my-feature', 'feat-my-feature'),
+      'Should match simple branch names');
+    assert.ok(worktreeDirMatchesBranch('feat-my-feature-mnabc123', 'feat-my-feature'),
+      'Should match simple branch names with suffix');
+  });
+
+  // ── Behavioral: readdirSync isolation prevents cascade failures ──
+
+  await test('cleanup temp scan continues when one directory is unreadable', () => {
+    const tmp = createTmpDir();
+    const subDir = path.join(tmp, 'subdir');
+    fs.mkdirSync(subDir);
+    // Create a stale temp file in subdir
+    const staleFile = path.join(subDir, 'prompt-test-123');
+    fs.writeFileSync(staleFile, 'test');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3600000);
+    fs.utimesSync(staleFile, twoHoursAgo, twoHoursAgo);
+
+    // Simulate the per-directory isolation pattern from cleanup.js
+    const scanDirs = [path.join(tmp, 'nonexistent-dir'), subDir];
+    const oneHourAgo = Date.now() - 3600000;
+    let cleaned = 0;
+    let errors = 0;
+    for (const dir of scanDirs) {
+      let dirEntries;
+      try {
+        dirEntries = fs.readdirSync(dir);
+      } catch (e) {
+        errors++;
+        continue;  // This is the key behavior — continue to next directory
+      }
+      for (const f of dirEntries) {
+        if (f.startsWith('prompt-')) {
+          const fp = path.join(dir, f);
+          try {
+            if (fs.statSync(fp).mtimeMs < oneHourAgo) {
+              fs.unlinkSync(fp);
+              cleaned++;
+            }
+          } catch { /* cleanup */ }
+        }
+      }
+    }
+    assert.strictEqual(errors, 1, 'First directory should fail');
+    assert.strictEqual(cleaned, 1, 'Second directory should still be cleaned despite first failing');
+  });
+
+  await test('cleanup.js uses worktreeDirMatchesBranch helper (no inline duplication)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('function worktreeDirMatchesBranch'),
+      'Should define worktreeDirMatchesBranch helper');
+    // The inline pattern should no longer appear — only the helper call
+    const inlinePatternCount = (src.match(/dirLower === branchSlug \|\| dirLower\.includes\(branchSlug/g) || []).length;
+    assert.strictEqual(inlinePatternCount, 1,
+      'Inline branch matching should appear only once (in the helper definition), not duplicated in call sites');
+    // Helper should be called in the worktree cleanup section
+    assert.ok(src.includes('worktreeDirMatchesBranch(dirLower'),
+      'Should call worktreeDirMatchesBranch with dirLower');
+    assert.ok(src.includes('worktreeDirMatchesBranch(entryDirLower'),
+      'Should call worktreeDirMatchesBranch with entryDirLower');
+  });
+
+  await test('cleanup.js wraps swept KB and PRD migration readdirSync individually', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Swept KB directory read should be individually wrapped
+    assert.ok(src.includes('sweptEntries = fs.readdirSync(sweptDir)'),
+      'Swept KB should assign readdirSync to variable for individual error handling');
+    assert.ok(src.includes('cleanup swept KB: failed to read'),
+      'Swept KB should log warning on readdirSync failure');
+    // PRD migration directory read should be individually wrapped
+    assert.ok(src.includes('prdDirEntries = fs.readdirSync(PRD_DIR)'),
+      'PRD migration should assign readdirSync to variable for individual error handling');
+    assert.ok(src.includes('migrate PRD statuses: failed to read'),
+      'PRD migration should log warning on readdirSync failure');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
