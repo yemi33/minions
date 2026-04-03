@@ -175,6 +175,7 @@ function executeTaskStage(stage, stageState, run, config) {
       status: 'pending',
       created: ts(),
       createdBy: 'pipeline:' + run.pipelineId,
+      branch: `pipeline/${run.pipelineId}/${stage.id}`,
       _pipelineRun: run.runId,
       _pipelineStage: stage.id,
     });
@@ -248,6 +249,7 @@ function executePlanStage(stage, stageState, run, config) {
       planFile: path.basename(filePath),
       created: ts(),
       createdBy: 'pipeline:' + run.pipelineId,
+      branch: `pipeline/${run.pipelineId}/${stage.id}`,
       _pipelineRun: run.runId,
       _pipelineStage: stage.id,
     });
