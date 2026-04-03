@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.304 (2026-04-03)
+
+### Features
+-  add Stop button to CC and doc-chat to abort in-flight requests
+
 ## 0.1.303 (2026-04-03)
 
 ### Fixes
