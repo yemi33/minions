@@ -56,9 +56,9 @@ function autoDiscover(targetDir) {
   try {
     let head = '';
     try {
-      head = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+      head = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     } catch {
-      head = execSync('git symbolic-ref HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+      head = execSync('git symbolic-ref HEAD', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     }
     const branch = head.replace('refs/remotes/origin/', '').replace('refs/heads/', '');
     if (branch) { result.mainBranch = branch; result._found.push('main branch'); }
@@ -66,7 +66,7 @@ function autoDiscover(targetDir) {
 
   // 2. Detect repo host, org, project, repo name from git remote URL
   try {
-    const remoteUrl = execSync('git remote get-url origin', { cwd: targetDir, encoding: 'utf8', timeout: 5000 }).trim();
+    const remoteUrl = execSync('git remote get-url origin', { cwd: targetDir, encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     if (remoteUrl.includes('github.com')) {
       result.repoHost = 'github';
       // https://github.com/org/repo.git or git@github.com:org/repo.git
