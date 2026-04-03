@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.337 (2026-04-03)
+
+### Fixes
+-  completed dispatch stat shows actual count instead of capped 20
+-  CC session auto-invalidated when system prompt changes after restart
+-  clear stale buildStatus when PRs are merged or abandoned
+
 ## 0.1.334 (2026-04-03)
 
 ### Features
