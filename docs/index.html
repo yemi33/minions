@@ -83,7 +83,7 @@
 <!-- Hero -->
 <div class="hero">
   <h1>Minions <span>Mission Control</span></h1>
-  <p class="tagline">5 autonomous AI agents, one engine, one dashboard. Plan, implement, review, and ship code — hands-free.</p>
+  <p class="tagline">5 autonomous AI agents, one engine, one dashboard. Plan, implement, review, and ship code &mdash; hands-free.</p>
   <div class="hero-badges">
     <span class="hero-badge green">Zero Dependencies</span>
     <span class="hero-badge blue">Claude-Powered</span>
@@ -108,66 +108,108 @@
 <!-- Features -->
 <div class="container">
 <div class="features">
-  <div class="feature"><h3>Autonomous Dispatch</h3><p>Engine discovers work from PRDs, PRs, and manual queue — routes to the right agent based on skills and availability.</p></div>
-  <div class="feature"><h3>Plan Lifecycle</h3><p>Plan &rarr; Review &rarr; Approve &rarr; PRD &rarr; Execute &rarr; Verify. Human-in-the-loop at every gate.</p></div>
+  <div class="feature"><h3>Autonomous Dispatch</h3><p>Engine discovers work from plans, PRs, pipelines, and queues &mdash; routes to the right agent based on skills and availability.</p></div>
+  <div class="feature"><h3>Plan Lifecycle</h3><p>Plan &rarr; Approve &rarr; PRD &rarr; Execute &rarr; Review &rarr; Verify. Human-in-the-loop at every gate.</p></div>
+  <div class="feature"><h3>Team Meetings</h3><p>Multi-agent meetings with investigate, debate, and conclude rounds. Agents research, discuss, and produce actionable conclusions.</p></div>
+  <div class="feature"><h3>Multi-Stage Pipelines</h3><p>Chain tasks, meetings, plans, and more into automated workflows. Cron triggers or manual. Artifacts flow between stages.</p></div>
+  <div class="feature"><h3>Eval Loop</h3><p>After implementation, auto-dispatches review &rarr; fix cycles. Configurable iterations and cost ceiling per work item.</p></div>
   <div class="feature"><h3>Git Worktree Isolation</h3><p>Each agent works in its own worktree. No conflicts, no cross-contamination, safe parallel execution.</p></div>
-  <div class="feature"><h3>Knowledge Consolidation</h3><p>Agent findings auto-consolidate into team notes and a searchable knowledge base. The minions learns as it works.</p></div>
+  <div class="feature"><h3>Knowledge Consolidation</h3><p>Agent findings auto-consolidate into team notes and a searchable knowledge base. The team learns as it works.</p></div>
   <div class="feature"><h3>PR Integration</h3><p>Auto-syncs PRs from Azure DevOps and GitHub. Detects review feedback, build failures, and human comments.</p></div>
-  <div class="feature"><h3>Live Dashboard</h3><p>Real-time mission control on port 7331. Agent status, work items, PRD progress, dispatch queue, and metrics.</p></div>
+  <div class="feature"><h3>Scheduled Tasks</h3><p>Cron-style recurring work: nightly tests, weekly audits, daily standups. Visual cron builder in the dashboard.</p></div>
+  <div class="feature"><h3>Command Center</h3><p>Natural language interface for delegating work to agents. CC orchestrates &mdash; agents implement.</p></div>
+  <div class="feature"><h3>Live Dashboard</h3><p>Real-time mission control on port 7331. Paginated views, optimistic updates, and visibility-aware polling.</p></div>
+  <div class="feature"><h3>One-Command Updates</h3><p><code>minions update</code> pulls latest from npm and applies. Config and charters preserved automatically.</p></div>
 </div>
 
 <!-- Demo scenarios -->
 <div class="scenario">
   <div class="scenario-header"><div class="scenario-num">1</div><h2>Dashboard Overview</h2></div>
-  <p>All 5 agents visible with live status — <span class="hl">3 working</span>, <span class="hl">2 idle</span>. Work items sorted by priority, PRD progress with dependency tracking.</p>
+  <p>Home page with agent status cards, project bar, and setup guidance. All agents visible at a glance.</p>
   <div class="demo-frame">
-    <img src="demo/01-dashboard-overview.gif" alt="Dashboard overview with agents working">
-    <div class="demo-caption">Scrolling through: Minions Members, Work Items (6 items across statuses), and PRD Progress (40% complete)</div>
+    <img src="demo/01-dashboard-overview.png" alt="Dashboard overview with agent cards">
+    <div class="demo-caption">Home page showing Minions Members, project bar, and engine status badge</div>
   </div>
 </div>
 
 <div class="scenario">
-  <div class="scenario-header"><div class="scenario-num">2</div><h2>Command Center</h2></div>
-  <p>Natural language interface — type what you need. Create plans, dispatch work, ask questions about the codebase.</p>
+  <div class="scenario-header"><div class="scenario-num">2</div><h2>Work Items</h2></div>
+  <p>Paginated table with status, type, priority, agent, and linked PRs. <span class="badge badge-yellow">PENDING</span> <span class="badge badge-blue">DISPATCHED</span> <span class="badge badge-green">DONE</span> <span class="badge badge-red">FAILED</span>. Retry, delete, and archive with optimistic updates.</p>
   <div class="demo-frame">
-    <img src="demo/02-command-center.gif" alt="Command Center typing">
-    <div class="demo-caption"><span class="badge badge-blue">CC</span> Typing a plan request, then switching to a one-off work item — the CC routes each to the right action</div>
+    <img src="demo/02-work-items.png" alt="Work items table">
+    <div class="demo-caption">Work items page &mdash; 20 per page with create, edit, retry, and delete actions</div>
   </div>
 </div>
 
 <div class="scenario">
-  <div class="scenario-header"><div class="scenario-num">3</div><h2>Work Items</h2></div>
-  <p>Full lifecycle: <span class="badge badge-yellow">PENDING</span> <span class="badge badge-blue">DISPATCHED</span> <span class="badge badge-blue">IN-PR</span> <span class="badge badge-green">DONE</span> <span class="badge badge-red">FAILED</span>. Retry failed items with one click.</p>
+  <div class="scenario-header"><div class="scenario-num">3</div><h2>Plans &amp; PRD</h2></div>
+  <p>Plan cards with Approve / Discuss &amp; Revise / Reject. PRD dependency graph with per-item retry. Archive completed plans.</p>
   <div class="demo-frame">
-    <img src="demo/03-work-items.gif" alt="Work items table">
-    <div class="demo-caption">Work items with mixed statuses — hovering over <span class="badge badge-red">Retry</span> on a failed exploration task</div>
+    <img src="demo/03-plans-prd.png" alt="Plans and PRD progress">
+    <div class="demo-caption">Plans page with status-colored cards, PRD dependency graph, and action buttons</div>
   </div>
 </div>
 
 <div class="scenario">
-  <div class="scenario-header"><div class="scenario-num">4</div><h2>Plan &amp; Doc Chat</h2></div>
-  <p>Click any plan to open its detail modal. Use the built-in doc chat to ask questions, steer direction, and revise — all before executing.</p>
+  <div class="scenario-header"><div class="scenario-num">4</div><h2>Pull Requests</h2></div>
+  <p>PR tracker sorted by date, with review, build, and merge status. Linked to work items and PRD items. Manual PR linking supported.</p>
   <div class="demo-frame">
-    <img src="demo/04-plan-docchat.gif" alt="Plan detail with doc chat">
-    <div class="demo-caption">Opening a plan, viewing rendered markdown, then asking "What are the security implications?" in the doc chat</div>
+    <img src="demo/04-pull-requests.png" alt="Pull requests tracker">
+    <div class="demo-caption">PRs sorted newest-first with build status, review status, and agent attribution</div>
   </div>
 </div>
 
 <div class="scenario">
-  <div class="scenario-header"><div class="scenario-num">5</div><h2>PRD Progress</h2></div>
-  <p>PRD items track dependencies and block dispatching until prerequisites complete. Progress bar shows done items.</p>
+  <div class="scenario-header"><div class="scenario-num">5</div><h2>Team Meetings</h2></div>
+  <p>Multi-agent meetings with 3 rounds: investigate, debate, conclude. Live progress per participant. Create plans from conclusions.</p>
   <div class="demo-frame">
-    <img src="demo/05-prd-progress.gif" alt="PRD progress with dependencies">
-    <div class="demo-caption">"User Authentication &amp; Authorization" — 5 items with dependency chains, 2 done, 3 to do</div>
+    <img src="demo/05-meetings.png" alt="Meetings page">
+    <div class="demo-caption">Meetings with round status badges, participant progress, and archive/delete actions</div>
   </div>
 </div>
 
 <div class="scenario">
-  <div class="scenario-header"><div class="scenario-num">6</div><h2>Inbox &amp; Metrics</h2></div>
-  <p>Agent findings flow to the inbox, get consolidated by Haiku into team notes, and classified into the knowledge base. Quality metrics track per-agent performance.</p>
+  <div class="scenario-header"><div class="scenario-num">6</div><h2>Pipelines</h2></div>
+  <p>Multi-stage workflows chaining tasks, meetings, plans, and more. Cron triggers or manual. Artifact tracking between stages.</p>
   <div class="demo-frame">
-    <img src="demo/06-inbox-metrics.gif" alt="Inbox and metrics">
-    <div class="demo-caption">Inbox with agent findings, dispatch queue with completed tasks, and agent quality metrics</div>
+    <img src="demo/06-pipelines.png" alt="Pipelines page">
+    <div class="demo-caption">Pipeline cards with stage flow visualization, run history, and progress bars</div>
+  </div>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header"><div class="scenario-num">7</div><h2>Notes &amp; Knowledge Base</h2></div>
+  <p>Inbox for agent findings, consolidated team notes, and categorized knowledge base. Inline Q&amp;A on any document.</p>
+  <div class="demo-frame">
+    <img src="demo/07-notes-kb.png" alt="Notes and knowledge base">
+    <div class="demo-caption">Notes inbox, team notes, and knowledge base with category tabs and pagination</div>
+  </div>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header"><div class="scenario-num">8</div><h2>Scheduled Tasks</h2></div>
+  <p>Cron-style recurring work with visual builder. Natural language parsing &mdash; type "every weekday at 9am" and it generates the cron.</p>
+  <div class="demo-frame">
+    <img src="demo/08-schedules.png" alt="Schedules page">
+    <div class="demo-caption">Schedule list with cron expressions, last-run times, and enable/disable toggles</div>
+  </div>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header"><div class="scenario-num">9</div><h2>Engine &amp; Metrics</h2></div>
+  <p>Dispatch queue, engine log, agent metrics, token usage, and context pressure. All paginated.</p>
+  <div class="demo-frame">
+    <img src="demo/09-engine.png" alt="Engine page">
+    <div class="demo-caption">Active/pending dispatches, completed history, engine log, and per-agent quality metrics</div>
+  </div>
+</div>
+
+<div class="scenario">
+  <div class="scenario-header"><div class="scenario-num">10</div><h2>Command Center</h2></div>
+  <p>Natural language delegation. CC orchestrates &mdash; agents implement. Session persists across refreshes. Actions auto-execute.</p>
+  <div class="demo-frame">
+    <img src="demo/10-command-center.png" alt="Command Center panel">
+    <div class="demo-caption">Command Center side panel with conversation history, action execution, and session indicator</div>
   </div>
 </div>
 
@@ -177,14 +219,17 @@
   <pre><span class="comment"># Install</span>
 npm install -g @yemi33/minions
 
-<span class="comment"># Initialize — scans for repos, starts engine + dashboard</span>
+<span class="comment"># Initialize &mdash; prompts for project locations, starts engine + dashboard</span>
 minions init
 
-<span class="comment"># Open dashboard</span>
-open http://localhost:7331
+<span class="comment"># Give your first task</span>
+minions work "Explore the codebase and document the architecture"
 
-<span class="comment"># Use the Command Center to create your first plan</span>
-<span class="comment"># Or add work items directly from the dashboard</span></pre>
+<span class="comment"># Open dashboard</span>
+http://localhost:7331
+
+<span class="comment"># Update to latest</span>
+minions update</pre>
 </div>
 
 <!-- Architecture -->
@@ -192,20 +237,23 @@ open http://localhost:7331
   <h2>Architecture</h2>
   <pre>
   ┌─────────────────────────────────────────────────────┐
-  │                  ~/.minions/ (central hub)              │
-  │                                                       │
-  │   engine.js ──── 60s tick loop ────┐                 │
-  │       │                            │                  │
-  │   discover work    spawn agents    poll PRs           │
-  │       │                │              │               │
-  │   ┌───┴───┐    ┌──────┴──────┐   ┌──┴───┐           │
-  │   │ PRDs  │    │  Worktrees  │   │ ADO  │           │
-  │   │ Items │    │  (isolated) │   │ GitHub│           │
-  │   └───────┘    └─────────────┘   └──────┘           │
-  │                                                       │
-  │   dashboard.js ── port 7331 ── mission control       │
-  │   notes.md ── consolidated team knowledge            │
-  │   knowledge/ ── searchable KB by category            │
+  │                  ~/.minions/ (central hub)           │
+  │                                                     │
+  │   engine.js ──── 60s tick loop ────┐                │
+  │       │                            │                │
+  │   discover work    spawn agents    poll PRs          │
+  │       │                │              │             │
+  │   ┌───┴───┐    ┌──────┴──────┐   ┌──┴───┐         │
+  │   │ Plans │    │  Worktrees  │   │ ADO  │         │
+  │   │ PRDs  │    │  (isolated) │   │GitHub│         │
+  │   │ Items │    │  per agent  │   │      │         │
+  │   └───────┘    └─────────────┘   └──────┘         │
+  │                                                     │
+  │   dashboard.js ── port 7331 ── mission control      │
+  │   meetings/ ── multi-agent discussions              │
+  │   pipelines/ ── multi-stage workflows               │
+  │   notes.md ── consolidated team knowledge           │
+  │   knowledge/ ── searchable KB by category           │
   └─────────────────────────────────────────────────────┘
   </pre>
 </div>
@@ -213,9 +261,8 @@ open http://localhost:7331
 </div>
 
 <footer>
-  <p>Minions &mdash; <a href="https://github.com/yemi33/minions">GitHub</a> &mdash; MIT License &mdash; Zero dependencies, powered by Claude</p>
+  <p>Minions &mdash; <a href="https://github.com/yemi33/minions">GitHub</a> &mdash; <a href="https://www.npmjs.com/package/@yemi33/minions">npm</a> &mdash; MIT License &mdash; Zero dependencies, powered by Claude</p>
 </footer>
 
 </body>
 </html>
-
