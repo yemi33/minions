@@ -436,7 +436,10 @@ function chainPlanToPrd(dispatchItem, meta, config) {
   log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
   const wiPath = path.join(MINIONS_DIR, 'work-items.json');
   let items = [];
-  try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch {}
+  try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch (err) {
+    log('warn', `Failed to parse ${wiPath}: ${err.message} — creating .bak and starting fresh`);
+    try { fs.copyFileSync(wiPath, wiPath + '.bak'); } catch {}
+  }
   items.push({
     id: 'W-' + shared.uid(),
     title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
@@ -623,7 +626,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       dirtyTargets.set(targetName, { prs: safeJson(prPath) || [], prPath });
     }
     const entry = dirtyTargets.get(targetName);
-    if (entry.prs.some(p => p.id === fullId || String(p.id).includes(prId))) continue;
+    if (entry.prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
 
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
@@ -694,7 +697,7 @@ function updatePrAfterReview(agentId, pr, project) {
   }
 
   shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
-  log('info', `Updated ${pr.id} → minions review: ${minionsVerdict} by ${reviewerName}`);
+  log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
 
