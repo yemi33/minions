@@ -479,6 +479,7 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === 'done') {
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAt = ts();
       } else if (status === 'failed') {
         if (reason) target.failReason = reason;
@@ -501,6 +502,7 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
+      if (!fs.existsSync(fpath)) continue;
       mutateJsonFileLocked(fpath, (plan) => {
         if (!plan?.missing_features) return plan;
         const feature = plan.missing_features.find(f => f.id === itemId);
@@ -635,10 +637,15 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       for (const pr of entry.prs) {
         const idx = existingPrs.findIndex(p => p.id === pr.id);
         if (idx >= 0) {
+          const existing = existingPrs[idx];
           // Backfill prdItems if needed
           if (pr.prdItems?.length) {
-            const merged = new Set([...(existingPrs[idx].prdItems || []), ...pr.prdItems]);
-            existingPrs[idx].prdItems = [...merged];
+            for (const metaId of pr.prdItems) {
+              if (!existing.prdItems?.includes(metaId)) {
+                if (!existing.prdItems) existing.prdItems = [];
+                existing.prdItems.push(metaId);
+              }
+            }
           }
         } else {
           existingPrs.push(pr);
@@ -652,6 +659,16 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 }
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
+
+// Resolve which project owns a PR by checking each project's pull-requests.json
+function resolveProjectForPr(prId, config) {
+  const projects = shared.getProjects(config || getConfig());
+  for (const p of projects) {
+    const prs = safeJson(shared.projectPrPath(p)) || [];
+    if (prs.some(pr => pr.id === prId || String(pr.id) === String(prId))) return p;
+  }
+  return null;
+}
 
 function updatePrAfterReview(agentId, pr, project) {
 
@@ -691,7 +708,8 @@ function updatePrAfterReview(agentId, pr, project) {
     });
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  const resolvedProject = project || resolveProjectForPr(pr.id, config);
+  shared.safeWrite(resolvedProject ? projectPrPath(resolvedProject) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
   log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
   createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
 }
@@ -714,7 +732,8 @@ function updatePrAfterFix(pr, project, source) {
     log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  const resolvedProject = project || resolveProjectForPr(pr.id, config);
+  shared.safeWrite(resolvedProject ? projectPrPath(resolvedProject) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -1245,10 +1264,11 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, 'done', '');
 
-  // Auto-dispatch evaluate work item after implement or fix completes successfully
+  // Auto-dispatch review work item after implement or fix completes successfully
   if (isSuccess && !skipDoneStatus && (type === 'implement' || (type === 'fix' && meta?.item?._evalParentId)) && meta?.item?.id) {
+    const autoReview = config.engine?.autoReview !== false;
     const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
-    if (evalLoop) {
+    if (evalLoop && autoReview) {
       try {
         const wiPath = resolveWiPath(meta);
         if (wiPath) {
@@ -1290,7 +1310,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  // Evaluate completion: parse verdict and handle eval→fix iteration loop
+  // Review completion: parse verdict and handle eval→fix iteration loop
   if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);

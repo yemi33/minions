@@ -1482,6 +1482,25 @@ function discoverFromWorkItems(config, project) {
       try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
     }
 
+    // Checkpoint resume: detect checkpoint.json in the agent worktree directory
+    vars.checkpoint_context = '';
+    const cpPath = path.join(vars.worktree_path, 'checkpoint.json');
+    if (fs.existsSync(cpPath)) {
+      try {
+        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+        const cpSummary = `## Checkpoint Resume\n\nCompleted: ${cpData.completed}\nRemaining: ${cpData.remaining}\nBlockers: ${cpData.blockers}\nBranch State: ${cpData.branch_state}`;
+        vars.checkpoint_context = cpSummary;
+        const cpCount = (item._checkpointCount || 0) + 1;
+        item._checkpointCount = cpCount;
+        if (cpCount > 3) {
+          item.status = 'needs-human-review';
+          log('info', `Work item ${item.id} exceeded 3 checkpoint-resumes, escalating to needs-human-review`);
+          continue;
+        }
+        log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+      } catch (cpErr) { log('warn', `Checkpoint read error for ${item.id}: ${cpErr.message}`); }
+    }
+
     // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
     const resolvedCtx = resolveTaskContext(item, config);
     if (resolvedCtx.additionalContext) {
@@ -1843,6 +1862,7 @@ function discoverCentralWorkItems(config) {
       vars.references = normRefs ? '## References\n\n' + normRefs : '';
       const normAc = (item.acceptanceCriteria || []).map(c => '- [ ] ' + c).join('\n');
       vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
+      vars.checkpoint_context = '';
 
       // Inject plan-specific variables for the plan playbook
       if (workType === 'plan') {
@@ -2047,7 +2067,7 @@ function discoverWork(config) {
   for (const item of allWork) {
     addToDispatch(item);
     if (item.meta?.source === 'pr-human-feedback') {
-      clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
+      clearPendingHumanFeedbackFlag(item.meta?.project, item.meta?.pr?.id);
     }
   }
 
