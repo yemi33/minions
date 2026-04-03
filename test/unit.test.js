@@ -2138,7 +2138,7 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
-    assert.ok(src.includes('retryableFailure && retries < 3'),
+    assert.ok(src.includes('retryableFailure && retries < maxRetries'),
       'Auto-retry should run only for retryable failures under retry cap');
     assert.ok(src.includes('Non-retryable failure:'),
       'Non-retryable failures should be surfaced explicitly');
@@ -2943,9 +2943,8 @@ async function testAreDependenciesMet() {
   await test('areDependenciesMet uses PRD_MET_STATUSES for all done aliases', () => {
     assert.ok(src.includes("PRD_MET_STATUSES"),
       'Should use PRD_MET_STATUSES set for status checking');
-    // Verify the set includes all legacy aliases
-    assert.ok(src.includes("'done'") && src.includes("'in-pr'") &&
-              src.includes("'implemented'") && src.includes("'complete'"),
+    // Verify it uses centralized DONE_STATUSES or includes legacy aliases
+    assert.ok(src.includes("DONE_STATUSES") || (src.includes("'done'") && src.includes("'in-pr'")),
       'PRD_MET_STATUSES should include done, in-pr, implemented, complete');
   });
 
@@ -3134,9 +3133,9 @@ async function testCompleteDispatch() {
       'Should delete prompt field to save memory in completed list');
   });
 
-  await test('completeDispatch auto-retries up to 3 times', () => {
-    assert.ok(src.includes('retries < 3'),
-      'Should allow up to 3 auto-retries for retryable failures');
+  await test('completeDispatch auto-retries up to maxRetries', () => {
+    assert.ok(src.includes('retries < maxRetries'),
+      'Should allow up to maxRetries auto-retries for retryable failures');
   });
 
   await test('completeDispatch marks failed on non-retryable reason', () => {

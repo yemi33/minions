@@ -386,7 +386,28 @@ const ENGINE_DEFAULTS = {
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // max review→fix cycles before escalating to human
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
+  maxRetries: 3, // max dispatch retries before marking work item as failed
 };
+
+// ─── Status & Type Constants ─────────────────────────────────────────────────
+
+const WI_STATUS = {
+  PENDING: 'pending', DISPATCHED: 'dispatched', DONE: 'done', FAILED: 'failed',
+  PAUSED: 'paused', QUEUED: 'queued', NEEDS_REVIEW: 'needs-human-review', DECOMPOSED: 'decomposed',
+};
+const DONE_STATUSES = new Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete']); // includes legacy aliases
+const WORK_TYPE = {
+  IMPLEMENT: 'implement', IMPLEMENT_LARGE: 'implement:large', FIX: 'fix', REVIEW: 'review',
+  VERIFY: 'verify', PLAN: 'plan', PLAN_TO_PRD: 'plan-to-prd', DECOMPOSE: 'decompose',
+  MEETING: 'meeting', EXPLORE: 'explore', ASK: 'ask', TEST: 'test', DOCS: 'docs',
+};
+const PLAN_STATUS = {
+  ACTIVE: 'active', AWAITING_APPROVAL: 'awaiting-approval', APPROVED: 'approved',
+  PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
+  REVISION_REQUESTED: 'revision-requested',
+};
+const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed' };
+const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout' };
 
 const DEFAULT_AGENTS = {
   ripley:  { name: 'Ripley',  emoji: '\u{1F3D7}\uFE0F',  role: 'Lead / Explorer', skills: ['architecture', 'codebase-exploration', 'design-review'] },
@@ -617,6 +638,7 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
   getProjects,

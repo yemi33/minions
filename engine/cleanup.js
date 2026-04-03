@@ -433,7 +433,7 @@ function runCleanup(config, verbose = false) {
 
   // 6. Migrate legacy work-item statuses to canonical values
   // in-pr, implemented, complete → done (one-time correction per item)
-  const LEGACY_DONE_STATUSES = new Set(['in-pr', 'implemented', 'complete']);
+  const LEGACY_DONE_STATUSES = shared.DONE_STATUSES;
   for (const project of projects) {
     try {
       const wiPath = projectWorkItemsPath(project);

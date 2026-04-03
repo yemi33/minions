@@ -10,7 +10,8 @@ const queries = require('./queries');
 const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked,
-  getProjects, projectWorkItemsPath, log, ts, dateStamp } = shared;
+  getProjects, projectWorkItemsPath, log, ts, dateStamp,
+  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -65,7 +66,7 @@ function isRetryableFailureReason(reason = '') {
 
 // ─── Complete Dispatch ───────────────────────────────────────────────────────
 
-function completeDispatch(id, result = 'success', reason = '', resultSummary = '', opts = {}) {
+function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
   const { processWorkItemFailure = true } = opts;
   let item = null;
 
@@ -98,9 +99,9 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
 
     // Update source work item status on failure + auto-retry with backoff
     const retryableFailure = isRetryableFailureReason(reason);
-    if (result === 'error' && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
+    if (result === DISPATCH_RESULT.ERROR && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
 
-    if (processWorkItemFailure && result === 'error' && item.meta?.item?.id) {
+    if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
       let retries = (item.meta.item._retryCount || 0);
       try {
         const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
@@ -112,8 +113,9 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
           if (wi) retries = wi._retryCount || 0;
         }
       } catch (e) { log('warn', 'read retry count: ' + e.message); }
-      if (retryableFailure && retries < 3) {
-        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/3`);
+      const maxRetries = ENGINE_DEFAULTS.maxRetries;
+      if (retryableFailure && retries < maxRetries) {
+        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}`);
         lifecycle().updateWorkItemStatus(item.meta, 'pending', '');
         // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
         if (item.meta?.dispatchKey) {
@@ -132,9 +134,9 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
           if (wiPath) {
             const items = safeJson(wiPath) || [];
             const wi = items.find(i => i.id === item.meta.item.id);
-            if (wi && wi.status !== 'paused') {
+            if (wi && wi.status !== WI_STATUS.PAUSED) {
               wi._retryCount = retries + 1;
-              wi.status = 'pending';
+              wi.status = WI_STATUS.PENDING;
               wi._lastRetryReason = reason || '';
               wi._lastRetryAt = ts();
               delete wi.failReason;
@@ -148,7 +150,7 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
       } else {
         const finalReason = !retryableFailure
           ? `Non-retryable failure: ${reason || 'Unknown error'}`
-          : (reason || 'Failed after 3 retries');
+          : (reason || `Failed after ${maxRetries} retries`);
         lifecycle().updateWorkItemStatus(item.meta, 'failed', finalReason);
         // Alert: find items blocked by this failure and write inbox note
         try {
@@ -157,11 +159,11 @@ function completeDispatch(id, result = 'success', reason = '', resultSummary = '
           const blockedItems = [];
           for (const p of getProjects(config)) {
             const items = safeJson(projectWorkItemsPath(p)) || [];
-            items.filter(w => w.status === 'pending' && (w.depends_on || []).includes(failedId))
+            items.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
               .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
           }
           const centralItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-          centralItems.filter(w => w.status === 'pending' && (w.depends_on || []).includes(failedId))
+          centralItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
             .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
 
           writeInboxAlert(`failed-${failedId}`,

@@ -24,7 +24,8 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS } = shared;
+const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS,
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -754,7 +755,7 @@ function areDependenciesMet(item, config) {
     } catch (e) { log('warn', 'read project work items for deps: ' + e.message); }
   }
   // PRD item statuses that count as "done" for dep resolution
-  const PRD_MET_STATUSES = new Set(['done', 'in-pr', 'implemented', 'complete']);
+  const PRD_MET_STATUSES = DONE_STATUSES;
 
   for (const depId of deps) {
     const depItem = allWorkItems.find(w => w.id === depId);
