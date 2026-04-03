@@ -8,7 +8,8 @@ const path = require('path');
 const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp } = shared;
+  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  ENGINE_DEFAULTS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -57,7 +58,7 @@ function checkPlanCompletion(meta, config) {
   const unmaterialized = [...planFeatureIds].filter(id => {
     if (workItemById[id]) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && DONE_STATUSES.has(prdItem.status));
   });
   if (unmaterialized.length > 0) {
     log('info', `Plan ${planFile}: ${unmaterialized.length}/${planFeatureIds.size} feature(s) not yet materialized as work items: ${unmaterialized.join(', ')}`);
@@ -67,17 +68,17 @@ function checkPlanCompletion(meta, config) {
   // Check 2: every feature's work item must be done (or PRD item marked done externally)
   const notDone = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && (w.status === 'done' || w.status === 'in-pr')) return false; // in-pr accepted for backward compat
+    if (w && DONE_STATUSES.has(w.status)) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && (prdItem.status === 'done' || prdItem.status === 'in-pr'));
+    return !(prdItem && DONE_STATUSES.has(prdItem.status));
   });
   if (notDone.length > 0) {
     log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
     return;
   }
 
-  const doneItems = planItems.filter(w => w.status === 'done' || w.status === 'in-pr');
-  const failedItems = planItems.filter(w => w.status === 'failed');
+  const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
+  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED);
 
   // 1. Mark plan as completed
   plan.status = 'completed';
@@ -490,20 +491,20 @@ function updateWorkItemStatus(meta, status, reason) {
       target.agentResults[agent] = { status, completedAt: ts(), reason: reason || undefined };
 
       const results = Object.values(target.agentResults);
-      const anySuccess = results.some(r => r.status === 'done');
+      const anySuccess = results.some(r => r.status === WI_STATUS.DONE);
       const allDone = Array.isArray(target.fanOutAgents) && target.fanOutAgents.length > 0 ? results.length >= target.fanOutAgents.length : false;
       const dispatchAge = target.dispatched_at ? Date.now() - new Date(target.dispatched_at).getTime() : 0;
       const timedOut = !allDone && dispatchAge > 6 * 60 * 60 * 1000 && results.length > 0;
 
       if (anySuccess) {
-        target.status = 'done';
+        target.status = WI_STATUS.DONE;
         delete target.failReason;
         delete target.failedAt;
         target.completedAgents = Object.entries(target.agentResults)
-          .filter(([, r]) => r.status === 'done')
+          .filter(([, r]) => r.status === WI_STATUS.DONE)
           .map(([a]) => a);
       } else if (allDone || timedOut) {
-        target.status = 'failed';
+        target.status = WI_STATUS.FAILED;
         target.failReason = timedOut
           ? `Fan-out timed out: ${results.length}/${(target.fanOutAgents || []).length} agents reported (all failed)`
           : 'All fan-out agents failed';
@@ -511,11 +512,11 @@ function updateWorkItemStatus(meta, status, reason) {
       }
     } else {
       target.status = status;
-      if (status === 'done') {
+      if (status === WI_STATUS.DONE) {
         delete target.failReason;
         delete target.failedAt;
         target.completedAt = ts();
-      } else if (status === 'failed') {
+      } else if (status === WI_STATUS.FAILED) {
         if (reason) target.failReason = reason;
         target.failedAt = ts();
       }
@@ -643,6 +644,9 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   for (const [name, { prPath, prIds }] of targetPrIds) {
     mutateJsonFileLocked(prPath, (prs) => {
       if (!Array.isArray(prs)) prs = [];
+      // Deduplicate any existing entries with same id (case-insensitive agent name race)
+      const seen = new Set();
+      prs = prs.filter(p => { const k = String(p.id); if (seen.has(k)) return false; seen.add(k); return true; });
       for (const { prId, fullId } of prIds) {
         if (prs.some(p => p.id === fullId || String(p.id) === String(prId))) continue;
 
@@ -981,7 +985,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   m.lastTask = dispatchItem.task;
   m.lastCompleted = ts();
   if (model) m.model = model;
-  if (result === 'success') {
+  if (result === DISPATCH_RESULT.SUCCESS) {
     m.tasksCompleted++;
     if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
     if (dispatchItem.type === 'review') m.reviewsDone++;
@@ -1105,7 +1109,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   const type = dispatchItem.type;
   const meta = dispatchItem.meta;
   const isSuccess = code === 0;
-  const result = isSuccess ? 'success' : 'error';
+  const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
   // Save session for potential resume on next dispatch
@@ -1141,9 +1145,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       }
     } catch { /* optional */ }
 
-    if (retries < 3) {
-      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/3`);
-      updateWorkItemStatus(meta, 'pending', '');
+    const maxRetries = ENGINE_DEFAULTS.maxRetries;
+    if (retries < maxRetries) {
+      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/${maxRetries}`);
+      updateWorkItemStatus(meta, WI_STATUS.PENDING, '');
       try {
         const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
           ? path.join(MINIONS_DIR, 'work-items.json')
@@ -1152,14 +1157,14 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           const items = safeJson(wiPath) || [];
           const wi = items.find(i => i.id === meta.item.id);
           if (wi) {
-            wi._retryCount = retries + 1; wi.status = 'pending'; delete wi.dispatched_at; delete wi.dispatched_to;
-            if (type === 'decompose') delete wi._decomposing; // clear so item can retry decomposition
+            wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to;
+            if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
             shared.safeWrite(wiPath, items);
           }
         }
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
     } else {
-      updateWorkItemStatus(meta, 'failed', 'Agent failed (3 retries exhausted)');
+      updateWorkItemStatus(meta, WI_STATUS.FAILED, `Agent failed (${maxRetries} retries exhausted)`);
     }
     // Clear _decomposing flag on failure so item doesn't get permanently stuck
     if (type === 'decompose') {
