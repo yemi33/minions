@@ -1672,45 +1672,6 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     return jsonReply(res, 200, plans);
   }
 
-  async function handlePlansArchiveMove(req, res) {
-    try {
-      const body = await readBody(req);
-      if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      const file = body.file;
-      if (file.includes('..') || file.includes('\0') || file.includes('/') || file.includes('\\')) return jsonReply(res, 400, { error: 'invalid' });
-
-      const isJson = file.endsWith('.json');
-      const sourceDir = isJson ? PRD_DIR : PLANS_DIR;
-      const archiveDir = path.join(sourceDir, 'archive');
-      const sourcePath = path.join(sourceDir, file);
-
-      if (!fs.existsSync(sourcePath)) return jsonReply(res, 404, { error: 'File not found' });
-      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
-
-      fs.renameSync(sourcePath, path.join(archiveDir, file));
-
-      // If archiving a PRD .json, also archive its source .md plan
-      let archivedSource = null;
-      if (isJson) {
-        try {
-          const prd = safeJson(path.join(archiveDir, file));
-          if (prd?.source_plan) {
-            const mdPath = path.join(PLANS_DIR, prd.source_plan);
-            if (fs.existsSync(mdPath)) {
-              const planArchive = path.join(PLANS_DIR, 'archive');
-              if (!fs.existsSync(planArchive)) fs.mkdirSync(planArchive, { recursive: true });
-              fs.renameSync(mdPath, path.join(planArchive, prd.source_plan));
-              archivedSource = prd.source_plan;
-            }
-          }
-        } catch { /* optional — source plan may not exist */ }
-      }
-
-      invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, archivedSource });
-    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
-  }
-
   async function handlePlansUnarchive(req, res) {
     try {
       const body = await readBody(req);
@@ -2988,8 +2949,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         if (result.code !== 0 || !result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
-          const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
+          const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-5).join(' | ');
           console.error(`[CC] LLM failed after retries ${debugInfo}: ${stderrTail}`);
+          try { shared.log('warn', `CC failed ${debugInfo}: ${stderrTail.slice(0, 300)}`); } catch {}
           const hasSession = !!ccSession.sessionId;
           const retryHint = hasSession
             ? 'Your session is still active — just send your message again to retry.'
@@ -3354,8 +3316,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/plans/unarchive', desc: 'Restore a plan/PRD from archive', params: 'file', handler: handlePlansUnarchive },
     { method: 'POST', path: '/api/plans/revise', desc: 'Request revision with feedback, dispatches agent to revise', params: 'file, feedback, requestedBy?', handler: handlePlansRevise },
     { method: 'POST', path: '/api/plans/discuss', desc: 'Generate a plan discussion session script for Claude CLI', params: 'file', handler: handlePlansDiscuss },
-    { method: 'POST', path: '/api/plans/archive', desc: 'Archive a plan/PRD (move to archive folder)', params: 'file', handler: handlePlansArchiveMove },
-    { method: 'POST', path: '/api/plans/unarchive', desc: 'Unarchive a plan/PRD (restore from archive folder)', params: 'file', handler: handlePlansUnarchive },
     { method: 'GET', path: /^\/api\/plans\/archive\/([^?]+)$/, desc: 'Read an archived plan file', handler: handlePlansArchiveRead },
     { method: 'GET', path: /^\/api\/plans\/([^?]+)$/, desc: 'Read a full plan (JSON from prd/ or markdown from plans/)', handler: handlePlansRead },
 
