@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.249 (2026-04-03)
+
+### Features
+-  mandatory test validation before PR creation in implement and fix playbooks
+
 ## 0.1.248 (2026-04-03)
 
 ### Fixes
