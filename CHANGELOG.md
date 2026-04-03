@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.245 (2026-04-03)
+
+### Features
+-  minions uninstall --confirm — full removal command
+-  capture-demos seeds mock data for richer screenshots
+-  add capture-demos skill for regenerating GitHub Pages screenshots
+
+### Fixes
+-  set GH_TOKEN for gh CLI in publish workflow
+-  publish workflow uses PR instead of direct push, CLI shows 'minions dash'
+-  CLI audit — kill dashboard on restart, expose kill/complete, update help
+-  clean _pendingReason on all status→done transitions, not just updateWorkItemStatus
+
+### Other
+- rename back to Minions Mission Control
+- docs: fix quick start — use 'minions dash' not raw URL
+- docs: update GitHub Pages with all features + fresh screenshots
+- docs: fix outdated references across all documentation
+
 ## 0.1.233 (2026-04-03)
 
 ### Fixes
