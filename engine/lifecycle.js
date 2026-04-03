@@ -1266,8 +1266,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
           mutateJsonFileLocked(wiPath, (items) => {
             // For fix items, target the original implement parent; for implement, target self
             const evalTargetId = type === 'fix' ? meta.item._evalParentId : meta.item.id;
-            // Dedup: skip if an evaluate item already exists for this parent
-            const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'evaluate' && i.status === 'pending');
+            // Dedup: skip if a review item already exists for this parent
+            const existing = items.find(i => i._evalParentId === evalTargetId && i.type === 'review' && i.status === 'pending');
             if (existing) {
               log('info', `Eval loop: evaluate item ${existing.id} already exists for ${evalTargetId}, skipping`);
               return items;
@@ -1276,7 +1276,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             const evalItem = {
               id: 'W-' + shared.uid(),
               title: `Evaluate: ${parentItem?.title || meta.item.title || evalTargetId}`,
-              type: 'evaluate',
+              type: 'review',
               priority: meta.item.priority || 'high',
               status: 'pending',
               created: ts(),
@@ -1302,7 +1302,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Evaluate completion: parse verdict and handle eval→fix iteration loop
-  if (isSuccess && type === 'evaluate' && meta?.item?._evalParentId) {
+  if (isSuccess && type === 'review' && meta?.item?._evalParentId) {
     try {
       const verdict = parseEvalVerdict(resultSummary || stdout);
       const evalLoop = config.engine?.evalLoop ?? shared.ENGINE_DEFAULTS.evalLoop;
