@@ -31,7 +31,7 @@ function cleanupTmpDirs() {
   }
 }
 
-async function test(name, fn) {
+async function test(name, fn, cleanup) {
   try {
     await fn();
     passed++;
@@ -41,6 +41,8 @@ async function test(name, fn) {
     failed++;
     results.push({ name, status: 'FAIL', error: e.message });
     process.stdout.write(`  \x1b[31mFAIL\x1b[0m ${name}: ${e.message}\n`);
+  } finally {
+    if (cleanup) try { await cleanup(); } catch {}
   }
 }
 
@@ -3590,9 +3592,7 @@ async function testCheckPlanCompletionIdempotency() {
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
     assert.strictEqual(verifyItems.length, 1, 'Exactly one verify work item should be created');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── Test 2: Second call with _completionNotified returns early ──
   await test('checkPlanCompletion second call: _completionNotified guard prevents duplicates', () => {
@@ -3617,9 +3617,7 @@ async function testCheckPlanCompletionIdempotency() {
     // PRD should not be re-archived (still at original path)
     assert.ok(fs.existsSync(path.join(prdDir, testPlanFile)),
       'PRD should not be moved when _completionNotified guard triggers');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── Test 3: Call twice end-to-end — only one set of side effects ──
   await test('checkPlanCompletion called twice: only one inbox file and one verify item total', () => {
@@ -3650,9 +3648,7 @@ async function testCheckPlanCompletionIdempotency() {
     const verifyItems = workItems.filter(w => w.itemType === 'verify' && w.sourcePlan === testPlanFile);
     assert.strictEqual(verifyItems.length, 1,
       'Second call should not create additional verify work items');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── Test 4: Crash recovery — status=completed without _completionNotified falls through ──
   await test('checkPlanCompletion crash recovery: completed but no flag creates verify item', () => {
@@ -3677,9 +3673,7 @@ async function testCheckPlanCompletionIdempotency() {
     const recoveredPlan = shared.safeJson(path.join(prdDir, testPlanFile));
     assert.strictEqual(recoveredPlan?._completionNotified, true,
       'Crash recovery should set _completionNotified for next re-entry');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── Test 5: shared-branch plan creates PR item only once ──
   await test('checkPlanCompletion shared-branch: only one PR work item across two calls', () => {
@@ -3704,9 +3698,7 @@ async function testCheckPlanCompletionIdempotency() {
     const prItems2 = workItems2.filter(w => w.itemType === 'pr' && w.sourcePlan === testPlanFile);
     assert.strictEqual(prItems2.length, 1,
       'Second call should not create additional PR work items');
-
-    cleanup();
-  });
+  }, cleanup);
 }
 
 // ─── Verify Workflow Tests ──────────────────────────────────────────────────
@@ -3791,9 +3783,7 @@ async function testVerifyWorkflow() {
     assert.strictEqual(verifyItems[0].priority, 'high');
     assert.ok(verifyItems[0].description.includes('Setup Commands'), 'Verify WI description should include setup commands');
     assert.ok(verifyItems[0].description.includes('Completed Items'), 'Verify WI description should include completed items');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 2. Verify WI has correct fields ──
   await test('verify: verify work item has sourcePlan, itemType, project, and description', () => {
@@ -3811,9 +3801,7 @@ async function testVerifyWorkflow() {
     assert.ok(v.id.startsWith('PL-'), 'Verify WI ID should start with PL-');
     assert.ok(v.title.includes('Verify plan'), 'Title should indicate verification');
     assert.ok(v.description.includes(testPlanFile), 'Description should reference plan file');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 3. No verify WI created when all items failed (no done items) ──
   await test('verify: no verify WI when no done items', () => {
@@ -3832,9 +3820,7 @@ async function testVerifyWorkflow() {
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
     assert.strictEqual(verifyItems.length, 0, 'No verify WI when not all items are done');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 4. Duplicate verify WI prevented ──
   await test('verify: existing verify WI prevents duplicate creation', () => {
@@ -3852,9 +3838,7 @@ async function testVerifyWorkflow() {
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
     assert.strictEqual(verifyItems.length, 1, 'Should not create duplicate verify WI');
     assert.strictEqual(verifyItems[0].id, 'PL-existing-verify', 'Original verify WI should be unchanged');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 5. archivePlan moves PRD and source plan ──
   await test('verify: archivePlan moves PRD to prd/archive/ and source plan to plans/archive/', () => {
@@ -3873,9 +3857,7 @@ async function testVerifyWorkflow() {
       'Source plan should be removed from plans/');
     assert.ok(fs.existsSync(path.join(plansArchiveDir, '_test-verify-flow.md')),
       'Source plan should be in plans/archive/');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 6. archivePlan is idempotent ──
   await test('verify: archivePlan is idempotent (no error if already archived)', () => {
@@ -3890,9 +3872,7 @@ async function testVerifyWorkflow() {
 
     assert.ok(fs.existsSync(path.join(prdArchiveDir, testPlanFile)),
       'Archived PRD should still exist');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 7. Plan status persisted to disk before archive ──
   await test('verify: plan status=completed and _completionNotified persisted to disk', () => {
@@ -3906,9 +3886,7 @@ async function testVerifyWorkflow() {
     assert.strictEqual(persisted.status, 'completed', 'status should be persisted as completed');
     assert.strictEqual(persisted._completionNotified, true, '_completionNotified should be persisted');
     assert.ok(persisted.completedAt, 'completedAt should be set');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 8. Verify WI description includes acceptance criteria ──
   await test('verify: verify WI description includes acceptance criteria from plan items', () => {
@@ -3923,9 +3901,7 @@ async function testVerifyWorkflow() {
     assert.ok(v.description.includes('AC1'), 'Should include acceptance criterion AC1');
     assert.ok(v.description.includes('AC2'), 'Should include acceptance criterion AC2');
     assert.ok(v.description.includes('AC3'), 'Should include acceptance criterion AC3');
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 9. Worktree paths use forward slashes (cross-platform) ──
   await test('verify: worktree paths in verify description use forward slashes', () => {
@@ -3947,9 +3923,7 @@ async function testVerifyWorkflow() {
     if (v && v.description.includes('worktree')) {
       assert.ok(!v.description.includes('\\\\'), 'Worktree paths should not contain backslashes');
     }
-
-    cleanup();
-  });
+  }, cleanup);
 
   // ── 10. Source code: archivePlan called from runPostCompletionHooks for verify tasks ──
   await test('verify: runPostCompletionHooks triggers archivePlan after verify completes', () => {
@@ -6384,8 +6358,16 @@ async function testEmptyProjectsGuards() {
   const testPlanFile = '_test-empty-proj.json';
   const prdDir = path.join(MINIONS_DIR, 'prd');
   const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
   fs.mkdirSync(prdDir, { recursive: true });
   fs.mkdirSync(inboxDir, { recursive: true });
+
+  function cleanupEmptyProj() {
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-empty-proj'));
+    for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
+    try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+    try { fs.unlinkSync(centralWiPath); } catch {}
+  }
 
   await test('checkPlanCompletion: empty projects[] does not crash, skips PR/verify creation', () => {
     // Write a PRD with all items done
@@ -6400,7 +6382,6 @@ async function testEmptyProjectsGuards() {
     shared.safeWrite(path.join(prdDir, testPlanFile), prd);
 
     // Write matching work items to central location (no project dir)
-    const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
     shared.safeWrite(centralWiPath, [
       { id: 'EP-001', title: 'Implement: Feature A', type: 'implement', status: 'done',
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
@@ -6420,13 +6401,7 @@ async function testEmptyProjectsGuards() {
       '_completionNotified should still be set even with empty projects');
     assert.strictEqual(completedPlan.status, 'completed',
       'Plan status should be marked completed');
-
-    // Cleanup
-    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-empty-proj'));
-    for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
-    try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
-    try { fs.unlinkSync(centralWiPath); } catch {}
-  });
+  }, cleanupEmptyProj);
 
   // ── Functional: syncPrsFromOutput with empty projects ──
 
