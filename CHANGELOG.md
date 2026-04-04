@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.344 (2026-04-04)
+
+### Fixes
+-  move Reset to Defaults button to settings modal header + fix getConfig error
+
 ## 0.1.343 (2026-04-04)
 
 ### Fixes
