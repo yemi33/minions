@@ -75,7 +75,10 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
     '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
 
-    '<span id="settings-status" style="font-size:11px;color:var(--muted)"></span>' +
+    '<div style="display:flex;align-items:center;gap:12px;margin-top:12px">' +
+      '<button onclick="resetSettingsToDefaults()" style="font-size:11px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Reset to Defaults</button>' +
+      '<span id="settings-status" style="font-size:11px;color:var(--muted)"></span>' +
+    '</div>' +
   '</div>';
 
   document.getElementById('modal-title').textContent = 'Settings';
@@ -223,4 +226,22 @@ async function addProject() {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
-window.MinionsSettings = { openSettings, saveSettings, addProject };
+async function resetSettingsToDefaults() {
+  if (!confirm('Reset all engine, CLI, and agent settings to defaults? This cannot be undone.')) return;
+  const status = document.getElementById('settings-status');
+  try {
+    status.textContent = 'Resetting...';
+    status.style.color = 'var(--blue)';
+    const res = await fetch('/api/settings/reset', { method: 'POST' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.error || 'Reset failed'); }
+    status.textContent = 'Reset complete. Reloading...';
+    status.style.color = 'var(--green)';
+    showToast('cmd-toast', 'Settings reset to defaults', true);
+    setTimeout(() => openSettings(), 500);
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
+}
+
+window.MinionsSettings = { openSettings, saveSettings, addProject, resetSettingsToDefaults };

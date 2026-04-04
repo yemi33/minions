@@ -277,8 +277,7 @@ let ccInFlight = false;
 let ccInFlightSince = 0; // timestamp — auto-release stuck guard
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 
-// Hash the system prompt so we can detect changes and invalidate stale sessions
-const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
+// _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
 
 function ccSessionValid() {
   if (!ccSession.sessionId) return false;
@@ -435,6 +434,9 @@ Available action types:
 7. **Never modify engine source code** (engine.js, engine/*.js, dashboard.js/html, minions.js, bin/).
 8. **Never push to git remotes** without the user explicitly confirming.
 9. For long-running processes (dev servers), start them detached so they survive after your session.`;
+
+// Hash the system prompt so we can detect changes and invalidate stale sessions
+const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
 
 function buildCCStatePreamble() {
   // Lightweight snapshot — just enough to orient. Use tools for details.
@@ -3279,6 +3281,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
+  async function handleSettingsReset(req, res) {
+    try {
+      const config = getConfig();
+      config.engine = { ...shared.ENGINE_DEFAULTS };
+      config.claude = { ...shared.DEFAULT_CLAUDE };
+      config.agents = { ...shared.DEFAULT_AGENTS };
+      safeWrite(CONFIG_PATH, config);
+      return jsonReply(res, 200, { ok: true });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   async function handleHealth(req, res) {
     const engine = getEngineState();
     const agents = getAgents();
@@ -3740,6 +3753,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
+    { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
   ];
 
   // Expose routes to CC preamble builder (once, on first request)
