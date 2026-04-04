@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.345 (2026-04-04)
+
+### Fixes
+-  move settings status message to header actions bar next to buttons
+
 ## 0.1.344 (2026-04-04)
 
 ### Fixes
