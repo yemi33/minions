@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.343 (2026-04-04)
+
+### Fixes
+-  remove duplicate selfRefVars declaration in playbook.js
+
 ## 0.1.342 (2026-04-04)
 
 ### Fixes
