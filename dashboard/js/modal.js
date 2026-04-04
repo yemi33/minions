@@ -6,9 +6,11 @@ function closeModal() {
   document.getElementById('modal').classList.remove('open');
   // Hide Q&A section (only shown for document modals)
   document.getElementById('modal-qa').style.display = 'none';
-  // Remove settings save button if present
+  // Remove settings buttons if present
   const settingsBtn = document.getElementById('modal-settings-save');
   if (settingsBtn) settingsBtn.remove();
+  const resetBtn = document.getElementById('modal-settings-reset');
+  if (resetBtn) resetBtn.remove();
   // Save Q&A session for this document (persist across modal open/close)
   if (_qaSessionKey && (_qaHistory.length > 0 || _qaQueue.length > 0)) {
     _qaSessions.set(_qaSessionKey, {
