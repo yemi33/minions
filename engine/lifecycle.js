@@ -477,6 +477,24 @@ function chainPlanToPrd(dispatchItem, meta, config) {
   shared.safeWrite(wiPath, items);
 }
 
+// ─── Work Item Path Resolution ───────────────────────────────────────────────
+
+/** Resolve the work-items.json path from dispatch meta. Reused by retry paths. */
+function resolveWorkItemPath(meta) {
+  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+    return path.join(MINIONS_DIR, 'work-items.json');
+  }
+  if (meta.source === 'work-item' && meta.project?.name) {
+    return path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
+  }
+  return null;
+}
+
+/** Check if a work item is in a terminal completed state. */
+function isItemCompleted(item) {
+  return item.status === WI_STATUS.DONE || !!item.completedAt;
+}
+
 // ─── Work Item Status ────────────────────────────────────────────────────────
 const _VALID_WI_STATUSES = new Set(Object.values(WI_STATUS));
 function updateWorkItemStatus(meta, status, reason) {
@@ -488,19 +506,14 @@ function updateWorkItemStatus(meta, status, reason) {
     return;
   }
 
-  let wiPath;
-  if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-    wiPath = path.join(MINIONS_DIR, 'work-items.json');
-  } else if (meta.source === 'work-item' && meta.project?.name) {
-    wiPath = path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json');
-  }
+  const wiPath = resolveWorkItemPath(meta);
   if (!wiPath) return;
 
-  const items = safeJson(wiPath);
-  if (!items || !Array.isArray(items)) return;
+  mutateJsonFileLocked(wiPath, (items) => {
+    if (!items || !Array.isArray(items)) return items;
+    const target = items.find(i => i.id === itemId);
+    if (!target) return items;
 
-  const target = items.find(i => i.id === itemId);
-  if (target) {
     if (meta.source === 'central-work-item-fanout') {
       if (!target.agentResults) target.agentResults = {};
       const parts = (meta.dispatchKey || '').split('-');
@@ -538,13 +551,11 @@ function updateWorkItemStatus(meta, status, reason) {
         target.failedAt = ts();
       }
     }
+    return items;
+  }, { defaultValue: [] });
 
-    shared.safeWrite(wiPath, items);
-    log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
-
-    // Sync status to PRD JSON so the two share the same value (work item is source of truth)
-    syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
-  }
+  log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
+  syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
 }
 
 const _VALID_PRD_STATUSES = new Set([...Object.values(WI_STATUS), 'missing']);
@@ -1371,5 +1382,7 @@ module.exports = {
   parseAgentOutput,
   runPostCompletionHooks,
   syncPrdFromPrs,
+  resolveWorkItemPath,
+  isItemCompleted,
 };
 

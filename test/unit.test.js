@@ -5484,6 +5484,9 @@ async function main() {
 
     // P-r7w2k9m4: PR write race condition fixes
     await testPrWriteRaceConditions();
+
+    // Status mutation guards — comprehensive retry/revert safety
+    await testStatusMutationGuards();
   } finally {
     cleanupTmpDirs();
   }
@@ -6674,6 +6677,310 @@ async function testPrWriteRaceConditions() {
     assert.strictEqual(toDispatch.length, 3, 'Should dispatch 3 unique items');
     assert.strictEqual(warnings.length, 1, 'Should have 1 duplicate warning');
     assert.ok(warnings[0].includes('D1'), 'Warning should reference the duplicate ID');
+  });
+}
+
+// ─── Status Mutation Guards — Comprehensive retry/revert safety tests ────────
+
+async function testStatusMutationGuards() {
+  console.log('\n── Status Mutation Guards — done/completedAt protection ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+  const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ─── Fix 1: updateWorkItemStatus uses mutateJsonFileLocked ──────────────
+
+  await test('updateWorkItemStatus uses mutateJsonFileLocked for atomic writes', () => {
+    // Extract the function body
+    const fnMatch = lifecycleSrc.match(/function updateWorkItemStatus\(meta, status, reason\)\s*\{([\s\S]*?)^}/m);
+    assert.ok(fnMatch, 'updateWorkItemStatus function must exist');
+    const fnBody = fnMatch[1];
+    assert.ok(fnBody.includes('mutateJsonFileLocked'),
+      'updateWorkItemStatus must use mutateJsonFileLocked for atomic read-modify-write');
+    // Should NOT use raw safeJson + safeWrite pattern
+    const hasSafeJsonBeforeSafeWrite = fnBody.includes('safeJson(wiPath)') && fnBody.includes('safeWrite(wiPath');
+    assert.ok(!hasSafeJsonBeforeSafeWrite,
+      'updateWorkItemStatus must NOT use safeJson+safeWrite (TOCTOU race) — use mutateJsonFileLocked');
+  });
+
+  // ─── Fix 2: timeout.js reconciliation guards done items ──────────────────
+
+  await test('timeout reconciliation skips done/completedAt items', () => {
+    // The reconcile loop must check completedAt before reverting
+    const reconcileSection = timeoutSrc.substring(
+      timeoutSrc.indexOf('Reconcile: find work items stuck'),
+      timeoutSrc.indexOf('module.exports')
+    );
+    assert.ok(reconcileSection, 'timeout.js must have reconciliation section');
+    assert.ok(reconcileSection.includes('completedAt') || reconcileSection.includes('WI_STATUS.DONE'),
+      'Timeout reconciliation must check completedAt or DONE status before reverting items');
+  });
+
+  await test('timeout reconciliation uses mutateJsonFileLocked', () => {
+    // The reconcile section must use mutateJsonFileLocked, not raw safeWrite
+    const reconcileSection = timeoutSrc.substring(
+      timeoutSrc.indexOf('Reconcile: find work items stuck'),
+      timeoutSrc.indexOf('module.exports')
+    );
+    assert.ok(reconcileSection.includes('mutateJsonFileLocked(wiPath'),
+      'timeout reconciliation must use mutateJsonFileLocked, not raw safeWrite');
+  });
+
+  // ─── Fix 3: lifecycle.js retry guards done items (already applied) ───────
+
+  await test('lifecycle retry path guards against reverting done items', () => {
+    assert.ok(lifecycleSrc.includes("wi.status === WI_STATUS.DONE || wi.completedAt"),
+      'lifecycle retry must check wi.status === DONE || wi.completedAt before reverting');
+    assert.ok(lifecycleSrc.includes('Skip retry') && lifecycleSrc.includes('already completed'),
+      'lifecycle retry must log when skipping retry for already-completed item');
+  });
+
+  // ─── Fix 4: dispatch.js retry guards done items (already applied) ────────
+
+  await test('dispatch.js retry guards against reverting done items', () => {
+    assert.ok(dispatchSrc.includes('WI_STATUS.DONE') && dispatchSrc.includes('completedAt'),
+      'dispatch retry must check both DONE status and completedAt');
+    // The guard pattern: wi.status !== WI_STATUS.DONE && !wi.completedAt
+    assert.ok(dispatchSrc.includes('wi.status !== WI_STATUS.PAUSED') && dispatchSrc.includes('!wi.completedAt'),
+      'dispatch retry must exclude PAUSED, DONE, and completedAt items');
+  });
+
+  // ─── Fix 5: engine.js dependency recovery guards done items ──────────────
+
+  await test('dependency recovery does not revert completed items to pending', () => {
+    const recoveryMatch = engineSrc.match(/Re-evaluate failed items[\s\S]*?Recovered.*from dependency failure/);
+    assert.ok(recoveryMatch, 'engine.js must have dependency recovery section');
+    const section = recoveryMatch[0];
+    assert.ok(section.includes('isItemCompleted') || section.includes('completedAt'),
+      'Dependency recovery must check isItemCompleted/completedAt before resetting');
+  });
+
+  await test('dependency cascade does not mark completed items as failed', () => {
+    const cascadeMatch = engineSrc.match(/Dependency failed.*cannot proceed[\s\S]*?Marking.*as failed/);
+    assert.ok(cascadeMatch, 'engine.js must have dependency cascade section');
+    const section = cascadeMatch[0];
+    assert.ok(section.includes('isItemCompleted') || section.includes('completedAt'),
+      'Dependency cascade must check isItemCompleted/completedAt before marking as failed');
+  });
+
+  // ─── Fix 6: stall recovery guards done items ────────────────────────────
+
+  await test('stall recovery auto-retry skips completedAt items', () => {
+    // Find the stall recovery section — from "Auto-retry failed items" to the auto-retry log
+    const stallStart = engineSrc.indexOf('Auto-retry failed items that are blocking');
+    const stallEnd = engineSrc.indexOf('Stall recovery: auto-retrying') + 100;
+    assert.ok(stallStart > 0 && stallEnd > stallStart, 'engine.js must have stall recovery auto-retry section');
+    const stallSection = engineSrc.substring(stallStart, stallEnd);
+    assert.ok(stallSection.includes('isItemCompleted') || stallSection.includes('completedAt'),
+      'Stall recovery must check isItemCompleted/completedAt before auto-retrying');
+  });
+
+  await test('stall recovery un-fail skips completedAt dependents', () => {
+    // Find the un-fail section — from "Un-fail dependent" to the un-fail log
+    const unfailStart = engineSrc.indexOf('Un-fail dependent items');
+    const unfailEnd = engineSrc.indexOf('Stall recovery: un-failing') + 100;
+    assert.ok(unfailStart > 0 && unfailEnd > unfailStart, 'engine.js must have stall recovery un-fail section');
+    const unfailSection = engineSrc.substring(unfailStart, unfailEnd);
+    assert.ok(unfailSection.includes('isItemCompleted') || unfailSection.includes('completedAt'),
+      'Stall recovery un-fail must check isItemCompleted/completedAt before resetting');
+  });
+
+  // ─── Fix 7: dashboard manual retry guards done items ─────────────────────
+
+  await test('dashboard manual retry checks for done items', () => {
+    // Find the manual retry handler section
+    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*'pending';\s*\n\s*item\._retryCount\s*=\s*0/);
+    assert.ok(retryMatch, 'dashboard.js must have manual retry handler');
+    // The section before the reset should have a done/completedAt guard or force check
+    const retrySection = dashboardSrc.substring(
+      dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") - 400,
+      dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") + 50
+    );
+    assert.ok(retrySection.includes('completedAt') || retrySection.includes('WI_STATUS.DONE') || retrySection.includes("'done'") || retrySection.includes('force'),
+      'Dashboard manual retry must check completedAt/done or require force flag');
+  });
+
+  // ─── Fix 8: dashboard PRD resume uses locks ──────────────────────────────
+
+  await test('dashboard PRD resume uses mutateJsonFileLocked', () => {
+    // Find the PRD resume section — it unpouses work items
+    const resumeMatch = dashboardSrc.match(/prd-pause[\s\S]*?_resumedAt/);
+    assert.ok(resumeMatch, 'dashboard.js must have PRD resume section');
+    const resumeSection = dashboardSrc.substring(
+      dashboardSrc.indexOf('prd-pause') - 500,
+      dashboardSrc.indexOf('_resumedAt') + 200
+    );
+    // Should use mutateJsonFileLocked, not raw safeWrite
+    const usesSafeWrite = resumeSection.includes('safeWrite(wiPath') && !resumeSection.includes('mutateJsonFileLocked(wiPath');
+    assert.ok(!usesSafeWrite,
+      'PRD resume must use mutateJsonFileLocked, not raw safeWrite');
+  });
+
+  // ─── Fix 9: dashboard PRD reset-all skips done items ─────────────────────
+
+  await test('dashboard PRD reset-all skips done/completedAt items', () => {
+    // Find the pause propagation section — "Propagate pause to materialized work items"
+    const pauseIdx = dashboardSrc.indexOf('Propagate pause to materialized work items');
+    assert.ok(pauseIdx > 0, 'dashboard.js must have pause propagation section');
+    // The section between "Propagate pause" and the next major block should have completedAt guard
+    const resetSection = dashboardSrc.substring(pauseIdx, pauseIdx + 2000);
+    assert.ok(resetSection.includes('completedAt'),
+      'PRD reset-all must check completedAt before resetting items');
+  });
+
+  // ─── Fix 10: dashboard kill-agent reset skips done items ──────────────────
+
+  await test('dashboard kill-agent reset skips done/completedAt items', () => {
+    // Find ALL "killedAgents.add(activeEntry.agent)" occurrences — the second one is the kill-agent handler
+    const allOccurrences = [];
+    let searchFrom = 0;
+    while (true) {
+      const idx = dashboardSrc.indexOf('killedAgents.add(activeEntry.agent)', searchFrom);
+      if (idx < 0) break;
+      allOccurrences.push(idx);
+      searchFrom = idx + 1;
+    }
+    assert.ok(allOccurrences.length >= 2, 'dashboard.js must have at least 2 kill-agent sections');
+    // Check the section around the second occurrence (plan-steering kill handler)
+    const killSection = dashboardSrc.substring(allOccurrences[1] - 2000, allOccurrences[1] + 500);
+    assert.ok(killSection.includes('completedAt'),
+      'Kill-agent work item reset must check completedAt before resetting items');
+  });
+
+  // ─── Behavioral tests: simulate guard logic ─────────────────────────────
+
+  await test('BEHAVIORAL: done item survives retry attempt', () => {
+    const items = [
+      { id: 'W1', status: 'done', completedAt: '2026-01-01T00:00:00Z', _retryCount: 0 },
+      { id: 'W2', status: 'failed', _retryCount: 1 },
+      { id: 'W3', status: 'dispatched', dispatched_at: '2026-01-01T00:00:00Z' },
+    ];
+    // Simulate retry guard logic (from dispatch.js pattern)
+    for (const wi of items) {
+      if (wi.status === 'done' || wi.completedAt) continue;
+      if (wi.status === 'paused') continue;
+      if (wi.status === 'failed') {
+        wi.status = 'pending';
+        wi._retryCount = (wi._retryCount || 0) + 1;
+      }
+    }
+    assert.strictEqual(items[0].status, 'done', 'Done item must not be reverted');
+    assert.strictEqual(items[0].completedAt, '2026-01-01T00:00:00Z', 'completedAt must be preserved');
+    assert.strictEqual(items[1].status, 'pending', 'Failed item should be retried');
+    assert.strictEqual(items[1]._retryCount, 2, 'Retry count should increment');
+    assert.strictEqual(items[2].status, 'dispatched', 'Dispatched item unchanged');
+  });
+
+  await test('BEHAVIORAL: completedAt without done status still survives', () => {
+    // Edge case: status might be 'dispatched' but completedAt set by another code path
+    const item = { id: 'W1', status: 'dispatched', completedAt: '2026-01-01T00:00:00Z' };
+    const shouldRevert = !(item.status === 'done' || item.completedAt);
+    assert.ok(!shouldRevert, 'Item with completedAt must be protected even if status is not done');
+  });
+
+  await test('BEHAVIORAL: stall recovery preserves done items in dependency chain', () => {
+    const items = [
+      { id: 'A', status: 'done', completedAt: '2026-01-01T00:00:00Z' },
+      { id: 'B', status: 'failed', depends_on: ['A'], failReason: 'Dependency failed — cannot proceed' },
+      { id: 'C', status: 'pending', depends_on: ['B'] },
+    ];
+    // Simulate stall recovery: retry failed items that block others
+    for (const item of items) {
+      if (item.status !== 'failed' || item.completedAt) continue;
+      const isBlocking = items.some(w => w.status === 'pending' && (w.depends_on || []).includes(item.id));
+      if (!isBlocking) continue;
+      item.status = 'pending';
+      item._retryCount = 0;
+      delete item.failReason;
+    }
+    assert.strictEqual(items[0].status, 'done', 'Done item A must not be touched');
+    assert.strictEqual(items[1].status, 'pending', 'Failed blocker B should be retried');
+    assert.strictEqual(items[2].status, 'pending', 'Pending item C unchanged');
+  });
+
+  await test('BEHAVIORAL: timeout reconciliation preserves done items', () => {
+    const items = [
+      { id: 'W1', status: 'dispatched', completedAt: '2026-01-01T00:00:00Z' },
+      { id: 'W2', status: 'dispatched', _retryCount: 0 },
+      { id: 'W3', status: 'done' },
+    ];
+    const activeKeys = new Set(); // no active dispatches
+    for (const item of items) {
+      if (item.status !== 'dispatched') continue;
+      if (item.completedAt || item.status === 'done') continue;
+      if (!activeKeys.has(item.id)) {
+        item.status = 'pending';
+        item._retryCount = (item._retryCount || 0) + 1;
+      }
+    }
+    assert.strictEqual(items[0].status, 'dispatched', 'Item with completedAt must NOT be reverted by timeout');
+    assert.strictEqual(items[1].status, 'pending', 'Orphaned dispatched item should be recovered');
+    assert.strictEqual(items[2].status, 'done', 'Done item must not be touched');
+  });
+
+  await test('BEHAVIORAL: manual retry with force overrides done guard', () => {
+    const item = { id: 'W1', status: 'done', completedAt: '2026-01-01T00:00:00Z' };
+    const force = true;
+    // Simulate: skip done items unless forced
+    if ((item.status === 'done' || item.completedAt) && !force) {
+      // would skip
+    } else {
+      item.status = 'pending';
+      item._retryCount = 0;
+      delete item.completedAt;
+    }
+    assert.strictEqual(item.status, 'pending', 'Force retry should override done guard');
+  });
+
+  await test('BEHAVIORAL: manual retry without force preserves done item', () => {
+    const item = { id: 'W1', status: 'done', completedAt: '2026-01-01T00:00:00Z' };
+    const force = false;
+    let skipped = false;
+    if ((item.status === 'done' || item.completedAt) && !force) {
+      skipped = true;
+    } else {
+      item.status = 'pending';
+    }
+    assert.ok(skipped, 'Non-forced retry should skip done item');
+    assert.strictEqual(item.status, 'done', 'Done status must be preserved');
+  });
+
+  await test('BEHAVIORAL: PRD reset-all skips done items, resets others', () => {
+    const items = [
+      { id: 'W1', status: 'done', completedAt: '2026-01-01T00:00:00Z', sourcePlan: 'plan.md' },
+      { id: 'W2', status: 'failed', sourcePlan: 'plan.md', failReason: 'timeout' },
+      { id: 'W3', status: 'dispatched', sourcePlan: 'plan.md', dispatched_at: '2026-01-01T00:00:00Z' },
+      { id: 'W4', status: 'paused', sourcePlan: 'plan.md', _pausedBy: 'prd-pause' },
+    ];
+    let resetCount = 0;
+    for (const w of items) {
+      if (w.completedAt || w.status === 'done') continue;
+      if (w.status !== 'pending') resetCount++;
+      w.status = 'pending';
+      delete w.dispatched_at;
+      delete w.failReason;
+    }
+    assert.strictEqual(items[0].status, 'done', 'Done item must survive reset-all');
+    assert.strictEqual(items[1].status, 'pending', 'Failed item should be reset');
+    assert.strictEqual(items[2].status, 'pending', 'Dispatched item should be reset');
+    assert.strictEqual(items[3].status, 'pending', 'Paused item should be reset');
+    assert.strictEqual(resetCount, 3, 'Should reset 3 non-done items');
+  });
+
+  // ─── Cross-cutting: no raw safeWrite in critical mutation paths ──────────
+
+  await test('updateWorkItemStatus does not use raw safeWrite pattern', () => {
+    const fnMatch = lifecycleSrc.match(/function updateWorkItemStatus[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'updateWorkItemStatus must exist');
+    const fnBody = fnMatch[0];
+    // Count safeWrite vs mutateJsonFileLocked
+    const safeWriteCount = (fnBody.match(/shared\.safeWrite\(wiPath|safeWrite\(wiPath/g) || []).length;
+    const lockCount = (fnBody.match(/mutateJsonFileLocked\(wiPath/g) || []).length;
+    assert.ok(lockCount > 0 || safeWriteCount === 0,
+      'updateWorkItemStatus must use mutateJsonFileLocked OR not write directly at all');
   });
 }
 

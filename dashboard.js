@@ -14,7 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -895,6 +895,11 @@ const server = http.createServer(async (req, res) => {
         if (!Array.isArray(items)) items = [];
         const item = items.find(i => i.id === id);
         if (!item) return items;
+        // Don't reset completed items unless explicitly forced
+        if ((item.status === 'done' || item.completedAt) && !body.force) {
+          found = 'already_done';
+          return items;
+        }
         found = true;
         item.status = 'pending';
         item._retryCount = 0; // Reset retry counter on manual retry
@@ -902,9 +907,11 @@ const server = http.createServer(async (req, res) => {
         delete item.dispatched_to;
         delete item.failReason;
         delete item.failedAt;
+        delete item.completedAt;
         delete item.fanOutAgents;
         return items;
       });
+      if (found === 'already_done') return jsonReply(res, 409, { error: 'item already completed — use force:true to retry' });
       if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
       // Clear completed dispatch entries so the engine doesn't dedup this item
@@ -1800,20 +1807,19 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
       for (const wiPath of wiPaths) {
         try {
-          const items = safeJson(wiPath);
-          if (!items) continue;
-          let changed = false;
-          for (const w of items) {
-            if (w.sourcePlan === body.file && w.status === 'paused' && w._pausedBy === 'prd-pause') {
-              w.status = 'pending';
-              delete w._pausedBy;
-              w._resumedAt = new Date().toISOString();
-              resumedItemIds.push(w.id);
-              resumed++;
-              changed = true;
+          mutateJsonFileLocked(wiPath, (items) => {
+            if (!Array.isArray(items)) return items;
+            for (const w of items) {
+              if (w.sourcePlan === body.file && w.status === 'paused' && w._pausedBy === 'prd-pause') {
+                w.status = 'pending';
+                delete w._pausedBy;
+                w._resumedAt = new Date().toISOString();
+                resumedItemIds.push(w.id);
+                resumed++;
+              }
             }
-          }
-          if (changed) safeWrite(wiPath, items);
+            return items;
+          }, { defaultValue: [] });
         } catch (e) { console.error('resume work items:', e.message); }
       }
 
@@ -1864,7 +1870,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             for (const w of items) {
               if (w.sourcePlan !== body.file) continue;
               // Keep completed items as-is, reset everything else to pending.
-              if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+              if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
 
               if (w.status === 'dispatched') {
                 // Kill the agent working on this item, if any.
@@ -2574,7 +2580,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                     let changed = false;
                     for (const w of items) {
                       if (w.sourcePlan !== f) continue;
-                      if (w.status === 'done' || w.status === 'implemented' || w.status === 'complete' || w.status === 'in-pr') continue;
+                      if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
                       if (w.status === 'dispatched') {
                         const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
                         if (activeEntry) {

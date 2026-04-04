@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeRead, safeWrite, safeJson, getProjects, projectWorkItemsPath, log, ts,
+const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
   ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
@@ -229,43 +229,43 @@ function checkTimeouts(config) {
     allWiPaths.push(projectWorkItemsPath(project));
   }
   for (const wiPath of allWiPaths) {
-    const items = safeJson(wiPath);
-    if (!items || !Array.isArray(items)) continue;
-    let changed = false;
-    for (const item of items) {
-      if (item.status !== WI_STATUS.DISPATCHED) continue;
-      // Check if any active dispatch references this item
-      // Dispatch keys include project name: work-{project}-{id} or central-work-{id}
-      const projectNames = getProjects(config).map(p => p.name);
-      const possibleKeys = [
-        `central-work-${item.id}`,
-        ...projectNames.map(p => `work-${p}-${item.id}`),
-      ];
-      const isActive = possibleKeys.some(k => activeKeys.has(k)) ||
-        (dispatchData.active || []).some(d => d.meta?.item?.id === item.id);
-      if (!isActive) {
-        // Don't revive items that were explicitly failed for non-retryable reasons
-        if (item.status === WI_STATUS.FAILED && item.failReason && !item.failReason.includes('Agent died')) continue;
-        const retries = (item._retryCount || 0);
-        const maxRetries = DEFAULTS.maxRetries;
-        if (retries < maxRetries) {
-          log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/${maxRetries}`);
-          item.status = WI_STATUS.PENDING;
-          item._retryCount = retries + 1;
-          delete item.dispatched_at;
-          delete item.dispatched_to;
-          delete item._pendingReason;
-        } else {
-          log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
-          item.status = WI_STATUS.FAILED;
-          item.failReason = `Agent died or was killed (${maxRetries} retries exhausted)`;
-          item.failedAt = ts();
-          delete item._pendingReason;
+    mutateJsonFileLocked(wiPath, (items) => {
+      if (!items || !Array.isArray(items)) return items;
+      let changed = false;
+      for (const item of items) {
+        if (item.status !== WI_STATUS.DISPATCHED) continue;
+        // Never revert completed items
+        if (item.completedAt || item.status === WI_STATUS.DONE) continue;
+        // Check if any active dispatch references this item
+        const projectNames = getProjects(config).map(p => p.name);
+        const possibleKeys = [
+          `central-work-${item.id}`,
+          ...projectNames.map(p => `work-${p}-${item.id}`),
+        ];
+        const isActive = possibleKeys.some(k => activeKeys.has(k)) ||
+          (dispatchData.active || []).some(d => d.meta?.item?.id === item.id);
+        if (!isActive) {
+          const retries = (item._retryCount || 0);
+          const maxRetries = DEFAULTS.maxRetries;
+          if (retries < maxRetries) {
+            log('info', `Reconcile: work item ${item.id} agent died — auto-retry ${retries + 1}/${maxRetries}`);
+            item.status = WI_STATUS.PENDING;
+            item._retryCount = retries + 1;
+            delete item.dispatched_at;
+            delete item.dispatched_to;
+            delete item._pendingReason;
+          } else {
+            log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
+            item.status = WI_STATUS.FAILED;
+            item.failReason = `Agent died or was killed (${maxRetries} retries exhausted)`;
+            item.failedAt = ts();
+            delete item._pendingReason;
+          }
+          changed = true;
         }
-        changed = true;
       }
-    }
-    if (changed) safeWrite(wiPath, items);
+      return items;
+    }, { defaultValue: [] });
   }
 }
 

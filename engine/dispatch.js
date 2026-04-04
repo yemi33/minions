@@ -104,9 +104,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
       let retries = (item.meta.item._retryCount || 0);
       try {
-        const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
+        const wiPath = lifecycle().resolveWorkItemPath(item.meta);
         if (wiPath) {
           const items = safeJson(wiPath);
           if (items && Array.isArray(items)) {
@@ -130,9 +128,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         }
         // Increment retry counter on the source work item
         try {
-          const wiPath = item.meta.source === 'central-work-item' || item.meta.source === 'central-work-item-fanout'
-            ? path.join(MINIONS_DIR, 'work-items.json')
-            : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
+          const wiPath = lifecycle().resolveWorkItemPath(item.meta);
           if (wiPath) {
             const items = safeJson(wiPath);
             if (!items || !Array.isArray(items)) throw new Error('work items unreadable');

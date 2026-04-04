@@ -132,7 +132,8 @@ const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
 
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
-  updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs } = require('./engine/lifecycle');
+  updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
+  isItemCompleted } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -1381,7 +1382,7 @@ function discoverFromWorkItems(config, project) {
   for (const item of items) {
     try {
     // Re-evaluate failed items: if deps have recovered, reset to pending
-    if (item.status === WI_STATUS.FAILED && item.failReason === 'Dependency failed — cannot proceed') {
+    if (item.status === WI_STATUS.FAILED && !isItemCompleted(item) && item.failReason === 'Dependency failed — cannot proceed') {
       const depStatus = areDependenciesMet(item, config);
       if (depStatus === true) {
         item.status = WI_STATUS.PENDING;
@@ -1396,7 +1397,7 @@ function discoverFromWorkItems(config, project) {
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
     if (item.depends_on && item.depends_on.length > 0) {
       const depStatus = areDependenciesMet(item, config);
-      if (depStatus === 'failed') {
+      if (depStatus === 'failed' && !isItemCompleted(item)) {
         item.status = WI_STATUS.FAILED;
         item.failReason = 'Dependency failed — cannot proceed';
         delete item._pendingReason;
@@ -2272,7 +2273,7 @@ async function tickInner() {
             if (pendingWithBlockedDeps.length > 0) {
               // Auto-retry failed items that are blocking others (transient errors)
               for (const item of items) {
-                if (item.status !== 'failed') continue;
+                if (item.status !== 'failed' || isItemCompleted(item)) continue;
                 // Only retry if something depends on this item
                 const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
                 if (!isBlocking) continue;
@@ -2310,7 +2311,7 @@ async function tickInner() {
             if (changed) {
               const retriedIds = new Set(items.filter(w => w.status === WI_STATUS.PENDING && w._retryCount === 0).map(w => w.id));
               for (const dep of items) {
-                if (dep.status === WI_STATUS.FAILED && dep.failReason === 'Dependency failed — cannot proceed') {
+                if (dep.status === WI_STATUS.FAILED && !isItemCompleted(dep) && dep.failReason === 'Dependency failed — cannot proceed') {
                   const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
                   if (blockers.length > 0) {
                     log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
