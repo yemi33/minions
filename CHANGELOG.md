@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.349 (2026-04-04)
+
+### Fixes
+-  remove settings Reset button when modal closes
+-  comprehensive status mutation guards — prevent done items from being reverted
+
+### Other
+- docs: update CLAUDE.md with constants, best practices, latest architecture
+
 ## 0.1.346 (2026-04-04)
 
 ### Fixes
