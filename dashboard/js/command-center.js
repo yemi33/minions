@@ -312,9 +312,9 @@ async function _ccDoSend(message, skipUserMsg) {
     if (e.name === 'AbortError') {
       if (streamedText) {
         const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px">Stopped after ' + ccElapsed + 's</div>');
+        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">Stopped after ' + ccElapsed + 's</div>');
       } else {
-        ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Stopped</span>');
+        ccAddMessage('assistant', '<span style="color:var(--red);font-size:11px">Stopped</span>');
       }
     } else {
       const retryId = 'cc-retry-' + Date.now();

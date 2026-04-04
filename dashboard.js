@@ -3022,8 +3022,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightSince = Date.now();
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-      // Clear ccInFlight if client disconnects mid-stream
-      req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; });
+      let _ccStreamAbort = null;
+      // Kill LLM process immediately if client disconnects mid-stream
+      req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; if (_ccStreamAbort) _ccStreamAbort(); });
 
       try {
         // Session management — same as non-streaming path
@@ -3036,7 +3037,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const prompt = preamble + '\n\n---\n\n' + body.message;
 
         const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
-        const result = await callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
+        const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
           timeout: 900000, label: 'command-center', model: 'sonnet', maxTurns: 50,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId,
@@ -3047,6 +3048,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
           }
         });
+        _ccStreamAbort = llmPromise.abort;
+        const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
         // Handle failure — same error reporting as non-streaming

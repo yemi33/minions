@@ -114,7 +114,8 @@ function isResumeSessionStillValid(result) {
  * onChunk(text) is called for each assistant text block as it arrives.
  */
 function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null } = {}) {
-  return new Promise((resolve) => {
+  let _abort = null;
+  const promise = new Promise((resolve) => {
     const id = uid();
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
     if (!require('fs').existsSync(tmpDir)) require('fs').mkdirSync(tmpDir, { recursive: true });
@@ -134,6 +135,8 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
     if (sessionId) args.push('--resume', sessionId);
 
     const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+
+    _abort = () => { shared.killImmediate(proc); };
 
     let stdout = '';
     let stderr = '';
@@ -197,6 +200,8 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
     });
   });
+  promise.abort = () => { if (_abort) _abort(); };
+  return promise;
 }
 
 module.exports = {
