@@ -3286,7 +3286,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleSettingsReset(req, res) {
     try {
-      const config = getConfig();
+      const config = queries.getConfig();
       config.engine = { ...shared.ENGINE_DEFAULTS };
       config.claude = { ...shared.DEFAULT_CLAUDE };
       config.agents = { ...shared.DEFAULT_AGENTS };

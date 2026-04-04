@@ -75,10 +75,7 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
     '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
 
-    '<div style="display:flex;align-items:center;gap:12px;margin-top:12px">' +
-      '<button onclick="resetSettingsToDefaults()" style="font-size:11px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Reset to Defaults</button>' +
-      '<span id="settings-status" style="font-size:11px;color:var(--muted)"></span>' +
-    '</div>' +
+    '<span id="settings-status" style="font-size:11px;color:var(--muted)"></span>' +
   '</div>';
 
   document.getElementById('modal-title').textContent = 'Settings';
@@ -86,15 +83,22 @@ async function openSettings() {
   // Add save button to modal header actions (next to copy/close)
   const actions = document.querySelector('.modal-header-actions');
   if (!actions) return;
-  const existingSaveBtn = document.getElementById('modal-settings-save');
-  if (!existingSaveBtn) {
+  if (!document.getElementById('modal-settings-reset')) {
+    const resetBtn = document.createElement('button');
+    resetBtn.id = 'modal-settings-reset';
+    resetBtn.className = 'modal-copy';
+    resetBtn.style.cssText = 'color:var(--red);border-color:var(--red)';
+    resetBtn.textContent = 'Reset';
+    resetBtn.onclick = resetSettingsToDefaults;
+    actions.insertBefore(resetBtn, actions.lastElementChild);
+  }
+  if (!document.getElementById('modal-settings-save')) {
     const saveBtn = document.createElement('button');
     saveBtn.id = 'modal-settings-save';
     saveBtn.className = 'modal-copy';
     saveBtn.style.cssText = 'color:var(--green);border-color:var(--green)';
     saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save';
     saveBtn.onclick = saveSettings;
-    // Insert before the close button (last child)
     actions.insertBefore(saveBtn, actions.lastElementChild);
   }
   document.getElementById('modal-body').innerHTML = html;
