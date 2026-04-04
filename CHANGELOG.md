@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.340 (2026-04-04)
+
+### Features
+-  add Reset to Defaults button in settings modal
+
+### Fixes
+-  work items table shows date (YYYY-MM-DD) instead of time-only
+-  CC stop button kills LLM process immediately + fix text/copy overlap
+
 ## 0.1.337 (2026-04-03)
 
 ### Fixes
