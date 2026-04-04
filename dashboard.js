@@ -3290,7 +3290,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       config.engine = { ...shared.ENGINE_DEFAULTS };
       config.claude = { ...shared.DEFAULT_CLAUDE };
       config.agents = { ...shared.DEFAULT_AGENTS };
-      safeWrite(CONFIG_PATH, config);
+      safeWrite(path.join(MINIONS_DIR, 'config.json'), config);
       return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }

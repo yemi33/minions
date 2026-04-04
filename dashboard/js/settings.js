@@ -100,13 +100,7 @@ async function openSettings() {
     saveBtn.onclick = saveSettings;
     actions.insertBefore(saveBtn, actions.lastElementChild);
   }
-  if (!document.getElementById('settings-status')) {
-    const status = document.createElement('span');
-    status.id = 'settings-status';
-    status.style.cssText = 'font-size:11px;color:var(--muted)';
-    actions.insertBefore(status, actions.lastElementChild);
-  }
-  document.getElementById('modal-body').innerHTML = html;
+  document.getElementById('modal-body').innerHTML = '<div id="settings-status" style="font-size:11px;min-height:16px;margin-bottom:4px"></div>' + html;
   document.getElementById('modal-body').style.fontFamily = '';
   document.getElementById('modal-body').style.whiteSpace = '';
   document.getElementById('modal').classList.add('open');
