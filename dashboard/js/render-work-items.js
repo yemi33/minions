@@ -56,7 +56,7 @@ function wiRow(item) {
       (item.failReason ? '<span style="display:block;font-size:9px;color:var(--red)" title="' + escHtml(item.failReason) + '">' + escHtml(item.failReason.slice(0, 30)) + '</span>' : '') +
     '</td>' +
     '<td>' + prLink + '</td>' +
-    '<td><span class="pr-date">' + escHtml((item.created || '').slice(0, 10)) + '</span></td>' +
+    '<td><span class="pr-date">' + escHtml((item.created || '').slice(0, 16).replace('T', ' ')) + '</span></td>' +
     '<td style="white-space:nowrap;font-size:9px;color:var(--muted)">' +
       (item.references && item.references.length ? '<span title="' + item.references.length + ' reference(s)" style="margin-right:4px">&#x1F517;' + item.references.length + '</span>' : '') +
       (item.acceptanceCriteria && item.acceptanceCriteria.length ? '<span title="' + item.acceptanceCriteria.length + ' acceptance criteria">&#x2611;' + item.acceptanceCriteria.length + '</span>' : '') +
