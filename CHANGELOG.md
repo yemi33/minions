@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.346 (2026-04-04)
+
+### Fixes
+-  settings reset CONFIG_PATH error + status shown beneath buttons
+-  move settings status message to header actions bar next to buttons
+
 ## 0.1.344 (2026-04-04)
 
 ### Fixes
