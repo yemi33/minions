@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.338 (2026-04-04)
+
+### Features
+-  add Reset to Defaults button in settings modal
+
 ## 0.1.337 (2026-04-03)
 
 ### Fixes
