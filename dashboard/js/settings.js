@@ -75,7 +75,6 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Routing Table</h3>' +
     '<textarea id="set-routing" rows="12" style="width:100%;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace;font-size:11px;resize:vertical">' + escHtml(data.routing || '') + '</textarea>' +
 
-    '<span id="settings-status" style="font-size:11px;color:var(--muted)"></span>' +
   '</div>';
 
   document.getElementById('modal-title').textContent = 'Settings';
@@ -100,6 +99,12 @@ async function openSettings() {
     saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save';
     saveBtn.onclick = saveSettings;
     actions.insertBefore(saveBtn, actions.lastElementChild);
+  }
+  if (!document.getElementById('settings-status')) {
+    const status = document.createElement('span');
+    status.id = 'settings-status';
+    status.style.cssText = 'font-size:11px;color:var(--muted)';
+    actions.insertBefore(status, actions.lastElementChild);
   }
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal-body').style.fontFamily = '';
