@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.378 (2026-04-06)
+
+### Features
+- Fix 3 crash bugs: fanAgentId, null dereferences, cleanDispatchEntries (#228)
+
+### Fixes
+-  preserve horizontal scroll position on PR and work item tables
+
 ## 0.1.376 (2026-04-06)
 
 ### Features
