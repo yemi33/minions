@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.414 (2026-04-06)
+
+### Fixes
+-  use shell exec for npm view — execFile can't run .cmd on Windows
+
 ## 0.1.413 (2026-04-06)
 
 ### Fixes
