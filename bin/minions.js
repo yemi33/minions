@@ -233,9 +233,9 @@ function init() {
     '.npmignore', '.gitignore', '.github',
   ]);
 
-  // Files that are always overwritten (engine code)
+  // Files that are always overwritten (engine code + version metadata)
   const alwaysUpdate = (name) =>
-    name.endsWith('.js') || name.endsWith('.html');
+    name.endsWith('.js') || name.endsWith('.html') || name === 'package.json';
 
   // Files that should be added if missing but never overwritten (user customizations)
   const neverOverwrite = (name) =>

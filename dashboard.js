@@ -13,7 +13,7 @@ const llm = require('./engine/llm');
 
 // Dashboard version stamp — captured at module load so it reflects the code actually running
 const _dashboardVersion = {
-  codeVersion: (() => { try { return require('./package.json').version; } catch { return null; } })(),
+  codeVersion: (() => { try { return require('./package.json').version; } catch {} try { return require('@yemi33/minions/package.json').version; } catch {} return null; })(),
   codeCommit: (() => { try { return require('child_process').execSync('git rev-parse --short HEAD', { cwd: __dirname, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch { return null; } })(),
   startedAt: new Date().toISOString(),
   pid: process.pid,
@@ -224,6 +224,10 @@ function getDiskVersion() {
     delete require.cache[pkgPath]; // bust Node's require cache so npm updates are detected
     diskVersion = require('./package.json').version;
   } catch {}
+  // Fallback: if no local package.json (e.g. ~/.minions/ missing it), try the npm package root
+  if (!diskVersion) {
+    try { diskVersion = require('@yemi33/minions/package.json').version; } catch {}
+  }
   let diskCommit = null;
   try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
   _diskVersionCache = { diskVersion, diskCommit };
