@@ -2,6 +2,7 @@
 
 let livePollingInterval = null;
 let liveEventSource = null;
+let _steerInFlight = false;
 
 function renderLiveChatMessage(raw) {
   const el = document.getElementById('live-messages');
@@ -43,7 +44,8 @@ function renderLiveChatMessage(raw) {
     // Human steering messages
     if (trimmed.startsWith('[human-steering]')) {
       const msg = trimmed.replace('[human-steering] ', '');
-      el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(msg) + '</div>';
+      el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(msg) +
+        '<div style="font-size:9px;opacity:0.7;margin-top:2px">\u2713 Queued</div></div>';
       continue;
     }
 
@@ -111,6 +113,7 @@ function stopLivePolling() {
 
 async function refreshLiveOutput() {
   if (!currentAgentId || currentTab !== 'live') { stopLivePolling(); return; }
+  if (_steerInFlight) return; // Don't clobber immediate steering feedback
   try {
     const text = await fetch('/api/agent/' + currentAgentId + '/live?tail=16384').then(r => r.text());
     const el = document.getElementById('live-messages');
@@ -129,11 +132,14 @@ async function sendSteering() {
   const message = input.value.trim();
   input.value = '';
 
+  // Pause polling so the immediate feedback isn't clobbered
+  _steerInFlight = true;
+
   // Immediate feedback — show the message right away
   const el = document.getElementById('live-messages');
   if (el) {
-    el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) + '</div>';
-    el.innerHTML += '<div id="steer-pending" style="align-self:flex-end;font-size:10px;color:var(--muted);padding:0 4px;margin-bottom:4px">Sending...</div>';
+    el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) +
+      '<div id="steer-pending" style="font-size:9px;opacity:0.7;margin-top:2px">Sending...</div></div>';
     el.scrollTop = el.scrollHeight;
   }
 
@@ -145,13 +151,16 @@ async function sendSteering() {
     const pending = document.getElementById('steer-pending');
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      if (pending) { pending.textContent = '\u26A0 Failed: ' + (d.error || 'unknown'); pending.style.color = 'var(--red)'; }
+      if (pending) { pending.textContent = '\u26A0 Failed: ' + (d.error || 'unknown'); pending.style.opacity = '1'; }
     } else {
-      if (pending) { pending.textContent = '\u2713 Queued — agent will see this on next turn'; pending.style.color = 'var(--green)'; }
+      if (pending) pending.textContent = '\u2713 Queued — agent will see this on next turn';
     }
   } catch (e) {
     const pending = document.getElementById('steer-pending');
-    if (pending) { pending.textContent = '\u26A0 ' + e.message; pending.style.color = 'var(--red)'; }
+    if (pending) { pending.textContent = '\u26A0 ' + e.message; pending.style.opacity = '1'; }
+  } finally {
+    // Resume polling after a short delay so the log has the [human-steering] line
+    setTimeout(() => { _steerInFlight = false; refreshLiveOutput(); }, 500);
   }
 }
 
