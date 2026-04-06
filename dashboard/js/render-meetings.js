@@ -3,6 +3,7 @@
 let _showArchived = false;
 const MTG_PER_PAGE = 10;
 let _mtgPage = 0;
+let _lastMeetingHash = '';
 
 function renderMeetings(meetings) {
   meetings = (meetings || []).filter(function(m) { return !isDeleted('mtg:' + m.id); });
@@ -213,6 +214,7 @@ function openMeetingDetail(id) {
     .then(r => r.json())
     .then(data => {
       if (!data.meeting) { alert('Meeting not found'); return; }
+      _lastMeetingHash = JSON.stringify(data.meeting);
       _renderMeetingDetail(data.meeting);
 
       // Live-poll while modal is open
@@ -225,10 +227,10 @@ function openMeetingDetail(id) {
           .then(r => r.json())
           .then(d => {
             if (d.meeting && _meetingPollId === id) {
-              const body = document.getElementById('modal-body');
-              const savedScroll = body ? body.scrollTop : 0;
+              const hash = JSON.stringify(d.meeting);
+              if (hash === _lastMeetingHash) return; // no change — skip re-render
+              _lastMeetingHash = hash;
               _renderMeetingDetail(d.meeting);
-              if (body) body.scrollTop = savedScroll;
             }
           })
           .catch(function() {});
