@@ -343,7 +343,8 @@ function getStatus() {
         dashboardStale,
         stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
-        updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+        // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
+        updateAvailable: !diskCommit && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
         _npmCheckError: _npmVersionCache?.error || null,
       };
     })(),
@@ -3488,7 +3489,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         dashboardRunning: _dashboardVersion.codeVersion,
         dashboardRunningCommit: _dashboardVersion.codeCommit,
         latest: npm.latest,
-        updateAvailable: !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
+        updateAvailable: !diskCommit && !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
         engineStale,
         dashboardStale,
         stale: engineStale || dashboardStale,
