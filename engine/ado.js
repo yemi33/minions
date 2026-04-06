@@ -170,7 +170,15 @@ async function pollPrStatus(config) {
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
     let newReviewStatus = pr.reviewStatus || 'pending';
     if (votes.length > 0) {
-      if (votes.some(v => v === -10)) newReviewStatus = 'changes-requested';
+      if (votes.some(v => v === -10)) {
+        // Don't re-trigger 'changes-requested' if fix agent already responded (waiting state).
+        // Only re-trigger if there's been a new push since the fix (reviewer re-reviewed).
+        if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
+          newReviewStatus = 'waiting'; // fix was submitted, same vote still present — wait for re-review
+        } else {
+          newReviewStatus = 'changes-requested';
+        }
+      }
       else if (votes.some(v => v >= 5)) newReviewStatus = 'approved';
       else if (votes.some(v => v === -5)) newReviewStatus = 'waiting';
       else newReviewStatus = 'pending';

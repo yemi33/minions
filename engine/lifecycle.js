@@ -762,8 +762,9 @@ function updatePrAfterFix(pr, project, source) {
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
     target.reviewStatus = 'waiting';
+    // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
+    if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
-      if (target.humanFeedback) target.humanFeedback.pendingFix = false;
       target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
       log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
     } else {

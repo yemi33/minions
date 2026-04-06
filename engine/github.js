@@ -204,7 +204,14 @@ async function pollPrStatus(config) {
       }
 
       let newReviewStatus = pr.reviewStatus || 'pending';
-      if (states.some(s => s === 'CHANGES_REQUESTED')) newReviewStatus = 'changes-requested';
+      if (states.some(s => s === 'CHANGES_REQUESTED')) {
+        // Don't re-trigger if fix agent already responded — wait for re-review
+        if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
+          newReviewStatus = 'waiting';
+        } else {
+          newReviewStatus = 'changes-requested';
+        }
+      }
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
       // If all reviews were COMMENTED (filtered out), states is empty but reviews exist.
