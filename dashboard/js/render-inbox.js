@@ -201,7 +201,14 @@ async function submitQuickNote() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title || 'Quick note', what: content || title })
     });
-    if (res.ok) { refresh(); }
+    if (res.ok) {
+      refresh();
+      const currentPage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
+      if (currentPage !== 'inbox') {
+        const link = document.querySelector('.sidebar-link[data-page="inbox"]');
+        if (link && !link.querySelector('.notif-badge')) showNotifBadge(link);
+      }
+    }
     else { const d = await res.json().catch(() => ({})); alert('Note failed: ' + (d.error || 'unknown')); openQuickNoteModal(); }
   } catch (e) { alert('Error saving note: ' + e.message); openQuickNoteModal(); }
 }

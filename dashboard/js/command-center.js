@@ -377,6 +377,8 @@ async function ccExecuteAction(action) {
         await _ccFetch('/api/notes', { title: action.title, what: action.content || action.description, author: 'command-center' });
         status.innerHTML = '&#10003; Note saved: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
+        var notePageLink = document.querySelector('.sidebar-link[data-page="inbox"]');
+        if (notePageLink && !notePageLink.querySelector('.notif-badge')) { var noteCurPage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page'); if (noteCurPage !== 'inbox') showNotifBadge(notePageLink); }
         break;
       }
       case 'pin': {
