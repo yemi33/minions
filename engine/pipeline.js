@@ -101,7 +101,7 @@ function completeRun(pipelineId, runId, status) {
 
 function resolveTemplate(str, run) {
   if (!str || typeof str !== 'string') return str;
-  return str.replace(/\{\{stages\.(\w+)\.(\w+)\}\}/g, (_, stageId, field) => {
+  return str.replace(/\{\{stages\.([\w-]+)\.([\w-]+)\}\}/g, (_, stageId, field) => {
     const stage = run?.stages?.[stageId];
     if (!stage) return '';
     if (field === 'output') return stage.output || '';
