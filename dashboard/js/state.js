@@ -89,6 +89,7 @@ function prunePrdRequeueState(workItems) {
 
 function rerenderPrdFromCache() {
   if (!window._lastStatus || !window._lastStatus.prdProgress) return;
+  renderPrdProgress(window._lastStatus.prdProgress);
   renderPrd(window._lastStatus.prd, window._lastStatus.prdProgress);
 }
 

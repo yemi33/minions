@@ -200,7 +200,7 @@ function renderPrdProgress(prog) {
 
   const renderGroupHeader = (g) => {
     const done = g.items.filter(i => i.status === 'done').length;
-    const wip = g.items.filter(i => i.status === 'dispatched' || i.status === 'dispatched').length;
+    const wip = g.items.filter(i => i.status === 'dispatched' || i.status === 'pending').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isAwaitingApproval = g.planStatus === 'awaiting-approval';
     const isPaused = g.planStatus === 'paused';
@@ -564,7 +564,7 @@ async function prdItemEdit(source, itemId) {
   let completionHtml = '';
   const isDone = item.status === 'done';
   const isFailed = item.status === 'failed';
-  const isActive = item.status === 'dispatched' || item.status === 'dispatched';
+  const isActive = item.status === 'dispatched' || item.status === 'pending';
 
   if (isDone || isFailed || isActive) {
     const agent = wi?.dispatched_to || completedEntry?.agent || '';
@@ -604,9 +604,9 @@ async function prdItemEdit(source, itemId) {
         '</select></div>' +
       '<div><label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Complexity</label>' +
         '<select id="prd-edit-complexity" style="padding:4px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text)">' +
-          '<option value="small"' + (item.complexity === 'small' ? ' selected' : '') + '>Small</option>' +
-          '<option value="medium"' + (item.complexity === 'medium' ? ' selected' : '') + '>Medium</option>' +
-          '<option value="large"' + (item.complexity === 'large' ? ' selected' : '') + '>Large</option>' +
+          '<option value="small"' + ((item.estimated_complexity || item.complexity) === 'small' ? ' selected' : '') + '>Small</option>' +
+          '<option value="medium"' + ((item.estimated_complexity || item.complexity) === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="large"' + ((item.estimated_complexity || item.complexity) === 'large' ? ' selected' : '') + '>Large</option>' +
         '</select></div>' +
     '</div>' +
     '<div style="display:flex;gap:8px">' +

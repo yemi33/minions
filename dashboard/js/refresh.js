@@ -41,7 +41,7 @@ function _processStatusUpdate(data) {
   renderAgents(data.agents);
   renderPrdProgress(data.prdProgress);
   _cachePrdItems(data.prdProgress);
-  renderInbox(data.inbox);
+  renderInbox(data.inbox || []);
   cmdUpdateAgentList(data.agents);
   cmdUpdateProjectList(data.projects || []);
   renderNotes(data.notes);
