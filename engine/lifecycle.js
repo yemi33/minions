@@ -727,6 +727,9 @@ function updatePrAfterReview(agentId, pr, project) {
 
   // Set reviewStatus to 'waiting' (single source of truth — synced from ADO/GitHub votes on next poll)
   target.reviewStatus = 'waiting';
+  // Track when this PR was last reviewed — used by engine.js to prevent re-dispatch
+  // until new commits are pushed (lastPushedAt > lastReviewedAt)
+  target.lastReviewedAt = ts();
   target.minionsReview = {
     reviewer: reviewerName,
     reviewedAt: ts(),
