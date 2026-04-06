@@ -5491,6 +5491,9 @@ async function main() {
 
     // Dashboard audit: critical functional bugs
     await testDashboardAuditCritical();
+
+    // Dashboard audit: XSS fixes
+    await testDashboardAuditXss();
   } finally {
     cleanupTmpDirs();
   }
@@ -7054,6 +7057,7 @@ async function testStatusMutationGuards() {
   });
 }
 
+<<<<<<< HEAD
 // ─── Dashboard Audit: Critical Functional Bugs ─────────────────────────────
 
 async function testDashboardAuditCritical() {
@@ -7108,6 +7112,77 @@ async function testDashboardAuditCritical() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     // The complexity dropdown must reference estimated_complexity
     assert.ok(src.includes('estimated_complexity'), 'edit modal must use estimated_complexity field from PRD JSON');
+  });
+}
+
+// ─── Dashboard Audit: XSS Fixes ────────────────────────────────────────────
+
+async function testDashboardAuditXss() {
+  console.log('\n── Dashboard Audit: XSS Fixes ──');
+
+  await test('render-agents.js escapes all agent fields in innerHTML', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    // The template literal section that builds agent cards
+    const cardSection = src.match(/grid\.innerHTML = agents\.map[\s\S]*?\.join\(''\)/);
+    assert.ok(cardSection, 'agent card template must exist');
+    const card = cardSection[0];
+    // These fields must be escaped
+    assert.ok(card.includes('escHtml(a.id)'), 'a.id must be escaped in onclick');
+    assert.ok(card.includes('escHtml(a.name)'), 'a.name must be escaped');
+    assert.ok(card.includes('escHtml(a.emoji)'), 'a.emoji must be escaped');
+    assert.ok(card.includes('escHtml(a.status)'), 'a.status must be escaped');
+    assert.ok(card.includes('escHtml(a.role)'), 'a.role must be escaped');
+  });
+
+  await test('render-agents.js detail header escapes agent fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+    const headerLine = src.match(/detail-agent-name.*innerHTML[\s\S]*?;/);
+    assert.ok(headerLine, 'detail header line must exist');
+    assert.ok(headerLine[0].includes('escHtml(agent.emoji)'), 'emoji must be escaped in detail');
+    assert.ok(headerLine[0].includes('escHtml(agent.name)'), 'name must be escaped in detail');
+    assert.ok(headerLine[0].includes('escHtml(agent.role)'), 'role must be escaped in detail');
+  });
+
+  await test('render-pinned.js uses data attributes instead of JS string injection', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pinned.js'), 'utf8');
+    // Should not have onclick="removePinnedNote('...')" with interpolated title
+    assert.ok(!src.includes("removePinnedNote(\\'" ) && !src.includes("removePinnedNote('" + "' + escHtml(e.title)"),
+      'removePinnedNote should not use JS string interpolation in onclick');
+    assert.ok(src.includes('data-pin-title'), 'should use data-pin-title attribute');
+    assert.ok(src.includes('this.dataset.pinTitle'), 'should read from dataset');
+  });
+
+  await test('render-inbox.js uses data attributes for item name in onclick', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    assert.ok(src.includes('data-inbox-name'), 'should use data-inbox-name attribute');
+    assert.ok(src.includes('this.dataset.inboxName'), 'should read from dataset');
+  });
+
+  await test('render-inbox.js escapes item.age', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    assert.ok(src.includes("escHtml(item.age") , 'item.age must be escaped');
+  });
+
+  await test('utils.js has safeUrl function that blocks javascript: protocol', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    assert.ok(src.includes('function safeUrl'), 'safeUrl must exist');
+    assert.ok(src.includes('javascript') || src.includes("https?"), 'safeUrl must whitelist http(s) only');
+  });
+
+  await test('render-prs.js uses safeUrl for PR links', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    assert.ok(src.includes('safeUrl(url)') || src.includes('safeUrl(pr.url'),
+      'PR link href must use safeUrl');
+  });
+
+  await test('render-prs.js table headers match cell count', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    const thMatch = src.match(/<th>/g) || [];
+    // Count <td> in prRow function
+    const rowFn = src.match(/function prRow[\s\S]*?return '[\s\S]*?<\/tr>/);
+    const tdMatch = rowFn ? (rowFn[0].match(/<td>/g) || []) : [];
+    assert.strictEqual(thMatch.length, tdMatch.length,
+      `PR table headers (${thMatch.length}) must match cell count (${tdMatch.length})`);
   });
 }
 

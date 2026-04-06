@@ -12,6 +12,13 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+function safeUrl(url) {
+  const s = String(url || '').trim();
+  if (/^https?:\/\//i.test(s)) return s;
+  if (s === '#' || s === '') return '#';
+  return '#'; // block javascript:, data:, etc.
+}
+
 function normalizePlanFile(file) {
   return String(file || '').replace(/\\/g, '/').split('/').pop();
 }

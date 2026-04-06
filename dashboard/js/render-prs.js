@@ -20,7 +20,7 @@ function prRow(pr) {
   const prId = pr.id || '—';
   return '<tr>' +
     '<td><span class="pr-id">' + escHtml(String(prId)) + '</span></td>' +
-    '<td><a class="pr-title" href="' + escHtml(url) + '" target="_blank">' + escHtml(pr.title || 'Untitled') + '</a></td>' +
+    '<td><a class="pr-title" href="' + escHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escHtml(pr.title || 'Untitled') + '</a></td>' +
     '<td><span class="pr-agent">' + escHtml(pr.agent || '—') + '</span></td>' +
     '<td><span class="pr-branch">' + escHtml(pr.branch || '—') + '</span></td>' +
     '<td><span class="pr-badge ' + reviewClass + '">' + escHtml(reviewLabel) + '</span></td>' +
@@ -33,7 +33,7 @@ function prRow(pr) {
 
 function prTableHtml(rows) {
   return '<div class="pr-table-wrap"><table class="pr-table"><thead><tr>' +
-    '<th>PR</th><th>Title</th><th>Agent</th><th>Branch</th><th>Review</th><th>Signed Off By</th><th>Build</th><th>Status</th><th>Created</th><th></th>' +
+    '<th>PR</th><th>Title</th><th>Agent</th><th>Branch</th><th>Review</th><th>Signed Off By</th><th>Build</th><th>Status</th><th>Created</th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
