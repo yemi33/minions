@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.416 (2026-04-06)
+
+### Features
+- Fix notes.md race condition and null guards in consolidation.js
+- Replace 5 raw status strings with WI_STATUS constants
+- Fix null crashes in lifecycle.js syncPrsFromOutput and createReviewFeedbackForAuthor
+
 ## 0.1.414 (2026-04-06)
 
 ### Fixes
