@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.365 (2026-04-06)
+
+### Fixes
+-  XSS vulnerabilities across dashboard components (#211)
+
 ## 0.1.364 (2026-04-06)
 
 ### Fixes
