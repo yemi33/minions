@@ -1898,9 +1898,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
                 }
               }
 
-              if (w.status !== 'pending') reset++;
-              w.status = 'pending';
-              delete w._pausedBy;
+              if (w.status !== 'paused') reset++;
+              w.status = 'paused';
+              w._pausedBy = 'prd-pause';
               delete w._resumedAt;
               delete w.dispatched_at;
               delete w.dispatched_to;
@@ -3202,8 +3202,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const config = queries.getConfig();
       const routing = safeRead(path.join(MINIONS_DIR, 'routing.md')) || '';
       return jsonReply(res, 200, {
-        engine: config.engine || {},
-        claude: config.claude || {},
+        engine: { ...shared.ENGINE_DEFAULTS, ...(config.engine || {}) },
+        claude: { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) },
         agents: config.agents || {},
         routing,
       });

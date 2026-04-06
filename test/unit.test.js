@@ -5488,6 +5488,9 @@ async function main() {
 
     // Status mutation guards — comprehensive retry/revert safety
     await testStatusMutationGuards();
+
+    // Dashboard audit: critical functional bugs
+    await testDashboardAuditCritical();
   } finally {
     cleanupTmpDirs();
   }
@@ -7048,6 +7051,63 @@ async function testStatusMutationGuards() {
     const lockCount = (fnBody.match(/mutateJsonFileLocked\(wiPath/g) || []).length;
     assert.ok(lockCount > 0 || safeWriteCount === 0,
       'updateWorkItemStatus must use mutateJsonFileLocked OR not write directly at all');
+  });
+}
+
+// ─── Dashboard Audit: Critical Functional Bugs ─────────────────────────────
+
+async function testDashboardAuditCritical() {
+  console.log('\n── Dashboard Audit: Critical Functional Bugs ──');
+
+  await test('plan pause sets status to paused with _pausedBy tag, not pending', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find the pause handler section (between "Propagate pause" and the safeWrite that commits the change)
+    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
+    assert.ok(pauseSection, 'pause handler section must exist');
+    const section = pauseSection[0];
+    assert.ok(section.includes("w.status = 'paused'"), 'pause must set status to paused, not pending');
+    assert.ok(section.includes("w._pausedBy = 'prd-pause'"), 'pause must set _pausedBy = prd-pause');
+    assert.ok(!section.includes("delete w._pausedBy"), 'pause must NOT delete _pausedBy');
+  });
+
+  await test('plan pause and resume are symmetric — resume finds paused items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Resume looks for status === 'paused' && _pausedBy === 'prd-pause'
+    assert.ok(src.includes("w.status === 'paused' && w._pausedBy === 'prd-pause'"),
+      'resume must look for paused + prd-pause tag');
+    // Pause must set those exact values
+    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
+    assert.ok(pauseSection[0].includes("'paused'") && pauseSection[0].includes("'prd-pause'"),
+      'pause must set the values that resume looks for');
+  });
+
+  await test('PRD isActive check includes both dispatched and pending', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // Should not have the tautology: dispatched || dispatched
+    const tautology = (src.match(/dispatched.*\|\|.*dispatched/g) || []);
+    assert.strictEqual(tautology.length, 0,
+      'render-prd.js must not have dispatched || dispatched tautology');
+    // Should have dispatched || pending
+    assert.ok(src.includes("'dispatched' || i.status === 'pending'") || src.includes("'dispatched' || item.status === 'pending'"),
+      'isActive/wip check must include both dispatched and pending');
+  });
+
+  await test('rerenderPrdFromCache calls renderPrdProgress', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'state.js'), 'utf8');
+    const fn = src.match(/function rerenderPrdFromCache[\s\S]*?^}/m);
+    assert.ok(fn, 'rerenderPrdFromCache must exist');
+    assert.ok(fn[0].includes('renderPrdProgress'), 'must call renderPrdProgress to update item list');
+  });
+
+  await test('refresh.js passes inbox with fallback to empty array', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+    assert.ok(src.includes('data.inbox || []'), 'renderInbox must receive data.inbox || [] fallback');
+  });
+
+  await test('PRD edit modal uses estimated_complexity field', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // The complexity dropdown must reference estimated_complexity
+    assert.ok(src.includes('estimated_complexity'), 'edit modal must use estimated_complexity field from PRD JSON');
   });
 }
 
