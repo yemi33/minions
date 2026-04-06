@@ -108,12 +108,16 @@ async function forEachActivePr(config, token, callback) {
           if (idx >= 0) currentPrs[idx] = updatedPr;
           // Don't push if not found — it was deleted by another writer, respect that
         }
-        // Remove duplicates (keep last occurrence which has latest status)
-        const seen = new Set();
-        return currentPrs.filter((p, i, arr) => {
-          const lastIdx = arr.findLastIndex(x => x.id === p.id);
-          return lastIdx === i;
-        });
+        // Remove duplicates — prefer merged/abandoned over active
+        const bestById = new Map();
+        const statusRank = { merged: 3, abandoned: 2, closed: 2, active: 1 };
+        for (const p of currentPrs) {
+          const existing = bestById.get(p.id);
+          if (!existing || (statusRank[p.status] || 0) > (statusRank[existing.status] || 0)) {
+            bestById.set(p.id, p);
+          }
+        }
+        return [...bestById.values()];
       }, { defaultValue: [] });
       totalUpdated += projectUpdated;
     }
