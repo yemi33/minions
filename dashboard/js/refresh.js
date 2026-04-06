@@ -93,9 +93,18 @@ function _processStatusUpdate(data) {
   } catch { /* expected on first load */ }
 }
 
+let _knownDashboardStartId = null;
 async function refresh() {
   try {
     const data = await safeFetch('/api/status').then(r => r.json());
+    // Auto-reload when dashboard restarts (stale connections cause "Failed to fetch" on CC/doc-chat)
+    const dashId = (data.version && data.version.dashboardStartedAt) || null;
+    if (dashId && _knownDashboardStartId && dashId !== _knownDashboardStartId) {
+      console.log('Dashboard restarted — reloading page');
+      location.reload();
+      return;
+    }
+    if (dashId) _knownDashboardStartId = dashId;
     _processStatusUpdate(data);
   } catch(e) { console.error('refresh error', e); }
 }

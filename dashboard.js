@@ -337,6 +337,7 @@ function getStatus() {
         runningCommit: engine.codeCommit || null,
         dashboardRunning: _dashboardVersion.codeVersion,
         dashboardRunningCommit: _dashboardVersion.codeCommit,
+        dashboardStartedAt: _dashboardVersion.startedAt,
         disk: diskVersion,
         diskCommit,
         engineStale,
