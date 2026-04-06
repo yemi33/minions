@@ -129,16 +129,30 @@ async function sendSteering() {
   const message = input.value.trim();
   input.value = '';
 
+  // Immediate feedback — show the message right away
+  const el = document.getElementById('live-messages');
+  if (el) {
+    el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) + '</div>';
+    el.innerHTML += '<div id="steer-pending" style="align-self:flex-end;font-size:10px;color:var(--muted);padding:0 4px;margin-bottom:4px">Sending...</div>';
+    el.scrollTop = el.scrollHeight;
+  }
+
   try {
     const res = await fetch('/api/agents/steer', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent: currentAgentId, message })
     });
+    const pending = document.getElementById('steer-pending');
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
-      alert('Steering failed: ' + (d.error || 'unknown'));
+      if (pending) { pending.textContent = '\u26A0 Failed: ' + (d.error || 'unknown'); pending.style.color = 'var(--red)'; }
+    } else {
+      if (pending) { pending.textContent = '\u2713 Queued — agent will see this on next turn'; pending.style.color = 'var(--green)'; }
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) {
+    const pending = document.getElementById('steer-pending');
+    if (pending) { pending.textContent = '\u26A0 ' + e.message; pending.style.color = 'var(--red)'; }
+  }
 }
 
 window.MinionsLive = { renderLiveChatMessage, startLiveStream, stopLiveStream, startLivePolling, stopLivePolling, refreshLiveOutput, sendSteering };
