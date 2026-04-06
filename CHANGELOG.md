@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.351 (2026-04-06)
+
+### Fixes
+-  skip meeting modal re-render when data unchanged
+
 ## 0.1.350 (2026-04-06)
 
 ### Fixes
