@@ -35,6 +35,11 @@ function toggleCommandCenter() {
 
 function ccNewSession() {
   fetch('/api/command-center/new-session', { method: 'POST' }).catch(() => {});
+  // Abort any in-flight request
+  ccAbort();
+  _ccSending = false;
+  _ccQueue = [];
+  try { localStorage.removeItem('cc-sending'); } catch {}
   _ccSessionId = null;
   _ccMessages = [];
   localStorage.removeItem('cc-session-id');
