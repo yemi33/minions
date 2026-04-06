@@ -37,11 +37,30 @@ function mutateDispatch(mutator) {
 function addToDispatch(item) {
   item.id = item.id || `${item.agent}-${item.type}-${shared.uid()}`;
   item.created_at = ts();
+  let added = false;
   mutateDispatch((dispatch) => {
+    // Dedup: skip if same work item ID is already pending or active
+    const wiId = item.meta?.item?.id;
+    if (wiId) {
+      const existing = [...dispatch.pending, ...(dispatch.active || [])].find(d => d.meta?.item?.id === wiId);
+      if (existing) {
+        log('info', `Dedup: skipping ${item.id} — work item ${wiId} already in ${existing.id}`);
+        return dispatch;
+      }
+    }
+    // Also dedup by dispatchKey
+    if (item.meta?.dispatchKey) {
+      const existing = [...dispatch.pending, ...(dispatch.active || [])].find(d => d.meta?.dispatchKey === item.meta.dispatchKey);
+      if (existing) {
+        log('info', `Dedup: skipping ${item.id} — dispatchKey ${item.meta.dispatchKey} already in ${existing.id}`);
+        return dispatch;
+      }
+    }
     dispatch.pending.push(item);
+    added = true;
     return dispatch;
   });
-  log('info', `Queued dispatch: ${item.id} (${item.type} → ${item.agent})`);
+  if (added) log('info', `Queued dispatch: ${item.id} (${item.type} → ${item.agent})`);
   return item.id;
 }
 
