@@ -39,6 +39,7 @@ function prTableHtml(rows) {
 }
 
 function renderPrs(prs) {
+  prs = prs.filter(p => !isDeleted('pr:' + p.id));
   allPrs = prs;
   const el = document.getElementById('pr-content');
   const count = document.getElementById('pr-count');
@@ -153,15 +154,18 @@ async function _submitLinkPr() {
 
 async function unlinkPr(id) {
   if (!confirm('Remove ' + id + ' from tracking?')) return;
+  // Optimistic: remove row immediately
+  markDeleted('pr:' + id);
+  const row = document.querySelector('[data-pr-id="' + id + '"]')?.closest('tr');
+  if (row) row.remove();
+  showToast('cmd-toast', id + ' removed', true);
   try {
     const res = await fetch('/api/pull-requests/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
-    showToast('cmd-toast', id + ' removed', true);
-    refresh();
-  } catch (e) { alert('Error: ' + e.message); }
+    if (!res.ok) { _deletedIds.delete('pr:' + id); const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); return; }
+  } catch (e) { _deletedIds.delete('pr:' + id); alert('Error: ' + e.message); refresh(); }
 }
 
 window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal, unlinkPr };
