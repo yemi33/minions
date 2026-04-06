@@ -233,8 +233,8 @@ function renderVersionBanner(version) {
     el.title = 'The dashboard process is running older code. Run: minions restart';
   } else if (version.updateAvailable) {
     el.style.cssText = 'font-size:9px;padding:2px 8px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:4px;color:var(--green);cursor:help';
-    el.textContent = 'v' + v + commitLabel + ' — v' + version.latest + ' available. Run: npm update -g @yemi33/minions';
-    el.title = 'A newer version is available on npm';
+    el.textContent = 'v' + v + commitLabel + ' — v' + version.latest + ' available. Run: minions update or npm update -g @yemi33/minions';
+    el.title = 'A newer version is available on npm. Run minions update to upgrade and restart.';
   } else {
     el.style.cssText = 'font-size:9px;color:var(--muted)';
     el.textContent = 'v' + v + commitLabel;
