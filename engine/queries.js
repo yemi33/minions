@@ -10,7 +10,8 @@ const os = require('os');
 const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
-  projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES } = shared;
+  projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
+  WI_STATUS } = shared;
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
@@ -179,7 +180,7 @@ function getAgentStatus(agentId) {
     const latestInFlight = allItems
       .filter(w =>
         (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        w.status === 'dispatched'
+        w.status === WI_STATUS.DISPATCHED
       )
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
