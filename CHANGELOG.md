@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.379 (2026-04-06)
+
+### Other
+- [E2E] Fix review re-dispatch loop, dashboard write races, crash bugs, and failing tests (#232)
+
 ## 0.1.378 (2026-04-06)
 
 ### Features
