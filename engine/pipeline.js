@@ -221,11 +221,40 @@ function executePlanStage(stage, stageState, run, config) {
   content += `**Created by:** Pipeline ${run.pipelineId}\n`;
   content += `**Date:** ${dateStamp()}\n\n---\n\n`;
 
-  // Include output from dependency stages
+  // Include output from dependency stages (for meetings, include full transcript)
   if (stage.dependsOn) {
     for (const depId of stage.dependsOn) {
       const depStage = run.stages[depId];
-      if (depStage?.output) {
+      if (!depStage) continue;
+
+      // If dependency is a meeting, include full findings + transcript
+      const meetingId = depStage.artifacts?.meetings?.[0];
+      if (meetingId) {
+        try {
+          const mtgPath = path.join(__dirname, '..', 'meetings', meetingId + '.json');
+          const mtg = safeJson(mtgPath);
+          if (mtg) {
+            content += `## Meeting: ${mtg.title || depId}\n\n`;
+            content += `**Agenda:** ${mtg.agenda || ''}\n\n`;
+            // Include each agent's findings
+            for (const [agent, finding] of Object.entries(mtg.findings || {})) {
+              const text = typeof finding === 'string' ? finding : finding?.content || '';
+              if (text) content += `### ${agent} — Findings\n\n${text}\n\n`;
+            }
+            // Include debate if present
+            for (const [agent, debate] of Object.entries(mtg.debate || {})) {
+              const text = typeof debate === 'string' ? debate : debate?.content || '';
+              if (text) content += `### ${agent} — Debate\n\n${text}\n\n`;
+            }
+            // Include conclusion
+            const conclusion = typeof mtg.conclusion === 'string' ? mtg.conclusion : mtg.conclusion?.content || '';
+            if (conclusion) content += `### Conclusion\n\n${conclusion}\n\n`;
+            continue;
+          }
+        } catch { /* fall through to output-only */ }
+      }
+
+      if (depStage.output) {
         content += `## From: ${depId}\n\n${depStage.output}\n\n`;
       }
     }
