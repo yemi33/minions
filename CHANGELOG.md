@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.369 (2026-04-06)
+
+### Fixes
+-  copy button preserves markdown formatting
+
 ## 0.1.368 (2026-04-06)
 
 ### Fixes
