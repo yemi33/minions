@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, MEETING_STATUS } = shared;
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
 const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
@@ -53,16 +53,16 @@ function savePipelineRuns(runs) {
 function getActiveRun(pipelineId) {
   const runs = getPipelineRuns();
   const pipelineRuns = runs[pipelineId] || [];
-  return pipelineRuns.find(r => r.status === 'running' || r.status === 'paused');
+  return pipelineRuns.find(r => r.status === PIPELINE_STATUS.RUNNING || r.status === PIPELINE_STATUS.PAUSED);
 }
 
 function startRun(pipelineId, pipeline) {
   const runId = `run-${uid()}`;
   const stages = {};
   for (const stage of (pipeline.stages || [])) {
-    stages[stage.id] = { status: 'pending', artifacts: {} };
+    stages[stage.id] = { status: PIPELINE_STATUS.PENDING, artifacts: {} };
   }
-  const run = { runId, pipelineId, startedAt: ts(), status: 'running', stages };
+  const run = { runId, pipelineId, startedAt: ts(), status: PIPELINE_STATUS.RUNNING, stages };
 
   mutateJsonFileLocked(PIPELINE_RUNS_PATH, (data) => {
     if (!data[pipelineId]) data[pipelineId] = [];
@@ -125,7 +125,7 @@ function resolveStageConfig(stage, run) {
 
 // ── Stage Execution ──────────────────────────────────────────────────────────
 
-function executeStage(stage, run, pipeline, config) {
+async function executeStage(stage, run, pipeline, config) {
   const resolved = resolveStageConfig(stage, run);
   const stageState = run.stages[stage.id];
 
@@ -144,12 +144,12 @@ function executeStage(stage, run, pipeline, config) {
       return executeScheduleStage(resolved, stageState, config);
     case 'wait':
       // wait stages just sit in waiting-human status until continued via API
-      return { status: 'waiting-human' };
+      return { status: PIPELINE_STATUS.WAITING_HUMAN };
     case 'parallel':
       return executeParallelStage(resolved, stageState, run, pipeline, config);
     default:
       log('warn', `Pipeline: unknown stage type '${resolved.type}' in stage ${stage.id}`);
-      return { status: 'failed', error: 'unknown stage type' };
+      return { status: PIPELINE_STATUS.FAILED, error: 'unknown stage type' };
   }
 }
 
@@ -183,7 +183,7 @@ function executeTaskStage(stage, stageState, run, config) {
   }
 
   safeWrite(wiPath, workItems);
-  return { status: 'running', artifacts: { workItems: createdIds } };
+  return { status: PIPELINE_STATUS.RUNNING, artifacts: { workItems: createdIds } };
 }
 
 function executeMeetingStage(stage, stageState, run, config) {
@@ -205,10 +205,10 @@ function executeMeetingStage(stage, stageState, run, config) {
     createdIds.push(meeting.id);
   }
 
-  return { status: 'running', artifacts: { meetings: createdIds } };
+  return { status: PIPELINE_STATUS.RUNNING, artifacts: { meetings: createdIds } };
 }
 
-function executePlanStage(stage, stageState, run, config) {
+async function executePlanStage(stage, stageState, run, config) {
   // Create a plan .md file from the stage config + previous stage output
   const plansDir = path.join(__dirname, '..', 'plans');
   if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
@@ -217,39 +217,62 @@ function executePlanStage(stage, stageState, run, config) {
   const filename = `${slug}-${dateStamp()}.md`;
   const filePath = shared.uniquePath(path.join(plansDir, filename));
 
-  let content = `# ${stage.title}\n\n`;
-  content += `**Created by:** Pipeline ${run.pipelineId}\n`;
-  content += `**Date:** ${dateStamp()}\n\n---\n\n`;
-
-  // Include output from dependency stages (for meetings, include full transcript)
+  // Build meeting context from dependency stages
+  let meetingContext = '';
   if (stage.dependsOn) {
     for (const depId of stage.dependsOn) {
       const depStage = run.stages[depId];
       if (!depStage) continue;
 
-      // If dependency is a meeting, include the conclusion (which should be concrete and actionable)
       const meetingId = depStage.artifacts?.meetings?.[0];
       if (meetingId) {
         try {
           const mtgPath = path.join(__dirname, '..', 'meetings', meetingId + '.json');
           const mtg = safeJson(mtgPath);
           if (mtg) {
-            const conclusion = typeof mtg.conclusion === 'string' ? mtg.conclusion : mtg.conclusion?.content || '';
-            if (conclusion) {
-              content += `## Meeting Conclusion: ${mtg.title || depId}\n\n${conclusion}\n\n`;
-              continue;
-            }
+            // Build full meeting document (same as dashboard "Create Plan from Meeting")
+            const transcript = (mtg.transcript || []).map(t =>
+              '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '')
+            ).join('\n\n---\n\n');
+            meetingContext += '# Meeting: ' + (mtg.title || depId) + '\n\n**Agenda:** ' + (mtg.agenda || '') + '\n\n' + transcript + '\n\n';
+            continue;
           }
-        } catch { /* fall through to output-only */ }
+        } catch { /* fall through */ }
       }
 
       if (depStage.output) {
-        content += `## From: ${depId}\n\n${depStage.output}\n\n`;
+        meetingContext += '## From: ' + depId + '\n\n' + depStage.output + '\n\n';
       }
     }
   }
 
-  if (stage.description) content += stage.description + '\n';
+  // Use LLM to generate a structured plan (same approach as dashboard "Create Plan from Meeting" button)
+  let content = '';
+  try {
+    const llm = require('./llm');
+    const planPrompt = 'Create an actionable implementation plan from this meeting. ' +
+      'Extract concrete action items from the conclusion and debates. ' +
+      'For each item include: what to do, which files/areas to change, priority (high/medium/low), and estimated complexity (small/medium/large). ' +
+      'Structure it as a plan ready for execution. Do NOT include preamble — start with the plan title.' +
+      (stage.description ? '\n\nAdditional instructions: ' + stage.description : '');
+    const fullPrompt = meetingContext + '\n\n---\n\n' + planPrompt;
+    const result = await llm.callLLM(fullPrompt, '', {
+      timeout: 120000, label: 'pipeline-plan', model: 'sonnet', maxTurns: 1,
+    });
+    if (result.text) {
+      content = result.text;
+      log('info', `Pipeline plan: LLM generated ${content.length} chars from meeting context`);
+    }
+  } catch (e) { log('warn', `Pipeline plan LLM failed: ${e.message} — falling back to raw meeting context`); }
+
+  // Fallback: raw meeting context if LLM failed
+  if (!content) {
+    content = `# ${stage.title}\n\n`;
+    content += `**Created by:** Pipeline ${run.pipelineId}\n`;
+    content += `**Date:** ${dateStamp()}\n\n---\n\n`;
+    content += meetingContext;
+    if (stage.description) content += stage.description + '\n';
+  }
 
   safeWrite(filePath, content);
 
@@ -303,7 +326,7 @@ function executeApiStage(stage, stageState, run) {
       req.end();
     } catch (e) { log('warn', `Pipeline API call failed: ${e.message}`); }
   }
-  return { status: 'completed', completedAt: ts() };
+  return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }
 
 function executeMergePrsStage(stage, stageState, run, config) {
@@ -313,11 +336,11 @@ function executeMergePrsStage(stage, stageState, run, config) {
     if (s.artifacts?.prs) prIds.push(...s.artifacts.prs);
   }
   if (prIds.length === 0) {
-    return { status: 'completed', completedAt: ts(), output: 'No PRs to merge' };
+    return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output: 'No PRs to merge' };
   }
   // The actual merge will be handled by the PR polling/merge logic
   // We just need to track which PRs to watch
-  return { status: 'running', artifacts: { prs: prIds } };
+  return { status: PIPELINE_STATUS.RUNNING, artifacts: { prs: prIds } };
 }
 
 function executeScheduleStage(stage, stageState, config) {
@@ -340,7 +363,7 @@ function executeParallelStage(stage, stageState, run, pipeline, config) {
   const subResults = {};
   for (const sub of subStages) {
     if (!run.stages[sub.id] || run.stages[sub.id].status === 'pending') {
-      const result = executeStage(sub, run, pipeline, config);
+      const result = await executeStage(sub, run, pipeline, config);
       subResults[sub.id] = result;
       run.stages[sub.id] = { ...run.stages[sub.id] || {}, ...result, startedAt: ts() };
     }
@@ -560,7 +583,7 @@ function discoverPipelineWork(config) {
           stageState.status = 'failed';
           anyFailed = true;
         } else if (depsReady) {
-          const result = executeStage(stage, activeRun, pipeline, config);
+          const result = await executeStage(stage, activeRun, pipeline, config);
           updateRunStage(pipeline.id, activeRun.runId, stage.id, { ...result, startedAt: ts() });
           Object.assign(stageState, result, { startedAt: ts() });
           if (result.status === 'running') anyRunning = true;
