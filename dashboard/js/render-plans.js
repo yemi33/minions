@@ -83,7 +83,8 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
 
   // Derive from work item progress
   if (allDone && !hasActiveWork) return 'completed';
-  if (hasActiveWork || hasPendingPrd) return 'dispatched';
+  if (hasActiveWork) return 'dispatched';
+  if (hasPendingPrd) return 'converting';
   if (hasFailed && !hasActiveWork) return 'has-failures';
 
   if (prdJsonStatus === 'awaiting-approval' && implementWi.length === 0) return 'awaiting-approval';
@@ -192,9 +193,10 @@ function renderPlans(plans) {
     const effectiveStatus = isArchived ? 'completed' : derivePlanStatus(prdFile, p.file, prdJsonStatus, allWi);
 
     const statusLabelsMap = {
-      'completed': 'Completed', 'dispatched': 'In Progress', 'paused': 'Paused',
-      'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved', 'rejected': 'Rejected',
-      'revision-requested': 'Revision Requested', 'has-failures': 'Has Failures', 'active': 'Active'
+      'completed': 'Completed', 'dispatched': 'In Progress', 'converting': 'Converting to PRD',
+      'paused': 'Paused', 'awaiting-approval': 'Awaiting Approval', 'approved': 'Approved',
+      'rejected': 'Rejected', 'revision-requested': 'Revision Requested',
+      'has-failures': 'Has Failures', 'active': 'Active'
     };
     const label = statusLabelsMap[effectiveStatus] || effectiveStatus;
     const needsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
@@ -246,8 +248,8 @@ function renderPlans(plans) {
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
     const versionBadge = p.version ? ' <span style="font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue);vertical-align:middle">v' + p.version + '</span>' : '';
-    const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
-    const cardClass = effectiveStatus === 'dispatched' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
+    const statusColors = { 'completed': 'var(--green)', 'dispatched': 'var(--blue)', 'converting': 'var(--yellow)', 'paused': 'var(--muted)', 'awaiting-approval': 'var(--yellow)', 'approved': 'var(--green)', 'rejected': 'var(--red)', 'has-failures': 'var(--red)', 'revision-requested': 'var(--purple,#a855f7)', 'active': 'var(--muted)' };
+    const cardClass = effectiveStatus === 'dispatched' || effectiveStatus === 'converting' ? 'working' : effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused' ? 'awaiting' : effectiveStatus;
     return '<div class="plan-card ' + cardClass + '" data-file="plans/' + escHtml(p.file) + '" style="cursor:pointer' + (isArchived ? ';opacity:0.7' : '') + '" onclick="planView(\'' + escHtml(p.file) + '\')">' +
       '<div class="plan-card-header">' +
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
