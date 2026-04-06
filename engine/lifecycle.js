@@ -1279,7 +1279,18 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // Detect implement tasks that completed without creating a PR
   if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
-    const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
+    let existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
+    // Also check pull-requests.json for PRs with matching prdItems or branch
+    if (!existingPrFound) {
+      const allProjects = shared.getProjects(config);
+      for (const p of allProjects) {
+        const prs = safeJson(shared.projectPrPath(p)) || [];
+        if (prs.some(pr => (pr.prdItems || []).includes(meta.item.id) || (pr.branch && pr.branch.includes(meta.item.id)))) {
+          existingPrFound = true;
+          break;
+        }
+      }
+    }
     if (!existingPrFound) {
       let wiPath;
       if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
