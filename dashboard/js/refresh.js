@@ -58,7 +58,6 @@ function _processStatusUpdate(data) {
   renderArchiveButtons(data.archivedPrds || []);
   renderEngineStatus(data.engine);
   renderVersionBanner(data.version);
-  renderSidebarVersion(data.version);
   renderDispatch(data.dispatch);
   window._lastDispatch = data.dispatch;
   window._lastWorkItems = data.workItems || [];

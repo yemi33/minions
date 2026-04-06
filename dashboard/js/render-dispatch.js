@@ -242,15 +242,4 @@ function renderVersionBanner(version) {
   }
 }
 
-function renderSidebarVersion(version) {
-  const el = document.getElementById('sidebar-version');
-  if (!el || !version) return;
-  const v = version.dashboardRunning || version.disk || '';
-  if (!v) return;
-  const parts = ['v' + v];
-  if (version.stale) parts.push('<span style="color:var(--yellow)">\u26A0 stale</span>');
-  else if (version.updateAvailable) parts.push('<span style="color:var(--green)">update available</span>');
-  el.innerHTML = parts.join(' ');
-}
-
-window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderVersionBanner, renderSidebarVersion, renderDispatch, renderEngineLog, shortTime, showErrorDetails };
+window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderVersionBanner, renderDispatch, renderEngineLog, shortTime, showErrorDetails };
