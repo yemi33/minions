@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.406 (2026-04-06)
+
+### Fixes
+-  re-check npm registry every 4 hours via setInterval
+-  PR delete is optimistic — row removed immediately, reverted on failure
+-  PR delete searches all project files, not just the first project
+
 ## 0.1.403 (2026-04-06)
 
 ### Fixes
