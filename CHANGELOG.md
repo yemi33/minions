@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.396 (2026-04-06)
+
+### Fixes
+-  prevent body-level scrolling — lock layout to viewport
+
 ## 0.1.395 (2026-04-06)
 
 ### Other
