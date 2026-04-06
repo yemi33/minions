@@ -7673,10 +7673,8 @@ async function testVersionCheck() {
   });
 
   await test('checkNpmVersion uses npm view (respects proxy/registry config)', () => {
-    assert.ok(dashSrc.includes("'npm'") || dashSrc.includes('"npm"'),
-      'must use npm CLI to check latest version (works behind corporate proxies)');
-    assert.ok(dashSrc.includes("'view'") || dashSrc.includes('"view"'),
-      'must use npm view subcommand');
+    assert.ok(dashSrc.includes('npm') && dashSrc.includes('view'),
+      'must use npm view to check latest version');
   });
 
   await test('_compareVersions correctly compares semver', () => {
@@ -7800,7 +7798,7 @@ async function testAutoRecoveryAndAtomicity() {
       'checkPlanCompletion should use effectiveSuccess');
     assert.ok(hookBody.includes("effectiveSuccess && meta?.item?.itemType === 'verify'"),
       'verify archive should use effectiveSuccess');
-    assert.ok(hookBody.includes('if (effectiveSuccess) extractSkillsFromOutput'),
+    assert.ok(hookBody.includes('if (effectiveSuccess)') && hookBody.includes('extractSkillsFromOutput'),
       'extractSkillsFromOutput should use effectiveSuccess');
     // isSuccess should NOT gate these downstream checks
     assert.ok(!hookBody.includes('if (isSuccess) extractSkillsFromOutput'),

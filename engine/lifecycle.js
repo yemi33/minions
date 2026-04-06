@@ -1358,7 +1358,21 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  if (effectiveSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
+  if (effectiveSuccess) {
+    extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
+    // Also scan inbox notes for skill blocks — agents often write skills to inbox, not stdout
+    try {
+      const today = dateStamp();
+      const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+      const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes(agentId) && f.includes(today));
+      for (const f of inboxFiles) {
+        const content = shared.safeRead(path.join(inboxDir, f));
+        if (content && content.includes('```skill')) {
+          extractSkillsFromOutput(content, agentId, dispatchItem, config);
+        }
+      }
+    } catch {}
+  }
   const finalResult = effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   updateAgentHistory(agentId, dispatchItem, finalResult);
   // Don't count auto-retries as errors in metrics — only count final outcomes
