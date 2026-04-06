@@ -1,5 +1,7 @@
 // dashboard/js/detail-panel.js — Agent detail panel extracted from dashboard.html
 
+let _charterRawCache = ''; // stored outside DOM to survive innerHTML rewrites on tab switch
+
 function closeDetail() {
   document.getElementById('detail-overlay').classList.remove('open');
   document.getElementById('detail-panel').classList.remove('open');
@@ -88,7 +90,7 @@ function renderDetailContent(detail, tab) {
       '</div>' +
       '<div id="charter-view" class="section">' + renderMd(charterContent || 'No charter found. Click Edit to create one.') + '</div>' +
       '<textarea id="charter-editor" style="display:none;width:100%;min-height:300px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-family:Consolas,monospace;font-size:12px;resize:vertical">' + escHtml(charterContent) + '</textarea>';
-    el._charterRaw = charterContent;
+    _charterRawCache = charterContent;
   } else if (tab === 'history') {
     let html = '';
     // Recent dispatch results
@@ -126,7 +128,7 @@ function _toggleCharterEdit() {
 
 function _cancelCharterEdit() {
   const el = document.getElementById('detail-content');
-  document.getElementById('charter-editor').value = el._charterRaw || '';
+  document.getElementById('charter-editor').value = _charterRawCache || '';
   document.getElementById('charter-view').style.display = '';
   document.getElementById('charter-editor').style.display = 'none';
   document.getElementById('charter-edit-btn').style.display = '';
@@ -146,7 +148,7 @@ async function _saveCharter() {
     });
     if (res.ok) {
       document.getElementById('charter-view').innerHTML = renderMd(content);
-      document.getElementById('detail-content')._charterRaw = content;
+      _charterRawCache = content;
       _cancelCharterEdit();
       showToast('cmd-toast', 'Charter saved', true);
     } else {

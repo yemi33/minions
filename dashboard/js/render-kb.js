@@ -62,7 +62,7 @@ function renderKnowledgeBase() {
       if (!Array.isArray(catItems)) continue;
       for (const item of catItems) items.push({ ...item, category: cat });
     }
-    items.sort((a, b) => b.date.localeCompare(a.date));
+    items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   } else {
     items = (_kbData[_kbActiveTab] || []).map(i => ({ ...i, category: _kbActiveTab }));
   }

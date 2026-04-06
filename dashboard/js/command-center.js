@@ -348,6 +348,12 @@ function ccRetryLast() {
   _ccDoSend(text.trim());
 }
 
+async function _ccFetch(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || 'Request failed (' + res.status + ')'); }
+  return res;
+}
+
 async function ccExecuteAction(action) {
   const msgs = document.getElementById('cc-messages');
   const status = document.createElement('div');
@@ -356,13 +362,10 @@ async function ccExecuteAction(action) {
   try {
     switch (action.type) {
       case 'dispatch': {
-        const res = await fetch('/api/work-items', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const res = await _ccFetch('/api/work-items', {
             title: action.title, type: action.workType || 'implement',
             priority: action.priority || 'medium', description: action.description || '',
             project: action.project || '', agents: action.agents || [],
-          })
         });
         const d = await res.json();
         status.innerHTML = '&#10003; Dispatched: <strong>' + escHtml(d.id || action.title) + '</strong>';
@@ -371,49 +374,33 @@ async function ccExecuteAction(action) {
         break;
       }
       case 'note': {
-        const today = new Date().toISOString().slice(0, 10);
-        await fetch('/api/notes', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title, what: action.content || action.description, author: 'command-center' })
-        });
+        await _ccFetch('/api/notes', { title: action.title, what: action.content || action.description, author: 'command-center' });
         status.innerHTML = '&#10003; Note saved: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
       case 'pin': {
-        await fetch('/api/pinned', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title, content: action.content || action.description, level: action.level || '' })
-        });
+        await _ccFetch('/api/pinned', { title: action.title, content: action.content || action.description, level: action.level || '' });
         status.innerHTML = '&#x1F4CC; Pinned: <strong>' + escHtml(action.title) + '</strong> — visible to all agents';
         status.style.color = 'var(--green)';
         refresh();
         break;
       }
       case 'plan': {
-        await fetch('/api/plan', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title, description: action.description, project: action.project, branchStrategy: action.branchStrategy || 'parallel' })
-        });
+        await _ccFetch('/api/plan', { title: action.title, description: action.description, project: action.project, branchStrategy: action.branchStrategy || 'parallel' });
         status.innerHTML = '&#10003; Plan queued: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
       case 'cancel': {
-        await fetch('/api/agents/cancel', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agentId: action.agent, reason: action.reason || 'Cancelled via command center' })
-        });
+        await _ccFetch('/api/agents/cancel', { agentId: action.agent, reason: action.reason || 'Cancelled via command center' });
         status.innerHTML = '&#10003; Cancelled agent: <strong>' + escHtml(action.agent) + '</strong>';
         status.style.color = 'var(--orange)';
         break;
       }
       case 'retry': {
         for (const id of (action.ids || [])) {
-          await fetch('/api/work-items/retry', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id, source: '' })
-          });
+          await _ccFetch('/api/work-items/retry', { id, source: '' });
         }
         status.innerHTML = '&#10003; Retried: <strong>' + escHtml((action.ids || []).join(', ')) + '</strong>';
         status.style.color = 'var(--green)';
@@ -421,46 +408,31 @@ async function ccExecuteAction(action) {
         break;
       }
       case 'pause-plan': {
-        await fetch('/api/plans/pause', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: action.file })
-        });
+        await _ccFetch('/api/plans/pause', { file: action.file });
         status.innerHTML = '&#10003; Paused plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--orange)';
         break;
       }
       case 'approve-plan': {
-        await fetch('/api/plans/approve', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: action.file })
-        });
+        await _ccFetch('/api/plans/approve', { file: action.file });
         status.innerHTML = '&#10003; Approved plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
       case 'edit-prd-item': {
-        await fetch('/api/prd-items/update', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: action.source, itemId: action.itemId, name: action.name, description: action.description, priority: action.priority, estimated_complexity: action.complexity })
-        });
+        await _ccFetch('/api/prd-items/update', { source: action.source, itemId: action.itemId, name: action.name, description: action.description, priority: action.priority, estimated_complexity: action.complexity });
         status.innerHTML = '&#10003; Updated PRD item: <strong>' + escHtml(action.itemId) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
       case 'remove-prd-item': {
-        await fetch('/api/prd-items/remove', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: action.source, itemId: action.itemId })
-        });
+        await _ccFetch('/api/prd-items/remove', { source: action.source, itemId: action.itemId });
         status.innerHTML = '&#10003; Removed PRD item: <strong>' + escHtml(action.itemId) + '</strong>';
         status.style.color = 'var(--orange)';
         break;
       }
       case 'delete-work-item': {
-        await fetch('/api/work-items/delete', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: action.id, source: action.source || '' })
-        });
+        await _ccFetch('/api/work-items/delete', { id: action.id, source: action.source || '' });
         status.innerHTML = '&#10003; Deleted work item: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--orange)';
         break;
@@ -585,48 +557,33 @@ async function ccExecuteAction(action) {
         break;
       }
       case 'unpin': {
-        await fetch('/api/pinned/remove', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: action.title })
-        });
+        await _ccFetch('/api/pinned/remove', { title: action.title });
         status.innerHTML = '&#10003; Unpinned: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
         refresh();
         break;
       }
       case 'archive-plan': {
-        await fetch('/api/plans/archive', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: action.file })
-        });
+        await _ccFetch('/api/plans/archive', { file: action.file });
         status.innerHTML = '&#10003; Archived plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
         refresh();
         break;
       }
       case 'reject-plan': {
-        await fetch('/api/plans/reject', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: action.file, reason: action.reason || '' })
-        });
+        await _ccFetch('/api/plans/reject', { file: action.file, reason: action.reason || '' });
         status.innerHTML = '&#10003; Rejected plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--orange)';
         break;
       }
       case 'steer-agent': {
-        await fetch('/api/agents/steer', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: action.agent, message: action.message || action.content })
-        });
+        await _ccFetch('/api/agents/steer', { agent: action.agent, message: action.message || action.content });
         status.innerHTML = '&#10003; Steering message sent to <strong>' + escHtml(action.agent) + '</strong>';
         status.style.color = 'var(--green)';
         break;
       }
       case 'add-meeting-note': {
-        await fetch('/api/meetings/note', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: action.id, note: action.note || action.content })
-        });
+        await _ccFetch('/api/meetings/note', { id: action.id, note: action.note || action.content });
         status.innerHTML = '&#10003; Note added to meeting <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
         break;
@@ -643,30 +600,21 @@ async function ccExecuteAction(action) {
         break;
       }
       case 'link-pr': {
-        await fetch('/api/pull-requests/link', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: action.url, title: action.title || '', project: action.project || '', autoObserve: action.autoObserve !== false })
-        });
+        await _ccFetch('/api/pull-requests/link', { url: action.url, title: action.title || '', project: action.project || '', autoObserve: action.autoObserve !== false });
         status.innerHTML = '&#10003; PR linked: <strong>' + escHtml(action.url) + '</strong>';
         status.style.color = 'var(--green)';
         refresh();
         break;
       }
       case 'archive-meeting': {
-        await fetch('/api/meetings/archive', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: action.id })
-        });
+        await _ccFetch('/api/meetings/archive', { id: action.id });
         status.innerHTML = '&#10003; Meeting archived: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
         refresh();
         break;
       }
       case 'update-routing': {
-        await fetch('/api/settings/routing', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: action.content })
-        });
+        await _ccFetch('/api/settings/routing', { content: action.content });
         status.innerHTML = '&#10003; Routing updated';
         status.style.color = 'var(--green)';
         break;
