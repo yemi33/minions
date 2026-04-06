@@ -28,6 +28,42 @@ const os = require('os');
 const { spawn, execSync } = require('child_process');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
+
+/** Kill process(es) listening on a given port. Works cross-platform. */
+function killByPort(port) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync(`netstat -ano | findstr ":${port} " | findstr LISTENING`, { encoding: 'utf8', timeout: 5000, windowsHide: true });
+      const pids = new Set();
+      for (const line of out.split('\n')) {
+        const pid = line.trim().split(/\s+/).pop();
+        if (pid && /^\d+$/.test(pid) && pid !== '0' && pid !== String(process.pid)) pids.add(pid);
+      }
+      for (const pid of pids) try { process.kill(parseInt(pid)); } catch {}
+    } else {
+      execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { timeout: 5000 });
+    }
+  } catch {}
+}
+
+/** Kill minions processes by command-line pattern matching (wmic on Windows, pkill on Unix). */
+function killMinionsProcesses(patterns) {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      for (const line of out.split('\n')) {
+        if (patterns.some(p => line.includes(p))) {
+          const pid = line.split(',').pop()?.trim();
+          if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
+        }
+      }
+    } else {
+      for (const p of patterns) {
+        try { execSync(`pkill -f "${p}" 2>/dev/null`, { timeout: 5000 }); } catch {}
+      }
+    }
+  } catch {}
+}
 const DEFAULT_MINIONS_HOME = path.join(os.homedir(), '.minions');
 const ROOT_POINTER_PATH = path.join(os.homedir(), '.minions-root');
 const LEGACY_DEFAULT_SQUAD_HOME = path.join(os.homedir(), '.squad');
@@ -495,20 +531,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   ensureInstalled();
   // Stop engine if running
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
-  // Kill existing dashboard
-  try {
-    if (process.platform === 'win32') {
-      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      for (const line of out.split('\n')) {
-        if (line.includes('dashboard.js') && line.includes('minions')) {
-          const pid = line.split(',').pop()?.trim();
-          if (pid && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
-        }
-      }
-    } else {
-      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
-    }
-  } catch {}
+  // Kill existing dashboard — port-based is reliable across all setups
+  killByPort(7331);
   const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start'], {
     cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
   });
@@ -550,22 +574,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   // 1. Kill all processes
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
-  // Kill dashboard
-  try {
-    if (process.platform === 'win32') {
-      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      for (const line of out.split('\n')) {
-        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
-          const pid = line.split(',').pop()?.trim();
-          if (pid && pid !== String(process.pid)) {
-            try { process.kill(parseInt(pid)); } catch {}
-          }
-        }
-      }
-    } else {
-      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
-    }
-  } catch {}
+  killByPort(7331);
+  killMinionsProcesses(['engine.js', 'dashboard.js', 'spawn-agent.js']);
   console.log('  Killed all processes');
 
   // 2. Delete runtime state
@@ -650,21 +660,8 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 
   // 1. Kill all processes
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME, timeout: 10000 }); } catch {}
-  try {
-    if (process.platform === 'win32') {
-      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
-      for (const line of out.split('\n')) {
-        if (line.includes('minions') && (line.includes('engine.js') || line.includes('dashboard.js') || line.includes('spawn-agent.js'))) {
-          const pid = line.split(',').pop()?.trim();
-          if (pid && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
-        }
-      }
-    } else {
-      try { execSync('pkill -f "minions.*engine.js" 2>/dev/null', { timeout: 5000 }); } catch {}
-      try { execSync('pkill -f "minions.*dashboard.js" 2>/dev/null', { timeout: 5000 }); } catch {}
-      try { execSync('lsof -ti:7331 | xargs kill -9 2>/dev/null', { timeout: 5000 }); } catch {}
-    }
-  } catch {}
+  killByPort(7331);
+  killMinionsProcesses(['engine.js', 'dashboard.js', 'spawn-agent.js']);
   console.log('  Killed all processes');
 
   // 2. Remove minions-authored skills from ~/.claude/skills/
