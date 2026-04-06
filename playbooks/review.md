@@ -11,6 +11,10 @@ Repo: {{repo_name}} | Org: {{ado_org}} | Project: {{ado_project}}
 Review **{{pr_id}}**: {{pr_title}}
 Branch: `{{pr_branch}}`
 
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks (e.g., reviewing unrelated files simultaneously). For reading diffs, checking patterns, and writing the review, work directly — do not spawn subagents.
+
 ## How to Review
 
 1. Fetch latest and read the diff:
