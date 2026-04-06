@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.352 (2026-04-06)
+
+### Fixes
+-  pipeline Continue button shows immediate feedback
+-  skip meeting modal re-render when data unchanged
+
 ## 0.1.350 (2026-04-06)
 
 ### Fixes
