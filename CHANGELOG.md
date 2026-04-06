@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.413 (2026-04-06)
+
+### Fixes
+-  auto-recover timed-out agents that created PRs before dying
+-  resolve npm path from Node binary dir — not PATH
+
 ## 0.1.411 (2026-04-06)
 
 ### Fixes
