@@ -1261,9 +1261,14 @@ function discoverFromPrs(config, project) {
     (dispatch.active || []).filter(d => d.meta?.pr?.id).map(d => d.meta.pr.id)
   );
 
+  const knownAgents = new Set(Object.keys(config.agents || {}));
   for (const pr of prs) {
     if (pr.status !== 'active') continue;
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
+    // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
+    // Manually-linked PRs with autoObserve are allowed through (they have _autoObserve flag)
+    const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || pr._autoObserve;
+    if (!isAgentPr) continue;
 
     const prNumber = (pr.id || '').replace(/^PR-/, '');
     // Use reviewStatus as single source of truth (synced from ADO/GitHub votes)

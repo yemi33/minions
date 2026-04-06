@@ -28,12 +28,13 @@ function prRow(pr) {
     '<td><span class="pr-badge ' + buildClass + '">' + escHtml(buildLabel) + '</span></td>' +
     '<td><span class="pr-badge ' + statusClass + '">' + escHtml(statusLabel) + '</span></td>' +
     '<td><span class="pr-date">' + escHtml((pr.created || '—').slice(0, 16).replace('T', ' ')) + '</span></td>' +
+    '<td><button class="pr-pager-btn" style="font-size:9px;padding:1px 5px;color:var(--red);border-color:var(--red)" data-pr-id="' + escHtml(String(prId)) + '" onclick="event.stopPropagation();unlinkPr(this.dataset.prId)" title="Remove from tracking">x</button></td>' +
     '</tr>';
 }
 
 function prTableHtml(rows) {
   return '<div class="pr-table-wrap"><table class="pr-table"><thead><tr>' +
-    '<th>PR</th><th>Title</th><th>Agent</th><th>Branch</th><th>Review</th><th>Signed Off By</th><th>Build</th><th>Status</th><th>Created</th>' +
+    '<th>PR</th><th>Title</th><th>Agent</th><th>Branch</th><th>Review</th><th>Signed Off By</th><th>Build</th><th>Status</th><th>Created</th><th></th>' +
     '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -150,4 +151,17 @@ async function _submitLinkPr() {
   } catch (e) { alert('Error: ' + e.message); openAddPrModal(); }
 }
 
-window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal };
+async function unlinkPr(id) {
+  if (!confirm('Remove ' + id + ' from tracking?')) return;
+  try {
+    const res = await fetch('/api/pull-requests/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); return; }
+    showToast('cmd-toast', id + ' removed', true);
+    refresh();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+window.MinionsPrs = { prRow, prTableHtml, renderPrs, prPrev, prNext, openAllPrs, openModal, openAddPrModal, unlinkPr };
