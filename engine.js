@@ -2104,7 +2104,7 @@ function discoverWork(config) {
   // Pipeline orchestration — check stage completions and start ready stages
   try {
     const { discoverPipelineWork } = require('./engine/pipeline');
-    discoverPipelineWork(config);
+    await discoverPipelineWork(config);
   } catch (e) { log('warn', 'discover pipeline work: ' + e.message); }
 
   // Periodic plan completion sweep — catch PRDs that completed while engine was down

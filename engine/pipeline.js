@@ -358,7 +358,7 @@ function executeScheduleStage(stage, stageState, config) {
   return { status: 'completed', completedAt: ts() };
 }
 
-function executeParallelStage(stage, stageState, run, pipeline, config) {
+async function executeParallelStage(stage, stageState, run, pipeline, config) {
   const subStages = stage.stages || [];
   const subResults = {};
   for (const sub of subStages) {
@@ -496,7 +496,7 @@ function isStageComplete(stage, stageState, run, config) {
 
 // ── Discovery (called per tick) ──────────────────────────────────────────────
 
-function discoverPipelineWork(config) {
+async function discoverPipelineWork(config) {
   const pipelines = getPipelines();
   if (pipelines.length === 0) return;
 

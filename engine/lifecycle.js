@@ -782,7 +782,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
 
   const prNum = (pr.id || '').replace('PR-', '');
 
-  if (pr.branch) {
+  if (pr.branch && project) {
     const root = path.resolve(project.localPath);
     const wtRoot = path.resolve(root, config.engine?.worktreeRoot || '../worktrees');
     // Find worktrees matching this branch — dir format is {slug}-{branch}-{suffix}
