@@ -148,8 +148,11 @@ function renderPrdProgress(prog) {
 
     // Linked work item info
     const wi = wiById[i.id];
+    const wiAgent = wi?.dispatched_to ? (agentData.find(a => a.id === wi.dispatched_to) || {}) : null;
     const wiLabel = wi ? '<span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border)" title="Work item: ' + escHtml(wi.id) + '">' +
-      escHtml(wi.id) + (wi.dispatched_to ? ' → ' + escHtml(wi.dispatched_to) : '') + '</span>' : '';
+      escHtml(wi.id) + '</span>' : '';
+    const agentLabel = wiAgent ? '<span style="font-size:9px;color:var(--muted)" title="' + escHtml(wiAgent.name || wi.dispatched_to) + '">' +
+      (wiAgent.emoji || '') + ' ' + escHtml(wiAgent.name || wi.dispatched_to) + '</span>' : '';
 
     // Requeue button for failed items
     const canRequeue = wi && (wi.status === 'failed' || i.status === 'failed');
@@ -170,6 +173,7 @@ function renderPrdProgress(prog) {
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
       wiLabel +
+      agentLabel +
       requeueBtn +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
@@ -320,7 +324,9 @@ function renderPrdProgress(prog) {
         const borderColor = statusColor(i.status);
         const src = escHtml(i.source || '');
         const iid = escHtml(i.id || '');
-        const agent = wi[i.id]?.dispatched_to || '';
+        const agentId = wi[i.id]?.dispatched_to || '';
+        const agentInfo = agentId ? (agentData.find(a => a.id === agentId) || {}) : null;
+        const agentDisplay = agentInfo ? (agentInfo.emoji || '') + ' ' + escHtml(agentInfo.name || agentId) : (agentId ? escHtml(agentId) : '');
         const deps = (i.depends_on || []).join(', ');
         const wipAnim = i.status === 'dispatched' ? 'animation:prdWipPulse 2s infinite;' : '';
         html += '<div onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')" ' +
@@ -333,7 +339,7 @@ function renderPrdProgress(prog) {
           '<div style="color:var(--text);font-size:11px;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">' + escHtml(i.name) + '</div>' +
           '<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
             '<span class="prd-item-priority ' + (i.priority || '') + '" style="font-size:8px;padding:1px 4px">' + escHtml(i.priority || '') + '</span>' +
-            (agent ? '<span style="font-size:8px;color:var(--muted)">' + escHtml(agent) + '</span>' : '') +
+            (agentDisplay ? '<span style="font-size:8px;color:var(--muted)">' + agentDisplay + '</span>' : '') +
             (function() {
               const w = wi[i.id];
               if (!w) return '';
@@ -484,7 +490,7 @@ function openArchivedPrdModal() {
       const done = g.items.filter(it => it.status === 'done').length;
       const failed = g.items.filter(it => it.status === 'failed').length;
       const completed = g.completedAt ? new Date(g.completedAt).toLocaleDateString() : '';
-      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(' + i + ')">' +
+      return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
         '<div class="plan-card-meta">' +
           (g.project ? '<span>' + escHtml(g.project) + '</span>' : '') +
@@ -504,16 +510,17 @@ function openArchivedPrdModal() {
   document.getElementById('modal').classList.add('open');
 }
 
-function showArchivedPrdDetail(idx) {
+function showArchivedPrdDetail(idxOrFile) {
   const groups = window._archivedPrdGroups || [];
+  const idx = typeof idxOrFile === 'string' ? groups.findIndex(g => g.file === idxOrFile) : idxOrFile;
   const g = groups[idx];
   if (!g) return;
 
   // View mode toggle for archived
   const isGraph = window._archivedPrdViewMode !== 'list';
   const toggleHtml = '<div style="display:flex;gap:4px;margin-bottom:8px">' +
-    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'graph\';showArchivedPrdDetail(' + idx + ')">Graph</button>' +
-    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'list\';showArchivedPrdDetail(' + idx + ')">List</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'graph\';showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">Graph</button>' +
+    '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._archivedPrdViewMode=\'list\';showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">List</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);margin-left:auto" onclick="triggerVerify(\'' + escHtml(g.file) + '\')">Trigger Verify</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="planUnarchive(\'' + escHtml(g.file) + '\',this)">Unarchive</button>' +
     '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="openArchivedPrdModal()">Back</button>' +
