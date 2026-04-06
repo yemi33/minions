@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.392 (2026-04-06)
+
+### Features
+-  track dashboard version — detect stale dashboard code separately
+- Replace magic strings in pipeline.js with STAGE_TYPE/PIPELINE_STATUS/MEETING_STATUS constants (#244)
+- Fix spawn-agent.js direct proc.kill() — use cross-platform helpers (#243)
+
+### Fixes
+-  show 'minions update' as primary upgrade command in version banner
+
 ## 0.1.388 (2026-04-06)
 
 ### Fixes
