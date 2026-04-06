@@ -173,10 +173,11 @@ async function checkNpmVersion() {
   try {
     const https = require('https');
     const data = await new Promise((resolve, reject) => {
-      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (res) => {
+      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (resp) => {
+        if (resp.statusCode !== 200) { reject(new Error('npm registry ' + resp.statusCode)); resp.resume(); return; }
         let body = '';
-        res.on('data', c => body += c);
-        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
+        resp.on('data', c => body += c);
+        resp.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
       });
       req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
@@ -210,7 +211,11 @@ function getDiskVersion() {
   const now = Date.now();
   if (_diskVersionCache && (now - _diskVersionCacheTs) < DISK_VERSION_TTL) return _diskVersionCache;
   let diskVersion = null;
-  try { diskVersion = require('./package.json').version; } catch {}
+  try {
+    const pkgPath = require.resolve('./package.json');
+    delete require.cache[pkgPath]; // bust Node's require cache so npm updates are detected
+    diskVersion = require('./package.json').version;
+  } catch {}
   let diskCommit = null;
   try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
   _diskVersionCache = { diskVersion, diskCommit };
