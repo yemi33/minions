@@ -141,6 +141,13 @@ async function pollPrStatus(config) {
     else if (prData.state === 'closed') newStatus = PR_STATUS.ABANDONED;
     else if (prData.state === 'open') newStatus = PR_STATUS.ACTIVE;
 
+    // Track head SHA changes to detect new pushes (used for review re-dispatch gating)
+    if (prData.head?.sha && pr.headSha !== prData.head.sha) {
+      pr.headSha = prData.head.sha;
+      pr.lastPushedAt = new Date().toISOString();
+      updated = true;
+    }
+
     if (pr.status !== newStatus) {
       log('info', `PR ${pr.id} status: ${pr.status} → ${newStatus}`);
       pr.status = newStatus;
@@ -191,6 +198,9 @@ async function pollPrStatus(config) {
       if (states.some(s => s === 'CHANGES_REQUESTED')) newReviewStatus = 'changes-requested';
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
+      // If all reviews were COMMENTED (filtered out), states is empty but reviews exist.
+      // Set to 'waiting' instead of leaving as 'pending' to prevent infinite review re-dispatch.
+      else if (states.length === 0 && reviews.length > 0 && newReviewStatus === 'pending') newReviewStatus = 'waiting';
 
       if (pr.reviewStatus !== newReviewStatus) {
         log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);

@@ -5731,6 +5731,45 @@ async function testPrWaitingResolve() {
   });
 }
 
+async function testReviewReDispatchLoop() {
+  console.log('\n── Review Re-Dispatch Loop Prevention ──');
+
+  await test('github.js sets reviewStatus to waiting when only COMMENTED reviews exist', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes("reviews.length > 0") && src.includes("newReviewStatus === 'pending'") && src.includes("newReviewStatus = 'waiting'"),
+      'Should set reviewStatus to waiting when all reviews are COMMENTED (states empty but reviews exist)');
+  });
+
+  await test('github.js tracks headSha and lastPushedAt on PR', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('pr.headSha') && src.includes('pr.lastPushedAt'),
+      'Should track headSha and lastPushedAt for new-commit detection');
+  });
+
+  await test('lifecycle.js sets lastReviewedAt on review completion', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
+    assert.ok(reviewFn.includes('lastReviewedAt'),
+      'updatePrAfterReview should set lastReviewedAt timestamp on PR record');
+  });
+
+  await test('engine.js skips review re-dispatch when lastReviewedAt set and no new commits', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(src.includes('alreadyReviewed') && src.includes('lastReviewedAt') && src.includes('lastPushedAt'),
+      'Should gate review dispatch on lastReviewedAt vs lastPushedAt comparison');
+    assert.ok(src.includes('!alreadyReviewed'),
+      'needsReview should include !alreadyReviewed check');
+  });
+
+  await test('engine.js allows re-dispatch when new commits pushed after review', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    // The condition: pr.lastPushedAt <= pr.lastReviewedAt means "no new commits"
+    // When lastPushedAt > lastReviewedAt, alreadyReviewed is false, allowing re-dispatch
+    assert.ok(src.includes("pr.lastPushedAt <= pr.lastReviewedAt"),
+      'alreadyReviewed should compare lastPushedAt <= lastReviewedAt so new pushes allow re-review');
+  });
+}
+
 async function testSettingsComprehensive() {
   await test('settings UI includes all ENGINE_DEFAULTS fields', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
@@ -5931,6 +5970,7 @@ async function testSessionFeatures() {
   await testScheduleDetailModal();
   await testPlanArchiveApi();
   await testPrWaitingResolve();
+  await testReviewReDispatchLoop();
   await testSettingsComprehensive();
   await testCcActionTypes();
   await testAutoModeStatus();

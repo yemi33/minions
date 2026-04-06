@@ -1268,9 +1268,11 @@ function discoverFromPrs(config, project) {
     // minionsReview tracks metadata (reviewer, note) but not the authoritative status
     const reviewStatus = pr.reviewStatus || 'pending';
 
-    // PRs needing review: pending or waiting (review dispatched but no verdict yet)
+    // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
-    const needsReview = autoReview && reviewStatus === 'pending';
+    // Skip re-dispatch if already reviewed and no new commits pushed since last review
+    const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
+    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
