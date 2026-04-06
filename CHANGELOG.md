@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.377 (2026-04-06)
+
+### Features
+- Fix 3 crash bugs: fanAgentId, null dereferences, cleanDispatchEntries (#228)
+
 ## 0.1.376 (2026-04-06)
 
 ### Features
