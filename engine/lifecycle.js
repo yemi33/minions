@@ -457,24 +457,22 @@ function chainPlanToPrd(dispatchItem, meta, config) {
 
   log('info', `Plan chaining: queuing plan-to-prd for next tick (chained from ${dispatchItem.id})`);
   const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-  let items = [];
-  try { items = JSON.parse(fs.readFileSync(wiPath, 'utf8')); } catch (err) {
-    log('warn', `Failed to parse ${wiPath}: ${err.message}`);
-    try { fs.copyFileSync(wiPath, wiPath + '.bak'); } catch {}
-  }
-  items.push({
-    id: 'W-' + shared.uid(),
-    title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
-    type: 'plan-to-prd',
-    priority: meta?.item?.priority || 'high',
-    description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
-    status: WI_STATUS.PENDING,
-    created: ts(),
-    createdBy: 'engine:chain',
-    project: targetProject.name,
-    planFile: planFile.name,
-  });
-  shared.safeWrite(wiPath, items);
+  shared.mutateJsonFileLocked(wiPath, (items) => {
+    if (!Array.isArray(items)) items = [];
+    items.push({
+      id: 'W-' + shared.uid(),
+      title: `Convert plan to PRD: ${meta?.item?.title || planFile.name}`,
+      type: 'plan-to-prd',
+      priority: meta?.item?.priority || 'high',
+      description: `Plan file: plans/${planFile.name}\nChained from plan task ${dispatchItem.id}`,
+      status: WI_STATUS.PENDING,
+      created: ts(),
+      createdBy: 'engine:chain',
+      project: targetProject.name,
+      planFile: planFile.name,
+    });
+    return items;
+  }, { defaultValue: [] });
 }
 
 // ─── Work Item Path Resolution ───────────────────────────────────────────────
