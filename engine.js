@@ -696,7 +696,13 @@ function spawnAgent(dispatchItem, config) {
   }, 3000);
 
   // Track process — even if PID isn't available yet (async on Windows)
-  activeProcesses.set(id, { proc, agentId, startedAt });
+  // Pre-load sessionId from session.json so steering works immediately on resume
+  let initialSessionId = null;
+  try {
+    const sj = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
+    if (sj?.sessionId && sj.dispatchId === id) initialSessionId = sj.sessionId;
+  } catch {}
+  activeProcesses.set(id, { proc, agentId, startedAt, sessionId: initialSessionId });
 
   // Log PID and persist to registry
   if (proc.pid) {

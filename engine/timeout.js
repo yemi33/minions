@@ -60,15 +60,23 @@ function checkSteering(config) {
     const steerPath = path.join(AGENTS_DIR, info.agentId, 'steer.md');
     if (!fs.existsSync(steerPath)) continue;
 
+    const sessionId = info.sessionId;
+    if (!sessionId) {
+      // No sessionId yet — check stale (>5 min means it'll never arrive)
+      try {
+        const age = Date.now() - fs.statSync(steerPath).mtimeMs;
+        if (age > 300000) {
+          log('warn', `Steering: no sessionId for ${info.agentId} after 5m — deleting stale message`);
+          try { fs.unlinkSync(steerPath); } catch {}
+        }
+      } catch {}
+      // Leave steer.md in place — retry next tick when sessionId may be available
+      continue;
+    }
+
     const message = safeRead(steerPath);
     try { fs.unlinkSync(steerPath); } catch { /* cleanup */ }
     if (!message) continue;
-
-    const sessionId = info.sessionId;
-    if (!sessionId) {
-      log('warn', `Steering: no sessionId for ${info.agentId} — cannot resume. Message dropped.`);
-      continue;
-    }
 
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
