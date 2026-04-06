@@ -38,7 +38,12 @@ async function openAgentDetail(id) {
     renderDetailTabs(detail);
     renderDetailContent(detail, currentTab);
   } catch(e) {
-    document.getElementById('detail-content').textContent = 'Error loading agent detail: ' + e.message;
+    document.getElementById('detail-content').innerHTML =
+      '<div style="padding:24px;text-align:center">' +
+        '<div style="color:var(--red);margin-bottom:12px">Error loading agent detail: ' + escHtml(e.message) + '</div>' +
+        '<button onclick="openAgentDetail(\'' + escHtml(id) + '\')" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;font-size:12px">Retry</button>' +
+        ' <button onclick="closeDetail()" style="padding:6px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:12px;color:var(--text)">Close</button>' +
+      '</div>';
   }
 
   document.getElementById('detail-overlay').classList.add('open');
