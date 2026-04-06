@@ -7642,9 +7642,9 @@ async function testVersionCheck() {
     assert.ok(cliSrc.includes('git rev-parse --short HEAD'), 'codeCommit should come from git');
   });
 
-  await test('dashboard getStatus includes version object with stale and updateAvailable', () => {
-    assert.ok(dashSrc.includes('version:') && dashSrc.includes('stale:') && dashSrc.includes('updateAvailable:'),
-      'status response must include version with stale and updateAvailable fields');
+  await test('dashboard getStatus includes version object with engine + dashboard stale flags', () => {
+    assert.ok(dashSrc.includes('version:') && dashSrc.includes('engineStale') && dashSrc.includes('dashboardStale') && dashSrc.includes('updateAvailable:'),
+      'status response must include version with engineStale, dashboardStale, and updateAvailable fields');
   });
 
   await test('getDiskVersion caches git rev-parse with TTL', () => {
@@ -7680,11 +7680,13 @@ async function testVersionCheck() {
     assert.strictEqual(fn('1.0.0', null), 1);
   });
 
-  await test('/api/version endpoint exists and includes all fields', () => {
+  await test('/api/version endpoint includes engine + dashboard version fields', () => {
     assert.ok(dashSrc.includes("'/api/version'"), '/api/version route must exist');
     assert.ok(dashSrc.includes('checkNpmVersion'), '/api/version must call checkNpmVersion');
-    assert.ok(dashSrc.includes('currentCommit'), '/api/version must include currentCommit');
-    assert.ok(dashSrc.includes('runningCommit'), '/api/version must include runningCommit');
+    assert.ok(dashSrc.includes('engineRunning'), '/api/version must include engineRunning');
+    assert.ok(dashSrc.includes('dashboardRunning'), '/api/version must include dashboardRunning');
+    assert.ok(dashSrc.includes('engineStale'), '/api/version must include engineStale');
+    assert.ok(dashSrc.includes('dashboardStale'), '/api/version must include dashboardStale');
   });
 
   await test('layout.html has version-banner element in header', () => {
@@ -7696,12 +7698,31 @@ async function testVersionCheck() {
       'version-banner should be near the engine-badge in the header');
   });
 
-  await test('renderVersionBanner handles all three states', () => {
+  await test('renderVersionBanner handles all five states (both stale, engine stale, dashboard stale, update, ok)', () => {
     assert.ok(renderSrc.includes('function renderVersionBanner'), 'renderVersionBanner must exist');
-    assert.ok(renderSrc.includes('version.stale'), 'must handle stale state');
+    assert.ok(renderSrc.includes('version.engineStale && version.dashboardStale'), 'must handle both-stale state');
+    assert.ok(renderSrc.includes('version.engineStale'), 'must handle engine-only stale');
+    assert.ok(renderSrc.includes('version.dashboardStale'), 'must handle dashboard-only stale');
     assert.ok(renderSrc.includes('version.updateAvailable'), 'must handle updateAvailable state');
     assert.ok(renderSrc.includes('npm update'), 'update state should show npm command');
-    assert.ok(renderSrc.includes('Restart to apply'), 'stale state should say restart');
+    assert.ok(renderSrc.includes('minions restart'), 'stale states should say minions restart');
+  });
+
+  await test('dashboard.js records _dashboardVersion at module load', () => {
+    assert.ok(dashSrc.includes('_dashboardVersion'), 'must have _dashboardVersion variable');
+    assert.ok(dashSrc.includes('_dashboardVersion.codeVersion'), 'must reference dashboard codeVersion');
+    // Should be set at module load, not inside server.listen
+    const beforeListen = dashSrc.indexOf('server.listen');
+    const dashVersionDef = dashSrc.indexOf('_dashboardVersion =');
+    assert.ok(dashVersionDef < beforeListen, '_dashboardVersion should be set before server.listen (at module load)');
+  });
+
+  await test('status version object includes dashboardRunning fields', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    assert.ok(statusFn[0].includes('dashboardRunning'), 'must include dashboardRunning');
+    assert.ok(statusFn[0].includes('dashboardRunningCommit'), 'must include dashboardRunningCommit');
+    assert.ok(statusFn[0].includes('dashboardStale'), 'must include dashboardStale');
   });
 
   await test('refresh.js calls renderVersionBanner', () => {

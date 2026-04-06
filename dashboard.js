@@ -10,6 +10,14 @@ const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const llm = require('./engine/llm');
+
+// Dashboard version stamp — captured at module load so it reflects the code actually running
+const _dashboardVersion = {
+  codeVersion: (() => { try { return require('./package.json').version; } catch { return null; } })(),
+  codeCommit: (() => { try { return require('child_process').execSync('git rev-parse --short HEAD', { cwd: __dirname, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch { return null; } })(),
+  startedAt: new Date().toISOString(),
+  pid: process.pid,
+};
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
@@ -313,13 +321,20 @@ function getStatus() {
     version: (() => {
       const engine = getEngineState();
       const { diskVersion, diskCommit } = getDiskVersion();
+      const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+                          !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
+      const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
+                             !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
       return {
         running: engine.codeVersion || null,
         runningCommit: engine.codeCommit || null,
+        dashboardRunning: _dashboardVersion.codeVersion,
+        dashboardRunningCommit: _dashboardVersion.codeCommit,
         disk: diskVersion,
         diskCommit,
-        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
-               !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit),
+        engineStale,
+        dashboardStale,
+        stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
         updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
       };
@@ -3435,15 +3450,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const npm = await checkNpmVersion();
       const { diskVersion, diskCommit } = getDiskVersion();
       const engine = getEngineState();
+      const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+                          !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
+      const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
+                             !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
       return jsonReply(res, 200, {
         current: diskVersion,
         currentCommit: diskCommit,
-        running: engine.codeVersion || null,
-        runningCommit: engine.codeCommit || null,
+        engineRunning: engine.codeVersion || null,
+        engineRunningCommit: engine.codeCommit || null,
+        dashboardRunning: _dashboardVersion.codeVersion,
+        dashboardRunningCommit: _dashboardVersion.codeCommit,
         latest: npm.latest,
         updateAvailable: !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
-        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
-               !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit),
+        engineStale,
+        dashboardStale,
+        stale: engineStale || dashboardStale,
         checkedAt: npm.checkedAt,
       });
     }},
