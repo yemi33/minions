@@ -1314,6 +1314,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
+            delete wi.failReason;
+            delete wi.noPr;
             log('info', `Auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
           } else if (hasOutput) {
             // Agent ran successfully but chose not to create a PR — mark done
