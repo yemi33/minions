@@ -52,6 +52,10 @@ If the task is purely exploratory (no deliverable requested), skip this step.
 ### 6. Status
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks. For reading files, exploring directories, and writing findings, work directly — do not spawn subagents.
+
 ## Rules
 - Do NOT modify existing code unless the task explicitly asks for it.
 - Use the appropriate MCP tools for PR creation — check available tools before starting.

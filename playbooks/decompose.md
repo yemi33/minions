@@ -21,6 +21,10 @@ A work item has been flagged as too large for a single agent dispatch. Analyze t
 {{acceptance_criteria}}
 {{/acceptance_criteria}}
 
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks. For codebase exploration, reading files, and writing the decomposition output, work directly — do not spawn subagents.
+
 ## Instructions
 
 1. **Explore the codebase** at `{{project_path}}` — understand the existing structure, patterns, and dependencies
