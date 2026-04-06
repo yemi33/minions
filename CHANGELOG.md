@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.386 (2026-04-06)
+
+### Fixes
+-  cache git rev-parse in version check — was spawning every 4s
+
 ## 0.1.385 (2026-04-06)
 
 ### Features
