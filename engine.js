@@ -356,14 +356,13 @@ function spawnAgent(dispatchItem, config) {
                     const existingWtPath = findExistingWorktree(rootDir, branchName);
                     if (existingWtPath && fs.existsSync(existingWtPath)) {
                       // Bug fix: read dispatch under file lock so check-and-act is atomic
-                      // Uses withFileLock directly (read-only) — no unnecessary disk write
                       let activelyUsed = false;
-                      withFileLock(DISPATCH_PATH + '.lock', () => {
-                        const dp = safeJson(DISPATCH_PATH) || {};
+                      mutateDispatch((dp) => {
                         activelyUsed = (dp.active || []).some(d => {
                           const dBranch = d.meta?.branch ? sanitizeBranch(d.meta.branch) : '';
                           return dBranch === branchName && d.id !== id;
                         });
+                        return dp;
                       });
                       if (activelyUsed) {
                         log('warn', `Branch ${branchName} actively used by another agent at ${existingWtPath} — cannot create worktree`);
