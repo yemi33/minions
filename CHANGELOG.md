@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.357 (2026-04-06)
+
+### Features
+-  show 'Converting to PRD' status instead of 'In Progress' during plan conversion
+
 ## 0.1.356 (2026-04-06)
 
 ### Fixes
