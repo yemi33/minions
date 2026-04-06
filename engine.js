@@ -910,7 +910,12 @@ function autoCleanPrdWorkItems(prdFile, config) {
   }
   if (deletedIds.length > 0) {
     const deletedSet = new Set(deletedIds);
-    cleanDispatchEntries(d => deletedSet.has(d.meta?.item?.id) && d.meta?.item?.sourcePlan === prdFile);
+    mutateDispatch((dispatch) => {
+      const pred = d => deletedSet.has(d.meta?.item?.id) && d.meta?.item?.sourcePlan === prdFile;
+      dispatch.pending = dispatch.pending.filter(d => !pred(d));
+      dispatch.active = dispatch.active.filter(d => !pred(d));
+      return dispatch;
+    });
     log('info', `Plan sync: cleared ${deletedIds.length} pending/failed work items for ${prdFile}`);
   }
 }
@@ -1858,7 +1863,7 @@ function discoverCentralWorkItems(config) {
           prompt,
           meta: {
             dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
-            branch: `fan/${item.id}/${fanAgentId}`,
+            branch: `fan/${item.id}/${agent.id}`,
             deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || DEFAULTS.agentTimeout)
           }
         });
