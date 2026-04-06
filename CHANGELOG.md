@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.383 (2026-04-06)
+
+### Fixes
+-  SyntaxError — await in non-async discoverWork function
+-  branch regex missed W- and PL- work item IDs — wrong PR agent attribution
+
 ## 0.1.381 (2026-04-06)
 
 ### Fixes
