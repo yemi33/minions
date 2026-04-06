@@ -7106,6 +7106,45 @@ async function testStatusMutationGuards() {
     assert.ok(lockCount > 0 || safeWriteCount === 0,
       'updateWorkItemStatus must use mutateJsonFileLocked OR not write directly at all');
   });
+
+  // ─── P-w2f6b9d4: Crash bug fixes — null guards and undefined variable ──────
+
+  await test('engine.js: fan-out branch uses agent.id, not fanAgentId', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(!src.includes('fanAgentId'), 'Should not reference undefined fanAgentId');
+    assert.ok(src.includes('fan/${item.id}/${agent.id}'), 'Fan-out branch should use agent.id');
+  });
+
+  await test('engine.js: plan sync uses mutateDispatch instead of cleanDispatchEntries', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(!src.includes('cleanDispatchEntries'), 'engine.js should not call cleanDispatchEntries (dashboard-only function)');
+  });
+
+  await test('dashboard.js: handlePrdItemsRemove null-guards safeJson result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('handlePrdItemsRemove');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
+    assert.ok(fnBody.includes("if (!plan)"), 'handlePrdItemsRemove must null-guard plan from safeJson');
+  });
+
+  await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('handlePlansDelete');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
+    // Should guard items from safeJson before calling .filter()
+    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)'),
+      'handlePlansDelete must null-guard items from safeJson before filter');
+  });
+
+  await test('dashboard.js: handleProjectsAdd null-guards config from safeJson', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fnStart = src.indexOf('handleProjectsAdd');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
+    assert.ok(fnBody.includes("if (!config)"), 'handleProjectsAdd must null-guard config from safeJson');
+  });
 }
 
 // ─── Dashboard Audit: Critical Functional Bugs ─────────────────────────────
