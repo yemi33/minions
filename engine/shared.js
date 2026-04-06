@@ -428,7 +428,7 @@ const DEFAULT_AGENTS = {
 
 const DEFAULT_CLAUDE = {
   binary: 'claude',
-  outputFormat: 'json',
+  outputFormat: 'stream-json',
   allowedTools: 'Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch',
 };
 
