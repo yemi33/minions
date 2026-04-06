@@ -166,6 +166,16 @@ async function pollPrStatus(config) {
       }
     }
 
+    // Track head commit changes to detect new pushes (used for review re-dispatch gating)
+    const headCommit = prData.lastMergeSourceCommit?.commitId || prData.sourceRefName || '';
+    if (headCommit && pr._adoHeadCommit !== headCommit) {
+      if (pr._adoHeadCommit) { // skip first detection — only track changes
+        pr.lastPushedAt = new Date().toISOString();
+      }
+      pr._adoHeadCommit = headCommit;
+      updated = true;
+    }
+
     const reviewers = prData.reviewers || [];
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
     let newReviewStatus = pr.reviewStatus || 'pending';
