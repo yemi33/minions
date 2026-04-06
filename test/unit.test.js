@@ -5518,6 +5518,9 @@ async function main() {
 
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
+
+    // Dashboard resilience: safeFetch, auto-reload, CC reset
+    await testDashboardResilience();
   } finally {
     cleanupTmpDirs();
   }
@@ -8011,6 +8014,224 @@ async function testAutoRecoveryAndAtomicity() {
       shared.projectPrPath = origProjectPrPath;
       shared.getProjects = origGetProjects;
     }
+  });
+}
+
+// ─── Dashboard Resilience: safeFetch, auto-reload, CC reset ─────────────────
+
+async function testDashboardResilience() {
+  console.log('\n── Dashboard Resilience ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+  const stateSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'state.js'), 'utf8');
+  const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const liveStreamSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+  const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+  const modalQaSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+
+  // ── safeFetch wrapper ──
+
+  await test('safeFetch is defined with AbortController timeout', () => {
+    assert.ok(stateSrc.includes('function safeFetch('),
+      'state.js must define safeFetch');
+    assert.ok(stateSrc.includes('AbortController'),
+      'safeFetch must use AbortController for timeout');
+    assert.ok(stateSrc.includes('clearTimeout(timer)'),
+      'safeFetch must clear timeout in finally block');
+  });
+
+  await test('safeFetch defaults to 15s timeout', () => {
+    assert.ok(stateSrc.includes('15000'),
+      'safeFetch default timeout should be 15000ms');
+  });
+
+  await test('safeFetch does not use AbortSignal.any (browser compat)', () => {
+    const fnBody = stateSrc.slice(stateSrc.indexOf('function safeFetch'), stateSrc.indexOf('}', stateSrc.indexOf('function safeFetch') + 100) + 1);
+    assert.ok(!fnBody.includes('AbortSignal.any'),
+      'safeFetch must not use AbortSignal.any (requires Chrome 116+/Firefox 124+)');
+  });
+
+  await test('safeFetch does not mutate caller opts', () => {
+    const fnStart = stateSrc.indexOf('function safeFetch');
+    const fnBody = stateSrc.slice(fnStart, stateSrc.indexOf('\n}', fnStart) + 2);
+    assert.ok(fnBody.includes('Object.assign({}'),
+      'safeFetch should copy opts via Object.assign before modifying');
+    assert.ok(fnBody.includes('delete fetchOpts.') && !fnBody.includes('delete opts.'),
+      'safeFetch must delete from the copy (fetchOpts), not the original (opts)');
+  });
+
+  // ── safeFetch applied to hot-path fetches ──
+
+  await test('refresh poll uses safeFetch', () => {
+    assert.ok(refreshSrc.includes("safeFetch('/api/status')"),
+      'Status poll must use safeFetch to prevent connection exhaustion');
+  });
+
+  await test('live output poll uses safeFetch', () => {
+    assert.ok(liveStreamSrc.includes('safeFetch('),
+      'Live output poll must use safeFetch');
+  });
+
+  await test('agent detail fetch uses safeFetch', () => {
+    assert.ok(agentsSrc.includes('safeFetch('),
+      'Agent detail fetch must use safeFetch');
+  });
+
+  // ── Auto-reload on dashboard restart ──
+
+  await test('dashboard exposes dashboardStartedAt in status version object', () => {
+    assert.ok(dashSrc.includes('dashboardStartedAt'),
+      'Status response must include dashboardStartedAt for restart detection');
+    assert.ok(dashSrc.includes('_dashboardVersion.startedAt'),
+      'dashboardStartedAt must be sourced from _dashboardVersion.startedAt');
+  });
+
+  await test('refresh detects dashboard restart and auto-reloads', () => {
+    assert.ok(refreshSrc.includes('_knownDashboardStartId'),
+      'refresh.js must track the dashboard start ID');
+    assert.ok(refreshSrc.includes('dashboardStartedAt'),
+      'refresh must read dashboardStartedAt from status');
+    assert.ok(refreshSrc.includes('location.reload()'),
+      'refresh must call location.reload() when dashboard restarts');
+  });
+
+  await test('auto-reload skips on first load (null guard)', () => {
+    // The condition must require both _knownDashboardStartId and dashId to be non-null
+    assert.ok(refreshSrc.includes('dashId && _knownDashboardStartId && dashId !== _knownDashboardStartId'),
+      'Auto-reload must only trigger when both old and new IDs are non-null and different');
+  });
+
+  await test('auto-reload sets _knownDashboardStartId on first successful poll', () => {
+    // After the reload check, it must set the ID
+    const reloadCheck = refreshSrc.indexOf('location.reload()');
+    const setId = refreshSrc.indexOf('_knownDashboardStartId = dashId', reloadCheck);
+    assert.ok(setId > reloadCheck,
+      '_knownDashboardStartId must be set after the reload check (not before)');
+  });
+
+  await test('auto-reload returns early after location.reload to prevent processing stale data', () => {
+    const reloadIdx = refreshSrc.indexOf('location.reload()');
+    const afterReload = refreshSrc.slice(reloadIdx, reloadIdx + 50);
+    assert.ok(afterReload.includes('return'),
+      'Must return immediately after location.reload() to skip _processStatusUpdate');
+  });
+
+  // ── CC New Session full reset ──
+
+  await test('ccNewSession aborts in-flight request', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
+    assert.ok(fn.includes('ccAbort()'),
+      'ccNewSession must call ccAbort() to abort in-flight requests');
+  });
+
+  await test('ccNewSession resets _ccSending flag', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
+    assert.ok(fn.includes('_ccSending = false'),
+      'ccNewSession must reset _ccSending to prevent queuing');
+  });
+
+  await test('ccNewSession clears queue', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
+    assert.ok(fn.includes('_ccQueue = []'),
+      'ccNewSession must clear the message queue');
+  });
+
+  await test('ccNewSession clears localStorage sending state', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
+    assert.ok(fn.includes("localStorage.removeItem('cc-sending')"),
+      'ccNewSession must clear cc-sending from localStorage');
+  });
+
+  await test('CC clears stale sending state on page load', () => {
+    // This must be at module top-level (not inside a function) to run before ccRestoreMessages
+    const firstFnDecl = ccSrc.indexOf('function ccAbort');
+    assert.ok(firstFnDecl > 0, 'ccAbort function must exist');
+    const moduleTop = ccSrc.slice(0, firstFnDecl);
+    assert.ok(moduleTop.includes("localStorage.removeItem('cc-sending')"),
+      'cc-sending must be cleared at module load (before any function) to prevent stale state after reload');
+  });
+
+  // ── CC server-side reset on new session ──
+
+  await test('server-side handleCommandCenterNewSession resets ccInFlight', () => {
+    assert.ok(dashSrc.includes('ccInFlight = false') && dashSrc.includes('handleCommandCenterNewSession'),
+      'handleCommandCenterNewSession must reset ccInFlight guard');
+  });
+
+  // ── Live stream steering resilience ──
+
+  await test('steering pauses polling with _steerInFlight flag', () => {
+    assert.ok(liveStreamSrc.includes('_steerInFlight = true'),
+      'sendSteering must set _steerInFlight to pause polling');
+    assert.ok(liveStreamSrc.includes('_steerInFlight = false'),
+      'sendSteering must reset _steerInFlight after completion');
+  });
+
+  await test('refreshLiveOutput skips when steering in flight', () => {
+    assert.ok(liveStreamSrc.includes('if (_steerInFlight) return'),
+      'refreshLiveOutput must skip when _steerInFlight is true');
+  });
+
+  await test('steering resumes polling with forced refresh after send', () => {
+    // Must have setTimeout that resets flag and calls refreshLiveOutput
+    assert.ok(liveStreamSrc.includes('setTimeout('),
+      'sendSteering must use setTimeout to resume polling');
+    const finallyBlock = liveStreamSrc.slice(liveStreamSrc.indexOf('} finally {', liveStreamSrc.indexOf('sendSteering')));
+    assert.ok(finallyBlock.includes('_steerInFlight = false') && finallyBlock.includes('refreshLiveOutput()'),
+      'Finally block must reset _steerInFlight and call refreshLiveOutput');
+  });
+
+  // ── Agent detail error recovery ──
+
+  await test('agent detail error shows Retry button', () => {
+    assert.ok(agentsSrc.includes('openAgentDetail('),
+      'Error state must include Retry button that calls openAgentDetail');
+    assert.ok(agentsSrc.includes('Retry'),
+      'Error message must contain Retry button text');
+  });
+
+  await test('agent detail error shows Close button', () => {
+    assert.ok(agentsSrc.includes('closeDetail()'),
+      'Error state must include Close button');
+  });
+
+  // ── Doc-chat processing badge ──
+
+  await test('doc-chat shows processing badge on source card when processing starts', () => {
+    const processBody = modalQaSrc.slice(
+      modalQaSrc.indexOf('async function _processQaMessage'),
+      modalQaSrc.indexOf('async function _processQaMessage') + 800
+    );
+    assert.ok(processBody.includes("showNotifBadge(sourceCard, 'processing')"),
+      '_processQaMessage must show processing badge on source card at start');
+  });
+
+  await test('doc-chat clears processing badge when processing completes', () => {
+    assert.ok(modalQaSrc.includes('clearNotifBadge(doneCard)'),
+      '_processQaMessage must clear badge when done (no more queued messages)');
+  });
+
+  await test('doc-chat badge persists if messages still queued', () => {
+    assert.ok(modalQaSrc.includes('_qaQueue.length === 0'),
+      'Badge should only clear when queue is empty');
+  });
+
+  // ── Command center overlay dismiss ──
+
+  await test('CC overlay exists for click-to-dismiss', () => {
+    const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    assert.ok(layoutSrc.includes('id="cc-overlay"'),
+      'layout.html must have cc-overlay element');
+    assert.ok(layoutSrc.includes("onclick=\"toggleCommandCenter()\"") && layoutSrc.includes('cc-overlay'),
+      'cc-overlay must call toggleCommandCenter on click');
+  });
+
+  await test('toggleCommandCenter shows and hides overlay', () => {
+    assert.ok(ccSrc.includes("getElementById('cc-overlay')"),
+      'toggleCommandCenter must reference cc-overlay');
+    assert.ok(ccSrc.includes("overlay.style.display"),
+      'toggleCommandCenter must toggle overlay display');
   });
 }
 
