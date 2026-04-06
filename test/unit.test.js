@@ -5497,6 +5497,9 @@ async function main() {
 
     // Dashboard audit: medium bugs
     await testDashboardAuditMedium();
+
+    // Dashboard audit: low-severity polish
+    await testDashboardAuditLow();
   } finally {
     cleanupTmpDirs();
   }
@@ -7250,6 +7253,42 @@ async function testDashboardAuditMedium() {
   await test('statusColor handles error state', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
     assert.ok(src.includes("'error'"), 'statusColor must handle error state');
+  });
+}
+
+// ─── Dashboard Audit: Low-Severity Polish ──────────────────────────────────
+
+async function testDashboardAuditLow() {
+  console.log('\n── Dashboard Audit: Low-Severity Polish ──');
+
+  await test('renderEngineLog has null guard on el', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-dispatch.js'), 'utf8');
+    const fn = src.match(/function renderEngineLog[\s\S]*?^}/m);
+    assert.ok(fn, 'renderEngineLog must exist');
+    assert.ok(fn[0].includes('if (!el) return'), 'must null-guard el for when engine page is not in DOM');
+  });
+
+  await test('modalCancelEdit uses innerHTML with renderMd, not textContent', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+    const fn = src.match(/function modalCancelEdit[\s\S]*?^}/m);
+    assert.ok(fn, 'modalCancelEdit must exist');
+    assert.ok(fn[0].includes('innerHTML') && fn[0].includes('renderMd'),
+      'must use innerHTML with renderMd to show rendered Markdown, not raw text via textContent');
+  });
+
+  await test('create work item modal includes critical priority', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    const createFn = src.match(/function openCreateWorkItemModal[\s\S]*?^}/m);
+    assert.ok(createFn, 'openCreateWorkItemModal must exist');
+    assert.ok(createFn[0].includes("'critical'"), 'priority list must include critical');
+  });
+
+  await test('submitWorkItemEdit and _submitCreateWorkItem accept event parameter', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('submitWorkItemEdit(id, source, e)') || src.includes('function submitWorkItemEdit(id, source, e'),
+      'submitWorkItemEdit must accept event parameter');
+    assert.ok(src.includes('_submitCreateWorkItem(e)') || src.includes('function _submitCreateWorkItem(e'),
+      '_submitCreateWorkItem must accept event parameter');
   });
 }
 

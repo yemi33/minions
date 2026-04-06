@@ -140,7 +140,7 @@ async function modalSaveEdit() {
 function modalCancelEdit() {
   const body = document.getElementById('modal-body');
   body.contentEditable = 'false';
-  body.textContent = _modalDocContext.content; // revert
+  body.innerHTML = renderMd(_modalDocContext.content); // revert (render Markdown, not raw text)
   body.style.border = '';
   body.style.padding = '';
   document.getElementById('modal-edit-btn').style.display = '';

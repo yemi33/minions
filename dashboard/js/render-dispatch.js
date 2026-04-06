@@ -6,9 +6,9 @@ let _completedPage = 0;
 let _logPage = 0;
 
 function _completedPrev() { if (_completedPage > 0) { _completedPage--; refresh(); } }
-function _completedNext() { _completedPage++; refresh(); }
+function _completedNext() { _completedPage++; refresh(); } // clamped in renderDispatch
 function _logPrev() { if (_logPage > 0) { _logPage--; refresh(); } }
-function _logNext() { _logPage++; refresh(); }
+function _logNext() { _logPage++; refresh(); } // clamped in renderEngineLog
 
 function renderEngineStatus(engine) {
   const badge = document.getElementById('engine-badge');
@@ -153,6 +153,7 @@ function renderDispatch(dispatch) {
 
 function renderEngineLog(log) {
   const el = document.getElementById('engine-log');
+  if (!el) return;
   if (!log || log.length === 0) {
     el.innerHTML = '<div class="empty">No log entries yet.</div>';
     return;

@@ -151,14 +151,14 @@ function editWorkItem(id, source) {
       '</label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">' +
         '<button onclick="closeModal()" class="pr-pager-btn" style="padding:6px 16px;font-size:var(--text-md)">Cancel</button>' +
-        '<button onclick="submitWorkItemEdit(\'' + escHtml(id) + '\',\'' + escHtml(source || '') + '\')" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
+        '<button onclick="submitWorkItemEdit(\'' + escHtml(id) + '\',\'' + escHtml(source || '') + '\',event)" style="padding:6px 16px;font-size:var(--text-md);background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Save</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
 }
 
-async function submitWorkItemEdit(id, source) {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+async function submitWorkItemEdit(id, source, e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const title = document.getElementById('wi-edit-title').value.trim();
   const description = document.getElementById('wi-edit-desc').value;
   const type = document.getElementById('wi-edit-type').value;
@@ -320,7 +320,7 @@ function openCreateWorkItemModal() {
   const typeOpts = ['implement', 'fix', 'explore', 'test', 'review', 'ask', 'plan', 'verify', 'decompose', 'meeting'].map(t =>
     '<option value="' + t + '"' + (t === 'implement' ? ' selected' : '') + '>' + t + '</option>'
   ).join('');
-  const priOpts = ['high', 'medium', 'low'].map(p =>
+  const priOpts = ['critical', 'high', 'medium', 'low'].map(p =>
     '<option value="' + p + '"' + (p === 'medium' ? ' selected' : '') + '>' + p + '</option>'
   ).join('');
   const agentOpts = (typeof cmdAgents !== 'undefined' ? cmdAgents : []).map(a =>
@@ -349,7 +349,7 @@ function openCreateWorkItemModal() {
       '<label id="wi-new-skippr-row" style="color:var(--text);font-size:var(--text-md);display:flex;gap:8px;align-items:center;cursor:pointer"><input type="checkbox" id="wi-new-skippr"> Skip PR creation (push branch only)</label>' +
       '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">' +
         '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
-        '<button onclick="_submitCreateWorkItem()" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create</button>' +
+        '<button onclick="_submitCreateWorkItem(event)" style="padding:6px 16px;background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">Create</button>' +
       '</div>' +
     '</div>';
   document.getElementById('modal').classList.add('open');
@@ -365,8 +365,8 @@ function openCreateWorkItemModal() {
   setTimeout(() => document.getElementById('wi-new-title')?.focus(), 100);
 }
 
-async function _submitCreateWorkItem() {
-  var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+async function _submitCreateWorkItem(e) {
+  var btn = (e || window.event)?.target; if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
   const title = document.getElementById('wi-new-title')?.value?.trim();
   if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } alert('Title is required'); return; }
   const desc = document.getElementById('wi-new-desc')?.value || '';
