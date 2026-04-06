@@ -131,10 +131,17 @@ async function kbSweep() {
       btn.textContent = 'failed';
       showToast('cmd-toast', 'Sweep failed: ' + (data.error || 'unknown'), false);
     }
+    // Show notification on sidebar if user is on a different page
+    var kbLink = document.querySelector('.sidebar-link[data-page="inbox"]');
+    var activePage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
+    if (kbLink && activePage !== 'inbox') showNotifBadge(kbLink, data.ok ? 'done' : 'done');
   } catch (e) {
     btn.style.color = 'var(--red)';
     btn.textContent = 'failed';
     showToast('cmd-toast', 'Sweep error: ' + e.message, false);
+    var kbLink2 = document.querySelector('.sidebar-link[data-page="inbox"]');
+    var activePage2 = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
+    if (kbLink2 && activePage2 !== 'inbox') showNotifBadge(kbLink2);
   }
   const isError = btn.textContent === 'failed';
   setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, isError ? 60000 : 3000);
