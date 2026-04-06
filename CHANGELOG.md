@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.395 (2026-04-06)
+
+### Other
+- revert: remove version info from sidebar
+
 ## 0.1.394 (2026-04-06)
 
 ### Features
