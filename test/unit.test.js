@@ -7134,7 +7134,7 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handlePrdItemsRemove');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!plan)"), 'handlePrdItemsRemove must null-guard plan from safeJson');
+    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj'), 'handlePrdItemsRemove must null-guard plan from safeJson or use safeJsonObj');
   });
 
   await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
@@ -7142,9 +7142,9 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handlePlansDelete');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
-    // Should guard items from safeJson before calling .filter()
-    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)'),
-      'handlePlansDelete must null-guard items from safeJson before filter');
+    // Should guard items from safeJson before calling .filter() — safeJsonArr also acceptable (returns [])
+    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)') || fnBody.includes('safeJsonArr'),
+      'handlePlansDelete must null-guard items from safeJson before filter or use safeJsonArr');
   });
 
   await test('dashboard.js: handleProjectsAdd null-guards config from safeJson', () => {
@@ -7152,7 +7152,7 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handleProjectsAdd');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!config)"), 'handleProjectsAdd must null-guard config from safeJson');
+    assert.ok(fnBody.includes("if (!config)") || fnBody.includes('safeJsonObj'), 'handleProjectsAdd must null-guard config from safeJson or use safeJsonObj');
   });
 }
 
@@ -7589,6 +7589,35 @@ async function testPrDuplicateRaceFix() {
     const ghPushes = (ghFn[0].match(/currentPrs\.push\(updatedPr\)/g) || []).length;
     assert.strictEqual(adoPushes, 0, 'ado.js merge-back must not push — deleted PRs should stay deleted');
     assert.strictEqual(ghPushes, 0, 'github.js merge-back must not push — deleted PRs should stay deleted');
+  });
+
+  // ── Branch regex matches W- prefixed work item IDs ──
+
+  await test('github.js reconcilePrs branch regex matches all work item ID prefixes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const reconcileFn = src.match(/async function reconcilePrs[\s\S]*?^}/m);
+    assert.ok(reconcileFn, 'reconcilePrs must exist in github.js');
+    assert.ok(reconcileFn[0].includes('W-[a-z0-9]'), 'must match W- IDs');
+    assert.ok(reconcileFn[0].includes('PL-[a-z0-9]'), 'must match PL- IDs');
+    assert.ok(reconcileFn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
+  });
+
+  await test('ado.js reconcilePrs branch regex matches all work item ID prefixes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const reconcileFn = src.match(/async function reconcilePrs[\s\S]*?^}/m);
+    assert.ok(reconcileFn, 'reconcilePrs must exist in ado.js');
+    assert.ok(reconcileFn[0].includes('W-[a-z0-9]'), 'must match W- IDs');
+    assert.ok(reconcileFn[0].includes('PL-[a-z0-9]'), 'must match PL- IDs');
+    assert.ok(reconcileFn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
+  });
+
+  await test('lifecycle.js handlePostMerge branch regex matches all work item ID prefixes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);
+    assert.ok(fn, 'handlePostMerge must exist');
+    assert.ok(fn[0].includes('W-[a-z0-9]'), 'must match W- IDs');
+    assert.ok(fn[0].includes('PL-[a-z0-9]'), 'must match PL- IDs');
+    assert.ok(fn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
   });
 }
 

@@ -805,7 +805,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   // Resolve linked work item from pr-links or PR branch name
   let mergedItemId = getPrLinks()[pr.id];
   if (!mergedItemId && pr.branch) {
-    const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]+)/i);
+    const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]{6,})/i) || pr.branch.match(/(PL-[a-z0-9]{6,})/i);
     if (branchMatch) mergedItemId = branchMatch[1];
   }
 

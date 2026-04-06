@@ -379,8 +379,8 @@ async function reconcilePrs(config) {
       const branch = (adoPr.sourceRefName || '').replace('refs/heads/', '');
       const title = adoPr.title || '';
       // Extract item ID from branch name or PR title (e.g., feat(P-2cafdc2a): ...)
-      const branchMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(PL-W\d+)/i);
-      const titleMatch = title.match(/\((P-[a-z0-9]{6,})\)/) || title.match(/\((PL-W\d+)\)/);
+      const branchMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(W-[a-z0-9]{6,})/i) || branch.match(/(PL-[a-z0-9]{6,})/i);
+      const titleMatch = title.match(/\((P-[a-z0-9]{6,})\)/) || title.match(/\((W-[a-z0-9]{6,})\)/) || title.match(/\((W-[a-z0-9]{6,})\)/) || title.match(/\((PL-[a-z0-9]{6,})\)/);
       const linkedItemId = branchMatch?.[1] || titleMatch?.[1] || null;
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;

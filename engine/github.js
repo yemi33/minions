@@ -379,7 +379,7 @@ async function reconcilePrs(config) {
     for (const ghPr of ghPrs) {
       const prId = `PR-${ghPr.number}`;
       const branch = ghPr.head?.ref || '';
-      const wiMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(PL-W\d+)/i);
+      const wiMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(W-[a-z0-9]{6,})/i) || branch.match(/(PL-[a-z0-9]{6,})/i);
       const linkedItemId = wiMatch ? wiMatch[1] : null;
       const linkedItem = linkedItemId ? allItems.find(i => i.id === linkedItemId) : null;
       const confirmedItemId = linkedItem ? linkedItemId : null;
