@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.359 (2026-04-06)
+
+### Features
+-  pipeline plan stage uses LLM to generate structured plan from meeting
+-  show 'Converting to PRD' status instead of 'In Progress' during plan conversion
+
+### Fixes
+-  smart no-PR handling — distinguish MCP stall from intentional no-PR
+
 ## 0.1.356 (2026-04-06)
 
 ### Fixes
