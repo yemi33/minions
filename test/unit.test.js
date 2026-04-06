@@ -5515,6 +5515,9 @@ async function main() {
 
     // Version check feature
     await testVersionCheck();
+
+    // Auto-recovery & atomicity
+    await testAutoRecoveryAndAtomicity();
   } finally {
     cleanupTmpDirs();
   }
@@ -7731,6 +7734,280 @@ async function testVersionCheck() {
   await test('refresh.js calls renderVersionBanner', () => {
     assert.ok(refreshSrc.includes('renderVersionBanner(data.version)'),
       'refresh must pass data.version to renderVersionBanner');
+  });
+}
+
+// ─── Auto-Recovery & Atomicity Tests ─────────────────────────────────────────
+
+async function testAutoRecoveryAndAtomicity() {
+  console.log('\n── Auto-Recovery & Atomicity ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Source structure: auto-recovery feature ──
+
+  await test('syncPrsFromOutput runs unconditionally (not gated on isSuccess)', () => {
+    // PR sync must run before the success/failure branching so timed-out agents' PRs are captured
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    // syncPrsFromOutput must NOT be inside an `if (isSuccess)` or `if (effectiveSuccess)` guard
+    const syncIdx = hookBody.indexOf('syncPrsFromOutput(stdout');
+    assert.ok(syncIdx > 0, 'syncPrsFromOutput must be called in runPostCompletionHooks');
+    // Check that the 200 chars before the call don't contain `if (isSuccess)` or `if (effectiveSuccess)`
+    const before = hookBody.slice(Math.max(0, syncIdx - 200), syncIdx);
+    assert.ok(!before.includes('if (isSuccess)') && !before.includes('if (effectiveSuccess)'),
+      'syncPrsFromOutput must not be gated on isSuccess or effectiveSuccess');
+  });
+
+  await test('autoRecovered restricted to PR-creating work types', () => {
+    assert.ok(lifecycleSrc.includes('WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX'),
+      'prCreatingType must check IMPLEMENT, IMPLEMENT_LARGE, and FIX');
+    assert.ok(lifecycleSrc.includes('prCreatingType && !!meta?.item?.id'),
+      'autoRecovered must require prCreatingType');
+  });
+
+  await test('autoRecovered is returned from runPostCompletionHooks', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered }'),
+      'runPostCompletionHooks must return autoRecovered in its result');
+  });
+
+  await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
+    assert.ok(engineSrc.includes('const { resultSummary, autoRecovered } = runPostCompletionHooks'),
+      'engine.js must destructure autoRecovered from runPostCompletionHooks');
+    assert.ok(engineSrc.includes('code === 0 || autoRecovered'),
+      'engine.js must use autoRecovered to determine effectiveResult for completeDispatch');
+  });
+
+  await test('effectiveSuccess drives all downstream success checks', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    // These should use effectiveSuccess, not isSuccess
+    assert.ok(hookBody.includes('effectiveSuccess && meta?.item?.sourcePlan'),
+      'checkPlanCompletion should use effectiveSuccess');
+    assert.ok(hookBody.includes("effectiveSuccess && meta?.item?.itemType === 'verify'"),
+      'verify archive should use effectiveSuccess');
+    assert.ok(hookBody.includes('if (effectiveSuccess) extractSkillsFromOutput'),
+      'extractSkillsFromOutput should use effectiveSuccess');
+    // isSuccess should NOT gate these downstream checks
+    assert.ok(!hookBody.includes('if (isSuccess) extractSkillsFromOutput'),
+      'extractSkillsFromOutput must NOT use raw isSuccess');
+  });
+
+  // ── Source structure: atomicity conversions ──
+
+  await test('updateMetrics uses mutateJsonFileLocked', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function updateMetrics('),
+      lifecycleSrc.indexOf('\n}\n', lifecycleSrc.indexOf('function updateMetrics('))
+    );
+    assert.ok(fnBody.includes('mutateJsonFileLocked(metricsPath'),
+      'updateMetrics must use mutateJsonFileLocked instead of safeWrite');
+    assert.ok(!fnBody.includes('shared.safeWrite(metricsPath'),
+      'updateMetrics must NOT use safeWrite');
+  });
+
+  await test('handleDecompositionResult uses mutateJsonFileLocked', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function handleDecompositionResult('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function handleDecompositionResult(') + 1)
+    );
+    assert.ok(fnBody.includes('mutateJsonFileLocked(wiPath'),
+      'handleDecompositionResult must use mutateJsonFileLocked');
+    assert.ok(!fnBody.includes('safeWrite(wiPath'),
+      'handleDecompositionResult must NOT use safeWrite');
+  });
+
+  await test('handleDecompositionResult has no redundant pre-read', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function handleDecompositionResult('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function handleDecompositionResult(') + 1)
+    );
+    // The old pattern: safeJson(wiPath) before mutateJsonFileLocked should be gone
+    const lockIdx = fnBody.indexOf('mutateJsonFileLocked(wiPath');
+    const preRead = fnBody.indexOf('safeJson(wiPath)');
+    assert.ok(preRead === -1 || preRead > lockIdx,
+      'handleDecompositionResult should not pre-read with safeJson before the lock');
+  });
+
+  await test('retry path uses resolveWorkItemPath instead of inline path resolution', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(hookBody.includes('resolveWorkItemPath(meta)'),
+      'Retry path must use resolveWorkItemPath helper');
+  });
+
+  await test('retry path uses mutateJsonFileLocked for status update', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Agent failed for'),
+      lifecycleSrc.indexOf('updateWorkItemStatus(meta, WI_STATUS.FAILED')
+    );
+    assert.ok(hookBody.includes('mutateJsonFileLocked(wiPath'),
+      'Retry status update must use mutateJsonFileLocked');
+    assert.ok(!hookBody.includes('shared.safeWrite(wiPath'),
+      'Retry status update must NOT use safeWrite');
+  });
+
+  await test('no-PR detection uses resolveWorkItemPath and mutateJsonFileLocked', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('Detect implement tasks that completed without creating a PR'),
+      lifecycleSrc.indexOf('if (type === WORK_TYPE.REVIEW)')
+    );
+    assert.ok(hookBody.includes('resolveWorkItemPath(meta)'),
+      'No-PR detection must use resolveWorkItemPath');
+    assert.ok(hookBody.includes('mutateJsonFileLocked(noPrWiPath'),
+      'No-PR detection must use mutateJsonFileLocked');
+  });
+
+  await test('syncPrdFromPrs uses module-scope imports, not lazy require', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrdFromPrs('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function syncPrdFromPrs(') + 1)
+    );
+    assert.ok(!fnBody.includes("require('./shared')"),
+      'syncPrdFromPrs must not lazy-require shared.js (already imported at module scope)');
+    assert.ok(fnBody.includes('shared.getProjects(') || fnBody.includes('shared.projectWorkItemsPath('),
+      'syncPrdFromPrs must use module-scope shared references');
+  });
+
+  await test('syncPrdFromPrs reconciles inside lock (no double reconciliation)', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrdFromPrs('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function syncPrdFromPrs(') + 1)
+    );
+    // reconcileItemsWithPrs should appear inside mutateJsonFileLocked, not outside as a pre-check
+    const lockIdx = fnBody.indexOf('mutateJsonFileLocked(wiPath');
+    const reconcileBeforeLock = fnBody.slice(0, lockIdx).indexOf('reconcileItemsWithPrs(items');
+    assert.ok(reconcileBeforeLock === -1,
+      'reconcileItemsWithPrs must not run as a pre-check before the lock');
+    assert.ok(fnBody.includes('reconcileItemsWithPrs(data, allPrs)'),
+      'reconcileItemsWithPrs must run inside the lock callback on fresh data');
+  });
+
+  await test('skill extraction computes ID inside lock (no race)', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function extractSkillsFromOutput('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function extractSkillsFromOutput(') + 1)
+    );
+    // The skillId computation (`SK${String(data.filter...`) must be inside mutateJsonFileLocked
+    const lockIdx = fnBody.indexOf('mutateJsonFileLocked(centralPath');
+    assert.ok(lockIdx > 0, 'extractSkillsFromOutput must use mutateJsonFileLocked for central work items');
+    const afterLock = fnBody.slice(lockIdx);
+    assert.ok(afterLock.includes("i.id?.startsWith('SK')"),
+      'Skill ID computation must be inside the lock callback');
+    // The dedupe check must also be inside the lock
+    assert.ok(afterLock.includes('data.some(i => i.title ==='),
+      'Skill dedupe check must be inside the lock callback');
+  });
+
+  // ── Functional: auto-recovery with syncPrsFromOutput ──
+
+  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
+
+  await test('runPostCompletionHooks returns autoRecovered=true when failed agent created PR', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
+
+    const origProjectPrPath = shared.projectPrPath;
+    const origGetProjects = shared.getProjects;
+    shared.projectPrPath = () => prFile;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/42 — Feature"}';
+      const dispatchItem = {
+        id: 'D-1', type: 'implement', task: 'Test task',
+        meta: { item: { id: 'W-100', title: 'Test' }, project: mockProject, source: 'work-item' }
+      };
+
+      // code=1 simulates heartbeat timeout kill
+      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
+      assert.strictEqual(result.autoRecovered, true,
+        'autoRecovered should be true when failed implement agent created PR');
+
+      // PR should have been synced despite failure
+      const prs = shared.safeJson(prFile) || [];
+      assert.ok(prs.length > 0, 'PR should be synced even from failed agent output');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('runPostCompletionHooks does NOT auto-recover non-implement types', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = { projects: [mockProject], agents: { reviewer: { name: 'Reviewer' } } };
+
+    const origProjectPrPath = shared.projectPrPath;
+    const origGetProjects = shared.getProjects;
+    shared.projectPrPath = () => prFile;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Review agent output that mentions a PR URL (should NOT trigger recovery)
+      const output = '{"type":"result","result":"Reviewed PR https://github.com/org/repo/pull/55 — looks good"}';
+      const dispatchItem = {
+        id: 'D-2', type: 'review', task: 'Review task',
+        meta: { item: { id: 'W-200', title: 'Review' }, project: mockProject, source: 'work-item',
+                pr: { id: 'PR-55', number: 55 } }
+      };
+
+      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'reviewer', 1, output, mockConfig);
+      assert.strictEqual(result.autoRecovered, false,
+        'autoRecovered should be false for review type even with PR in output');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('runPostCompletionHooks returns autoRecovered=false on normal success', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } } };
+
+    const origProjectPrPath = shared.projectPrPath;
+    const origGetProjects = shared.getProjects;
+    shared.projectPrPath = () => prFile;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/77"}';
+      const dispatchItem = {
+        id: 'D-3', type: 'implement', task: 'Test task',
+        meta: { item: { id: 'W-300', title: 'Test' }, project: mockProject, source: 'work-item' }
+      };
+
+      // code=0 means normal success — autoRecovered should be false
+      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, output, mockConfig);
+      assert.strictEqual(result.autoRecovered, false,
+        'autoRecovered should be false when agent succeeded normally (code=0)');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
   });
 }
 
