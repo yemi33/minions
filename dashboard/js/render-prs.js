@@ -96,9 +96,10 @@ function openModal(i) {
 }
 
 function openAddPrModal() {
-  const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p =>
-    '<option value="' + escHtml(p) + '">' + escHtml(p) + '</option>'
-  ).join('');
+  const projOpts = (typeof cmdProjects !== 'undefined' ? cmdProjects : []).map(p => {
+    const name = typeof p === 'object' ? p.name : p;
+    return '<option value="' + escHtml(name) + '">' + escHtml(name) + '</option>';
+  }).join('');
   const inputStyle = 'display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-md);font-family:inherit';
 
   document.getElementById('modal-title').textContent = 'Link Pull Request';

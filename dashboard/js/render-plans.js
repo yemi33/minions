@@ -255,7 +255,7 @@ function renderPlans(plans) {
         '<div><div class="plan-card-title">' + escHtml(p.summary || p.file) + versionBadge + '</div>' +
           '<div class="plan-card-meta">' +
             '<span style="font-weight:600;color:' + (statusColors[effectiveStatus] || 'var(--muted)') + '">' + label + '</span>' +
-            '<span>' + escHtml(p.project) + '</span>' +
+            (p.project ? '<span>' + escHtml(p.project) + '</span>' : '') +
             '<span>' + p.itemCount + ' items</span>' +
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
@@ -370,6 +370,7 @@ async function planSubmitRevise(file) {
   try {
     const res = await fetch('/api/plans/revise', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, feedback }) });
     const data = await res.json();
+    if (!res.ok) { showToast('cmd-toast', 'Revision failed: ' + (data.error || 'unknown'), false); return; }
     showToast('cmd-toast', 'Revision requested — agent will update the plan (' + data.workItemId + ')', true);
     planHideRevise(file);
     refreshPlans();

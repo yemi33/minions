@@ -84,7 +84,7 @@ function renderWorkItems(items) {
   allWorkItems = items;
   const el = document.getElementById('work-items-content');
   const countEl = document.getElementById('wi-count');
-  countEl.textContent = items.length;
+  if (countEl) countEl.textContent = items.length;
   if (!items.length) {
     el.innerHTML = '<p class="empty">No work items. Add tasks via Command Center above.</p>';
     return;

@@ -5494,6 +5494,9 @@ async function main() {
 
     // Dashboard audit: XSS fixes
     await testDashboardAuditXss();
+
+    // Dashboard audit: medium bugs
+    await testDashboardAuditMedium();
   } finally {
     cleanupTmpDirs();
   }
@@ -7057,7 +7060,6 @@ async function testStatusMutationGuards() {
   });
 }
 
-<<<<<<< HEAD
 // ─── Dashboard Audit: Critical Functional Bugs ─────────────────────────────
 
 async function testDashboardAuditCritical() {
@@ -7183,6 +7185,71 @@ async function testDashboardAuditXss() {
     const tdMatch = rowFn ? (rowFn[0].match(/<td>/g) || []) : [];
     assert.strictEqual(thMatch.length, tdMatch.length,
       `PR table headers (${thMatch.length}) must match cell count (${tdMatch.length})`);
+  });
+}
+
+// ─── Dashboard Audit: Medium Bugs ───────────────────────────────────────────
+
+async function testDashboardAuditMedium() {
+  console.log('\n── Dashboard Audit: Medium Bugs ──');
+
+  await test('handleSettingsReset calls reloadConfig and invalidateStatusCache', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resetFn = src.match(/function handleSettingsReset[\s\S]*?^  \}/m);
+    assert.ok(resetFn, 'handleSettingsReset must exist');
+    assert.ok(resetFn[0].includes('reloadConfig()'), 'reset must call reloadConfig');
+    assert.ok(resetFn[0].includes('invalidateStatusCache()'), 'reset must invalidate cache');
+  });
+
+  await test('handleWorkItemsCreate persists skipPr flag', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('body.skipPr') && src.includes('item.skipPr'),
+      'work item create must copy skipPr from body to item');
+  });
+
+  await test('handleWorkItemsDelete uses mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find delete handler — it's after "Remove item from work-items file" or uses splice
+    const deleteSections = src.match(/Remove item from work-items|mutateJsonFileLocked\(wiPath[\s\S]*?splice/g) || [];
+    // Should use mutateJsonFileLocked, not raw safeRead+safeWrite
+    assert.ok(src.includes('mutateJsonFileLocked(wiPath') || !src.includes("JSON.parse(safeRead(wiPath) || '[]')"),
+      'delete must use mutateJsonFileLocked for atomic read-modify-write');
+  });
+
+  await test('openEditScheduleModal calls _updateCronPreview', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
+    const editFn = src.match(/function openEditScheduleModal[\s\S]*?^}/m);
+    assert.ok(editFn, 'openEditScheduleModal must exist');
+    assert.ok(editFn[0].includes('_updateCronPreview'), 'edit modal must call _updateCronPreview');
+  });
+
+  await test('wi-count element has null guard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('if (countEl)'), 'wi-count access must be null-guarded');
+  });
+
+  await test('render-plans.js guards p.project against undefined', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('p.project ?') || src.includes('p.project?'),
+      'p.project must be guarded before rendering');
+  });
+
+  await test('render-prs.js cmdProjects handles object items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    assert.ok(src.includes('p.name') && src.includes("typeof p === 'object'"),
+      'cmdProjects items must be unwrapped from {name} objects');
+  });
+
+  await test('planSubmitRevise checks res.ok before success toast', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const reviseFn = src.match(/async function planSubmitRevise[\s\S]*?^}/m);
+    assert.ok(reviseFn, 'planSubmitRevise must exist');
+    assert.ok(reviseFn[0].includes('res.ok'), 'must check res.ok before showing success');
+  });
+
+  await test('statusColor handles error state', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+    assert.ok(src.includes("'error'"), 'statusColor must handle error state');
   });
 }
 

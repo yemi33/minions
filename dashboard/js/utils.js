@@ -38,7 +38,7 @@ function timeAgo(isoStr) {
 }
 
 function statusColor(s) {
-  return s === 'working' ? 'working' : s === 'done' ? 'done' : '';
+  return s === 'working' ? 'working' : s === 'done' ? 'done' : s === 'error' ? 'error' : '';
 }
 
 function llmCopyBtn() {
