@@ -546,6 +546,8 @@ function updateWorkItemStatus(meta, status, reason) {
         delete target.failReason;
         delete target.failedAt;
         target.completedAt = ts();
+        // Restore agent info from dispatch metadata (cleared on retry reset)
+        if (meta._agentId && !target.dispatched_to) target.dispatched_to = meta._agentId;
       } else if (status === WI_STATUS.FAILED) {
         if (reason) target.failReason = reason;
         target.failedAt = ts();
@@ -1163,7 +1165,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     // If decomposition produced nothing, fall through to mark parent as done
   }
 
-  if (isSuccess && meta?.item?.id && !skipDoneStatus) updateWorkItemStatus(meta, WI_STATUS.DONE, '');
+  if (isSuccess && meta?.item?.id && !skipDoneStatus) {
+    meta._agentId = agentId;
+    updateWorkItemStatus(meta, WI_STATUS.DONE, '');
+  }
   if (!isSuccess && meta?.item?.id) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
