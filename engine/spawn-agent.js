@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { exec, runFile, cleanChildEnv } = require('./shared');
+const { exec, runFile, cleanChildEnv, killGracefully, killImmediate } = require('./shared');
 
 const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
 
@@ -165,7 +165,7 @@ try {
 } catch (err) {
   console.error(`FATAL: stdin write failed (broken pipe): ${err.message}`);
   fs.appendFileSync(debugPath, `STDIN ERROR: ${err.message}\n`);
-  try { proc.kill('SIGTERM'); } catch { /* process may already be dead */ }
+  killImmediate(proc);
   process.exit(1);
 }
 
@@ -197,8 +197,7 @@ const startupTimer = setTimeout(() => {
     const msg = `TIMEOUT: Claude CLI produced no output after ${MCP_STARTUP_TIMEOUT / 1000}s (likely MCP server startup stall)`;
     console.error(msg);
     fs.appendFileSync(debugPath, msg + '\n');
-    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
-    setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
+    killGracefully(proc);
   }
 }, MCP_STARTUP_TIMEOUT);
 proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });

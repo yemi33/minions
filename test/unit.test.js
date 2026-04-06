@@ -6362,7 +6362,7 @@ async function testAuxModuleBugFixes() {
     // Verify proc.stdin.write is inside a try block
     assert.ok(src.includes('try {') && src.includes('proc.stdin.write'), 'stdin write should be in try block');
     assert.ok(src.includes('broken pipe'), 'Should log broken pipe error');
-    assert.ok(src.includes('proc.kill(\'SIGTERM\')'), 'Should kill child process on broken pipe');
+    assert.ok(src.includes('killImmediate(proc)'), 'Should kill child process on broken pipe using cross-platform killImmediate');
   });
 
   // Bug #33: playbook.js template self-reference detection
