@@ -462,12 +462,14 @@ function spawnAgent(dispatchItem, config) {
   }
 
   // Session resume: reuse last session if same branch and recent enough (< 2 hours)
+  let cachedSessionId = null;
   // Only resume when the context is relevant — same branch means the agent is
   // continuing work on the same PR/feature (e.g., author fixing their own build failure)
   if (!agentId.startsWith('temp-')) {
     try {
       const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
       if (sessionFile?.sessionId && sessionFile.savedAt) {
+        cachedSessionId = sessionFile.sessionId;
         const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
         const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
         if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
@@ -655,10 +657,12 @@ function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
-    completeDispatch(id, code === 0 ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, '', resultSummary);
+    // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
+    const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
+    completeDispatch(id, effectiveResult, '', resultSummary);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
@@ -696,7 +700,7 @@ function spawnAgent(dispatchItem, config) {
   }, 3000);
 
   // Track process — even if PID isn't available yet (async on Windows)
-  activeProcesses.set(id, { proc, agentId, startedAt });
+  activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
 
   // Log PID and persist to registry
   if (proc.pid) {
@@ -1827,7 +1831,8 @@ function discoverCentralWorkItems(config) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
 
-        const ap = assignedProject || projects[0];
+        const ap = assignedProject || (projects.length > 0 ? projects[0] : null);
+        if (!ap) { log('warn', `Fan-out: skipping ${fanKey} — no projects configured`); continue; }
         const vars = {
           ...buildBaseVars(agent.id, config, ap),
           item_id: item.id,
@@ -1897,7 +1902,8 @@ function discoverCentralWorkItems(config) {
 
       const agentName = config.agents[agentId]?.name || agentId;
       const agentRole = config.agents[agentId]?.role || 'Agent';
-      const firstProject = projects[0];
+      const firstProject = projects.length > 0 ? projects[0] : null;
+      if (!firstProject) { log('warn', `Dispatch: skipping ${item.id} — no projects configured`); continue; }
 
       const vars = {
         ...buildBaseVars(agentId, config, firstProject),
@@ -2291,7 +2297,7 @@ async function tickInner() {
             if (pendingWithBlockedDeps.length > 0) {
               // Auto-retry failed items that are blocking others (transient errors)
               for (const item of items) {
-                if (item.status !== 'failed' || isItemCompleted(item)) continue;
+                if (item.status !== WI_STATUS.FAILED || isItemCompleted(item)) continue;
                 // Only retry if something depends on this item
                 const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
                 if (!isBlocking) continue;
@@ -2333,7 +2339,7 @@ async function tickInner() {
                   const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
                   if (blockers.length > 0) {
                     log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
-                    dep.status = 'pending';
+                    dep.status = WI_STATUS.PENDING;
                     dep._retryCount = 0;
                     delete dep.failReason;
                     delete dep.failedAt;

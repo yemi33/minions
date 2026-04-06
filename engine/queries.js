@@ -10,7 +10,8 @@ const os = require('os');
 const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
-  projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES } = shared;
+  projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
+  WI_STATUS } = shared;
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
@@ -179,7 +180,7 @@ function getAgentStatus(agentId) {
     const latestInFlight = allItems
       .filter(w =>
         (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        w.status === 'dispatched'
+        w.status === WI_STATUS.DISPATCHED
       )
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
@@ -648,13 +649,13 @@ function getPrdInfo(config) {
   for (const project of projects) {
     try {
       const workItems = safeJson(projectWorkItemsPath(project)) || [];
-      for (const wi of workItems) { if (!wi.id) { console.warn(`[queries] Skipping work item without id in ${project.name}:`, JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan) wiById[wi.id] = wi; }
+      for (const wi of workItems) { if (!wi?.id) { console.warn(`[queries] Skipping work item without id in ${project.name}:`, JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan) wiById[wi.id] = wi; }
     } catch { /* optional */ }
   }
   // Also check central work-items.json
   try {
     const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-    for (const wi of centralWi) { if (!wi.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
+    for (const wi of centralWi) { if (!wi?.id) { console.warn('[queries] Skipping central work item without id:', JSON.stringify(wi).slice(0, 120)); continue; } if (wi.sourcePlan && !wiById[wi.id]) wiById[wi.id] = wi; }
   } catch { /* optional */ }
 
   // PR-to-PRD linking — derived from PR.prdItems (single source of truth)

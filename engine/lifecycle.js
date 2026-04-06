@@ -168,15 +168,15 @@ function checkPlanCompletion(meta, config) {
       const featureBranch = plan.feature_branch;
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
-      const prItem = {
+      workItems.push({
         id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
         type: 'implement', priority: 'high',
         description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.\n\n**Branch:** \`${featureBranch}\`\n**Target:** \`${mainBranch}\`\n\n## Completed Items\n${itemSummary}`,
         status: WI_STATUS.PENDING, created: ts(), createdBy: 'engine:plan-completion',
         sourcePlan: planFile, itemType: 'pr',
         branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
-      };
-      mutateJsonFileLocked(wiPath, (data) => { const items = data || []; items.push(prItem); return items; });
+      });
+      shared.safeWrite(wiPath, workItems);
     }
   }
 
@@ -257,7 +257,7 @@ function checkPlanCompletion(meta, config) {
       prSummary,
     ].join('\n');
 
-    const verifyItem = {
+    workItems.push({
       id: verifyId,
       title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
       type: 'verify',
@@ -269,8 +269,8 @@ function checkPlanCompletion(meta, config) {
       sourcePlan: planFile,
       itemType: 'verify',
       project: projectName,
-    };
-    mutateJsonFileLocked(wiPath, (data) => { const items = data || []; items.push(verifyItem); return items; });
+    });
+    shared.safeWrite(wiPath, workItems);
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
@@ -571,11 +571,8 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
       if (!plan?.missing_features) continue;
       const feature = plan.missing_features.find(f => f.id === itemId);
       if (feature && feature.status !== status) {
-        mutateJsonFileLocked(fpath, (data) => {
-          const f = (data?.missing_features || []).find(f => f.id === itemId);
-          if (f) f.status = status;
-          return data;
-        });
+        feature.status = status;
+        shared.safeWrite(fpath, plan);
         return;
       }
     }
@@ -620,6 +617,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
   for (const f of inboxFiles) {
     const content = safeRead(path.join(INBOX_DIR, f));
+    if (!content) continue;
     const prHeaderPattern = /\*\*PR[:\*]*\*?\s*[#-]*\s*(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
     while ((match = prHeaderPattern.exec(content)) !== null) prMatches.add(match[1] || match[2]);
   }
@@ -823,11 +821,8 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (!plan?.missing_features) continue;
         const feature = plan.missing_features.find(f => f.id === mergedItemId);
         if (feature && feature.status !== WI_STATUS.DONE) {
-          mutateJsonFileLocked(path.join(prdDir, pf), (data) => {
-            const f = (data?.missing_features || []).find(f => f.id === mergedItemId);
-            if (f) { f.status = WI_STATUS.DONE; }
-            return data;
-          });
+          feature.status = WI_STATUS.DONE;
+          shared.safeWrite(path.join(prdDir, pf), plan);
           updated++;
         }
       }
@@ -837,22 +832,18 @@ async function handlePostMerge(pr, project, config, newStatus) {
     // Mark work item as done
     const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
-    let wiUpdated = false;
     for (const wiPath of wiPaths) {
-      if (wiUpdated) break;
       try {
         const items = safeJson(wiPath);
         if (!items) continue;
         const item = items.find(i => i.id === mergedItemId);
         if (item && item.status !== WI_STATUS.DONE) {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          const now = ts();
-          mutateJsonFileLocked(wiPath, (data) => {
-            const wi = (data || []).find(i => i.id === mergedItemId);
-            if (wi && wi.status !== WI_STATUS.DONE) { wi.status = WI_STATUS.DONE; wi.completedAt = now; wi._mergedVia = pr.id; }
-            return data;
-          });
-          wiUpdated = true;
+          item.status = WI_STATUS.DONE;
+          item.completedAt = ts();
+          item._mergedVia = pr.id;
+          shared.safeWrite(wiPath, items);
+          break;
         }
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
@@ -861,12 +852,10 @@ async function handlePostMerge(pr, project, config, newStatus) {
   const agentId = (pr.agent || '').toLowerCase();
   if (agentId && config.agents?.[agentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    mutateJsonFileLocked(metricsPath, (metrics) => {
-      metrics = metrics || {};
-      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-      metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
-      return metrics;
-    });
+    const metrics = safeJson(metricsPath) || {};
+    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+    metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
+    shared.safeWrite(metricsPath, metrics);
   }
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
@@ -935,14 +924,17 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
         const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-        const items = safeJson(centralPath) || [];
-        const alreadyExists = items.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED);
-        if (!alreadyExists) {
-          const skillId = `SK${String(items.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
-          const skillItem = { id: skillId, type: 'implement', title: `Add skill: ${name}`,
+        let skillId = null;
+        mutateJsonFileLocked(centralPath, data => {
+          data = data || [];
+          if (data.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED)) return data;
+          skillId = `SK${String(data.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
+          data.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
             description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
-            priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` };
-          mutateJsonFileLocked(centralPath, (data) => { const arr = data || []; arr.push(skillItem); return arr; });
+            priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
+          return data;
+        });
+        if (skillId) {
           log('info', `Queued work item ${skillId} to PR project skill "${name}" into ${project}`);
         }
       }
@@ -1000,7 +992,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   const inboxFiles = getInboxFiles();
   const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
   if (reviewFiles.length === 0) return;
-  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).join('\n\n');
+  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).filter(Boolean).join('\n\n');
   const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${pr.id}-${today}.md`;
   const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
@@ -1018,7 +1010,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
 function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {
 
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-  mutateJsonFileLocked(metricsPath, (metrics) => {
+  mutateJsonFileLocked(metricsPath, metrics => {
     metrics = metrics || {};
     if (!metrics[agentId]) {
       metrics[agentId] = { tasksCompleted: 0, tasksErrored: 0, prsCreated: 0, prsApproved: 0, prsRejected: 0,
@@ -1108,41 +1100,42 @@ function handleDecompositionResult(stdout, meta, config) {
   for (const p of projects) allPaths.push(shared.projectWorkItemsPath(p));
 
   for (const wiPath of allPaths) {
-    const items = safeJson(wiPath) || [];
-    const parent = items.find(i => i.id === parentId);
-    if (!parent) continue;
+    let found = false;
+    mutateJsonFileLocked(wiPath, data => {
+      if (!Array.isArray(data)) return data;
+      const p = data.find(i => i.id === parentId);
+      if (!p) return data;
+      found = true;
 
-    const subItemIds = subItems.map(s => s.id);
-    mutateJsonFileLocked(wiPath, (data) => {
-      const arr = data || [];
-      const p = arr.find(i => i.id === parentId);
-      if (p) {
-        p.status = WI_STATUS.DECOMPOSED;
-        p._decomposed = true;
-        delete p._decomposing;
-        p._subItemIds = subItemIds;
-      }
+      // Mark parent as decomposed
+      p.status = WI_STATUS.DECOMPOSED;
+      p._decomposed = true;
+      delete p._decomposing;
+      p._subItemIds = subItems.map(s => s.id);
+
+      // Create child work items
       for (const sub of subItems) {
-        if (arr.some(i => i.id === sub.id)) continue; // dedupe
-        arr.push({
+        if (data.some(i => i.id === sub.id)) continue; // dedupe
+        data.push({
           id: sub.id,
           title: sub.name || sub.title || `Sub-task of ${parentId}`,
           type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
-          priority: sub.priority || parent.priority || 'medium',
+          priority: sub.priority || p.priority || 'medium',
           description: sub.description || '',
           status: WI_STATUS.PENDING,
           complexity: sub.estimated_complexity || 'medium',
           depends_on: sub.depends_on || [],
           parent_id: parentId,
-          sourcePlan: parent.sourcePlan,
-          branchStrategy: parent.branchStrategy,
-          featureBranch: parent.featureBranch,
+          sourcePlan: p.sourcePlan,
+          branchStrategy: p.branchStrategy,
+          featureBranch: p.featureBranch,
           created: new Date().toISOString(),
           createdBy: 'decomposition',
         });
       }
-      return arr;
+      return data;
     });
+    if (!found) continue;
     log('info', `Decomposition: ${parentId} → ${subItems.length} sub-items: ${subItems.map(s => s.id).join(', ')}`);
     return subItems.length;
   }
@@ -1168,25 +1161,37 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     } catch (err) { log('warn', `Session save: ${err.message}`); }
   }
 
+  // Always attempt PR sync — even failed/timed-out agents may have created PRs before dying
+  let prsCreatedCount = 0;
+  try {
+    prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
+  } catch (err) { log('warn', `PR sync from output: ${err.message}`); }
+
+  // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
+  const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
+  const autoRecovered = !isSuccess && prsCreatedCount > 0 && prCreatingType && !!meta?.item?.id;
+  if (autoRecovered) {
+    log('info', `Auto-recovery: agent failed but created ${prsCreatedCount} PR(s) — upgrading ${meta.item.id} to done`);
+  }
+  const effectiveSuccess = isSuccess || autoRecovered;
+
   // Handle decomposition results — create sub-items from decompose agent output
   let skipDoneStatus = false;
-  if (type === WORK_TYPE.DECOMPOSE && isSuccess && meta?.item?.id) {
+  if (type === WORK_TYPE.DECOMPOSE && effectiveSuccess && meta?.item?.id) {
     const subCount = handleDecompositionResult(stdout, meta, config);
     if (subCount > 0) skipDoneStatus = true; // parent already marked 'decomposed' by handler
     // If decomposition produced nothing, fall through to mark parent as done
   }
 
-  if (isSuccess && meta?.item?.id && !skipDoneStatus) {
+  if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
     updateWorkItemStatus(meta, WI_STATUS.DONE, '');
   }
-  if (!isSuccess && meta?.item?.id) {
+  if (!effectiveSuccess && meta?.item?.id) {
     // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
     let retries = (meta.item._retryCount || 0);
+    const wiPath = resolveWorkItemPath(meta);
     try {
-      const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-        ? path.join(MINIONS_DIR, 'work-items.json')
-        : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
       if (wiPath) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
@@ -1198,22 +1203,19 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
       updateWorkItemStatus(meta, WI_STATUS.PENDING, '');
       try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
-          mutateJsonFileLocked(wiPath, (data) => {
-            const arr = data || [];
-            const wi = arr.find(i => i.id === meta.item.id);
-            if (wi) {
-              if (wi.status === WI_STATUS.DONE || wi.completedAt) {
-                log('info', `Skip retry for ${meta.item.id} — already completed`);
-              } else {
-                wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to; delete wi.failReason;
-                if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
-              }
+          mutateJsonFileLocked(wiPath, data => {
+            if (!Array.isArray(data)) return data;
+            const wi = data.find(i => i.id === meta.item.id);
+            if (!wi) return data;
+            // Don't revert if already completed by another code path
+            if (wi.status === WI_STATUS.DONE || wi.completedAt) {
+              log('info', `Skip retry for ${meta.item.id} — already completed`);
+              return data;
             }
-            return arr;
+            wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to; delete wi.failReason;
+            if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
+            return data;
           });
         }
       } catch (err) { log('warn', `Retry update: ${err.message}`); }
@@ -1223,15 +1225,12 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     // Clear _decomposing flag on failure so item doesn't get permanently stuck
     if (type === WORK_TYPE.DECOMPOSE) {
       try {
-        const wiPath = meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout'
-          ? path.join(MINIONS_DIR, 'work-items.json')
-          : meta.project?.name ? path.join(MINIONS_DIR, 'projects', meta.project.name, 'work-items.json') : null;
         if (wiPath) {
-          mutateJsonFileLocked(wiPath, (data) => {
-            const arr = data || [];
-            const wi = arr.find(i => i.id === meta.item.id);
-            if (wi) { delete wi._decomposing; }
-            return arr;
+          mutateJsonFileLocked(wiPath, data => {
+            if (!Array.isArray(data)) return data;
+            const wi = data.find(i => i.id === meta.item.id);
+            if (wi) delete wi._decomposing;
+            return data;
           });
         }
       } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
@@ -1246,13 +1245,10 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
-  if (isSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
-
-  let prsCreatedCount = 0;
-  if (isSuccess) prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
+  if (effectiveSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 
   // After verify completes, archive the plan
-  if (isSuccess && meta?.item?.itemType === 'verify' && meta?.item?.sourcePlan) {
+  if (effectiveSuccess && meta?.item?.itemType === 'verify' && meta?.item?.sourcePlan) {
     try {
       const vPlanFile = meta.item.sourcePlan;
       const vPlanPath = path.join(PRD_DIR, vPlanFile);
@@ -1300,7 +1296,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   }
 
   // Detect implement tasks that completed without creating a PR
-  if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
+  if (effectiveSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
     let existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
     // Also check pull-requests.json for PRs with matching prdItems or branch
@@ -1315,45 +1311,45 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
       }
     }
     if (!existingPrFound) {
-      let wiPath;
-      if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      } else if (meta.project?.localPath) {
-        wiPath = shared.projectWorkItemsPath(meta.project);
-      }
-      if (wiPath) {
-        // Check current state for retry count before locking
+      const noPrWiPath = resolveWorkItemPath(meta);
+      if (noPrWiPath) {
         const hasOutput = stdout && stdout.length > 500;
-        const now = ts();
-        mutateJsonFileLocked(wiPath, (data) => {
-          const arr = data || [];
-          const wi = arr.find(i => i.id === meta.item.id);
-          if (wi) {
-            const retries = wi._retryCount || 0;
-            if (!hasOutput && retries < ENGINE_DEFAULTS.maxRetries) {
-              wi.status = WI_STATUS.PENDING;
-              wi._retryCount = retries + 1;
-              delete wi.dispatched_at;
-              delete wi.dispatched_to;
-              delete wi.failReason;
-              delete wi.noPr;
-              log('info', `Auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
-            } else if (hasOutput) {
-              wi.status = WI_STATUS.DONE;
-              wi.completedAt = now;
-              wi._noPr = true;
-              wi._noPrReason = 'Agent completed without creating a PR (changes may already exist or not be needed)';
-              delete wi.failReason;
-              log('info', `${meta.item.id} completed without PR — marking done (agent produced output)`);
-            } else {
-              wi.status = WI_STATUS.NEEDS_REVIEW;
-              wi._noPr = true;
-              wi.failReason = 'Completed without output or PR after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
-              log('warn', `${meta.item.id} needs review — no output after ${ENGINE_DEFAULTS.maxRetries} retries`);
-            }
+        let action = null;
+        mutateJsonFileLocked(noPrWiPath, data => {
+          if (!Array.isArray(data)) return data;
+          const w = data.find(i => i.id === meta.item.id);
+          if (!w) return data;
+          const retries = w._retryCount || 0;
+          if (!hasOutput && retries < ENGINE_DEFAULTS.maxRetries) {
+            w.status = WI_STATUS.PENDING;
+            w._retryCount = retries + 1;
+            delete w.dispatched_at;
+            delete w.dispatched_to;
+            delete w.failReason;
+            delete w.noPr;
+            action = { type: 'retry', retries: retries + 1 };
+          } else if (hasOutput) {
+            w.status = WI_STATUS.DONE;
+            w.completedAt = ts();
+            w._noPr = true;
+            w._noPrReason = 'Agent completed without creating a PR (changes may already exist or not be needed)';
+            delete w.failReason;
+            action = { type: 'done' };
+          } else {
+            w.status = WI_STATUS.NEEDS_REVIEW;
+            w._noPr = true;
+            w.failReason = 'Completed without output or PR after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+            action = { type: 'needs-review' };
           }
-          return arr;
+          return data;
         });
+        if (action?.type === 'retry') {
+          log('info', `Auto-retry ${action.retries}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
+        } else if (action?.type === 'done') {
+          log('info', `${meta.item.id} completed without PR — marking done (agent produced output)`);
+        } else if (action?.type === 'needs-review') {
+          log('warn', `${meta.item.id} needs review — no output after ${ENGINE_DEFAULTS.maxRetries} retries`);
+        }
       }
     }
   }
@@ -1361,14 +1357,15 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
-  if (isSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
-  updateAgentHistory(agentId, dispatchItem, result);
+  if (effectiveSuccess) extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
+  const finalResult = effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
+  updateAgentHistory(agentId, dispatchItem, finalResult);
   // Don't count auto-retries as errors in metrics — only count final outcomes
-  const isAutoRetry = !isSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
-  const metricsResult = isAutoRetry ? 'retry' : result;
+  const isAutoRetry = !effectiveSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
+  const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
-  return { resultSummary, taskUsage };
+  return { resultSummary, taskUsage, autoRecovered };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
@@ -1377,31 +1374,28 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 // (e.g., manually raised PRs, cross-plan PRs, or PRs created while engine was paused).
 function syncPrdFromPrs(config) {
   try {
-    const { getProjects, projectWorkItemsPath, projectPrPath, safeJson, mutateJsonFileLocked: mutateLocked } = require('./shared');
     const { reconcileItemsWithPrs } = require('../engine');
     config = config || queries.getConfig();
-    const allProjects = getProjects(config);
+    const allProjects = shared.getProjects(config);
 
     // Exact prdItems match only — no fuzzy matching
-    const allPrs = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
+    const allPrs = allProjects.flatMap(p => safeJson(shared.projectPrPath(p)) || []);
 
     let totalReconciled = 0;
     for (const project of allProjects) {
-      const wiPath = projectWorkItemsPath(project);
+      const wiPath = shared.projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
       const hasPending = items.some(wi => wi.status === WI_STATUS.PENDING && !wi._pr);
       if (!hasPending) continue;
-      // Check if reconciliation would change anything before locking
-      const reconciled = reconcileItemsWithPrs(items, allPrs);
+      let reconciled = 0;
+      const reconciledItems = mutateJsonFileLocked(wiPath, data => {
+        if (!Array.isArray(data)) return data;
+        reconciled = reconcileItemsWithPrs(data, allPrs);
+        return data;
+      });
       if (reconciled > 0) {
-        mutateLocked(wiPath, (data) => {
-          const freshItems = data || [];
-          reconcileItemsWithPrs(freshItems, allPrs);
-          return freshItems;
-        });
         // Sync done status to PRD JSON for each newly reconciled item
-        const updatedItems = safeJson(wiPath) || [];
-        for (const wi of updatedItems) {
+        for (const wi of (reconciledItems || [])) {
           if (wi.status === WI_STATUS.DONE) syncPrdItemStatus(wi.id, WI_STATUS.DONE, wi.sourcePlan);
         }
         totalReconciled += reconciled;

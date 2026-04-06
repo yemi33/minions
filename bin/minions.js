@@ -483,6 +483,9 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   }
   // Re-exec the NEW binary (just installed) so the updated code runs init --force
   execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
+  // Restart engine + dashboard so they pick up the new code
+  console.log('\n  Restarting engine and dashboard...\n');
+  execSync('minions restart', { stdio: 'inherit', timeout: 60000 });
 } else if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
   showVersion();
 } else if (cmd === 'add' || cmd === 'remove' || cmd === 'list' || cmd === 'scan') {

@@ -58,17 +58,23 @@ function checkSteering(config) {
   const activeProcesses = engine().activeProcesses;
   for (const [id, info] of activeProcesses) {
     const steerPath = path.join(AGENTS_DIR, info.agentId, 'steer.md');
-    if (!fs.existsSync(steerPath)) continue;
+    let steerMtime;
+    try { steerMtime = fs.statSync(steerPath).mtimeMs; } catch { continue; } // ENOENT = no steering message
+
+    const sessionId = info.sessionId;
+    if (!sessionId) {
+      // No sessionId yet — check stale (>5 min means it'll never arrive)
+      if (Date.now() - steerMtime > 300000) {
+        log('warn', `Steering: no sessionId for ${info.agentId} after 5m — deleting stale message`);
+        try { fs.unlinkSync(steerPath); } catch {}
+      }
+      // Leave steer.md in place — retry next tick when sessionId may be available
+      continue;
+    }
 
     const message = safeRead(steerPath);
     try { fs.unlinkSync(steerPath); } catch { /* cleanup */ }
     if (!message) continue;
-
-    const sessionId = info.sessionId;
-    if (!sessionId) {
-      log('warn', `Steering: no sessionId for ${info.agentId} — cannot resume. Message dropped.`);
-      continue;
-    }
 
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 

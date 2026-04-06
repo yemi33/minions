@@ -179,21 +179,21 @@ async function checkNpmVersion() {
   const now = Date.now();
   if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
   try {
-    const https = require('https');
-    const data = await new Promise((resolve, reject) => {
-      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (resp) => {
-        if (resp.statusCode !== 200) { reject(new Error('npm registry ' + resp.statusCode)); resp.resume(); return; }
-        let body = '';
-        resp.on('data', c => body += c);
-        resp.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
+    // Use npm view — respects user's .npmrc proxy/registry config
+    // Must use shell:true on Windows because npm is a .cmd batch script
+    const { exec: _exec } = require('child_process');
+    const nodeDir = require('path').dirname(process.execPath);
+    const npmPath = require('path').join(nodeDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    const version = await new Promise((resolve, reject) => {
+      _exec(`"${npmPath}" view ${PKG_NAME} version`, { timeout: 15000, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
+        if (err) reject(err); else resolve((stdout || '').trim());
       });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     });
-    _npmVersionCache = { latest: data.version || null, checkedAt: new Date().toISOString() };
+    _npmVersionCache = { latest: version || null, checkedAt: new Date().toISOString() };
     _npmVersionCacheTs = now;
-  } catch {
-    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: 'check failed' };
+  } catch (e) {
+    console.error('[version-check] npm view failed:', e.message?.split('\n')[0]);
+    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: e.message?.split('\n')[0] || 'check failed' };
   }
   return _npmVersionCache;
 }
@@ -208,8 +208,9 @@ function _compareVersions(a, b) {
   return 0;
 }
 
-// Kick off first npm check on startup (non-blocking)
+// Kick off first npm check on startup, then re-check every 4 hours
 checkNpmVersion().catch(() => {});
+setInterval(() => checkNpmVersion().catch(() => {}), NPM_CHECK_INTERVAL);
 
 // Cache disk version + git commit (only changes on deploy/pull, not per-request)
 let _diskVersionCache = null;
@@ -341,6 +342,7 @@ function getStatus() {
         stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
         updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+        _npmCheckError: _npmVersionCache?.error || null,
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -1457,6 +1459,13 @@ const server = http.createServer(async (req, res) => {
     const agentId = match[1];
     const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     const liveLogPath = path.join(agentDir, 'live-output.log');
+    let _cleanedUp = false;
+
+    // Safe res.write wrapper — guards against writes after cleanup and EPIPE/ERR_STREAM_DESTROYED
+    const safeWrite = (data) => {
+      if (_cleanedUp) return;
+      try { res.write(data); } catch { /* EPIPE or ERR_STREAM_DESTROYED — client gone */ }
+    };
 
     // Check if agent directory exists — avoid dangling watchers on nonexistent paths
     if (!fs.existsSync(agentDir)) {
@@ -1478,13 +1487,14 @@ const server = http.createServer(async (req, res) => {
     try {
       const content = fs.readFileSync(liveLogPath, 'utf8');
       if (content.length > 0) {
-        res.write(`data: ${JSON.stringify(content)}\n\n`);
+        safeWrite(`data: ${JSON.stringify(content)}\n\n`);
         offset = Buffer.byteLength(content, 'utf8');
       }
     } catch { /* optional */ }
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
+      if (_cleanedUp) return;
       try {
         const stat = fs.statSync(liveLogPath);
         if (stat.size > offset) {
@@ -1494,29 +1504,32 @@ const server = http.createServer(async (req, res) => {
           fs.closeSync(fd);
           offset = stat.size;
           const chunk = buf.toString('utf8');
-          if (chunk) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          if (chunk) safeWrite(`data: ${JSON.stringify(chunk)}\n\n`);
         }
       } catch { /* optional */ }
     };
 
     fs.watchFile(liveLogPath, { interval: 500 }, watcher);
 
-    // Cleanup helper to prevent handle leaks
+    // Idempotent cleanup helper to prevent handle leaks
     const cleanup = () => {
+      if (_cleanedUp) return;
+      _cleanedUp = true;
       try { clearInterval(doneCheck); } catch { /* optional */ }
       try { fs.unwatchFile(liveLogPath, watcher); } catch { /* optional */ }
     };
 
     // Check if agent is still active (poll every 5s)
     const doneCheck = setInterval(() => {
+      if (_cleanedUp) return;
       try {
         const dispatch = getDispatchQueue();
         const isActive = (dispatch.active || []).some(d => d.agent === agentId);
         if (!isActive) {
           watcher(); // flush final content
-          res.write(`event: done\ndata: complete\n\n`);
+          safeWrite(`event: done\ndata: complete\n\n`);
           cleanup();
-          res.end();
+          try { res.end(); } catch { /* optional */ }
         }
       } catch (e) {
         cleanup();
