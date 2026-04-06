@@ -1279,6 +1279,10 @@ function discoverFromPrs(config, project) {
     // minionsReview tracks metadata (reviewer, note) but not the authoritative status
     const reviewStatus = pr.reviewStatus || 'pending';
 
+    // Skip fix dispatch if a fix was recently submitted and awaiting re-review.
+    // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
+    const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
+
     // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
     // Skip re-dispatch if already reviewed and no new commits pushed since last review
@@ -1298,7 +1302,7 @@ function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
-    if (reviewStatus === 'changes-requested') {
+    if (reviewStatus === 'changes-requested' && !awaitingReReview) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -1314,7 +1318,7 @@ function discoverFromPrs(config, project) {
     // PRs with pending human feedback (or coalesced comments from while agent was fixing)
     const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if (pr.humanFeedback?.pendingFix || hasCoalescedFeedback) {
+    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview) {
       const key = humanFixKey;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch
