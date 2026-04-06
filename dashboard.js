@@ -3637,19 +3637,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     { method: 'POST', path: '/api/pull-requests/delete', desc: 'Remove a PR from tracking', params: 'id, project?', handler: async (req, res) => {
       const body = await readBody(req);
-      const { id, project: projectName } = body;
+      const { id } = body;
       if (!id) return jsonReply(res, 400, { error: 'id required' });
       reloadConfig();
-      const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
-      const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
+      // Search all project PR files and central file
+      const prPaths = [
+        ...shared.getProjects(CONFIG).map(p => shared.projectPrPath(p)),
+        path.join(MINIONS_DIR, 'pull-requests.json'),
+      ];
       let found = false;
-      mutateJsonFileLocked(prPath, (prs) => {
-        if (!Array.isArray(prs)) return prs;
-        const idx = prs.findIndex(p => p.id === id);
-        if (idx >= 0) { prs.splice(idx, 1); found = true; }
-        return prs;
-      }, { defaultValue: [] });
+      for (const prPath of prPaths) {
+        if (found) break;
+        mutateJsonFileLocked(prPath, (prs) => {
+          if (!Array.isArray(prs)) return prs;
+          const idx = prs.findIndex(p => p.id === id);
+          if (idx >= 0) { prs.splice(idx, 1); found = true; }
+          return prs;
+        }, { defaultValue: [] });
+      }
       if (!found) return jsonReply(res, 404, { error: 'PR not found' });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
