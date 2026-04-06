@@ -617,6 +617,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
   const inboxFiles = getInboxFiles().filter(f => f.includes(agentId) && f.includes(today));
   for (const f of inboxFiles) {
     const content = safeRead(path.join(INBOX_DIR, f));
+    if (!content) continue;
     const prHeaderPattern = /\*\*PR[:\*]*\*?\s*[#-]*\s*(?:(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+))/gi;
     while ((match = prHeaderPattern.exec(content)) !== null) prMatches.add(match[1] || match[2]);
   }
@@ -988,7 +989,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
   const inboxFiles = getInboxFiles();
   const reviewFiles = inboxFiles.filter(f => f.includes(reviewerAgentId) && f.includes(today));
   if (reviewFiles.length === 0) return;
-  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).join('\n\n');
+  const reviewContent = reviewFiles.map(f => safeRead(path.join(INBOX_DIR, f))).filter(Boolean).join('\n\n');
   const feedbackFile = `feedback-${authorAgentId}-from-${reviewerAgentId}-${pr.id}-${today}.md`;
   const feedbackPath = shared.uniquePath(path.join(INBOX_DIR, feedbackFile));
   const content = `# Review Feedback for ${config.agents[authorAgentId]?.name || authorAgentId}\n\n` +
