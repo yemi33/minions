@@ -313,18 +313,32 @@ function executeApiStage(stage, stageState, run) {
   for (const call of calls) {
     const url = `http://localhost:${process.env.MINIONS_PORT || 7331}${call.endpoint}`;
     const body = typeof call.body === 'string' ? call.body : JSON.stringify(call.body || {});
-    // Fire and forget — use Node's http module
-    try {
-      const http = require('http');
-      const parsed = new URL(url);
-      const req = http.request({
-        hostname: parsed.hostname, port: parsed.port, path: parsed.pathname,
-        method: call.method || 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      req.write(body);
-      req.end();
-    } catch (e) { log('warn', `Pipeline API call failed: ${e.message}`); }
+    const makeRequest = (attempt) => {
+      try {
+        const http = require('http');
+        const parsed = new URL(url);
+        const req = http.request({
+          hostname: parsed.hostname, port: parsed.port, path: parsed.pathname,
+          method: call.method || 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+          if (res.statusCode >= 400) {
+            log('warn', `Pipeline API call to ${call.endpoint} returned ${res.statusCode} (attempt ${attempt})`);
+            if (attempt < 2) setTimeout(() => makeRequest(attempt + 1), 2000);
+          }
+        });
+        req.on('error', (err) => {
+          log('warn', `Pipeline API call to ${call.endpoint} failed: ${err.message} (attempt ${attempt})`);
+          if (attempt < 2) setTimeout(() => makeRequest(attempt + 1), 2000);
+        });
+        req.write(body);
+        req.end();
+      } catch (e) {
+        log('warn', `Pipeline API call to ${call.endpoint} threw: ${e.message} (attempt ${attempt})`);
+        if (attempt < 2) setTimeout(() => makeRequest(attempt + 1), 2000);
+      }
+    };
+    makeRequest(1);
   }
   return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }

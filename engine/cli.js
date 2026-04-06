@@ -149,8 +149,8 @@ const commands = {
         if (agentPid && agentPid > 0) {
           try {
             if (process.platform === 'win32') {
-              const out = exec(`tasklist /FI "PID eq ${agentPid}" /NH`, { encoding: 'utf8', timeout: 3000 });
-              if (!out.includes(String(agentPid))) agentPid = null;
+              const out = exec(`tasklist /FI "PID eq ${agentPid}" /NH`, { encoding: 'utf8', timeout: 3000 }).trim();
+              if (!new RegExp(`\\b${agentPid}\\b`).test(out)) agentPid = null;
             } else {
               process.kill(agentPid, 0);
             }

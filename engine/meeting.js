@@ -233,12 +233,13 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     return;
   }
 
-  // Check if all participants have submitted for this round
-  const allSubmitted = meeting.participants.every(p => {
-    if (meeting.status === 'investigating') return !!meeting.findings[p];
-    if (meeting.status === 'debating') return !!meeting.debate[p];
-    return true;
-  });
+  // Check if all participants have submitted for this round using direct count
+  const participantCount = meeting.participants.length;
+  const allSubmitted = meeting.status === 'investigating'
+    ? Object.keys(meeting.findings || {}).length >= participantCount
+    : meeting.status === 'debating'
+      ? Object.keys(meeting.debate || {}).length >= participantCount
+      : true;
 
   if (allSubmitted) {
     // Advance to next round

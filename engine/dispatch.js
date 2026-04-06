@@ -87,7 +87,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
     delete item.prompt;
-    if (dispatch.completed.length > 100) {
+    if (dispatch.completed.length >= 100) {
       dispatch.completed = dispatch.completed.slice(-100);
     }
     dispatch.completed.push(item);

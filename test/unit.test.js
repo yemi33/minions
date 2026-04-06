@@ -3127,7 +3127,7 @@ async function testCompleteDispatch() {
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
 
   await test('completeDispatch caps completed list at 100', () => {
-    assert.ok(src.includes('dispatch.completed.length > 100'),
+    assert.ok(src.includes('dispatch.completed.length >= 100'),
       'Should trim completed list when it exceeds 100 entries');
   });
 
