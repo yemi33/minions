@@ -714,66 +714,63 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 function updatePrAfterReview(agentId, pr, project) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
-  const target = prs.find(p => p.id === pr.id);
-  if (!target) return;
 
   const config = getConfig();
   const reviewerName = config.agents[agentId]?.name || agentId;
-  // Record the reviewer — actual verdict comes from ADO/GitHub votes via pollPrStatus.
-  // Set to 'waiting' so pollPrStatus updates it with the real vote on next cycle.
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
-  // Set reviewStatus to 'waiting' (single source of truth — synced from ADO/GitHub votes on next poll)
-  target.reviewStatus = 'waiting';
-  // Track when this PR was last reviewed — used by engine.js to prevent re-dispatch
-  // until new commits are pushed (lastPushedAt > lastReviewedAt)
-  target.lastReviewedAt = ts();
-  target.minionsReview = {
-    reviewer: reviewerName,
-    reviewedAt: ts(),
-    note: completedEntry?.task || ''
-  };
-  // Metrics update: don't track 'waiting' as a verdict — metrics are updated
-  // when pollPrStatus syncs the actual vote to minionsReview.status.
-  // The reviewer's reviewsDone counter is incremented in the main updateMetrics call.
+  const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+  let updatedTarget = null;
+  shared.mutateJsonFileLocked(prPath, (prs) => {
+    if (!Array.isArray(prs)) return prs;
+    const target = prs.find(p => p.id === pr.id);
+    if (!target) return prs;
+    target.reviewStatus = 'waiting';
+    target.lastReviewedAt = ts();
+    target.minionsReview = {
+      reviewer: reviewerName,
+      reviewedAt: ts(),
+      note: completedEntry?.task || ''
+    };
+    updatedTarget = { ...pr, ...target };
+    return prs;
+  }, { defaultValue: [] });
 
-  // Track reviewer for metrics purposes
+  // Track reviewer for metrics purposes (separate file, separate lock)
   const authorAgentId = (pr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
-    const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath) || {};
-    if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
-    shared.safeWrite(metricsPath, metrics);
+    shared.mutateJsonFileLocked(path.join(ENGINE_DIR, 'metrics.json'), (metrics) => {
+      if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
+      return metrics;
+    }, { defaultValue: {} });
   }
 
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
-  log('info', `Updated ${pr.id} → minions review: ${target.reviewStatus} by ${reviewerName}`);
-  createReviewFeedbackForAuthor(agentId, { ...pr, ...target }, config);
+  log('info', `Updated ${pr.id} → minions review: waiting by ${reviewerName}`);
+  if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config);
 }
 
 function updatePrAfterFix(pr, project, source) {
 
   if (!pr?.id) return;
-  const prs = getPrs(project);
-  const target = prs.find(p => p.id === pr.id);
-  if (!target) return;
-
-  // Reset reviewStatus to 'waiting' for re-review (single source of truth)
-  target.reviewStatus = 'waiting';
-  if (source === 'pr-human-feedback') {
-    if (target.humanFeedback) target.humanFeedback.pendingFix = false;
-    target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
-    log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
-  } else {
-    target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
-    log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
-  }
-
-  shared.safeWrite(project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json'), prs);
+  const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
+  shared.mutateJsonFileLocked(prPath, (prs) => {
+    if (!Array.isArray(prs)) return prs;
+    const target = prs.find(p => p.id === pr.id);
+    if (!target) return prs;
+    target.reviewStatus = 'waiting';
+    if (source === 'pr-human-feedback') {
+      if (target.humanFeedback) target.humanFeedback.pendingFix = false;
+      target.minionsReview = { ...target.minionsReview, note: 'Fixed human feedback, awaiting re-review', fixedAt: ts() };
+      log('info', `Updated ${pr.id} → cleared humanFeedback.pendingFix, reset to waiting for re-review`);
+    } else {
+      target.minionsReview = { ...target.minionsReview, note: 'Fixed, awaiting re-review', fixedAt: ts() };
+      log('info', `Updated ${pr.id} → reviewStatus: waiting (fix pushed)`);
+    }
+    return prs;
+  }, { defaultValue: [] });
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────

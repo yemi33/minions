@@ -5509,6 +5509,9 @@ async function main() {
 
     // Engine audit: medium bugs
     await testEngineAuditMedium();
+
+    // PR duplicate race condition fixes
+    await testPrDuplicateRaceFix();
   } finally {
     cleanupTmpDirs();
   }
@@ -7505,4 +7508,47 @@ async function testEngineAuditMedium() {
       'chainPlanToPrd must not use unlocked safeWrite on work-items.json');
   });
 }
+
+// ─── PR Duplicate Race Condition Fixes ──────────────────────────────────────
+
+async function testPrDuplicateRaceFix() {
+  console.log('\n── PR Duplicate Race Condition Fixes ──');
+
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const dashboardSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('/api/pull-requests/link uses mutateJsonFileLocked, not safeWrite', () => {
+    // The link handler should be inside a mutateJsonFileLocked block
+    assert.ok(dashboardSrc.includes("mutateJsonFileLocked(prPath"),
+      'PR link endpoint must use mutateJsonFileLocked for atomic check-and-insert');
+  });
+
+  await test('updatePrAfterReview uses mutateJsonFileLocked, not safeWrite', () => {
+    const fn = lifecycleSrc.match(/function updatePrAfterReview[\s\S]*?^}/m);
+    assert.ok(fn, 'updatePrAfterReview must exist');
+    assert.ok(fn[0].includes('mutateJsonFileLocked'),
+      'updatePrAfterReview must use mutateJsonFileLocked on PR file');
+    assert.ok(!fn[0].includes('shared.safeWrite(project'),
+      'updatePrAfterReview must not use bare safeWrite on PR file');
+  });
+
+  await test('updatePrAfterFix uses mutateJsonFileLocked, not safeWrite', () => {
+    const fn = lifecycleSrc.match(/function updatePrAfterFix[\s\S]*?^}/m);
+    assert.ok(fn, 'updatePrAfterFix must exist');
+    assert.ok(fn[0].includes('mutateJsonFileLocked'),
+      'updatePrAfterFix must use mutateJsonFileLocked on PR file');
+    assert.ok(!fn[0].includes('shared.safeWrite(project'),
+      'updatePrAfterFix must not use bare safeWrite on PR file');
+  });
+
+  await test('updatePrAfterReview metrics write uses mutateJsonFileLocked', () => {
+    const fn = lifecycleSrc.match(/function updatePrAfterReview[\s\S]*?^}/m);
+    assert.ok(fn, 'updatePrAfterReview must exist');
+    // Metrics write should also be locked
+    const metricsWrites = (fn[0].match(/mutateJsonFileLocked/g) || []).length;
+    assert.ok(metricsWrites >= 2,
+      'updatePrAfterReview should use mutateJsonFileLocked for both PR file and metrics file');
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });
