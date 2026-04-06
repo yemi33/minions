@@ -13,13 +13,13 @@
   <h1>Minions Mission Control <span id="header-projects">—</span></h1>
   <div style="display:flex;align-items:center;gap:8px;">
     <span class="engine-badge stopped" id="engine-badge">STOPPED</span>
+    <span id="version-banner" style="font-size:9px;color:var(--muted)"></span>
     <div class="timestamp" id="ts">—</div>
     <button onclick="toggleCommandCenter()" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--blue);padding:4px 10px;line-height:1;font-weight:700;border:1px solid var(--blue);border-radius:4px" title="Command Center" id="cc-toggle-btn">Command Center</button>
     <button onclick="openSettings()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--muted);padding:4px;line-height:1" title="Settings">&#9881;</button>
   </div>
 </header>
 <div class="engine-alert" id="engine-alert"></div>
-<div id="version-banner" style="font-size:9px;color:var(--muted);padding:0 16px"></div>
 
 <!-- Command Center Drawer -->
 <div id="cc-drawer" style="display:none;position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--surface);border-left:1px solid var(--border);z-index:350;flex-direction:column;overscroll-behavior:contain">

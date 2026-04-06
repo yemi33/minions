@@ -5512,6 +5512,9 @@ async function main() {
 
     // PR duplicate race condition fixes
     await testPrDuplicateRaceFix();
+
+    // Version check feature
+    await testVersionCheck();
   } finally {
     cleanupTmpDirs();
   }
@@ -7618,6 +7621,92 @@ async function testPrDuplicateRaceFix() {
     assert.ok(fn[0].includes('W-[a-z0-9]'), 'must match W- IDs');
     assert.ok(fn[0].includes('PL-[a-z0-9]'), 'must match PL- IDs');
     assert.ok(fn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
+  });
+}
+
+// ─── Version Check Feature ──────────────────────────────────────────────────
+
+async function testVersionCheck() {
+  console.log('\n── Version Check Feature ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+  const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-dispatch.js'), 'utf8');
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+  const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+
+  await test('engine cli.js writes codeVersion and codeCommit to control.json on start', () => {
+    assert.ok(cliSrc.includes('codeVersion'), 'cli.js must write codeVersion');
+    assert.ok(cliSrc.includes('codeCommit'), 'cli.js must write codeCommit');
+    assert.ok(cliSrc.includes("require('../package.json').version"), 'codeVersion should come from package.json');
+    assert.ok(cliSrc.includes('git rev-parse --short HEAD'), 'codeCommit should come from git');
+  });
+
+  await test('dashboard getStatus includes version object with stale and updateAvailable', () => {
+    assert.ok(dashSrc.includes('version:') && dashSrc.includes('stale:') && dashSrc.includes('updateAvailable:'),
+      'status response must include version with stale and updateAvailable fields');
+  });
+
+  await test('getDiskVersion caches git rev-parse with TTL', () => {
+    assert.ok(dashSrc.includes('function getDiskVersion'), 'getDiskVersion must exist');
+    assert.ok(dashSrc.includes('DISK_VERSION_TTL'), 'must use a TTL cache');
+    assert.ok(dashSrc.includes('_diskVersionCacheTs'), 'must track cache timestamp');
+    // Must not run git rev-parse inline in getStatus
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    assert.ok(!statusFn[0].includes('execSync'), 'getStatus must not call execSync directly — use getDiskVersion cache');
+  });
+
+  await test('getDiskVersion busts require cache for package.json', () => {
+    const fn = dashSrc.match(/function getDiskVersion[\s\S]*?^}/m);
+    assert.ok(fn, 'getDiskVersion must exist');
+    assert.ok(fn[0].includes('delete require.cache'), 'must bust require cache so npm updates are detected');
+  });
+
+  await test('checkNpmVersion checks HTTP status before JSON.parse', () => {
+    assert.ok(dashSrc.includes('resp.statusCode !== 200') || dashSrc.includes('statusCode !== 200'),
+      'must check HTTP status code from npm registry before parsing body');
+  });
+
+  await test('_compareVersions correctly compares semver', () => {
+    // Test the actual function
+    const fn = new Function('return ' + dashSrc.match(/function _compareVersions[\s\S]*?^}/m)[0])();
+    assert.strictEqual(fn('1.0.0', '1.0.0'), 0);
+    assert.strictEqual(fn('1.0.1', '1.0.0'), 1);
+    assert.strictEqual(fn('1.0.0', '1.0.1'), -1);
+    assert.strictEqual(fn('0.2.0', '0.1.999'), 1);
+    assert.strictEqual(fn('2.0.0', '1.99.99'), 1);
+    assert.strictEqual(fn(null, '1.0.0'), -1);
+    assert.strictEqual(fn('1.0.0', null), 1);
+  });
+
+  await test('/api/version endpoint exists and includes all fields', () => {
+    assert.ok(dashSrc.includes("'/api/version'"), '/api/version route must exist');
+    assert.ok(dashSrc.includes('checkNpmVersion'), '/api/version must call checkNpmVersion');
+    assert.ok(dashSrc.includes('currentCommit'), '/api/version must include currentCommit');
+    assert.ok(dashSrc.includes('runningCommit'), '/api/version must include runningCommit');
+  });
+
+  await test('layout.html has version-banner element in header', () => {
+    assert.ok(layoutSrc.includes('id="version-banner"'), 'layout must have version-banner element');
+    // Should be near the engine badge, not in a separate div
+    const badgeLine = layoutSrc.indexOf('engine-badge');
+    const bannerLine = layoutSrc.indexOf('version-banner');
+    assert.ok(Math.abs(badgeLine - bannerLine) < 200,
+      'version-banner should be near the engine-badge in the header');
+  });
+
+  await test('renderVersionBanner handles all three states', () => {
+    assert.ok(renderSrc.includes('function renderVersionBanner'), 'renderVersionBanner must exist');
+    assert.ok(renderSrc.includes('version.stale'), 'must handle stale state');
+    assert.ok(renderSrc.includes('version.updateAvailable'), 'must handle updateAvailable state');
+    assert.ok(renderSrc.includes('npm update'), 'update state should show npm command');
+    assert.ok(renderSrc.includes('Restart to apply'), 'stale state should say restart');
+  });
+
+  await test('refresh.js calls renderVersionBanner', () => {
+    assert.ok(refreshSrc.includes('renderVersionBanner(data.version)'),
+      'refresh must pass data.version to renderVersionBanner');
   });
 }
 
