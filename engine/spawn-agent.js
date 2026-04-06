@@ -189,7 +189,22 @@ proc.stderr.on('data', (chunk) => {
 // Pipe stdout to parent
 proc.stdout.pipe(process.stdout);
 
+// MCP startup timeout: kill if no stdout within 3 minutes (MCP servers downloading/starting)
+const MCP_STARTUP_TIMEOUT = 180000; // 3 minutes
+let gotFirstOutput = false;
+const startupTimer = setTimeout(() => {
+  if (!gotFirstOutput) {
+    const msg = `TIMEOUT: Claude CLI produced no output after ${MCP_STARTUP_TIMEOUT / 1000}s (likely MCP server startup stall)`;
+    console.error(msg);
+    fs.appendFileSync(debugPath, msg + '\n');
+    try { proc.kill('SIGTERM'); } catch { /* process may be dead */ }
+    setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 5000);
+  }
+}, MCP_STARTUP_TIMEOUT);
+proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTimer); });
+
 proc.on('close', (code) => {
+  clearTimeout(startupTimer);
   fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
   process.exit(code || 0);
 });
