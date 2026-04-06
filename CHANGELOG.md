@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.420 (2026-04-06)
+
+### Features
+- Low-priority cleanup: dedupe regex, consolidate streaming parse, add path validation alignment
+- Fix 6 medium bugs: dispatch pruning, null guards, skill regex, meeting advancement, CLI PID check, pipeline retry
+- Convert remaining lifecycle.js safeWrite calls to mutateJsonFileLocked
+
+### Fixes
+-  address review feedback — pipeline.js socket leak and magic numbers
+
 ## 0.1.417 (2026-04-06)
 
 ### Features
