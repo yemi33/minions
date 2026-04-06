@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.370 (2026-04-06)
+
+### Features
+- Add subagent guidance and health check preamble to playbooks (#225)
+- Fix 2 failing source-pattern test assertions (#224)
+
+### Fixes
+-  copy button preserves markdown formatting
+
 ## 0.1.368 (2026-04-06)
 
 ### Fixes
