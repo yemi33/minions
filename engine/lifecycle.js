@@ -1193,7 +1193,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
             if (wi.status === WI_STATUS.DONE || wi.completedAt) {
               log('info', `Skip retry for ${meta.item.id} — already completed`);
             } else {
-              wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to;
+              wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to; delete wi.failReason;
               if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
               shared.safeWrite(wiPath, items);
             }

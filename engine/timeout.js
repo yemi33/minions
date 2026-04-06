@@ -254,6 +254,7 @@ function checkTimeouts(config) {
             delete item.dispatched_at;
             delete item.dispatched_to;
             delete item._pendingReason;
+            delete item.failReason;
           } else {
             log('warn', `Reconcile: work item ${item.id} failed after ${retries} retries — marking as failed`);
             item.status = WI_STATUS.FAILED;
