@@ -179,18 +179,14 @@ async function checkNpmVersion() {
   const now = Date.now();
   if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
   try {
-    const https = require('https');
-    const data = await new Promise((resolve, reject) => {
-      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (resp) => {
-        if (resp.statusCode !== 200) { reject(new Error('npm registry ' + resp.statusCode)); resp.resume(); return; }
-        let body = '';
-        resp.on('data', c => body += c);
-        resp.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
+    // Use npm view — respects user's .npmrc proxy/registry config (unlike raw https.get)
+    const { execFile } = require('child_process');
+    const version = await new Promise((resolve, reject) => {
+      execFile('npm', ['view', PKG_NAME, 'version'], { timeout: 15000, windowsHide: true }, (err, stdout) => {
+        if (err) reject(err); else resolve((stdout || '').trim());
       });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     });
-    _npmVersionCache = { latest: data.version || null, checkedAt: new Date().toISOString() };
+    _npmVersionCache = { latest: version || null, checkedAt: new Date().toISOString() };
     _npmVersionCacheTs = now;
   } catch {
     _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: 'check failed' };

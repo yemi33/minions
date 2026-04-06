@@ -7664,9 +7664,11 @@ async function testVersionCheck() {
     assert.ok(fn[0].includes('delete require.cache'), 'must bust require cache so npm updates are detected');
   });
 
-  await test('checkNpmVersion checks HTTP status before JSON.parse', () => {
-    assert.ok(dashSrc.includes('resp.statusCode !== 200') || dashSrc.includes('statusCode !== 200'),
-      'must check HTTP status code from npm registry before parsing body');
+  await test('checkNpmVersion uses npm view (respects proxy/registry config)', () => {
+    assert.ok(dashSrc.includes("'npm'") || dashSrc.includes('"npm"'),
+      'must use npm CLI to check latest version (works behind corporate proxies)');
+    assert.ok(dashSrc.includes("'view'") || dashSrc.includes('"view"'),
+      'must use npm view subcommand');
   });
 
   await test('_compareVersions correctly compares semver', () => {
