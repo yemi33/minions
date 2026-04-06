@@ -6368,7 +6368,7 @@ async function testAuxModuleBugFixes() {
     // Verify proc.stdin.write is inside a try block
     assert.ok(src.includes('try {') && src.includes('proc.stdin.write'), 'stdin write should be in try block');
     assert.ok(src.includes('broken pipe'), 'Should log broken pipe error');
-    assert.ok(src.includes('proc.kill(\'SIGTERM\')'), 'Should kill child process on broken pipe');
+    assert.ok(src.includes('killImmediate(proc)'), 'Should kill child process on broken pipe using cross-platform killImmediate');
   });
 
   // Bug #33: playbook.js template self-reference detection
@@ -6733,15 +6733,15 @@ async function testPrWriteRaceConditions() {
 
   console.log('\n── Engine.js Race Condition Fixes (P-aa0ik3fh) ──');
 
-  await test('worktree reuse check reads dispatch inside withFileLock, not bare safeJson', () => {
+  await test('worktree reuse check reads dispatch inside mutateDispatch, not bare safeJson', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Find the worktree reuse section — the activelyUsed check with dispatch lock
     const reuseSectionMatch = src.match(/Bug fix: read dispatch under file lock[\s\S]*?activelyUsed\)/);
     assert.ok(reuseSectionMatch, 'Should have worktree reuse section');
     const reuseSection = reuseSectionMatch[0];
-    // Should use withFileLock for atomic read-only access, NOT bare safeJson(DISPATCH_PATH)
-    assert.ok(reuseSection.includes('withFileLock'), 'Worktree reuse check should use withFileLock for atomic read');
-    assert.ok(!reuseSection.includes('safeJson(DISPATCH_PATH)') || reuseSection.includes('withFileLock'), 'Worktree reuse check should read dispatch under file lock');
+    // Should use mutateDispatch (which uses mutateJsonFileLocked → withFileLock) for atomic read, NOT bare safeJson(DISPATCH_PATH)
+    assert.ok(reuseSection.includes('mutateDispatch'), 'Worktree reuse check should use mutateDispatch for atomic read');
+    assert.ok(!reuseSection.includes('safeJson(DISPATCH_PATH)') || reuseSection.includes('mutateDispatch'), 'Worktree reuse check should read dispatch under file lock');
   });
 
   await test('self-heal completed-array filter uses immutable pattern (builds new array)', () => {

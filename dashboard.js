@@ -1345,6 +1345,7 @@ const server = http.createServer(async (req, res) => {
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
       const plan = safeJsonObj(planPath);
+      if (!plan) return jsonReply(res, 500, { error: 'failed to read plan file' });
       const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
       if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
 
@@ -2214,6 +2215,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       for (const wiPath of wiPaths) {
         try {
           const items = safeJsonArr(wiPath);
+          if (!items) continue;
           const filtered = items.filter(w => w.sourcePlan !== body.file);
           if (filtered.length < items.length) {
             cleaned += items.length - filtered.length;
@@ -2921,6 +2923,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       const configPath = path.join(MINIONS_DIR, 'config.json');
       const config = safeJsonObj(configPath);
+      if (!config) return jsonReply(res, 500, { error: 'failed to read config' });
       if (!config.projects) config.projects = [];
 
       // Check if already linked
