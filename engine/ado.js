@@ -101,11 +101,12 @@ async function forEachActivePr(config, token, callback) {
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(shared.projectPrPath(project), (currentPrs) => {
-        // Merge updated PRs into the locked copy by ID
-        for (const updatedPr of prs) {
+        // Only merge back PRs that the callback actually modified — not the entire
+        // stale snapshot, which would overwrite concurrent writes from other code paths
+        for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
           if (idx >= 0) currentPrs[idx] = updatedPr;
-          else currentPrs.push(updatedPr);
+          // Don't push if not found — it was deleted by another writer, respect that
         }
         return currentPrs;
       }, { defaultValue: [] });

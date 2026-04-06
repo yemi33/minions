@@ -7549,6 +7549,47 @@ async function testPrDuplicateRaceFix() {
     assert.ok(metricsWrites >= 2,
       'updatePrAfterReview should use mutateJsonFileLocked for both PR file and metrics file');
   });
+
+  // ── Merge-back pattern: only modified PRs, not full stale snapshot ──
+
+  await test('ado.js forEachActivePr merges only activePrs, not full prs snapshot', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const fn = src.match(/async function forEachActivePr[\s\S]*?^}/m);
+    assert.ok(fn, 'forEachActivePr must exist');
+    // The merge-back must iterate activePrs (modified only), not prs (full snapshot)
+    assert.ok(fn[0].includes('for (const updatedPr of activePrs)'),
+      'ado.js merge-back must iterate activePrs, not the full prs snapshot');
+    assert.ok(!fn[0].includes('for (const updatedPr of prs)'),
+      'ado.js merge-back must NOT iterate the full prs snapshot — overwrites concurrent writes');
+  });
+
+  await test('github.js forEachActiveGhPr merges only activePrs, not full prs snapshot', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const fn = src.match(/async function forEachActiveGhPr[\s\S]*?^}/m);
+    assert.ok(fn, 'forEachActiveGhPr must exist');
+    assert.ok(fn[0].includes('for (const updatedPr of activePrs)'),
+      'github.js project merge-back must iterate activePrs');
+    assert.ok(fn[0].includes('for (const updatedPr of activeCentral)'),
+      'github.js central merge-back must iterate activeCentral');
+    // Must not have the old pattern iterating full snapshots
+    assert.ok(!fn[0].includes('for (const updatedPr of prs)'),
+      'github.js must NOT iterate full prs snapshot');
+    assert.ok(!fn[0].includes('for (const updatedPr of centralPrs)'),
+      'github.js must NOT iterate full centralPrs snapshot');
+  });
+
+  await test('merge-back does not re-add deleted PRs (no else push)', () => {
+    const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    // forEachActivePr/forEachActiveGhPr merge-backs should only overwrite, never push
+    const adoFn = adoSrc.match(/async function forEachActivePr[\s\S]*?^}/m);
+    const ghFn = ghSrc.match(/async function forEachActiveGhPr[\s\S]*?^}/m);
+    // Count "currentPrs.push(updatedPr)" inside the merge-back blocks
+    const adoPushes = (adoFn[0].match(/currentPrs\.push\(updatedPr\)/g) || []).length;
+    const ghPushes = (ghFn[0].match(/currentPrs\.push\(updatedPr\)/g) || []).length;
+    assert.strictEqual(adoPushes, 0, 'ado.js merge-back must not push — deleted PRs should stay deleted');
+    assert.strictEqual(ghPushes, 0, 'github.js merge-back must not push — deleted PRs should stay deleted');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

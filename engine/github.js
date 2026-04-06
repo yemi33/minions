@@ -72,10 +72,10 @@ async function forEachActiveGhPr(config, callback) {
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(projectPrPath(project), (currentPrs) => {
-        for (const updatedPr of prs) {
+        // Only merge back PRs that the callback actually modified
+        for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
           if (idx >= 0) currentPrs[idx] = updatedPr;
-          else currentPrs.push(updatedPr);
         }
         return currentPrs;
       }, { defaultValue: [] });
@@ -113,10 +113,10 @@ async function forEachActiveGhPr(config, callback) {
   }
   if (centralUpdated > 0) {
     mutateJsonFileLocked(centralPath, (currentPrs) => {
-      for (const updatedPr of centralPrs) {
+      // Only merge back central PRs that the callback actually modified
+      for (const updatedPr of activeCentral) {
         const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
         if (idx >= 0) currentPrs[idx] = updatedPr;
-        else currentPrs.push(updatedPr);
       }
       return currentPrs;
     }, { defaultValue: [] });
