@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.402 (2026-04-06)
+
+### Features
+-  pipeline stages detect and link inbox notes as artifacts
+
+### Fixes
+-  prevent auto-review of human PRs + add unlink button
+-  reconcilePrs only auto-tracks PRs linked to minions work items
+-  auto-detect main branch when configured mainBranch doesn't exist
+-  engine restart button shows toast + green checkmark, suppresses stale banner 30s
+
 ## 0.1.397 (2026-04-06)
 
 ### Fixes
