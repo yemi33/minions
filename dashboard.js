@@ -180,12 +180,12 @@ async function checkNpmVersion() {
   if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
   try {
     // Use npm view — respects user's .npmrc proxy/registry config
-    // Resolve npm path from Node binary location — detached processes may not have PATH
-    const { execFile } = require('child_process');
+    // Must use shell:true on Windows because npm is a .cmd batch script
+    const { exec: _exec } = require('child_process');
     const nodeDir = require('path').dirname(process.execPath);
     const npmPath = require('path').join(nodeDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
     const version = await new Promise((resolve, reject) => {
-      execFile(npmPath, ['view', PKG_NAME, 'version'], { timeout: 15000, windowsHide: true }, (err, stdout) => {
+      _exec(`"${npmPath}" view ${PKG_NAME} version`, { timeout: 15000, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
         if (err) reject(err); else resolve((stdout || '').trim());
       });
     });
