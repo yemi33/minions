@@ -108,7 +108,12 @@ async function forEachActivePr(config, token, callback) {
           if (idx >= 0) currentPrs[idx] = updatedPr;
           // Don't push if not found — it was deleted by another writer, respect that
         }
-        return currentPrs;
+        // Remove duplicates (keep last occurrence which has latest status)
+        const seen = new Set();
+        return currentPrs.filter((p, i, arr) => {
+          const lastIdx = arr.findLastIndex(x => x.id === p.id);
+          return lastIdx === i;
+        });
       }, { defaultValue: [] });
       totalUpdated += projectUpdated;
     }
