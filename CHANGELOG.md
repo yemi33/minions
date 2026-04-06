@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.444 (2026-04-06)
+
+### Features
+-  notification dot on Notes & KB sidebar when sweep completes/fails
+
+### Fixes
+-  pipeline tasks don't hardcode agent — any available agent picks up work
+
 ## 0.1.441 (2026-04-06)
 
 ### Fixes
