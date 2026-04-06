@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.398 (2026-04-06)
+
+### Fixes
+-  engine restart button shows toast + green checkmark, suppresses stale banner 30s
+
 ## 0.1.397 (2026-04-06)
 
 ### Fixes
