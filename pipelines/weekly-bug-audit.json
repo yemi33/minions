@@ -1,0 +1,35 @@
+{
+  "id": "weekly-bug-audit",
+  "title": "Weekly Comprehensive Bug Audit",
+  "stages": [
+    {
+      "id": "bug-audit",
+      "type": "task",
+      "taskType": "explore",
+      "title": "Comprehensive bug audit — engine, dashboard, CLI, all modules",
+      "description": "Perform a thorough bug audit of the entire Minions codebase (D:/squad). Read every core module and look for real bugs, not style issues.\n\nCover:\n- engine.js — tick logic, spawn chain, orphan detection, concurrency, state transitions\n- dashboard.js — all API handlers, null/undefined guards, race conditions, auth, error paths\n- engine/shared.js, queries.js, lifecycle.js, dispatch.js, consolidation.js, ado.js, github.js, cli.js, preflight.js, scheduler.js, pipeline.js, meeting.js, cooldown.js, llm.js\n- All status/type constant usage — look for raw strings that should use WI_STATUS, WORK_TYPE, etc.\n- Concurrency safety — any safeWrite() on files that need mutateJsonFileLocked()\n- Cross-platform hazards — direct proc.kill(), process.env.HOME, unescaped Windows paths\n- Null/undefined crashes — missing guards before .filter(), .map(), .find() on possibly-null values\n- Logic bugs — off-by-one, wrong condition, incorrect status transitions, stale state reads\n- Error handling gaps — unhandled promise rejections, missing try/catch in tick phases\n- Config access before guard — reading projects[0] without checking projects.length\n\nFor each bug found, record:\n- File and line number\n- Severity: critical / high / medium / low\n- Description of the bug and how it manifests\n- Proposed fix\n\nProduce a structured findings report. Do NOT make any code changes — analysis only."
+    },
+    {
+      "id": "audit-review-wait",
+      "type": "wait",
+      "title": "Review audit findings before planning",
+      "description": "Ripley has completed the bug audit. Review the findings in the agent output, then continue to generate the fix plan.",
+      "dependsOn": [
+        "bug-audit"
+      ]
+    },
+    {
+      "id": "fix-plan",
+      "type": "plan",
+      "title": "Bug fix plan from weekly audit",
+      "description": "Based on the bug audit findings:\n\n{{stages.bug-audit.output}}\n\nWrite a detailed implementation plan to fix the bugs identified. Group related fixes where it makes sense. Each item should be concrete, scoped to specific files/functions, and ordered by severity (critical first). The plan will go to human review before any execution begins — do not auto-approve.",
+      "dependsOn": [
+        "audit-review-wait"
+      ]
+    }
+  ],
+  "trigger": {
+    "cron": "0 9 3"
+  },
+  "enabled": true
+}

@@ -1,0 +1,47 @@
+{
+  "id": "weekly-simplify-review",
+  "title": "Weekly Simplify Review & Improvement Plan",
+  "stages": [
+    {
+      "id": "simplify-analysis",
+      "type": "task",
+      "taskType": "explore",
+      "title": "Simplify analysis � Minions codebase",
+      "description": "Perform a thorough simplify review of the entire Minions codebase (D:/squad). Read all core modules (engine.js, dashboard.js, engine/*.js) and identify: redundant code, missed reuse of shared utilities, premature abstractions, magic strings/numbers, copy-paste patterns, functions that could be generalized, and architectural inconsistencies. Produce a structured findings report with specific file:line references and concrete recommendations for each issue. Do NOT make any code changes � analysis and reporting only."
+    },
+    {
+      "id": "simplify-meeting",
+      "type": "meeting",
+      "title": "Weekly Code Quality & Simplification Review",
+      "agenda": "Ripley has completed a simplify analysis of the Minions codebase. Review the findings and reach consensus on what to fix.\n\nFindings:\n{{stages.simplify-analysis.output}}\n\nDiscussion points:\n1. Review each finding and assess severity/impact\n2. Debate proposed solutions and tradeoffs\n3. Prioritize � what is worth doing vs. not worth the churn?\n4. Agree on a concrete, scoped set of improvements\n5. Produce a clear list of agreed-upon changes with rationale",
+      "participants": [
+        "all"
+      ],
+      "dependsOn": [
+        "simplify-analysis"
+      ]
+    },
+    {
+      "id": "user-review-wait",
+      "type": "wait",
+      "title": "Awaiting your sign-off on proposed improvements",
+      "description": "Review the meeting conclusions and continue the pipeline when satisfied with the agreed improvements.",
+      "dependsOn": [
+        "simplify-meeting"
+      ]
+    },
+    {
+      "id": "improvement-plan",
+      "type": "plan",
+      "title": "Create improvement plan from simplify review",
+      "description": "Based on the agreed improvements from the simplify review meeting:\n\n{{stages.simplify-meeting.output}}\n\nWrite a detailed implementation plan for the agreed code quality improvements to the Minions codebase. Each item should be scoped, concrete, and reference specific files and functions. The plan will be submitted for user review before any execution begins.",
+      "dependsOn": [
+        "user-review-wait"
+      ]
+    }
+  ],
+  "trigger": {
+    "cron": "0 9 2"
+  },
+  "enabled": true
+}

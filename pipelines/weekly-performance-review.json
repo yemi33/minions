@@ -1,0 +1,48 @@
+{
+  "id": "weekly-performance-review",
+  "title": "Weekly Performance Review & Fix Pipeline",
+  "stages": [
+    {
+      "id": "perf-audit",
+      "type": "task",
+      "taskType": "explore",
+      "title": "Performance audit — hangs, blocking ops, async issues",
+      "description": "Perform a thorough performance audit of the entire Minions codebase (D:/squad). Read all core modules (engine.js, dashboard.js, engine/*.js, dashboard/*.js) and identify real performance problems.\n\nFocus areas:\n- **Hangs / blocking I/O**: synchronous fs calls (readFileSync, writeFileSync) on the hot path, blocking requires inside functions, synchronous JSON parsing of large files\n- **Lack of optimistic updates**: dashboard API handlers that wait for a full file write before responding, work item mutations that could return immediately and confirm async, UI state that stalls on round-trips\n- **Waiting for API**: serial `await` chains that could be `Promise.all`, ADO/GitHub polling that blocks the tick loop, agent live-stream handlers that await unnecessarily\n- **Async operation issues**: unresolved promise chains, fire-and-forget mutations without error handling, missing concurrency limits on fan-out spawns, tick phases that don't yield between items\n- **Lock contention**: mutateJsonFileLocked calls that hold locks too long or are called unnecessarily in read-only paths\n- **SSE/streaming**: response streams not flushed promptly, missing heartbeat causing client timeouts, large payloads serialized synchronously before first byte sent\n\nFor each issue found, record:\n- File and line number\n- Category: hang / no-optimistic-update / api-wait / async-issue / lock-contention / sse\n- Severity: critical / high / medium / low\n- Description and how it manifests under load or in the UI\n- Proposed fix\n\nProduce a structured findings report. Do NOT make any code changes — analysis only."
+    },
+    {
+      "id": "perf-meeting",
+      "type": "meeting",
+      "title": "Performance Review — agree on fixes",
+      "agenda": "Ripley has completed a performance audit of the Minions codebase. Review findings and agree on what to fix.\n\nFindings:\n{{stages.perf-audit.output}}\n\nDiscussion points:\n1. Review each finding — is it a real problem or acceptable tradeoff?\n2. For no-optimistic-update issues: agree on which API endpoints should return immediately vs. wait\n3. For hangs and blocking ops: agree on whether to move to async, use streams, or cache\n4. For async/await chains: agree on where Promise.all parallelisation is safe\n5. Prioritise — critical and high severity first, limit scope to what can ship in one plan\n6. Produce a concrete, ordered list of agreed fixes with rationale and file references",
+      "participants": [
+        "all"
+      ],
+      "dependsOn": [
+        "perf-audit"
+      ]
+    },
+    {
+      "id": "perf-review-wait",
+      "type": "wait",
+      "title": "Review meeting conclusions before planning",
+      "description": "Review the performance meeting conclusions above, then continue to create and dispatch the fix plan.",
+      "dependsOn": [
+        "perf-meeting"
+      ]
+    },
+    {
+      "id": "perf-plan",
+      "type": "plan",
+      "title": "Performance fix plan from weekly review",
+      "description": "Based on the agreed performance fixes from the meeting:\n\n{{stages.perf-meeting.output}}\n\nWrite a detailed implementation plan for the agreed performance improvements to the Minions codebase. Each item must:\n- Reference the specific file(s) and function(s) to change\n- Describe the before/after behaviour\n- Be independently shippable (one PR per item where possible)\n- Be ordered by severity (critical first)\n\nThe plan will be auto-approved and dispatched to agents immediately.",
+      "dependsOn": [
+        "perf-review-wait"
+      ],
+      "autoApprove": true
+    }
+  ],
+  "trigger": {
+    "cron": "0 9 4"
+  },
+  "enabled": true
+}
