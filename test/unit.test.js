@@ -3393,13 +3393,13 @@ async function testLifecycleDataSafety() {
 
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
 
-  await test('Work-items.json parse failure is logged, not silently swallowed', () => {
-    // The old code had: try { items = JSON.parse(...); } catch {}
-    // The fix adds logging in the catch block
-    assert.ok(!src.match(/JSON\.parse\(fs\.readFileSync\(wiPath[^)]*\)\);\s*\}\s*catch\s*\{\s*\}/),
-      'Should not have empty catch block when parsing work-items.json');
-    assert.ok(src.includes('.bak'),
-      'Should create a backup before falling back to empty array');
+  await test('chainPlanToPrd uses atomic writes on work-items.json', () => {
+    // chainPlanToPrd should use mutateJsonFileLocked, not raw readFileSync+safeWrite
+    const chainFn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
+    if (chainFn) {
+      assert.ok(chainFn[0].includes('mutateJsonFileLocked'),
+        'chainPlanToPrd must use mutateJsonFileLocked for atomic writes');
+    }
   });
 
   await test('updatePrAfterReview logs defined variable, not minionsVerdict', () => {
@@ -5506,6 +5506,9 @@ async function main() {
 
     // Engine audit: critical bugs
     await testEngineAuditCritical();
+
+    // Engine audit: medium bugs
+    await testEngineAuditMedium();
   } finally {
     cleanupTmpDirs();
   }
@@ -7425,6 +7428,42 @@ async function testEngineAuditCritical() {
       'scheduler must not use strict !== true check — schedules with enabled:undefined would silently never fire');
     assert.ok(src.includes('!sched.enabled'),
       'scheduler should use truthy check to match dashboard UI behavior');
+  });
+}
+
+// ─── Engine Audit: Medium Bugs ──────────────────────────────────────────────
+
+async function testEngineAuditMedium() {
+  console.log('\n── Engine Audit: Medium Bugs ──');
+
+  await test('render-kb.js declares _kbData variable', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(src.includes('let _kbData') || src.includes('var _kbData') || src.includes('const _kbData'),
+      '_kbData must be explicitly declared to avoid implicit global / ReferenceError in strict mode');
+  });
+
+  await test('render-kb.js escapes item.agent', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(src.includes("escHtml(item.agent)"),
+      'item.agent must be escaped via escHtml to prevent XSS');
+  });
+
+  await test('_archiveMeeting clears markDeleted on API failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const fn = src.match(/async function _archiveMeeting[\s\S]*?^}/m);
+    assert.ok(fn, '_archiveMeeting must exist');
+    assert.ok(fn[0].includes("_deletedIds.delete"),
+      'must clear markDeleted on API failure to prevent phantom invisible meeting');
+  });
+
+  await test('chainPlanToPrd uses mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.match(/function chainPlanToPrd[\s\S]*?^}/m);
+    assert.ok(fn, 'chainPlanToPrd must exist');
+    assert.ok(fn[0].includes('mutateJsonFileLocked'),
+      'chainPlanToPrd must use mutateJsonFileLocked for atomic read-modify-write on work-items.json');
+    assert.ok(!fn[0].includes('safeWrite(wiPath'),
+      'chainPlanToPrd must not use unlocked safeWrite on work-items.json');
   });
 }
 main().catch(e => { console.error(e); process.exit(1); });

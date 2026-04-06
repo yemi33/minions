@@ -12,6 +12,7 @@ const KB_CAT_ICONS = {
   reviews: '\u{1F50D}', learnings: '\u{1F4A1}', decisions: '\u{2696}',
   incidents: '\u{1F6A8}', 'api-notes': '\u{1F517}',
 };
+let _kbData = {};
 let _kbActiveTab = 'all';
 const KB_PER_PAGE = 30;
 let _kbPage = 0;
@@ -86,7 +87,7 @@ function renderKnowledgeBase() {
         '<div class="kb-item-title">' + icon + ' ' + escHtml(item.title) + '</div>' +
         '<div class="kb-item-meta">' +
           '<span>' + label + '</span>' +
-          (item.agent ? '<span>' + item.agent + '</span>' : '') +
+          (item.agent ? '<span>' + escHtml(item.agent) + '</span>' : '') +
           '<span>' + (item.date || '') + '</span>' +
           '<span>' + Math.round(item.size / 1024) + 'KB</span>' +
         '</div>' +

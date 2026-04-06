@@ -344,8 +344,8 @@ async function _archiveMeeting(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { _deletedIds.delete('mtg:' + id); const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { _deletedIds.delete('mtg:' + id); alert('Error: ' + e.message); refresh(); }
 }
 
 async function _unarchiveMeeting(id) {
