@@ -901,6 +901,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
   if (!fullText) fullText = output;
   const skillBlocks = [];
   const skillRegex = /```skill\s*\n([\s\S]*?)```/g;
+  skillRegex.lastIndex = 0;
   let match;
   while ((match = skillRegex.exec(fullText)) !== null) {
     skillBlocks.push(match[1].trim());

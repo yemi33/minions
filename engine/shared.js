@@ -438,6 +438,8 @@ const ENGINE_DEFAULTS = {
   evalMaxIterations: 3, // max review→fix cycles before escalating to human
   evalMaxCost: null, // USD ceiling per work item across all eval iterations; null = no limit (gather baseline data first)
   maxRetries: 3, // max dispatch retries before marking work item as failed
+  pipelineApiRetries: 2, // max attempts for pipeline API calls
+  pipelineApiRetryDelay: 2000, // ms delay between pipeline API retries
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────

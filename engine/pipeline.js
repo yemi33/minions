@@ -7,7 +7,8 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
+const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
 const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
@@ -313,18 +314,34 @@ function executeApiStage(stage, stageState, run) {
   for (const call of calls) {
     const url = `http://localhost:${process.env.MINIONS_PORT || 7331}${call.endpoint}`;
     const body = typeof call.body === 'string' ? call.body : JSON.stringify(call.body || {});
-    // Fire and forget — use Node's http module
-    try {
-      const http = require('http');
-      const parsed = new URL(url);
-      const req = http.request({
-        hostname: parsed.hostname, port: parsed.port, path: parsed.pathname,
-        method: call.method || 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      req.write(body);
-      req.end();
-    } catch (e) { log('warn', `Pipeline API call failed: ${e.message}`); }
+    const maxAttempts = ENGINE_DEFAULTS.pipelineApiRetries;
+    const retryDelay = ENGINE_DEFAULTS.pipelineApiRetryDelay;
+    const makeRequest = (attempt) => {
+      try {
+        const parsed = new URL(url);
+        const req = http.request({
+          hostname: parsed.hostname, port: parsed.port, path: parsed.pathname,
+          method: call.method || 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+          res.resume(); // drain body to free socket
+          if (res.statusCode >= 400) {
+            log('warn', `Pipeline API call to ${call.endpoint} returned ${res.statusCode} (attempt ${attempt})`);
+            if (attempt < maxAttempts) setTimeout(() => makeRequest(attempt + 1), retryDelay);
+          }
+        });
+        req.on('error', (err) => {
+          log('warn', `Pipeline API call to ${call.endpoint} failed: ${err.message} (attempt ${attempt})`);
+          if (attempt < maxAttempts) setTimeout(() => makeRequest(attempt + 1), retryDelay);
+        });
+        req.write(body);
+        req.end();
+      } catch (e) {
+        log('warn', `Pipeline API call to ${call.endpoint} threw: ${e.message} (attempt ${attempt})`);
+        if (attempt < maxAttempts) setTimeout(() => makeRequest(attempt + 1), retryDelay);
+      }
+    };
+    makeRequest(1);
   }
   return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }
