@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.375 (2026-04-06)
+
+### Fixes
+-  show red notification dot on Notes & KB when note is created
+-  medium bugs — KB declaration, meeting phantom archive, lifecycle race (#216)
+
 ## 0.1.373 (2026-04-06)
 
 ### Features
