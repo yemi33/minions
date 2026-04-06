@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.366 (2026-04-06)
+
+### Fixes
+-  medium dashboard bugs — settings reset, work items, schedules, plans (#212)
+-  XSS vulnerabilities across dashboard components (#211)
+
 ## 0.1.364 (2026-04-06)
 
 ### Fixes
