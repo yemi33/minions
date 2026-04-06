@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.397 (2026-04-06)
+
+### Fixes
+-  close stale publish PRs before creating new one
+-  prevent body-level scrolling — lock layout to viewport
+
 ## 0.1.395 (2026-04-06)
 
 ### Other
