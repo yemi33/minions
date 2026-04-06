@@ -171,6 +171,10 @@ async function _processQaMessage(message, selection) {
   const capturedFilePath = _modalFilePath;
   const capturedDocContext = { ..._modalDocContext };
 
+  // Show processing badge on the source card
+  const sourceCard = findCardForFile(capturedFilePath);
+  if (sourceCard) showNotifBadge(sourceCard, 'processing');
+
   const loadingId = 'chat-loading-' + Date.now();
   const qaQueueBadge = _qaQueue.length > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + _qaQueue.length + ' queued</span>' : '';
   _qaAbortController = new AbortController();
@@ -280,6 +284,12 @@ async function _processQaMessage(message, selection) {
   _qaAbortController = null;
   thread.scrollTop = thread.scrollHeight;
 
+  // Clear processing badge on source card (unless more messages queued)
+  if (_qaQueue.length === 0) {
+    const doneCard = findCardForFile(capturedFilePath);
+    if (doneCard) clearNotifBadge(doneCard);
+  }
+
   // Save session (persists even if modal was closed during processing)
   const modalIsOpen = document.getElementById('modal').classList.contains('open');
   if (_qaSessionKey) {
@@ -296,7 +306,7 @@ async function _processQaMessage(message, selection) {
     // Show notification badge on source card when modal was closed during processing
     if (!modalIsOpen) {
       const card = findCardForFile(sessionFilePath);
-      if (card) showNotifBadge(card);
+      if (card) showNotifBadge(card, _qaQueue.length > 0 ? 'processing' : 'done');
       _qaSessionKey = '';
     }
   }
