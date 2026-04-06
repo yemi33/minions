@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.368 (2026-04-06)
+
+### Fixes
+-  dashboard audit pass 2 — CC error handling, charter edits, archived PRDs (#214)
+
 ## 0.1.367 (2026-04-06)
 
 ### Fixes
