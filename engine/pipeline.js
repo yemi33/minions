@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, MEETING_STATUS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS } = shared;
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
 const PIPELINES_DIR = path.join(__dirname, '..', 'pipelines');
@@ -130,22 +130,22 @@ async function executeStage(stage, run, pipeline, config) {
   const stageState = run.stages[stage.id];
 
   switch (resolved.type) {
-    case 'task':
+    case STAGE_TYPE.TASK:
       return executeTaskStage(resolved, stageState, run, config);
-    case 'meeting':
+    case STAGE_TYPE.MEETING:
       return executeMeetingStage(resolved, stageState, run, config);
-    case 'plan':
+    case STAGE_TYPE.PLAN:
       return executePlanStage(resolved, stageState, run, config);
-    case 'api':
+    case STAGE_TYPE.API:
       return executeApiStage(resolved, stageState, run);
-    case 'merge-prs':
+    case STAGE_TYPE.MERGE_PRS:
       return executeMergePrsStage(resolved, stageState, run, config);
-    case 'schedule':
+    case STAGE_TYPE.SCHEDULE:
       return executeScheduleStage(resolved, stageState, config);
-    case 'wait':
+    case STAGE_TYPE.WAIT:
       // wait stages just sit in waiting-human status until continued via API
       return { status: PIPELINE_STATUS.WAITING_HUMAN };
-    case 'parallel':
+    case STAGE_TYPE.PARALLEL:
       return executeParallelStage(resolved, stageState, run, pipeline, config);
     default:
       log('warn', `Pipeline: unknown stage type '${resolved.type}' in stage ${stage.id}`);
@@ -298,7 +298,7 @@ async function executePlanStage(stage, stageState, run, config) {
   }
 
   return {
-    status: 'running',
+    status: PIPELINE_STATUS.RUNNING,
     artifacts: {
       plans: [path.basename(filePath)],
       workItems: [wiId],
@@ -355,33 +355,33 @@ function executeScheduleStage(stage, stageState, config) {
     }
   }
   safeWrite(path.join(__dirname, '..', 'config.json'), config);
-  return { status: 'completed', completedAt: ts() };
+  return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }
 
 async function executeParallelStage(stage, stageState, run, pipeline, config) {
   const subStages = stage.stages || [];
   const subResults = {};
   for (const sub of subStages) {
-    if (!run.stages[sub.id] || run.stages[sub.id].status === 'pending') {
+    if (!run.stages[sub.id] || run.stages[sub.id].status === PIPELINE_STATUS.PENDING) {
       const result = await executeStage(sub, run, pipeline, config);
       subResults[sub.id] = result;
       run.stages[sub.id] = { ...run.stages[sub.id] || {}, ...result, startedAt: ts() };
     }
   }
   // Parent is running until all subs complete
-  return { status: 'running', artifacts: { subStages: subStages.map(s => s.id) } };
+  return { status: PIPELINE_STATUS.RUNNING, artifacts: { subStages: subStages.map(s => s.id) } };
 }
 
 // ── Stage Completion Checks ──────────────────────────────────────────────────
 
 function isStageComplete(stage, stageState, run, config) {
-  if (stageState.status === 'completed' || stageState.status === 'failed') return true;
-  if (stageState.status === 'pending' || stageState.status === 'waiting-human') return false;
+  if (stageState.status === PIPELINE_STATUS.COMPLETED || stageState.status === PIPELINE_STATUS.FAILED) return true;
+  if (stageState.status === PIPELINE_STATUS.PENDING || stageState.status === PIPELINE_STATUS.WAITING_HUMAN) return false;
 
   const artifacts = stageState.artifacts || {};
 
   switch (stage.type) {
-    case 'task': {
+    case STAGE_TYPE.TASK: {
       const wiPath = path.join(__dirname, '..', 'work-items.json');
       const workItems = safeJson(wiPath) || [];
       const ids = artifacts.workItems || [];
@@ -391,16 +391,16 @@ function isStageComplete(stage, stageState, run, config) {
         return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
     }
-    case 'meeting': {
+    case STAGE_TYPE.MEETING: {
       const { getMeeting } = require('./meeting');
       const ids = artifacts.meetings || [];
       if (ids.length === 0) return false;
       return ids.every(id => {
         const m = getMeeting(id);
-        return m && (m.status === 'completed' || m.status === 'archived');
+        return m && (m.status === MEETING_STATUS.COMPLETED || m.status === MEETING_STATUS.ARCHIVED);
       });
     }
-    case 'plan': {
+    case STAGE_TYPE.PLAN: {
       // Plan stage completion: PRD conversion done + all materialized work items done
       const wiPath = path.join(__dirname, '..', 'work-items.json');
       const workItems = safeJson(wiPath) || [];
@@ -464,7 +464,7 @@ function isStageComplete(stage, stageState, run, config) {
         return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
     }
-    case 'merge-prs': {
+    case STAGE_TYPE.MERGE_PRS: {
       const prIds = artifacts.prs || [];
       if (prIds.length === 0) return true; // nothing to merge
       const projects = shared.getProjects(config);
@@ -477,16 +477,16 @@ function isStageComplete(stage, stageState, run, config) {
       }
       return true;
     }
-    case 'api':
-    case 'schedule':
+    case STAGE_TYPE.API:
+    case STAGE_TYPE.SCHEDULE:
       return true; // fire-and-forget
-    case 'wait':
-      return stageState.status === 'completed';
-    case 'parallel': {
+    case STAGE_TYPE.WAIT:
+      return stageState.status === PIPELINE_STATUS.COMPLETED;
+    case STAGE_TYPE.PARALLEL: {
       const subIds = artifacts.subStages || [];
       return subIds.every(id => {
         const sub = run.stages[id];
-        return sub && (sub.status === 'completed' || sub.status === 'failed');
+        return sub && (sub.status === PIPELINE_STATUS.COMPLETED || sub.status === PIPELINE_STATUS.FAILED);
       });
     }
     default:
@@ -533,18 +533,18 @@ async function discoverPipelineWork(config) {
       if (!stageState) continue;
 
       // Check if running stage completed
-      if (stageState.status === 'running') {
+      if (stageState.status === PIPELINE_STATUS.RUNNING) {
         if (isStageComplete(stage, stageState, activeRun, config)) {
           // Collect output
           let output = '';
-          if (stage.type === 'task') {
+          if (stage.type === STAGE_TYPE.TASK) {
             const wiPath = path.join(__dirname, '..', 'work-items.json');
             const workItems = safeJson(wiPath) || [];
             output = (stageState.artifacts?.workItems || []).map(id => {
               const wi = workItems.find(w => w.id === id);
               return wi?.resultSummary || wi?.title || id;
             }).join('\n');
-          } else if (stage.type === 'meeting') {
+          } else if (stage.type === STAGE_TYPE.MEETING) {
             const { getMeeting } = require('./meeting');
             output = (stageState.artifacts?.meetings || []).map(id => {
               const m = getMeeting(id);
@@ -553,9 +553,9 @@ async function discoverPipelineWork(config) {
           }
 
           updateRunStage(pipeline.id, activeRun.runId, stage.id, {
-            status: 'completed', completedAt: ts(), output
+            status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output
           });
-          stageState.status = 'completed';
+          stageState.status = PIPELINE_STATUS.COMPLETED;
           stageState.output = output;
           log('info', `Pipeline ${pipeline.id}: stage ${stage.id} completed`);
         } else {
@@ -564,42 +564,42 @@ async function discoverPipelineWork(config) {
         }
       }
 
-      if (stageState.status === 'waiting-human') { allComplete = false; continue; }
+      if (stageState.status === PIPELINE_STATUS.WAITING_HUMAN) { allComplete = false; continue; }
 
       // Check if pending stage is ready to start
-      if (stageState.status === 'pending') {
+      if (stageState.status === PIPELINE_STATUS.PENDING) {
         allComplete = false;
         const depsReady = (stage.dependsOn || []).every(depId => {
           const dep = activeRun.stages[depId];
-          return dep && dep.status === 'completed';
+          return dep && dep.status === PIPELINE_STATUS.COMPLETED;
         });
         const depsFailed = (stage.dependsOn || []).some(depId => {
           const dep = activeRun.stages[depId];
-          return dep && dep.status === 'failed';
+          return dep && dep.status === PIPELINE_STATUS.FAILED;
         });
 
         if (depsFailed) {
-          updateRunStage(pipeline.id, activeRun.runId, stage.id, { status: 'failed', error: 'dependency failed' });
-          stageState.status = 'failed';
+          updateRunStage(pipeline.id, activeRun.runId, stage.id, { status: PIPELINE_STATUS.FAILED, error: 'dependency failed' });
+          stageState.status = PIPELINE_STATUS.FAILED;
           anyFailed = true;
         } else if (depsReady) {
           const result = await executeStage(stage, activeRun, pipeline, config);
           updateRunStage(pipeline.id, activeRun.runId, stage.id, { ...result, startedAt: ts() });
           Object.assign(stageState, result, { startedAt: ts() });
-          if (result.status === 'running') anyRunning = true;
+          if (result.status === PIPELINE_STATUS.RUNNING) anyRunning = true;
           log('info', `Pipeline ${pipeline.id}: started stage ${stage.id} (${stage.type})`);
         }
       }
 
-      if (stageState.status === 'failed') anyFailed = true;
-      if (stageState.status !== 'completed') allComplete = false;
+      if (stageState.status === PIPELINE_STATUS.FAILED) anyFailed = true;
+      if (stageState.status !== PIPELINE_STATUS.COMPLETED) allComplete = false;
     }
 
     // Check if run is done
     if (allComplete) {
-      completeRun(pipeline.id, activeRun.runId, 'completed');
+      completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.COMPLETED);
     } else if (anyFailed && !anyRunning) {
-      completeRun(pipeline.id, activeRun.runId, 'failed');
+      completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.FAILED);
     }
   }
 }
