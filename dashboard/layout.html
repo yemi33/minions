@@ -62,17 +62,19 @@
 
 <div class="page-layout">
   <nav class="sidebar" id="sidebar">
-    <a class="sidebar-link" data-page="home" href="/">Home</a>
-    <a class="sidebar-link" data-page="work" href="/work">Work Items <span class="sidebar-count" id="sidebar-wi"></span></a>
-    <a class="sidebar-link" data-page="plans" href="/plans">Plans & PRD</a>
-    <a class="sidebar-link" data-page="prs" href="/prs">Pull Requests <span class="sidebar-count" id="sidebar-pr"></span></a>
-    <a class="sidebar-link" data-page="inbox" href="/inbox">Notes & KB</a>
-    <a class="sidebar-link" data-page="tools" href="/tools">Skills & MCP</a>
-    <a class="sidebar-link" data-page="schedule" href="/schedule">Schedules</a>
-    <a class="sidebar-link" data-page="pipelines" href="/pipelines">Pipelines</a>
-    <a class="sidebar-link" data-page="meetings" href="/meetings">Meetings</a>
-    <a class="sidebar-link" data-page="engine" href="/engine">Engine</a>
-    <div id="sidebar-version" style="margin-top:auto;padding:8px 12px;font-size:9px;color:var(--muted);border-top:1px solid var(--border)"></div>
+    <div style="flex:1;overflow-y:auto">
+      <a class="sidebar-link" data-page="home" href="/">Home</a>
+      <a class="sidebar-link" data-page="work" href="/work">Work Items <span class="sidebar-count" id="sidebar-wi"></span></a>
+      <a class="sidebar-link" data-page="plans" href="/plans">Plans & PRD</a>
+      <a class="sidebar-link" data-page="prs" href="/prs">Pull Requests <span class="sidebar-count" id="sidebar-pr"></span></a>
+      <a class="sidebar-link" data-page="inbox" href="/inbox">Notes & KB</a>
+      <a class="sidebar-link" data-page="tools" href="/tools">Skills & MCP</a>
+      <a class="sidebar-link" data-page="schedule" href="/schedule">Schedules</a>
+      <a class="sidebar-link" data-page="pipelines" href="/pipelines">Pipelines</a>
+      <a class="sidebar-link" data-page="meetings" href="/meetings">Meetings</a>
+      <a class="sidebar-link" data-page="engine" href="/engine">Engine</a>
+    </div>
+    <div id="sidebar-version" style="flex-shrink:0;padding:8px 12px;font-size:9px;color:var(--muted);border-top:1px solid var(--border)"></div>
   </nav>
   <div class="page-content" id="page-content"><!-- __PAGES__ --></div>
 </div>
