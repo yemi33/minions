@@ -110,7 +110,13 @@ function renderWorkItems(items) {
     '</div>';
   }
 
+  const tableWrap = el.querySelector('.pr-table-wrap');
+  const savedScroll = tableWrap ? tableWrap.scrollLeft : 0;
   el.innerHTML = html;
+  if (savedScroll) {
+    const newWrap = el.querySelector('.pr-table-wrap');
+    if (newWrap) newWrap.scrollLeft = savedScroll;
+  }
 }
 
 function editWorkItem(id, source) {

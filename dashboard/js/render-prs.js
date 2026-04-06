@@ -64,7 +64,13 @@ function renderPrs(prs) {
     '</div>';
   }
 
+  const tableWrap = el.querySelector('.pr-table-wrap');
+  const savedScroll = tableWrap ? tableWrap.scrollLeft : 0;
   el.innerHTML = prTableHtml(rows) + pager;
+  if (savedScroll) {
+    const newWrap = el.querySelector('.pr-table-wrap');
+    if (newWrap) newWrap.scrollLeft = savedScroll;
+  }
 }
 
 function prPrev() { if (prPage > 0) { prPage--; renderPrs(allPrs); } }
