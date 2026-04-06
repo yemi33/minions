@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.388 (2026-04-06)
+
+### Fixes
+-  move version banner next to engine badge + add 10 tests
+
 ## 0.1.387 (2026-04-06)
 
 ### Fixes
