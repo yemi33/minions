@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.409 (2026-04-06)
+
+### Fixes
+-  npm version check — use npm.cmd on Windows, log errors, expose in API
+
 ## 0.1.408 (2026-04-06)
 
 ### Fixes
