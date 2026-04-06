@@ -14,7 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -959,17 +959,18 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const idx = items.findIndex(i => i.id === id);
-      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
+      let found = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const idx = items.findIndex(i => i.id === id);
+        if (idx === -1) return items;
+        found = true;
+        items.splice(idx, 1);
+        return items;
+      });
+      if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
-      const item = items[idx];
-
-      // Remove item from work-items file
-      items.splice(idx, 1);
-      safeWrite(wiPath, items);
-
-      // Clean dispatch entries + kill running agent
+      // Clean dispatch entries + kill running agent (outside lock)
       const dispatchRemoved = cleanDispatchEntries(d =>
         d.meta?.item?.id === id ||
         d.meta?.dispatchKey?.endsWith(id)
@@ -1008,21 +1009,24 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const idx = items.findIndex(i => i.id === id);
-      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
+      let archivedItem = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const idx = items.findIndex(i => i.id === id);
+        if (idx === -1) return items;
+        archivedItem = items.splice(idx, 1)[0];
+        archivedItem.archivedAt = new Date().toISOString();
+        return items;
+      });
+      if (!archivedItem) return jsonReply(res, 404, { error: 'item not found' });
 
-      const item = items.splice(idx, 1)[0];
-      item.archivedAt = new Date().toISOString();
-
-      // Append to archive file
+      // Append to archive file (outside lock)
       const archivePath = wiPath.replace('.json', '-archive.json');
-      let archive = [];
-      const existing = safeRead(archivePath);
-      if (existing) { try { archive = JSON.parse(existing); } catch {} }
-      archive.push(item);
-      safeWrite(archivePath, archive);
-      safeWrite(wiPath, items);
+      mutateJsonFileLocked(archivePath, (archive) => {
+        if (!Array.isArray(archive)) archive = [];
+        archive.push(archivedItem);
+        return archive;
+      }, { defaultValue: [] });
 
       // Clean dispatch entries for archived item
       const sourcePrefix = (!source || source === 'central') ? 'central-work-' : `work-${source}-`;
@@ -1066,22 +1070,22 @@ const server = http.createServer(async (req, res) => {
         // Write to central queue — agent decides which project
         wiPath = path.join(MINIONS_DIR, 'work-items.json');
       }
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title, type: body.type || 'implement',
         priority: body.priority || 'medium', description: body.description || '',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+        status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
       if (body.scope) item.scope = body.scope;
       if (body.agent) item.agent = body.agent;
       if (body.agents) item.agents = body.agents;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
-      items.push(item);
-      safeWrite(wiPath, items);
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        items.push(item);
+        return items;
+      });
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1103,29 +1107,32 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const item = items.find(i => i.id === id);
-      if (!item) return jsonReply(res, 404, { error: 'item not found' });
+      let result = null;
+      let agentChanged = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) { result = { code: 404, body: { error: 'item not found' } }; return items; }
+        if (item.status === WI_STATUS.DISPATCHED) { result = { code: 400, body: { error: 'Cannot edit dispatched items' } }; return items; }
 
-      if (item.status === 'dispatched') {
-        return jsonReply(res, 400, { error: 'Cannot edit dispatched items' });
-      }
-
-      if (title !== undefined) item.title = title;
-      if (description !== undefined) item.description = description;
-      if (type !== undefined) item.type = type;
-      if (priority !== undefined) item.priority = priority;
-      if (agent !== undefined) {
-        item.agent = agent || null;
-        // Clear stale pending dispatch entries so the engine re-queues with the new agent
-        cleanDispatchEntries(d => d.meta?.item?.id === id);
-      }
-      if (body.references !== undefined) item.references = body.references;
-      if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
-      item.updatedAt = new Date().toISOString();
-
-      safeWrite(wiPath, items);
-      return jsonReply(res, 200, { ok: true, item });
+        if (title !== undefined) item.title = title;
+        if (description !== undefined) item.description = description;
+        if (type !== undefined) item.type = type;
+        if (priority !== undefined) item.priority = priority;
+        if (agent !== undefined) {
+          item.agent = agent || null;
+          agentChanged = true;
+        }
+        if (body.references !== undefined) item.references = body.references;
+        if (body.acceptanceCriteria !== undefined) item.acceptanceCriteria = body.acceptanceCriteria;
+        item.updatedAt = new Date().toISOString();
+        result = { code: 200, body: { ok: true, item } };
+        return items;
+      });
+      if (!result) return jsonReply(res, 500, { error: 'unexpected state' });
+      // Clear stale pending dispatch entries outside lock
+      if (agentChanged) cleanDispatchEntries(d => d.meta?.item?.id === id);
+      return jsonReply(res, result.code, result.body);
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
