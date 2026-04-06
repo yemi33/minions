@@ -2328,9 +2328,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     try {
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
-      if (body.file.includes('..') || body.file.includes('\0') || body.file.includes('/') || body.file.includes('\\')) {
-        return jsonReply(res, 400, { error: 'invalid filename' });
-      }
+      try { shared.sanitizePath(body.file, body.file.endsWith('.json') ? PRD_DIR : PLANS_DIR); }
+      catch { return jsonReply(res, 400, { error: 'invalid filename' }); }
       const isJson = body.file.endsWith('.json');
       const targetDir = isJson ? PRD_DIR : PLANS_DIR;
       const archivePath = path.join(targetDir, 'archive', body.file);
