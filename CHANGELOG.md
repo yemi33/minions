@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.385 (2026-04-06)
+
+### Features
+-  npm update check — show when newer version is available
+-  show engine version and stale-code warning in dashboard
+
 ## 0.1.383 (2026-04-06)
 
 ### Fixes
