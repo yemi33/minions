@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.408 (2026-04-06)
+
+### Fixes
+-  minions update auto-restarts engine + dashboard after upgrading
+
 ## 0.1.407 (2026-04-06)
 
 ### Features
