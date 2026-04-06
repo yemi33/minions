@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.407 (2026-04-06)
+
+### Features
+- Add missing return in mutateJsonFileLocked metrics callbacks
+- Fix SSE resource leak in handleAgentLiveStream
+- Add projects[0] length guards in engine.js
+
+### Fixes
+-  npm version check uses npm view instead of raw https.get
+-  re-check npm registry every 4 hours via setInterval
+-  PR delete is optimistic — row removed immediately, reverted on failure
+-  PR delete searches all project files, not just the first project
+
 ## 0.1.403 (2026-04-06)
 
 ### Fixes
