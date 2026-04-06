@@ -95,7 +95,7 @@ function _processStatusUpdate(data) {
 
 async function refresh() {
   try {
-    const data = await fetch('/api/status').then(r => r.json());
+    const data = await safeFetch('/api/status').then(r => r.json());
     _processStatusUpdate(data);
   } catch(e) { console.error('refresh error', e); }
 }

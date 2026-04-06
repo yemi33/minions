@@ -115,7 +115,7 @@ async function refreshLiveOutput() {
   if (!currentAgentId || currentTab !== 'live') { stopLivePolling(); return; }
   if (_steerInFlight) return; // Don't clobber immediate steering feedback
   try {
-    const text = await fetch('/api/agent/' + currentAgentId + '/live?tail=16384').then(r => r.text());
+    const text = await safeFetch('/api/agent/' + currentAgentId + '/live?tail=16384').then(r => r.text());
     const el = document.getElementById('live-messages');
     if (el) {
       const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;

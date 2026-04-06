@@ -34,7 +34,7 @@ async function openAgentDetail(id) {
     (agent.resultSummary ? '<div style="margin-top:4px;font-size:11px;color:var(--text);line-height:1.4">' + renderMd(agent.resultSummary.slice(0, 300)) + '</div>' : '');
 
   try {
-    const detail = await fetch('/api/agent/' + id).then(r => r.json());
+    const detail = await safeFetch('/api/agent/' + id).then(r => r.json());
     renderDetailTabs(detail);
     renderDetailContent(detail, currentTab);
   } catch(e) {
