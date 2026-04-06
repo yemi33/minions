@@ -243,7 +243,9 @@ function renderPlaybook(type, vars) {
   // Inject learnings requirement
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
   content += `After completing your task, you MUST write a findings/learnings file to:\n`;
-  content += `\`${MINIONS_DIR}/notes/inbox/${vars.agent_id || 'agent'}-${dateStamp()}.md\`\n\n`;
+  const timeStamp = new Date().toISOString().slice(11, 16).replace(':', '');
+  const inboxSlug = [vars.agent_id || 'agent', vars.task_id || '', dateStamp(), timeStamp].filter(Boolean).join('-');
+  content += `\`${MINIONS_DIR}/notes/inbox/${inboxSlug}.md\`\n\n`;
   content += `Include:\n`;
   content += `- What you learned about the codebase\n`;
   content += `- Patterns you discovered or established\n`;
@@ -342,7 +344,7 @@ function buildSystemPrompt(agentId, config, project) {
   prompt += `1. Use git worktrees — NEVER checkout on main working tree\n`;
   prompt += `2. ${getRepoHostToolRule(project)}\n`;
   prompt += `3. Follow the project conventions in CLAUDE.md if present\n`;
-  prompt += `4. Write learnings to: ${MINIONS_DIR}/notes/inbox/${agentId}-${dateStamp()}.md\n`;
+  prompt += `4. Write learnings to the path specified in the task prompt (format: \`notes/inbox/{agent}-{work-item-id}-{date}-{time}.md\`)\n`;
   prompt += `5. Agent status is managed by the engine via dispatch.json — agents do not need to track their own status\n`;
   prompt += `6. If you discover a repeatable workflow, output it as a \\\`\\\`\\\`skill fenced block — the engine auto-extracts it to ~/.claude/skills/\n\n`;
 
