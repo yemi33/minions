@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.355 (2026-04-06)
+
+### Fixes
+-  pipeline plan stage includes only meeting conclusion, not full transcript
+-  pipeline plans include full meeting content, conclusion playbook requires concrete details
+-  pipeline template regex now matches hyphenated stage IDs
+-  pipeline Continue button shows immediate feedback
+-  skip meeting modal re-render when data unchanged
+
 ## 0.1.350 (2026-04-06)
 
 ### Fixes
