@@ -3482,34 +3482,34 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const projects = shared.getProjects(CONFIG);
       const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
       const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
-      const prs = JSON.parse(safeRead(prPath) || '[]');
 
       // Extract PR number from URL
       const prNumMatch = url.match(/\/pull\/(\d+)|pullrequest\/(\d+)/);
       const prNum = prNumMatch ? (prNumMatch[1] || prNumMatch[2]) : Date.now().toString().slice(-6);
       const prId = 'PR-' + prNum;
 
-      if (prs.some(p => p.id === prId || p.url === url)) return jsonReply(res, 400, { error: 'PR already tracked' });
-
-      // Save minimal entry — the existing pollPrStatus (ado.js/github.js) will
-      // fetch title, author, branch, build status, and review status on next poll cycle (~6 min).
-      // For auto-observe PRs, status='active' makes pollPrStatus process them.
-      // For context-only PRs, status='linked' skips polling but shows in agent context.
-      prs.push({
-        id: prId,
-        title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
-        agent: 'human',
-        branch: '',
-        reviewStatus: autoObserve ? 'pending' : 'none',
-        status: autoObserve ? 'active' : 'linked',
-        created: new Date().toISOString(),
-        url,
-        prdItems: [],
-        _manual: true,
-        _autoObserve: !!autoObserve,
-        _context: context || '',
-      });
-      safeWrite(prPath, prs);
+      // Atomic check-and-insert to prevent duplicates and races with polling loops
+      let duplicate = false;
+      mutateJsonFileLocked(prPath, (prs) => {
+        if (!Array.isArray(prs)) prs = [];
+        if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
+        prs.push({
+          id: prId,
+          title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+          agent: 'human',
+          branch: '',
+          reviewStatus: autoObserve ? 'pending' : 'none',
+          status: autoObserve ? 'active' : 'linked',
+          created: new Date().toISOString(),
+          url,
+          prdItems: [],
+          _manual: true,
+          _autoObserve: !!autoObserve,
+          _context: context || '',
+        });
+        return prs;
+      }, { defaultValue: [] });
+      if (duplicate) return jsonReply(res, 400, { error: 'PR already tracked' });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id: prId });
     }},
