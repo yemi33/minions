@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.356 (2026-04-06)
+
+### Fixes
+-  add MCP startup timeout — kill agent if no output after 3 minutes
+
 ## 0.1.355 (2026-04-06)
 
 ### Fixes
