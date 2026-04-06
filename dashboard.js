@@ -181,15 +181,18 @@ async function checkNpmVersion() {
   try {
     // Use npm view — respects user's .npmrc proxy/registry config (unlike raw https.get)
     const { execFile } = require('child_process');
+    // On Windows, detached processes may not have npm on PATH — use npm.cmd explicitly
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     const version = await new Promise((resolve, reject) => {
-      execFile('npm', ['view', PKG_NAME, 'version'], { timeout: 15000, windowsHide: true }, (err, stdout) => {
+      execFile(npmCmd, ['view', PKG_NAME, 'version'], { timeout: 15000, windowsHide: true, env: process.env }, (err, stdout) => {
         if (err) reject(err); else resolve((stdout || '').trim());
       });
     });
     _npmVersionCache = { latest: version || null, checkedAt: new Date().toISOString() };
     _npmVersionCacheTs = now;
-  } catch {
-    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: 'check failed' };
+  } catch (e) {
+    console.error('[version-check] npm view failed:', e.message?.split('\n')[0]);
+    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: e.message?.split('\n')[0] || 'check failed' };
   }
   return _npmVersionCache;
 }
@@ -338,6 +341,7 @@ function getStatus() {
         stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
         updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+        _npmCheckError: _npmVersionCache?.error || null,
       };
     })(),
     timestamp: new Date().toISOString(),
