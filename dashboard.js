@@ -169,15 +169,17 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
-// ── npm update check (cached for 4 hours) ──────────────────────────────────
+// ── npm update check ────────────────────────────────────────────────────────
 let _npmVersionCache = null;
 let _npmVersionCacheTs = 0;
-const NPM_CHECK_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+function _getVersionCheckInterval() {
+  try { return queries.getConfig()?.engine?.versionCheckInterval || shared.ENGINE_DEFAULTS.versionCheckInterval; } catch { return shared.ENGINE_DEFAULTS.versionCheckInterval; }
+}
 const PKG_NAME = '@yemi33/minions';
 
 async function checkNpmVersion() {
   const now = Date.now();
-  if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
+  if (_npmVersionCache && (now - _npmVersionCacheTs) < _getVersionCheckInterval()) return _npmVersionCache;
   try {
     // Use npm view — respects user's .npmrc proxy/registry config
     // Must use shell:true on Windows because npm is a .cmd batch script
@@ -210,7 +212,7 @@ function _compareVersions(a, b) {
 
 // Kick off first npm check on startup, then re-check every 4 hours
 checkNpmVersion().catch(() => {});
-setInterval(() => checkNpmVersion().catch(() => {}), NPM_CHECK_INTERVAL);
+setInterval(() => checkNpmVersion().catch(() => {}), _getVersionCheckInterval());
 
 // Cache disk version + git commit (only changes on deploy/pull, not per-request)
 let _diskVersionCache = null;

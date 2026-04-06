@@ -440,6 +440,7 @@ const ENGINE_DEFAULTS = {
   maxRetries: 3, // max dispatch retries before marking work item as failed
   pipelineApiRetries: 2, // max attempts for pipeline API calls
   pipelineApiRetryDelay: 2000, // ms delay between pipeline API retries
+  versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
