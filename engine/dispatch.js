@@ -116,7 +116,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
       const maxRetries = ENGINE_DEFAULTS.maxRetries;
       if (retryableFailure && retries < maxRetries) {
         log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}`);
-        lifecycle().updateWorkItemStatus(item.meta, 'pending', '');
+        lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
         // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
         if (item.meta?.dispatchKey) {
           try {
@@ -150,7 +150,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         const finalReason = !retryableFailure
           ? `Non-retryable failure: ${reason || 'Unknown error'}`
           : (reason || `Failed after ${maxRetries} retries`);
-        lifecycle().updateWorkItemStatus(item.meta, 'failed', finalReason);
+        lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.FAILED, finalReason);
         // Alert: find items blocked by this failure and write inbox note
         try {
           const config = getConfig();

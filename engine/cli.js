@@ -158,7 +158,13 @@ const commands = {
         }
 
         if (agentPid) {
-          e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true });
+          // Load sessionId from session.json for steering support
+          let sessionId = null;
+          try {
+            const sj = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
+            if (sj?.sessionId) sessionId = sj.sessionId;
+          } catch {}
+          e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true, sessionId });
           // Sync work item status to dispatched — direct file write to avoid lifecycle lazy init issues
           if (item.meta?.item?.id && item.meta?.project?.localPath) {
             try {

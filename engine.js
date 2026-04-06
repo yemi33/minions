@@ -462,12 +462,14 @@ function spawnAgent(dispatchItem, config) {
   }
 
   // Session resume: reuse last session if same branch and recent enough (< 2 hours)
+  let cachedSessionId = null;
   // Only resume when the context is relevant — same branch means the agent is
   // continuing work on the same PR/feature (e.g., author fixing their own build failure)
   if (!agentId.startsWith('temp-')) {
     try {
       const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
       if (sessionFile?.sessionId && sessionFile.savedAt) {
+        cachedSessionId = sessionFile.sessionId;
         const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
         const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
         if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
@@ -655,10 +657,12 @@ function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
-    completeDispatch(id, code === 0 ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, '', resultSummary);
+    // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
+    const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
+    completeDispatch(id, effectiveResult, '', resultSummary);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
@@ -696,7 +700,7 @@ function spawnAgent(dispatchItem, config) {
   }, 3000);
 
   // Track process — even if PID isn't available yet (async on Windows)
-  activeProcesses.set(id, { proc, agentId, startedAt });
+  activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
 
   // Log PID and persist to registry
   if (proc.pid) {

@@ -179,21 +179,21 @@ async function checkNpmVersion() {
   const now = Date.now();
   if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
   try {
-    const https = require('https');
-    const data = await new Promise((resolve, reject) => {
-      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (resp) => {
-        if (resp.statusCode !== 200) { reject(new Error('npm registry ' + resp.statusCode)); resp.resume(); return; }
-        let body = '';
-        resp.on('data', c => body += c);
-        resp.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
+    // Use npm view — respects user's .npmrc proxy/registry config
+    // Must use shell:true on Windows because npm is a .cmd batch script
+    const { exec: _exec } = require('child_process');
+    const nodeDir = require('path').dirname(process.execPath);
+    const npmPath = require('path').join(nodeDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    const version = await new Promise((resolve, reject) => {
+      _exec(`"${npmPath}" view ${PKG_NAME} version`, { timeout: 15000, windowsHide: true, encoding: 'utf8' }, (err, stdout) => {
+        if (err) reject(err); else resolve((stdout || '').trim());
       });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
     });
-    _npmVersionCache = { latest: data.version || null, checkedAt: new Date().toISOString() };
+    _npmVersionCache = { latest: version || null, checkedAt: new Date().toISOString() };
     _npmVersionCacheTs = now;
-  } catch {
-    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: 'check failed' };
+  } catch (e) {
+    console.error('[version-check] npm view failed:', e.message?.split('\n')[0]);
+    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: e.message?.split('\n')[0] || 'check failed' };
   }
   return _npmVersionCache;
 }
@@ -342,6 +342,7 @@ function getStatus() {
         stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
         updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+        _npmCheckError: _npmVersionCache?.error || null,
       };
     })(),
     timestamp: new Date().toISOString(),

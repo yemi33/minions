@@ -38,7 +38,7 @@ function consolidateInbox(config) {
 
   const items = files.map(f => ({
     name: f,
-    content: safeRead(path.join(INBOX_DIR, f))
+    content: safeRead(path.join(INBOX_DIR, f)) || ''
   }));
 
   const existingNotes = getNotes() || '';
@@ -220,30 +220,33 @@ function consolidateWithLLM(items, existingNotes, files, config) {
       }
 
       const entry = '\n\n---\n\n' + digest;
-      const current = getNotes();
-      let newContent = current + entry;
+      // Wrap read-modify-write in file lock to prevent race with concurrent consolidation or manual edits
+      shared.withFileLock(NOTES_PATH + '.lock', () => {
+        const current = getNotes() || '';
+        let newContent = current + entry;
 
-      if (newContent.length > 50000) {
-        // Truncate on section boundary — scan backward for last \n# before byte limit
-        // Never cut mid-section to preserve readability
-        const limit = 50000;
-        const lastSectionBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
-        if (lastSectionBoundary > 0) {
-          newContent = newContent.slice(0, lastSectionBoundary);
-          log('info', `Pruned notes.md at section boundary (pos ${lastSectionBoundary}) to stay under ${limit} bytes`);
-        } else {
-          // Fallback: use the old section-count approach
-          const sections = newContent.split('\n---\n\n### ');
-          if (sections.length > 10) {
-            const header = sections[0];
-            const recent = sections.slice(-8);
-            newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
-            log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
+        if (newContent.length > 50000) {
+          // Truncate on section boundary — scan backward for last \n# before byte limit
+          // Never cut mid-section to preserve readability
+          const limit = 50000;
+          const lastSectionBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
+          if (lastSectionBoundary > 0) {
+            newContent = newContent.slice(0, lastSectionBoundary);
+            log('info', `Pruned notes.md at section boundary (pos ${lastSectionBoundary}) to stay under ${limit} bytes`);
+          } else {
+            // Fallback: use the old section-count approach
+            const sections = newContent.split('\n---\n\n### ');
+            if (sections.length > 10) {
+              const header = sections[0];
+              const recent = sections.slice(-8);
+              newContent = header + '\n---\n\n### ' + recent.join('\n---\n\n### ');
+              log('info', `Pruned notes.md: removed ${sections.length - 9} old sections`);
+            }
           }
         }
-      }
 
-      safeWrite(NOTES_PATH, newContent);
+        safeWrite(NOTES_PATH, newContent);
+      });
       classifyToKnowledgeBase(items);
       archiveInboxFiles(files);
       log('info', `LLM consolidation complete: ${files.length} notes processed by Haiku`);
@@ -297,10 +300,10 @@ function consolidateWithRegex(items, files) {
       if (!trimmed || sectionPattern.test(trimmed)) continue;
       let insight = null;
       const numMatch = trimmed.match(numberedPattern);
-      if (numMatch) insight = `**${numMatch[1].trim()}**: ${numMatch[2].trim()}`;
+      if (numMatch && numMatch[1] && numMatch[2]) insight = `**${numMatch[1].trim()}**: ${numMatch[2].trim()}`;
       if (!insight) {
         const bulMatch = trimmed.match(bulletPattern);
-        if (bulMatch) insight = `**${bulMatch[1].trim()}**: ${bulMatch[2].trim()}`;
+        if (bulMatch && bulMatch[1] && bulMatch[2]) insight = `**${bulMatch[1].trim()}**: ${bulMatch[2].trim()}`;
       }
       if (!insight && importantKeywords.test(trimmed) && !trimmed.startsWith('#') && trimmed.length > 30 && trimmed.length < 500) {
         insight = trimmed;
@@ -363,19 +366,22 @@ function consolidateWithRegex(items, files) {
   const dupCount = allInsights.length - deduped.length;
   if (dupCount > 0) entry += `_Deduplication: ${dupCount} duplicate(s) removed._\n`;
 
-  const current = getNotes();
-  let newContent = current + entry;
-  if (newContent.length > 50000) {
-    const limit = 50000;
-    const lastBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
-    if (lastBoundary > 0) {
-      newContent = newContent.slice(0, lastBoundary);
-    } else {
-      const sections = newContent.split('\n---\n\n### ');
-      if (sections.length > 10) { newContent = sections[0] + '\n---\n\n### ' + sections.slice(-8).join('\n---\n\n### '); }
+  // Wrap read-modify-write in file lock to prevent race with concurrent consolidation or manual edits
+  shared.withFileLock(NOTES_PATH + '.lock', () => {
+    const current = getNotes() || '';
+    let newContent = current + entry;
+    if (newContent.length > 50000) {
+      const limit = 50000;
+      const lastBoundary = newContent.lastIndexOf('\n---\n\n### ', limit);
+      if (lastBoundary > 0) {
+        newContent = newContent.slice(0, lastBoundary);
+      } else {
+        const sections = newContent.split('\n---\n\n### ');
+        if (sections.length > 10) { newContent = sections[0] + '\n---\n\n### ' + sections.slice(-8).join('\n---\n\n### '); }
+      }
     }
-  }
-  safeWrite(NOTES_PATH, newContent);
+    safeWrite(NOTES_PATH, newContent);
+  });
   classifyToKnowledgeBase(items);
   archiveInboxFiles(files);
   log('info', `Regex fallback: consolidated ${files.length} notes \u2192 ${deduped.length} insights into notes.md`);

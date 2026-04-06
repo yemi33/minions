@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.414 (2026-04-06)
+
+### Fixes
+-  use shell exec for npm view — execFile can't run .cmd on Windows
+
+## 0.1.413 (2026-04-06)
+
+### Fixes
+-  auto-recover timed-out agents that created PRs before dying
+-  resolve npm path from Node binary dir — not PATH
+
+## 0.1.411 (2026-04-06)
+
+### Fixes
+-  steering messages retry instead of being silently dropped
+
+### Other
+- refactor: simplify steering — remove redundant session read, fix TOCTOU
+
+## 0.1.409 (2026-04-06)
+
+### Fixes
+-  npm version check — use npm.cmd on Windows, log errors, expose in API
+
+## 0.1.408 (2026-04-06)
+
+### Fixes
+-  minions update auto-restarts engine + dashboard after upgrading
+
+## 0.1.407 (2026-04-06)
+
+### Features
+- Add missing return in mutateJsonFileLocked metrics callbacks
+- Fix SSE resource leak in handleAgentLiveStream
+- Add projects[0] length guards in engine.js
+
+### Fixes
+-  npm version check uses npm view instead of raw https.get
+-  re-check npm registry every 4 hours via setInterval
+-  PR delete is optimistic — row removed immediately, reverted on failure
+-  PR delete searches all project files, not just the first project
+
 ## 0.1.403 (2026-04-06)
 
 ### Fixes
