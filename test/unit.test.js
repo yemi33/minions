@@ -5500,6 +5500,9 @@ async function main() {
 
     // Dashboard audit: low-severity polish
     await testDashboardAuditLow();
+
+    // Dashboard audit pass 2
+    await testDashboardAuditPass2();
   } finally {
     cleanupTmpDirs();
   }
@@ -7289,6 +7292,54 @@ async function testDashboardAuditLow() {
       'submitWorkItemEdit must accept event parameter');
     assert.ok(src.includes('_submitCreateWorkItem(e)') || src.includes('function _submitCreateWorkItem(e'),
       '_submitCreateWorkItem must accept event parameter');
+  });
+}
+
+// ─── Dashboard Audit Pass 2 ─────────────────────────────────────────────────
+
+async function testDashboardAuditPass2() {
+  console.log('\n── Dashboard Audit Pass 2 ──');
+
+  await test('CC actions use _ccFetch helper with res.ok check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(src.includes('async function _ccFetch'), '_ccFetch helper must exist');
+    assert.ok(src.includes('res.ok'), '_ccFetch must check res.ok');
+    // Count direct fetch calls vs _ccFetch calls in ccExecuteAction
+    const actionFn = src.match(/async function ccExecuteAction[\s\S]*?^}/m);
+    assert.ok(actionFn, 'ccExecuteAction must exist');
+    const directFetches = (actionFn[0].match(/await fetch\('/g) || []).length;
+    // Remaining direct fetches are for cases that already have their own res.ok checks
+    // (schedule, meetings, settings, pipelines, doc-chat) or are read-only (plan content fetch)
+    assert.ok(directFetches <= 10,
+      'ccExecuteAction should use _ccFetch for simple mutations, found ' + directFetches + ' direct fetch calls');
+  });
+
+  await test('_renderPlanModal wraps JSON.parse in try/catch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.match(/function _renderPlanModal[\s\S]*?^}/m);
+    assert.ok(fn, '_renderPlanModal must exist');
+    assert.ok(fn[0].includes('try') && fn[0].includes('JSON.parse'),
+      'JSON.parse must be wrapped in try/catch');
+  });
+
+  await test('charter raw content stored outside DOM element', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'detail-panel.js'), 'utf8');
+    assert.ok(src.includes('_charterRawCache'), 'should use module-level _charterRawCache variable');
+    assert.ok(!src.includes('el._charterRaw'), 'should not use DOM expando el._charterRaw');
+  });
+
+  await test('KB sort handles undefined date', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-kb.js'), 'utf8');
+    assert.ok(src.includes("b.date || ''") || src.includes("(b.date||'')"),
+      'KB sort must handle undefined date with fallback');
+  });
+
+  await test('prdItemEdit searches archived groups as fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fn = src.match(/async function prdItemEdit[\s\S]*?^}/m);
+    assert.ok(fn, 'prdItemEdit must exist');
+    assert.ok(fn[0].includes('_archivedPrdGroups'),
+      'prdItemEdit must search archived groups when item not in _prdItems');
   });
 }
 

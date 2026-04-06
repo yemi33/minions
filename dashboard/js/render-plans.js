@@ -400,7 +400,11 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   let text = '';
 
   if (normalizedFile.endsWith('.json')) {
-    const plan = JSON.parse(raw);
+    let plan;
+    try { plan = JSON.parse(raw); } catch (e) {
+      document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to parse plan JSON: ' + escHtml(e.message) + '</p><pre style="font-size:10px;max-height:200px;overflow:auto">' + escHtml((raw || '').slice(0, 500)) + '</pre>';
+      return;
+    }
     title = plan.plan_summary || normalizedFile;
     const items = (plan.missing_features || []).map((f, i) =>
       (i + 1) + '. [' + f.id + '] ' + f.name + ' (' + (f.estimated_complexity || '?') + ', ' + (f.priority || '?') + ')' +

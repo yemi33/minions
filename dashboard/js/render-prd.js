@@ -550,7 +550,14 @@ function showArchivedPrdDetail(idxOrFile) {
 }
 
 async function prdItemEdit(source, itemId) {
-  const item = _prdItems.find(i => i.source === source && i.id === itemId);
+  let item = _prdItems.find(i => i.source === source && i.id === itemId);
+  // Also search archived groups if not found in active items
+  if (!item && window._archivedPrdGroups) {
+    for (const g of window._archivedPrdGroups) {
+      item = (g.items || []).find(i => i.source === source && i.id === itemId);
+      if (item) break;
+    }
+  }
   if (!item) return;
 
   // Look up work item and dispatch completion info
