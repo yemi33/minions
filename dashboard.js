@@ -959,15 +959,18 @@ const server = http.createServer(async (req, res) => {
       }
       if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
 
-      const items = JSON.parse(safeRead(wiPath) || '[]');
-      const idx = items.findIndex(i => i.id === id);
-      if (idx === -1) return jsonReply(res, 404, { error: 'item not found' });
-
-      const item = items[idx];
-
-      // Remove item from work-items file
-      items.splice(idx, 1);
-      safeWrite(wiPath, items);
+      let item = null;
+      let found = false;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) return items;
+        const idx = items.findIndex(i => i.id === id);
+        if (idx === -1) return items;
+        item = items[idx];
+        items.splice(idx, 1);
+        found = true;
+        return items;
+      }, { defaultValue: [] });
+      if (!found) return jsonReply(res, 404, { error: 'item not found' });
 
       // Clean dispatch entries + kill running agent
       const dispatchRemoved = cleanDispatchEntries(d =>
@@ -1080,6 +1083,7 @@ const server = http.createServer(async (req, res) => {
       if (body.agents) item.agents = body.agents;
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
+      if (body.skipPr) item.skipPr = true;
       items.push(item);
       safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, id });
@@ -3297,6 +3301,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       config.claude = { ...shared.DEFAULT_CLAUDE };
       config.agents = { ...shared.DEFAULT_AGENTS };
       safeWrite(path.join(MINIONS_DIR, 'config.json'), config);
+      reloadConfig();
+      invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }

@@ -484,6 +484,7 @@ function openEditScheduleModal(id) {
   document.getElementById('modal-body').innerHTML = _scheduleFormHtml(sched, true);
   window._editScheduleId = id;
   document.getElementById('modal').classList.add('open');
+  _updateCronPreview();
 }
 
 async function submitSchedule(isEdit) {
