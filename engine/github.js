@@ -216,6 +216,7 @@ async function pollPrStatus(config) {
                 if (!metrics[authorId]) metrics[authorId] = {};
                 if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
                 else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+                return metrics;
               });
             } catch (err) { log('warn', `Metrics update: ${err.message}`); }
           }
