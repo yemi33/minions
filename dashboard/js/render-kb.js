@@ -136,7 +136,8 @@ async function kbSweep() {
     btn.textContent = 'failed';
     showToast('cmd-toast', 'Sweep error: ' + e.message, false);
   }
-  setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, 3000);
+  const isError = btn.textContent === 'failed';
+  setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, isError ? 60000 : 3000);
 }
 
 function openCreateKbModal() {

@@ -1630,8 +1630,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   async function handleKnowledgeSweep(req, res) {
+    // Auto-release stale guard after 5 min (LLM may have hung)
+    if (global._kbSweepInFlight && global._kbSweepStartedAt && Date.now() - global._kbSweepStartedAt > 300000) {
+      console.log('[kb-sweep] Auto-releasing stale guard (>5min)');
+      global._kbSweepInFlight = false;
+    }
     if (global._kbSweepInFlight) return jsonReply(res, 409, { error: 'sweep already in progress' });
     global._kbSweepInFlight = true;
+    global._kbSweepStartedAt = Date.now();
     try {
       const entries = getKnowledgeBaseEntries();
       if (entries.length < 2) return jsonReply(res, 200, { ok: true, summary: 'nothing to sweep (< 2 entries)' });
