@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.421 (2026-04-06)
+
+### Features
+- Dashboard robustness — raw string fixes, plan steering clarity, safeWrite race fix
+- Low-priority cleanup: dedupe regex, consolidate streaming parse, add path validation alignment
+- Fix 6 medium bugs: dispatch pruning, null guards, skill regex, meeting advancement, CLI PID check, pipeline retry
+- Convert remaining lifecycle.js safeWrite calls to mutateJsonFileLocked
+
+### Fixes
+-  CC retry now drains queued messages after success
+-  address review feedback — pipeline.js socket leak and magic numbers
+
 ## 0.1.417 (2026-04-06)
 
 ### Features
