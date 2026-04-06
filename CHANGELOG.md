@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.411 (2026-04-06)
+
+### Fixes
+-  steering messages retry instead of being silently dropped
+
+### Other
+- refactor: simplify steering — remove redundant session read, fix TOCTOU
+
 ## 0.1.409 (2026-04-06)
 
 ### Fixes
