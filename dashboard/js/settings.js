@@ -47,6 +47,7 @@ async function openSettings() {
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
+      settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
@@ -164,6 +165,7 @@ async function saveSettings() {
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
+      versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
     };
 
     const claudePayload = {

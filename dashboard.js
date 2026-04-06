@@ -3358,6 +3358,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
           idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
           meetingRoundTimeout: [60000],
+          versionCheckInterval: [60000],
         };
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
