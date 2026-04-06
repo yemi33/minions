@@ -227,29 +227,18 @@ function executePlanStage(stage, stageState, run, config) {
       const depStage = run.stages[depId];
       if (!depStage) continue;
 
-      // If dependency is a meeting, include full findings + transcript
+      // If dependency is a meeting, include the conclusion (which should be concrete and actionable)
       const meetingId = depStage.artifacts?.meetings?.[0];
       if (meetingId) {
         try {
           const mtgPath = path.join(__dirname, '..', 'meetings', meetingId + '.json');
           const mtg = safeJson(mtgPath);
           if (mtg) {
-            content += `## Meeting: ${mtg.title || depId}\n\n`;
-            content += `**Agenda:** ${mtg.agenda || ''}\n\n`;
-            // Include each agent's findings
-            for (const [agent, finding] of Object.entries(mtg.findings || {})) {
-              const text = typeof finding === 'string' ? finding : finding?.content || '';
-              if (text) content += `### ${agent} — Findings\n\n${text}\n\n`;
-            }
-            // Include debate if present
-            for (const [agent, debate] of Object.entries(mtg.debate || {})) {
-              const text = typeof debate === 'string' ? debate : debate?.content || '';
-              if (text) content += `### ${agent} — Debate\n\n${text}\n\n`;
-            }
-            // Include conclusion
             const conclusion = typeof mtg.conclusion === 'string' ? mtg.conclusion : mtg.conclusion?.content || '';
-            if (conclusion) content += `### Conclusion\n\n${conclusion}\n\n`;
-            continue;
+            if (conclusion) {
+              content += `## Meeting Conclusion: ${mtg.title || depId}\n\n${conclusion}\n\n`;
+              continue;
+            }
           }
         } catch { /* fall through to output-only */ }
       }
