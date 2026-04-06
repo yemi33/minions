@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.440 (2026-04-06)
+
+### Fixes
+-  safeFetch compat — drop AbortSignal.any, avoid opts mutation
+
 ## 0.1.439 (2026-04-06)
 
 ### Features
