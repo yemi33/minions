@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.387 (2026-04-06)
+
+### Fixes
+-  version check — bust require cache, check HTTP status from npm
+
 ## 0.1.386 (2026-04-06)
 
 ### Fixes
