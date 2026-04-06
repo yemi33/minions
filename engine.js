@@ -911,8 +911,10 @@ function autoCleanPrdWorkItems(prdFile, config) {
     const deletedSet = new Set(deletedIds);
     mutateDispatch((dispatch) => {
       const pred = d => deletedSet.has(d.meta?.item?.id) && d.meta?.item?.sourcePlan === prdFile;
-      dispatch.pending = dispatch.pending.filter(d => !pred(d));
-      dispatch.active = dispatch.active.filter(d => !pred(d));
+      for (const queue of ['pending', 'active', 'completed']) {
+        if (!Array.isArray(dispatch[queue])) continue;
+        dispatch[queue] = dispatch[queue].filter(d => !pred(d));
+      }
       return dispatch;
     });
     log('info', `Plan sync: cleared ${deletedIds.length} pending/failed work items for ${prdFile}`);
