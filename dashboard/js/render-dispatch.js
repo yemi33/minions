@@ -37,7 +37,7 @@ function renderEngineStatus(engine) {
 function renderEngineAlert(state, staleMs) {
   const el = document.getElementById('engine-alert');
   if (!el) return;
-  if (state !== 'stale') {
+  if (state !== 'stale' || (window._engineRestartedAt && Date.now() - window._engineRestartedAt < 30000)) {
     el.style.display = 'none';
     el.innerHTML = '';
     return;
@@ -53,7 +53,12 @@ function renderEngineAlert(state, staleMs) {
       const res = await fetch('/api/engine/restart', { method: 'POST' });
       const data = await res.json();
       if (data.ok) {
-        this.textContent = 'Restarted (PID ' + data.pid + ')';
+        this.textContent = '\u2713 Restarted (PID ' + data.pid + ')';
+        this.style.color = 'var(--green)';
+        this.style.borderColor = 'var(--green)';
+        showToast('cmd-toast', 'Engine restarted — PID ' + data.pid, true);
+        // Suppress stale banner for 30s while new engine writes its first heartbeat
+        window._engineRestartedAt = Date.now();
         setTimeout(() => refresh(), 3000);
       } else {
         this.textContent = 'Failed: ' + (data.error || 'unknown');
