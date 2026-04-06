@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.443 (2026-04-06)
+
+### Features
+-  notification dot on Notes & KB sidebar when sweep completes/fails
+
 ## 0.1.441 (2026-04-06)
 
 ### Fixes
