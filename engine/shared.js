@@ -417,6 +417,18 @@ const PLAN_STATUS = {
 };
 const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed' };
 const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout' };
+const PIPELINE_STATUS = {
+  PENDING: 'pending', RUNNING: 'running', COMPLETED: 'completed',
+  FAILED: 'failed', PAUSED: 'paused', WAITING_HUMAN: 'waiting-human',
+};
+const STAGE_TYPE = {
+  TASK: 'task', MEETING: 'meeting', PLAN: 'plan', API: 'api',
+  MERGE_PRS: 'merge-prs', SCHEDULE: 'schedule', WAIT: 'wait', PARALLEL: 'parallel',
+};
+const MEETING_STATUS = {
+  INVESTIGATING: 'investigating', DEBATING: 'debating', CONCLUDING: 'concluding',
+  COMPLETED: 'completed', ARCHIVED: 'archived',
+};
 
 const DEFAULT_AGENTS = {
   ripley:  { name: 'Ripley',  emoji: '\u{1F3D7}\uFE0F',  role: 'Lead / Explorer', skills: ['architecture', 'codebase-exploration', 'design-review'] },
@@ -648,6 +660,7 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
   getProjects,
