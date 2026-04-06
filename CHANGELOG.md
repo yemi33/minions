@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.410 (2026-04-06)
+
+### Fixes
+-  steering messages retry instead of being silently dropped
+
 ## 0.1.409 (2026-04-06)
 
 ### Fixes
