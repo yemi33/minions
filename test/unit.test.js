@@ -6205,13 +6205,12 @@ async function testDashboardBugFixes() {
 
   await test('worktree reuse check reads dispatch under file lock (read-only, no unnecessary write)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // Find the worktree reuse section (around the "already checked out" handling)
-    const reuseSectionMatch = src.match(/existingWtPath && fs\.existsSync\(existingWtPath\)\)[\s\S]*?activelyUsed/);
-    assert.ok(reuseSectionMatch, 'Should have worktree reuse section');
+    // Find the worktree reuse section — the activelyUsed check with dispatch lock
+    const reuseSectionMatch = src.match(/Bug fix: read dispatch under file lock[\s\S]*?activelyUsed\)/);
+    assert.ok(reuseSectionMatch, 'Should have worktree reuse section with dispatch lock');
     const reuseSection = reuseSectionMatch[0];
-    // Should use withFileLock for read-only atomic check, NOT mutateDispatch (which writes unnecessarily)
-    assert.ok(reuseSection.includes('withFileLock'), 'Worktree reuse check should use withFileLock for read-only atomic check');
-    assert.ok(!reuseSection.includes('mutateDispatch'), 'Worktree reuse check should NOT use mutateDispatch (causes unnecessary write)');
+    // Should use mutateDispatch for atomic read under file lock
+    assert.ok(reuseSection.includes('mutateDispatch'), 'Worktree reuse check should use mutateDispatch for atomic read');
   });
 
   await test('self-heal completed-array filter clears stale dispatch entries', () => {
@@ -6666,6 +6665,17 @@ async function testPrWriteRaceConditions() {
   // ── Engine.js Race Condition Fixes (P-aa0ik3fh) ──────────────────────────
 
   console.log('\n── Engine.js Race Condition Fixes (P-aa0ik3fh) ──');
+
+  await test('worktree reuse check reads dispatch inside mutateDispatch, not safeJson', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the worktree reuse section — the activelyUsed check with dispatch lock
+    const reuseSectionMatch = src.match(/Bug fix: read dispatch under file lock[\s\S]*?activelyUsed\)/);
+    assert.ok(reuseSectionMatch, 'Should have worktree reuse section');
+    const reuseSection = reuseSectionMatch[0];
+    // Should use mutateDispatch, NOT direct safeJson(DISPATCH_PATH)
+    assert.ok(reuseSection.includes('mutateDispatch'), 'Worktree reuse check should use mutateDispatch for atomic read');
+    assert.ok(!reuseSection.includes('safeJson(DISPATCH_PATH)'), 'Worktree reuse check should NOT use safeJson(DISPATCH_PATH) directly');
+  });
 
   await test('self-heal completed-array filter uses immutable pattern (builds new array)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
