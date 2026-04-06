@@ -161,6 +161,47 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+// ── npm update check (cached for 4 hours) ──────────────────────────────────
+let _npmVersionCache = null;
+let _npmVersionCacheTs = 0;
+const NPM_CHECK_INTERVAL = 4 * 60 * 60 * 1000; // 4 hours
+const PKG_NAME = '@yemi33/minions';
+
+async function checkNpmVersion() {
+  const now = Date.now();
+  if (_npmVersionCache && (now - _npmVersionCacheTs) < NPM_CHECK_INTERVAL) return _npmVersionCache;
+  try {
+    const https = require('https');
+    const data = await new Promise((resolve, reject) => {
+      const req = https.get(`https://registry.npmjs.org/${PKG_NAME}/latest`, { timeout: 5000 }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { reject(new Error('bad json')); } });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    });
+    _npmVersionCache = { latest: data.version || null, checkedAt: new Date().toISOString() };
+    _npmVersionCacheTs = now;
+  } catch {
+    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: 'check failed' };
+  }
+  return _npmVersionCache;
+}
+
+function _compareVersions(a, b) {
+  const pa = (a || '').split('.').map(Number);
+  const pb = (b || '').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+  }
+  return 0;
+}
+
+// Kick off first npm check on startup (non-blocking)
+checkNpmVersion().catch(() => {});
+
 function getMcpServers() {
   try {
     const home = os.homedir();
@@ -261,6 +302,8 @@ function getStatus() {
         diskCommit,
         stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
                !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit),
+        latest: _npmVersionCache?.latest || null,
+        updateAvailable: !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
       };
     })(),
     timestamp: new Date().toISOString(),
@@ -3367,6 +3410,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   const ROUTES = [
     // Routes endpoint (self-describing API)
+    { method: 'GET', path: '/api/version', desc: 'Current + latest version info with update check', handler: async (req, res) => {
+      const npm = await checkNpmVersion();
+      let diskVersion = null;
+      try { diskVersion = require('./package.json').version; } catch {}
+      const engine = getEngineState();
+      return jsonReply(res, 200, {
+        current: diskVersion,
+        running: engine.codeVersion || null,
+        latest: npm.latest,
+        updateAvailable: !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
+        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion),
+        checkedAt: npm.checkedAt,
+      });
+    }},
     { method: 'GET', path: '/api/routes', desc: 'List all available API endpoints', handler: (req, res) => {
       const list = ROUTES.map(r => ({
         method: r.method,

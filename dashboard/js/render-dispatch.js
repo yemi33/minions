@@ -215,19 +215,24 @@ function renderVersionBanner(version) {
   if (!el) return;
   if (!version) { el.style.display = 'none'; return; }
 
-  // Show version in footer area
-  const label = version.running ? 'v' + version.running : '';
+  const v = version.running || version.disk || '?';
   const commitLabel = version.runningCommit ? ' (' + version.runningCommit + ')' : '';
-  el.textContent = label + commitLabel;
-  el.title = 'Engine: v' + (version.running || '?') + ' ' + (version.runningCommit || '') +
-    '\nDisk: v' + (version.disk || '?') + ' ' + (version.diskCommit || '');
 
   if (version.stale) {
+    // Engine running old code — needs restart
     el.style.cssText = 'font-size:9px;padding:2px 8px;background:rgba(210,153,34,0.15);border:1px solid rgba(210,153,34,0.3);border-radius:4px;color:var(--yellow);cursor:help';
-    el.textContent = '\u26A0 Engine running v' + (version.running || '?') + ' (' + (version.runningCommit || '?') + ') — disk has v' + (version.disk || '?') + ' (' + (version.diskCommit || '?') + '). Restart to apply.';
+    el.textContent = '\u26A0 Engine running v' + (version.running || '?') + ' — disk has v' + (version.disk || '?') + '. Restart to apply.';
     el.title = 'The engine process is running older code than what is on disk. Run: minions restart';
+  } else if (version.updateAvailable) {
+    // New version on npm
+    el.style.cssText = 'font-size:9px;padding:2px 8px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:4px;color:var(--green);cursor:help';
+    el.textContent = 'v' + v + commitLabel + ' — v' + version.latest + ' available. Run: npm update -g @yemi33/minions';
+    el.title = 'A newer version is available on npm';
   } else {
+    // Up to date
     el.style.cssText = 'font-size:9px;color:var(--muted)';
+    el.textContent = 'v' + v + commitLabel;
+    el.title = 'Minions v' + v + (version.latest ? ' (latest)' : '');
   }
 }
 
