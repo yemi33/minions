@@ -73,6 +73,12 @@ function safeJson(p) {
   }
 }
 
+/** Null-safe safeJson wrapper — returns {} when file is missing/corrupt. */
+function safeJsonObj(p) { return safeJson(p) || {}; }
+
+/** Null-safe safeJson wrapper — returns [] when file is missing/corrupt. */
+function safeJsonArr(p) { return safeJson(p) || []; }
+
 /**
  * Monotonic counter for generating unique temp file names within this process.
  * Assumes single-thread execution (no worker_threads). If worker_threads are
@@ -623,7 +629,7 @@ module.exports = {
   log,
   safeRead,
   safeReadDir,
-  safeJson,
+  safeJson, safeJsonObj, safeJsonArr,
   safeWrite,
   safeUnlink,
   withFileLock,
