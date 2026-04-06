@@ -344,8 +344,14 @@ function ccRetryLast() {
   const el = document.getElementById('cc-messages');
   if (el?.lastElementChild) el.lastElementChild.remove();
   _ccMessages = _ccMessages.slice(0, -1); // remove error from history
-  // Resend
-  _ccDoSend(text.trim());
+  // Resend, then drain queue
+  _ccDoSend(text.trim()).then(async () => {
+    while (_ccQueue.length > 0) {
+      const next = _ccQueue.shift();
+      _renderQueueIndicator();
+      await _ccDoSend(next);
+    }
+  });
 }
 
 async function _ccFetch(url, body) {
