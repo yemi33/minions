@@ -5503,6 +5503,9 @@ async function main() {
 
     // Dashboard audit pass 2
     await testDashboardAuditPass2();
+
+    // Engine audit: critical bugs
+    await testEngineAuditCritical();
   } finally {
     cleanupTmpDirs();
   }
@@ -6368,9 +6371,9 @@ async function testAuxModuleBugFixes() {
   });
 
   // Bug #35: scheduler treats undefined/null enabled as disabled
-  await test('scheduler.js: undefined enabled skips schedule', () => {
+  await test('scheduler.js: falsy enabled skips schedule', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
-    assert.ok(src.includes('enabled !== true'), 'Should use strict !== true check');
+    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check to match dashboard UI behavior');
   });
 
   await test('scheduler discoverScheduledWork skips undefined-enabled schedules', () => {
@@ -6380,7 +6383,7 @@ async function testAuxModuleBugFixes() {
     // We can't easily override the path, so test the source logic instead
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
     // Verify the line that checks enabled
-    assert.ok(src.includes('sched.enabled !== true'), 'Should require explicit true');
+    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check — matches dashboard UI enabled badge');
     // A schedule with enabled:undefined should be skipped
     // A schedule with enabled:null should be skipped
     // A schedule with enabled:false should be skipped
@@ -7385,4 +7388,43 @@ async function testDashboardAuditPass2() {
   });
 }
 
+// ─── Engine Audit: Critical Bugs ────────────────────────────────────────────
+
+async function testEngineAuditCritical() {
+  console.log('\n── Engine Audit: Critical Bugs ──');
+
+  await test('executeParallelStage is declared async', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('async function executeParallelStage'),
+      'executeParallelStage must be async to use await');
+  });
+
+  await test('discoverPipelineWork is declared async', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('async function discoverPipelineWork'),
+      'discoverPipelineWork must be async to use await');
+  });
+
+  await test('engine.js awaits discoverPipelineWork', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('await discoverPipelineWork'),
+      'engine tick must await discoverPipelineWork since it is async');
+  });
+
+  await test('handlePostMerge guards against null project', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);
+    assert.ok(fn, 'handlePostMerge must exist');
+    assert.ok(fn[0].includes('pr.branch && project') || fn[0].includes('project &&'),
+      'handlePostMerge must guard project before accessing project.localPath');
+  });
+
+  await test('scheduler enabled check uses truthy, not strict equality', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
+    assert.ok(!src.includes('sched.enabled !== true'),
+      'scheduler must not use strict !== true check — schedules with enabled:undefined would silently never fire');
+    assert.ok(src.includes('!sched.enabled'),
+      'scheduler should use truthy check to match dashboard UI behavior');
+  });
+}
 main().catch(e => { console.error(e); process.exit(1); });
