@@ -1458,6 +1458,13 @@ const server = http.createServer(async (req, res) => {
     const agentId = match[1];
     const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
     const liveLogPath = path.join(agentDir, 'live-output.log');
+    let _cleanedUp = false;
+
+    // Safe res.write wrapper — guards against writes after cleanup and EPIPE/ERR_STREAM_DESTROYED
+    const safeWrite = (data) => {
+      if (_cleanedUp) return;
+      try { res.write(data); } catch { /* EPIPE or ERR_STREAM_DESTROYED — client gone */ }
+    };
 
     // Check if agent directory exists — avoid dangling watchers on nonexistent paths
     if (!fs.existsSync(agentDir)) {
@@ -1479,13 +1486,14 @@ const server = http.createServer(async (req, res) => {
     try {
       const content = fs.readFileSync(liveLogPath, 'utf8');
       if (content.length > 0) {
-        res.write(`data: ${JSON.stringify(content)}\n\n`);
+        safeWrite(`data: ${JSON.stringify(content)}\n\n`);
         offset = Buffer.byteLength(content, 'utf8');
       }
     } catch { /* optional */ }
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
+      if (_cleanedUp) return;
       try {
         const stat = fs.statSync(liveLogPath);
         if (stat.size > offset) {
@@ -1495,29 +1503,32 @@ const server = http.createServer(async (req, res) => {
           fs.closeSync(fd);
           offset = stat.size;
           const chunk = buf.toString('utf8');
-          if (chunk) res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+          if (chunk) safeWrite(`data: ${JSON.stringify(chunk)}\n\n`);
         }
       } catch { /* optional */ }
     };
 
     fs.watchFile(liveLogPath, { interval: 500 }, watcher);
 
-    // Cleanup helper to prevent handle leaks
+    // Idempotent cleanup helper to prevent handle leaks
     const cleanup = () => {
+      if (_cleanedUp) return;
+      _cleanedUp = true;
       try { clearInterval(doneCheck); } catch { /* optional */ }
       try { fs.unwatchFile(liveLogPath, watcher); } catch { /* optional */ }
     };
 
     // Check if agent is still active (poll every 5s)
     const doneCheck = setInterval(() => {
+      if (_cleanedUp) return;
       try {
         const dispatch = getDispatchQueue();
         const isActive = (dispatch.active || []).some(d => d.agent === agentId);
         if (!isActive) {
           watcher(); // flush final content
-          res.write(`event: done\ndata: complete\n\n`);
+          safeWrite(`event: done\ndata: complete\n\n`);
           cleanup();
-          res.end();
+          try { res.end(); } catch { /* optional */ }
         }
       } catch (e) {
         cleanup();
