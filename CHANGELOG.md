@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.429 (2026-04-06)
+
+### Features
+-  version check interval on settings page
+-  configurable version check interval, default 1 hour
+- Dashboard robustness — raw string fixes, plan steering clarity, safeWrite race fix
+- Low-priority cleanup: dedupe regex, consolidate streaming parse, add path validation alignment
+- Fix 6 medium bugs: dispatch pruning, null guards, skill regex, meeting advancement, CLI PID check, pipeline retry
+- Convert remaining lifecycle.js safeWrite calls to mutateJsonFileLocked
+
+### Fixes
+-  deduplicate PR entries during poll write-back
+-  agent inbox notes include work item ID and time in filename
+-  Notes & KB sidebar notifies on inbox changes and notes.md edits
+-  live output no longer clobbered by steering send
+-  plan-to-prd playbook — don't include verify item, engine adds it
+-  steering messages right-aligned with immediate feedback
+-  CC retry now drains queued messages after success
+-  address review feedback — pipeline.js socket leak and magic numbers
+
 ## 0.1.417 (2026-04-06)
 
 ### Features
