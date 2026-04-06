@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.364 (2026-04-06)
+
+### Fixes
+-  critical dashboard bugs — plan pause, PRD tautology, inbox null guard (#210)
+
 ## 0.1.363 (2026-04-06)
 
 ### Features
