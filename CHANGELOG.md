@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.441 (2026-04-06)
+
+### Fixes
+-  auto-reload page when dashboard restarts
+-  safeFetch compat — drop AbortSignal.any, avoid opts mutation
+
 ## 0.1.439 (2026-04-06)
 
 ### Features
