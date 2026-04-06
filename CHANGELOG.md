@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.380 (2026-04-06)
+
+### Fixes
+-  clear failReason and noPr on no-PR retry reset
+-  PR duplicate race condition — convert safeWrite to mutateJsonFileLocked (#240)
+
+### Other
+- [E2E] Fix review re-dispatch loop, dashboard write races, crash bugs, and failing tests (#232)
+
 ## 0.1.378 (2026-04-06)
 
 ### Features
