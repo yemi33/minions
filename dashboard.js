@@ -14,7 +14,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -1206,7 +1206,7 @@ const server = http.createServer(async (req, res) => {
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
       // Pre-check: verify item exists before taking the lock
-      const preCheck = safeJson(planPath);
+      const preCheck = safeJsonObj(planPath);
       const preItem = (preCheck.missing_features || []).find(f => f.id === body.itemId);
       if (!preItem) return jsonReply(res, 404, { error: 'item not found in plan' });
 
@@ -1258,7 +1258,7 @@ const server = http.createServer(async (req, res) => {
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJson(planPath);
+      const plan = safeJsonObj(planPath);
       const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
       if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
 
@@ -2048,7 +2048,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (!body.source) return jsonReply(res, 400, { error: 'source required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJson(planPath);
+      const plan = safeJsonObj(planPath);
       const planItems = plan.missing_features || [];
 
       let reset = 0, kept = 0, newCount = 0;
@@ -2127,7 +2127,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
       for (const wiPath of wiPaths) {
         try {
-          const items = safeJson(wiPath);
+          const items = safeJsonArr(wiPath);
           const filtered = items.filter(w => w.sourcePlan !== body.file);
           if (filtered.length < items.length) {
             cleaned += items.length - filtered.length;
@@ -2834,7 +2834,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!fs.existsSync(target)) return jsonReply(res, 400, { error: 'Directory not found: ' + target });
 
       const configPath = path.join(MINIONS_DIR, 'config.json');
-      const config = safeJson(configPath);
+      const config = safeJsonObj(configPath);
       if (!config.projects) config.projects = [];
 
       // Check if already linked

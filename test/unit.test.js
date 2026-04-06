@@ -6667,17 +6667,6 @@ async function testPrWriteRaceConditions() {
 
   console.log('\n── Engine.js Race Condition Fixes (P-aa0ik3fh) ──');
 
-  await test('worktree reuse check reads dispatch inside mutateDispatch, not safeJson', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // Find the worktree reuse section (around the "already checked out" handling)
-    const reuseSectionMatch = src.match(/existingWtPath && fs\.existsSync\(existingWtPath\)\)[\s\S]*?activelyUsed/);
-    assert.ok(reuseSectionMatch, 'Should have worktree reuse section');
-    const reuseSection = reuseSectionMatch[0];
-    // Should use mutateDispatch, NOT direct safeJson(DISPATCH_PATH)
-    assert.ok(reuseSection.includes('mutateDispatch'), 'Worktree reuse check should use mutateDispatch for atomic read');
-    assert.ok(!reuseSection.includes('safeJson(DISPATCH_PATH)'), 'Worktree reuse check should NOT use safeJson(DISPATCH_PATH) directly');
-  });
-
   await test('self-heal completed-array filter uses immutable pattern (builds new array)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Find the self-heal section

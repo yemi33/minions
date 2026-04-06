@@ -25,7 +25,7 @@ async function openSettings() {
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Engine</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Tick Interval', 'set-tickInterval', e.tickInterval || 60000, 'ms', 'How often the engine runs discovery + dispatch') +
-      settingsField('Max Concurrent Agents', 'set-maxConcurrent', e.maxConcurrent || 3, '', 'Max agents working simultaneously') +
+      settingsField('Max Concurrent Agents', 'set-maxConcurrent', e.maxConcurrent || 5, '', 'Max agents working simultaneously') +
       settingsField('Consolidation Threshold', 'set-inboxConsolidateThreshold', e.inboxConsolidateThreshold || 5, 'notes', 'Inbox notes before auto-consolidation') +
       settingsField('Agent Timeout', 'set-agentTimeout', e.agentTimeout || 18000000, 'ms', 'Kill agent after this duration') +
       settingsField('Max Turns', 'set-maxTurns', e.maxTurns || 100, '', 'Claude CLI --max-turns per agent') +

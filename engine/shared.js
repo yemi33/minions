@@ -73,6 +73,12 @@ function safeJson(p) {
   }
 }
 
+/** Null-safe safeJson wrapper — returns {} when file is missing/corrupt. */
+function safeJsonObj(p) { return safeJson(p) || {}; }
+
+/** Null-safe safeJson wrapper — returns [] when file is missing/corrupt. */
+function safeJsonArr(p) { return safeJson(p) || []; }
+
 /**
  * Monotonic counter for generating unique temp file names within this process.
  * Assumes single-thread execution (no worker_threads). If worker_threads are
@@ -422,7 +428,7 @@ const DEFAULT_AGENTS = {
 
 const DEFAULT_CLAUDE = {
   binary: 'claude',
-  outputFormat: 'json',
+  outputFormat: 'stream-json',
   allowedTools: 'Edit,Write,Read,Bash,Glob,Grep,Agent,WebFetch,WebSearch',
 };
 
@@ -623,7 +629,7 @@ module.exports = {
   log,
   safeRead,
   safeReadDir,
-  safeJson,
+  safeJson, safeJsonObj, safeJsonArr,
   safeWrite,
   safeUnlink,
   withFileLock,
