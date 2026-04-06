@@ -17,6 +17,14 @@ Branch: `{{pr_branch}}`
 
 {{review_note}}
 
+## Health Check
+
+Before starting work, run `git status` and verify the worktree is clean and on the expected branch (`{{pr_branch}}`). If the worktree is dirty or on the wrong branch, report the issue and stop.
+
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks. For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
+
 ## How to Fix
 
 1. You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.

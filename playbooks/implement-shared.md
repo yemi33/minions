@@ -45,6 +45,14 @@ git push origin {{branch_name}}
 - Remove the worktree — the next plan item needs it
 - Create a new worktree — one already exists at `{{worktree_path}}`
 
+## Health Check
+
+Before starting work, run `git status` and verify the worktree is clean and on the expected branch (`{{branch_name}}`). If the worktree is dirty or on the wrong branch, report the issue and stop.
+
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks. For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
+
 ## Instructions
 
 1. Read relevant source code and reference implementations before writing anything

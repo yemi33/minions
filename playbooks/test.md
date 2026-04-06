@@ -26,6 +26,10 @@ This is a **test/build/run task**. Your goal is to build, run, test, or verify s
 5. **Test** if the task asks for it (e.g., `yarn test`, `pytest`, etc.)
 6. **Report results** — what worked, what failed, build output, test results, localhost URL if running
 
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks. For building, testing, and reporting results, work directly — do not spawn subagents.
+
 ## Rules
 
 - **Do NOT create pull requests** — this is a test/verification task only

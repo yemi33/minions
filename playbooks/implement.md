@@ -30,6 +30,14 @@ If this feature spans multiple projects, you may need to:
 3. If changes are needed in other projects, create separate worktrees and PRs for each
 4. Note cross-repo dependencies in PR descriptions (e.g., "Requires office-bohemia PR #123")
 
+## Health Check
+
+Before starting work, run `git status` and verify the worktree is clean and on the expected branch. If the worktree is dirty or on the wrong branch, report the issue and stop.
+
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks (e.g., editing files in unrelated modules simultaneously). For sequential work, single-file edits, searches, and file reads, work directly — do not spawn subagents.
+
 ## Instructions
 
 1. Read relevant source code and reference implementations before writing anything

@@ -209,6 +209,10 @@ For each project worktree:
 
 4. Note the E2E PR URLs in the testing guide.
 
+## Working Style
+
+Use subagents only for genuinely parallel, independent tasks (e.g., building separate project worktrees simultaneously). For sequential steps like reading docs, running tests, and writing the report, work directly — do not spawn subagents.
+
 ## Rules
 
 - **Read the project docs first** — never assume a build system, language, or framework
