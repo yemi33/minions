@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.446 (2026-04-06)
+
+### Features
+-  notification dot on Notes & KB sidebar when sweep completes/fails
+
+### Fixes
+-  pipeline agent is optional — set only when user explicitly requests
+-  remove hardcoded agent assignments from all pipeline JSONs
+-  pipeline tasks don't hardcode agent — any available agent picks up work
+
 ## 0.1.441 (2026-04-06)
 
 ### Fixes
