@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.382 (2026-04-06)
+
+### Fixes
+-  branch regex missed W- and PL- work item IDs — wrong PR agent attribution
+
 ## 0.1.381 (2026-04-06)
 
 ### Fixes
