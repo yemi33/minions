@@ -399,6 +399,11 @@ async function reconcilePrs(config) {
         continue;
       }
 
+      // Only auto-track PRs that are linked to a minions work item.
+      // PRs on feat/ or work/ branches without a work item ID (P-xxx, W-xxx, PL-xxx)
+      // are human-authored and should not be auto-tracked or auto-reviewed.
+      if (!confirmedItemId) continue;
+
       const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
@@ -409,12 +414,12 @@ async function reconcilePrs(config) {
         status: 'active',
         created: adoPr.creationDate || ts(),
         url: prUrl,
-        prdItems: confirmedItemId ? [confirmedItemId] : [],
+        prdItems: [confirmedItemId],
       });
-      if (confirmedItemId) addPrLink(prId, confirmedItemId);
+      addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
-      log('info', `PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
+      log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
     }
 
     // Backfill prdItems from pr-links for any PR with empty array

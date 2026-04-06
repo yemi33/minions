@@ -396,6 +396,9 @@ async function reconcilePrs(config) {
         continue;
       }
 
+      // Only auto-track PRs linked to a minions work item — skip human-authored PRs
+      if (!confirmedItemId) continue;
+
       const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
 
       existingPrs.push({
@@ -407,13 +410,13 @@ async function reconcilePrs(config) {
         status: 'active',
         created: ghPr.created_at || ts(),
         url: prUrl,
-        prdItems: confirmedItemId ? [confirmedItemId] : [],
+        prdItems: [confirmedItemId],
       });
-      if (confirmedItemId) addPrLink(prId, confirmedItemId);
+      addPrLink(prId, confirmedItemId);
       existingIds.add(prId);
       projectAdded++;
 
-      log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}${confirmedItemId ? ', linked to ' + confirmedItemId : ''}) to ${project.name}`);
+      log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
