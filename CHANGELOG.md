@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.389 (2026-04-06)
+
+### Features
+- Fix spawn-agent.js direct proc.kill() — use cross-platform helpers (#243)
+
 ## 0.1.388 (2026-04-06)
 
 ### Fixes
