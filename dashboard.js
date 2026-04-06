@@ -208,8 +208,9 @@ function _compareVersions(a, b) {
   return 0;
 }
 
-// Kick off first npm check on startup (non-blocking)
+// Kick off first npm check on startup, then re-check every 4 hours
 checkNpmVersion().catch(() => {});
+setInterval(() => checkNpmVersion().catch(() => {}), NPM_CHECK_INTERVAL);
 
 // Cache disk version + git commit (only changes on deploy/pull, not per-request)
 let _diskVersionCache = null;
