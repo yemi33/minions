@@ -202,6 +202,22 @@ function _compareVersions(a, b) {
 // Kick off first npm check on startup (non-blocking)
 checkNpmVersion().catch(() => {});
 
+// Cache disk version + git commit (only changes on deploy/pull, not per-request)
+let _diskVersionCache = null;
+let _diskVersionCacheTs = 0;
+const DISK_VERSION_TTL = 60000; // re-check every 60s
+function getDiskVersion() {
+  const now = Date.now();
+  if (_diskVersionCache && (now - _diskVersionCacheTs) < DISK_VERSION_TTL) return _diskVersionCache;
+  let diskVersion = null;
+  try { diskVersion = require('./package.json').version; } catch {}
+  let diskCommit = null;
+  try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+  _diskVersionCache = { diskVersion, diskCommit };
+  _diskVersionCacheTs = now;
+  return _diskVersionCache;
+}
+
 function getMcpServers() {
   try {
     const home = os.homedir();
@@ -291,10 +307,7 @@ function getStatus() {
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
     version: (() => {
       const engine = getEngineState();
-      let diskVersion = null;
-      try { diskVersion = require('./package.json').version; } catch {}
-      let diskCommit = null;
-      try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+      const { diskVersion, diskCommit } = getDiskVersion();
       return {
         running: engine.codeVersion || null,
         runningCommit: engine.codeCommit || null,
@@ -3412,15 +3425,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Routes endpoint (self-describing API)
     { method: 'GET', path: '/api/version', desc: 'Current + latest version info with update check', handler: async (req, res) => {
       const npm = await checkNpmVersion();
-      let diskVersion = null;
-      try { diskVersion = require('./package.json').version; } catch {}
+      const { diskVersion, diskCommit } = getDiskVersion();
       const engine = getEngineState();
       return jsonReply(res, 200, {
         current: diskVersion,
+        currentCommit: diskCommit,
         running: engine.codeVersion || null,
+        runningCommit: engine.codeCommit || null,
         latest: npm.latest,
         updateAvailable: !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
-        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion),
+        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+               !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit),
         checkedAt: npm.checkedAt,
       });
     }},
