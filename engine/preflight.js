@@ -27,7 +27,13 @@ function findClaudeBinary() {
     path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
     // fnm / volta — sibling to the node binary
     path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
-  ].filter(Boolean);
+  ].filter(p => {
+    if (!p) {
+      if (process.env.MINIONS_DEBUG) console.log('[preflight] Dropped empty CLI search path entry');
+      return false;
+    }
+    return true;
+  });
   for (const p of searchPaths) {
     try { if (fs.existsSync(p)) return p; } catch {}
   }

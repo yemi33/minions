@@ -160,25 +160,12 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
               if (block.type === 'text' && block.text && block.text !== lastTextSent) {
                 lastTextSent = block.text;
                 onChunk(block.text);
-              }
-            }
-          }
-        } catch { /* incomplete JSON or non-JSON line */ }
-      }
-      // Also emit tool_use events so the frontend can show "Using tool: Read..."
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('{')) continue;
-        try {
-          const obj = JSON.parse(trimmed);
-          if (obj.type === 'assistant' && obj.message?.content) {
-            for (const block of obj.message.content) {
-              if (block.type === 'tool_use' && block.name && onToolUse) {
+              } else if (block.type === 'tool_use' && block.name && onToolUse) {
                 onToolUse(block.name, block.input);
               }
             }
           }
-        } catch {}
+        } catch { /* incomplete JSON or non-JSON line */ }
       }
     });
     proc.stderr.on('data', d => { stderr += d.toString(); });
