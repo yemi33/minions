@@ -156,7 +156,7 @@ async function executeStage(stage, run, pipeline, config) {
 
 function executeTaskStage(stage, stageState, run, config) {
   // Create work item(s) for the task
-  const items = stage.items || [{ title: stage.title, description: stage.description || '', type: stage.taskType || 'explore', agent: stage.agent }];
+  const items = stage.items || [{ title: stage.title, description: stage.description || '', type: stage.taskType || 'explore' }];
   const count = stage.count || items.length;
   const wiPath = path.join(__dirname, '..', 'work-items.json');
   const workItems = safeJson(wiPath) || [];
@@ -172,7 +172,7 @@ function executeTaskStage(stage, stageState, run, config) {
       description: item.description || stage.description || '',
       type: item.type || stage.taskType || 'explore',
       priority: item.priority || stage.priority || 'medium',
-      agent: item.agent || stage.agent || '',
+      // No hardcoded agent — let engine routing assign any available agent
       status: WI_STATUS.PENDING,
       created: ts(),
       createdBy: 'pipeline:' + run.pipelineId,
