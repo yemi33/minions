@@ -253,13 +253,21 @@ async function _togglePipelineEnabled(id, enabled, btn) {
 }
 
 async function _continuePipeline(id, stageId, btn) {
-  if (btn) { btn.textContent = 'Continuing...'; btn.style.pointerEvents = 'none'; }
+  if (btn) { btn.textContent = 'Continuing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     var res = await fetch('/api/pipelines/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, stageId: stageId }) });
-    if (res.ok) { showToast('cmd-toast', 'Stage continued', true); openPipelineDetail(id); }
-    else { var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
-  if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; }
+    if (res.ok) {
+      showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
+      if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
+      setTimeout(function() { openPipelineDetail(id); }, 2000);
+    } else {
+      var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown'));
+      if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+    if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
+  }
 }
 
 async function _deletePipelineConfirm(id) {
