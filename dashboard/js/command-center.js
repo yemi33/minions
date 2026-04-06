@@ -19,8 +19,10 @@ function ccAbort() {
 function toggleCommandCenter() {
   _ccOpen = !_ccOpen;
   const drawer = document.getElementById('cc-drawer');
+  const overlay = document.getElementById('cc-overlay');
   if (_ccOpen) ccApplySavedWidth();
   drawer.style.display = _ccOpen ? 'flex' : 'none';
+  if (overlay) overlay.style.display = _ccOpen ? 'block' : 'none';
   if (_ccOpen) {
     clearNotifBadge(document.getElementById('cc-toggle-btn'));
     document.getElementById('cc-input').focus();
