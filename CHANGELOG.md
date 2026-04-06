@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.403 (2026-04-06)
+
+### Fixes
+-  version check works on pure npm installs without package.json in ~/.minions
+
 ## 0.1.402 (2026-04-06)
 
 ### Features
