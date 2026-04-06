@@ -223,7 +223,14 @@ function openMeetingDetail(id) {
         }
         fetch('/api/meetings/' + encodeURIComponent(id))
           .then(r => r.json())
-          .then(d => { if (d.meeting && _meetingPollId === id) _renderMeetingDetail(d.meeting); })
+          .then(d => {
+            if (d.meeting && _meetingPollId === id) {
+              const body = document.getElementById('modal-body');
+              const savedScroll = body ? body.scrollTop : 0;
+              _renderMeetingDetail(d.meeting);
+              if (body) body.scrollTop = savedScroll;
+            }
+          })
           .catch(function() {});
       }, 3000);
     })
