@@ -1827,7 +1827,8 @@ function discoverCentralWorkItems(config) {
         const fanKey = `${key}-${agent.id}`;
         if (isAlreadyDispatched(fanKey)) continue;
 
-        const ap = assignedProject || projects[0];
+        const ap = assignedProject || (projects.length > 0 ? projects[0] : null);
+        if (!ap) { log('warn', `Fan-out: skipping ${fanKey} — no projects configured`); continue; }
         const vars = {
           ...buildBaseVars(agent.id, config, ap),
           item_id: item.id,
@@ -1897,7 +1898,8 @@ function discoverCentralWorkItems(config) {
 
       const agentName = config.agents[agentId]?.name || agentId;
       const agentRole = config.agents[agentId]?.role || 'Agent';
-      const firstProject = projects[0];
+      const firstProject = projects.length > 0 ? projects[0] : null;
+      if (!firstProject) { log('warn', `Dispatch: skipping ${item.id} — no projects configured`); continue; }
 
       const vars = {
         ...buildBaseVars(agentId, config, firstProject),
@@ -2291,7 +2293,7 @@ async function tickInner() {
             if (pendingWithBlockedDeps.length > 0) {
               // Auto-retry failed items that are blocking others (transient errors)
               for (const item of items) {
-                if (item.status !== 'failed' || isItemCompleted(item)) continue;
+                if (item.status !== WI_STATUS.FAILED || isItemCompleted(item)) continue;
                 // Only retry if something depends on this item
                 const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
                 if (!isBlocking) continue;
@@ -2333,7 +2335,7 @@ async function tickInner() {
                   const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
                   if (blockers.length > 0) {
                     log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
-                    dep.status = 'pending';
+                    dep.status = WI_STATUS.PENDING;
                     dep._retryCount = 0;
                     delete dep.failReason;
                     delete dep.failedAt;
