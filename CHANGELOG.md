@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.384 (2026-04-06)
+
+### Features
+-  show engine version and stale-code warning in dashboard
+
 ## 0.1.383 (2026-04-06)
 
 ### Fixes
