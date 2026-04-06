@@ -166,7 +166,7 @@ function checkPlanCompletion(meta, config) {
     if (!existingPrItem) {
       const id = 'PL-' + shared.uid();
       const featureBranch = plan.feature_branch;
-      const mainBranch = primaryProject.mainBranch || 'main';
+      const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
       workItems.push({
         id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
@@ -196,7 +196,7 @@ function checkPlanCompletion(meta, config) {
           return pr.status === PR_STATUS.ACTIVE && linkedId && doneItems.find(w => w.id === linkedId);
         });
       if (prs.length > 0) {
-        projectPrs[p.name] = { project: p, prs, mainBranch: p.mainBranch || 'main' };
+        projectPrs[p.name] = { project: p, prs, mainBranch: shared.resolveMainBranch(p.localPath, p.mainBranch) };
       }
     }
 

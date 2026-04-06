@@ -267,6 +267,51 @@ function execSilent(cmd, opts = {}) {
   return _execSync(cmd, { stdio: 'pipe', windowsHide: true, ...opts });
 }
 
+/**
+ * Detect the default branch for a git repo. Tries in order:
+ * 1. The configured mainBranch (if it exists as a local or remote ref)
+ * 2. git symbolic-ref refs/remotes/origin/HEAD (what the remote says)
+ * 3. Fallback to 'main'
+ * Cached per rootDir to avoid repeated git calls within a tick.
+ */
+const _mainBranchCache = new Map();
+function resolveMainBranch(rootDir, configuredBranch) {
+  const cacheKey = rootDir + ':' + (configuredBranch || '');
+  const cached = _mainBranchCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < 300000) return cached.branch; // 5min TTL
+
+  const gitOpts = { cwd: rootDir, encoding: 'utf8', stdio: 'pipe', timeout: 5000, windowsHide: true };
+
+  // 1. If configured branch exists, use it
+  if (configuredBranch) {
+    try {
+      _execSync(`git rev-parse --verify "${configuredBranch}"`, gitOpts);
+      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      return configuredBranch;
+    } catch { /* configured branch doesn't exist locally */ }
+    try {
+      _execSync(`git rev-parse --verify "origin/${configuredBranch}"`, gitOpts);
+      _mainBranchCache.set(cacheKey, { branch: configuredBranch, ts: Date.now() });
+      return configuredBranch;
+    } catch { /* not on remote either */ }
+  }
+
+  // 2. Auto-detect from remote HEAD
+  try {
+    const ref = _execSync('git symbolic-ref refs/remotes/origin/HEAD', gitOpts).trim();
+    const branch = ref.replace('refs/remotes/origin/', '');
+    if (branch) {
+      _mainBranchCache.set(cacheKey, { branch, ts: Date.now() });
+      return branch;
+    }
+  } catch { /* no remote HEAD set */ }
+
+  // 3. Fallback
+  const fallback = configuredBranch || 'main';
+  _mainBranchCache.set(cacheKey, { branch: fallback, ts: Date.now() });
+  return fallback;
+}
+
 // ── Environment ─────────────────────────────────────────────────────────────
 
 function cleanChildEnv() {
@@ -651,6 +696,7 @@ module.exports = {
   writeToInbox,
   exec,
   execSilent,
+  resolveMainBranch,
   run,
   runFile,
   cleanChildEnv,

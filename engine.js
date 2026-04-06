@@ -323,7 +323,7 @@ function spawnAgent(dispatchItem, config) {
             }
           } else {
             log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
-            const mainRef = sanitizeBranch(project.mainBranch || 'main');
+            const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
             try {
               runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (e1) {
@@ -1212,7 +1212,7 @@ function materializePlansAsWorkItems(config) {
           const firstProject = itemsByProject.values().next().value?.project;
           if (!firstProject?.localPath) throw new Error('no project with localPath');
           const root = path.resolve(firstProject.localPath);
-          const mainBranch = firstProject.mainBranch || 'main';
+          const mainBranch = shared.resolveMainBranch(root, firstProject.mainBranch);
           const branch = sanitizeBranch(plan.feature_branch);
           // Create branch from main (idempotent — ignores if exists)
           exec(`git branch "${branch}" "${mainBranch}" 2>/dev/null || true`, { cwd: root, stdio: 'pipe' });

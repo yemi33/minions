@@ -735,7 +735,7 @@ const commands = {
       agent_role: config.agents[agentId]?.role,
       project_name: targetProject.name || 'Unknown',
       project_path: targetProject.localPath || '',
-      main_branch: targetProject.mainBranch || 'main',
+      main_branch: targetProject.localPath ? shared.resolveMainBranch(targetProject.localPath, targetProject.mainBranch) : (targetProject.mainBranch || 'main'),
       ado_org: targetProject.adoOrg || 'Unknown',
       ado_project: targetProject.adoProject || 'Unknown',
       repo_name: targetProject.repoName || 'Unknown',

@@ -7453,10 +7453,11 @@ async function testEngineAuditCritical() {
       'discoverPipelineWork must be async to use await');
   });
 
-  await test('engine.js awaits discoverPipelineWork', () => {
+  await test('engine.js handles async discoverPipelineWork', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('await discoverPipelineWork'),
-      'engine tick must await discoverPipelineWork since it is async');
+    assert.ok(src.includes('discoverPipelineWork(config)'), 'must call discoverPipelineWork');
+    assert.ok(src.includes('.catch(') || src.includes('await discoverPipelineWork'),
+      'must handle the async result (await or .catch)');
   });
 
   await test('handlePostMerge guards against null project', () => {

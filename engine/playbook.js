@@ -30,7 +30,7 @@ function getPrCreateInstructions(project) {
   if (host === 'github') {
     const org = project?.adoOrg || '';
     const repo = project?.repoName || '';
-    const mainBranch = project?.mainBranch || 'main';
+    const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
     return `Use \`gh pr create\` to create a pull request:\n` +
       `- \`gh pr create --base ${mainBranch} --head <your-branch> --title "PR title" --body "PR description" --repo ${org}/${repo}\`\n` +
       `- Always set --base to \`${mainBranch}\` (the main branch)\n` +
@@ -62,7 +62,7 @@ function getPrFetchInstructions(project) {
   if (host === 'github') {
     const org = project?.adoOrg || '';
     const repo = project?.repoName || '';
-    const mainBranch = project?.mainBranch || 'main';
+    const mainBranch = project?.localPath ? shared.resolveMainBranch(project.localPath, project.mainBranch) : (project?.mainBranch || 'main');
     return `Use \`gh pr view\` to fetch PR status:\n` +
       `- \`gh pr view <number> --json number,title,state,mergeable,reviewDecision,headRefName,baseRefName,statusCheckRollup --repo ${org}/${repo}\`\n` +
       `- This returns JSON with PR state, mergeability, review decision, and check statuses\n` +
