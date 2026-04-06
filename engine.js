@@ -1416,7 +1416,12 @@ function discoverFromWorkItems(config, project) {
     // This protects against persisted state drift from old runtime versions.
     try {
       mutateDispatch((dp) => {
-        dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== key) : [];
+        const prev = Array.isArray(dp.completed) ? dp.completed : [];
+        const next = [];
+        for (let i = 0; i < prev.length; i++) {
+          if (prev[i].meta?.dispatchKey !== key) next.push(prev[i]);
+        }
+        dp.completed = next;
         return dp;
       });
       dispatchCooldowns.delete(key);
