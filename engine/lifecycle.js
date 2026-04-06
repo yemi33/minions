@@ -1279,11 +1279,8 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   // Detect implement tasks that completed without creating a PR
   if (isSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
-    const projects = shared.getProjects(config);
     const existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
     if (!existingPrFound) {
-      log('warn', `Agent completed implement task ${meta.item.id} but no PR was created — reverting to failed for retry`);
-      // Revert to failed so auto-retry can re-attempt with PR creation
       let wiPath;
       if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
         wiPath = path.join(MINIONS_DIR, 'work-items.json');
@@ -1294,18 +1291,30 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
         const items = safeJson(wiPath) || [];
         const wi = items.find(i => i.id === meta.item.id);
         if (wi) {
-          wi.noPr = true;
-          wi.failReason = 'Completed without creating a pull request';
           const retries = wi._retryCount || 0;
-          if (retries < ENGINE_DEFAULTS.maxRetries) {
+          // Check if agent produced meaningful output (not just MCP timeout)
+          const hasOutput = stdout && stdout.length > 500;
+          if (!hasOutput && retries < ENGINE_DEFAULTS.maxRetries) {
+            // No meaningful output — likely MCP stall or startup failure, retry
             wi.status = WI_STATUS.PENDING;
             wi._retryCount = retries + 1;
             delete wi.dispatched_at;
             delete wi.dispatched_to;
-            log('info', `Auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no PR created)`);
+            log('info', `Auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries} for ${meta.item.id} (no output, no PR)`);
+          } else if (hasOutput) {
+            // Agent ran successfully but chose not to create a PR — mark done
+            wi.status = WI_STATUS.DONE;
+            wi.completedAt = ts();
+            wi._noPr = true;
+            wi._noPrReason = 'Agent completed without creating a PR (changes may already exist or not be needed)';
+            delete wi.failReason;
+            log('info', `${meta.item.id} completed without PR — marking done (agent produced output)`);
           } else {
-            wi.status = WI_STATUS.FAILED;
-            log('warn', `${meta.item.id} failed after ${ENGINE_DEFAULTS.maxRetries} retries — no PR created`);
+            // No output after max retries — mark as needs review
+            wi.status = WI_STATUS.NEEDS_REVIEW;
+            wi._noPr = true;
+            wi.failReason = 'Completed without output or PR after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+            log('warn', `${meta.item.id} needs review — no output after ${ENGINE_DEFAULTS.maxRetries} retries`);
           }
           shared.safeWrite(wiPath, items);
         }

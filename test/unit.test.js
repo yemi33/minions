@@ -438,9 +438,10 @@ async function testEngineDefaults() {
     }
   });
 
-  await test('DEFAULT_CLAUDE has required fields', () => {
+  await test('DEFAULT_CLAUDE has required fields with correct values', () => {
     assert.ok(shared.DEFAULT_CLAUDE.binary);
-    assert.ok(shared.DEFAULT_CLAUDE.outputFormat);
+    assert.strictEqual(shared.DEFAULT_CLAUDE.outputFormat, 'stream-json',
+      'outputFormat must be stream-json — json format buffers all output, breaking live streaming');
     assert.ok(shared.DEFAULT_CLAUDE.allowedTools);
   });
 
@@ -5653,10 +5654,11 @@ async function testSyncPrsFromOutputCentral() {
 }
 
 async function testNoRetryPrCompletion() {
-  await test('lifecycle reverts implement tasks without PR to pending for retry', () => {
+  await test('lifecycle handles implement tasks without PR — retry or mark done', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes('Completed without creating a pull request'), 'should set failReason for no-PR completion');
-    assert.ok(src.includes('Auto-retry') && src.includes('no PR created'), 'should auto-retry when no PR');
+    assert.ok(src.includes('no output, no PR') || src.includes('no PR created'), 'should auto-retry when no output and no PR');
+    assert.ok(src.includes('_noPr') || src.includes('noPr'), 'should flag items that completed without PR');
+    assert.ok(src.includes('hasOutput'), 'should distinguish meaningful output from MCP stall');
   });
 }
 
@@ -5735,6 +5737,72 @@ async function testSettingsComprehensive() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
     assert.ok(src.includes("showToast('cmd-toast', 'Settings saved'"), 'should show success toast');
     assert.ok(src.includes("'Saving...'"), 'should show saving state on button');
+  });
+
+  // ── Default consistency: shared.js defaults must match settings.js fallbacks ──
+
+  await test('DEFAULT_CLAUDE.outputFormat must be stream-json', () => {
+    assert.strictEqual(shared.DEFAULT_CLAUDE.outputFormat, 'stream-json',
+      'outputFormat must be stream-json — json buffers all output and breaks live streaming + triggers MCP startup timeout');
+  });
+
+  await test('settings UI outputFormat fallback matches DEFAULT_CLAUDE', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const match = src.match(/outputFormat\s*\|\|\s*'([^']+)'/);
+    assert.ok(match, 'settings.js should have outputFormat fallback');
+    assert.strictEqual(match[1], shared.DEFAULT_CLAUDE.outputFormat,
+      'settings.js outputFormat fallback must match DEFAULT_CLAUDE.outputFormat');
+  });
+
+  await test('settings UI maxConcurrent fallback matches ENGINE_DEFAULTS', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const match = src.match(/maxConcurrent\s*\|\|\s*(\d+)/);
+    assert.ok(match, 'settings.js should have maxConcurrent fallback');
+    assert.strictEqual(Number(match[1]), shared.ENGINE_DEFAULTS.maxConcurrent,
+      'settings.js maxConcurrent fallback must match ENGINE_DEFAULTS.maxConcurrent');
+  });
+
+  await test('settings UI numeric fallbacks match ENGINE_DEFAULTS', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const numericFields = [
+      'tickInterval', 'agentTimeout', 'maxTurns', 'heartbeatTimeout',
+      'worktreeCreateTimeout', 'worktreeCreateRetries', 'idleAlertMinutes',
+      'shutdownTimeout', 'restartGracePeriod', 'meetingRoundTimeout',
+      'inboxConsolidateThreshold', 'evalMaxIterations'
+    ];
+    for (const field of numericFields) {
+      const re = new RegExp(`${field}\\s*\\|\\|\\s*(\\d+)`);
+      const match = src.match(re);
+      if (!match) continue; // field may use different pattern (e.g. ternary)
+      const uiDefault = Number(match[1]);
+      const engineDefault = shared.ENGINE_DEFAULTS[field];
+      if (engineDefault !== undefined) {
+        assert.strictEqual(uiDefault, engineDefault,
+          `settings.js ${field} fallback (${uiDefault}) must match ENGINE_DEFAULTS.${field} (${engineDefault})`);
+      }
+    }
+  });
+
+  await test('handleSettingsRead merges ENGINE_DEFAULTS into response', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('...shared.ENGINE_DEFAULTS') || src.includes('...ENGINE_DEFAULTS'),
+      'handleSettingsRead should spread ENGINE_DEFAULTS into engine response so UI gets correct defaults');
+  });
+
+  await test('handleSettingsRead merges DEFAULT_CLAUDE into response', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('...shared.DEFAULT_CLAUDE') || src.includes('...DEFAULT_CLAUDE'),
+      'handleSettingsRead should spread DEFAULT_CLAUDE into claude response so UI gets correct defaults');
+  });
+
+  await test('engine.js outputFormat fallback matches DEFAULT_CLAUDE', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const matches = src.match(/outputFormat\s*\|\|\s*'([^']+)'/g) || [];
+    for (const m of matches) {
+      const val = m.match(/'([^']+)'/)[1];
+      assert.strictEqual(val, shared.DEFAULT_CLAUDE.outputFormat,
+        `engine.js outputFormat fallback '${val}' must match DEFAULT_CLAUDE.outputFormat`);
+    }
   });
 }
 
