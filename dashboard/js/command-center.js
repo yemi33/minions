@@ -320,8 +320,11 @@ async function _ccDoSend(message, skipUserMsg) {
       }
     } else {
       const retryId = 'cc-retry-' + Date.now();
+      const isNetworkError = e.message === 'Failed to fetch' || e.message.includes('NetworkError');
       ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
-        '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>');
+        (isNetworkError ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard may have restarted. Try again or click New Session.</div>' : '') +
+        '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
+        ' <button onclick="ccNewSession()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
     _ccSending = false;
