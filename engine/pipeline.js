@@ -552,12 +552,34 @@ async function discoverPipelineWork(config) {
             }).join('\n\n');
           }
 
+          // Scan for inbox/archive notes created by this stage's agents
+          try {
+            const notesDirs = [
+              path.join(__dirname, '..', 'notes', 'inbox'),
+              path.join(__dirname, '..', 'notes', 'archive'),
+            ];
+            const stageWiIds = stageState.artifacts?.workItems || [];
+            const notes = [];
+            for (const dir of notesDirs) {
+              for (const f of safeReadDir(dir).filter(n => n.endsWith('.md'))) {
+                if (stageWiIds.some(id => f.includes(id)) || f.includes(stage.id) || f.includes(pipeline.id)) {
+                  notes.push(f);
+                }
+              }
+            }
+            if (notes.length > 0) {
+              stageState.artifacts = stageState.artifacts || {};
+              stageState.artifacts.notes = notes;
+            }
+          } catch { /* optional */ }
+
           updateRunStage(pipeline.id, activeRun.runId, stage.id, {
-            status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output
+            status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output,
+            artifacts: stageState.artifacts,
           });
           stageState.status = PIPELINE_STATUS.COMPLETED;
           stageState.output = output;
-          log('info', `Pipeline ${pipeline.id}: stage ${stage.id} completed`);
+          log('info', `Pipeline ${pipeline.id}: stage ${stage.id} completed${stageState.artifacts?.notes?.length ? ` (${stageState.artifacts.notes.length} notes)` : ''}`);
         } else {
           anyRunning = true;
           allComplete = false;

@@ -41,6 +41,11 @@ function _renderArtifactLinks(artifacts) {
     links.push('<span style="' + linkStyle + ';cursor:default;color:var(--muted);background:color-mix(in srgb, var(--muted) 8%, transparent);border-color:color-mix(in srgb, var(--muted) 15%, transparent)" title="Sub-stage ' + escHtml(id) + '">⚓ ' + escHtml(id) + '</span>');
   });
 
+  // Notes → navigate to inbox page
+  (artifacts.notes || []).forEach(function(name) {
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'inbox\')" title="Note: ' + escHtml(name) + '">📝 ' + escHtml(name.replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30)) + '</span>');
+  });
+
   if (links.length === 0) return '';
   return '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">' + links.join('') + '</div>';
 }
