@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.367 (2026-04-06)
+
+### Fixes
+-  low-severity dashboard polish — null guards, event params, UI gaps (#213)
+-  medium dashboard bugs — settings reset, work items, schedules, plans (#212)
+-  XSS vulnerabilities across dashboard components (#211)
+
 ## 0.1.364 (2026-04-06)
 
 ### Fixes
