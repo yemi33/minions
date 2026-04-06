@@ -210,4 +210,25 @@ async function showErrorDetails(agentId, reason, task) {
   }
 }
 
-window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderDispatch, renderEngineLog, shortTime, showErrorDetails };
+function renderVersionBanner(version) {
+  const el = document.getElementById('version-banner');
+  if (!el) return;
+  if (!version) { el.style.display = 'none'; return; }
+
+  // Show version in footer area
+  const label = version.running ? 'v' + version.running : '';
+  const commitLabel = version.runningCommit ? ' (' + version.runningCommit + ')' : '';
+  el.textContent = label + commitLabel;
+  el.title = 'Engine: v' + (version.running || '?') + ' ' + (version.runningCommit || '') +
+    '\nDisk: v' + (version.disk || '?') + ' ' + (version.diskCommit || '');
+
+  if (version.stale) {
+    el.style.cssText = 'font-size:9px;padding:2px 8px;background:rgba(210,153,34,0.15);border:1px solid rgba(210,153,34,0.3);border-radius:4px;color:var(--yellow);cursor:help';
+    el.textContent = '\u26A0 Engine running v' + (version.running || '?') + ' (' + (version.runningCommit || '?') + ') — disk has v' + (version.disk || '?') + ' (' + (version.diskCommit || '?') + '). Restart to apply.';
+    el.title = 'The engine process is running older code than what is on disk. Run: minions restart';
+  } else {
+    el.style.cssText = 'font-size:9px;color:var(--muted)';
+  }
+}
+
+window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderVersionBanner, renderDispatch, renderEngineLog, shortTime, showErrorDetails };

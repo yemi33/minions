@@ -84,7 +84,12 @@ const commands = {
       console.log(`Engine was running (PID ${control.pid}) but process is dead — restarting.`);
     }
 
-    safeWrite(CONTROL_PATH, { state: 'running', pid: process.pid, started_at: e.ts() });
+    // Record version + git commit so dashboard can detect stale engine code
+    let codeVersion = null;
+    try { codeVersion = require('../package.json').version; } catch {}
+    let codeCommit = null;
+    try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+    safeWrite(CONTROL_PATH, { state: 'running', pid: process.pid, started_at: e.ts(), codeVersion, codeCommit });
     e.log('info', 'Engine started');
     console.log(`Engine started (PID: ${process.pid})`);
 

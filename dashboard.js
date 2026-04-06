@@ -248,6 +248,21 @@ function getStatus() {
     },
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
+    version: (() => {
+      const engine = getEngineState();
+      let diskVersion = null;
+      try { diskVersion = require('./package.json').version; } catch {}
+      let diskCommit = null;
+      try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+      return {
+        running: engine.codeVersion || null,
+        runningCommit: engine.codeCommit || null,
+        disk: diskVersion,
+        diskCommit,
+        stale: !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+               !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit),
+      };
+    })(),
     timestamp: new Date().toISOString(),
   };
   _statusCacheTs = now;
