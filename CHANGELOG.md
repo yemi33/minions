@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.412 (2026-04-06)
+
+### Fixes
+-  resolve npm path from Node binary dir — not PATH
+
 ## 0.1.411 (2026-04-06)
 
 ### Fixes
