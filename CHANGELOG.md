@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.418 (2026-04-06)
+
+### Features
+- Convert remaining lifecycle.js safeWrite calls to mutateJsonFileLocked
+
 ## 0.1.417 (2026-04-06)
 
 ### Features
