@@ -7173,19 +7173,24 @@ async function testDashboardAuditCritical() {
     const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
     assert.ok(pauseSection, 'pause handler section must exist');
     const section = pauseSection[0];
-    assert.ok(section.includes("w.status = 'paused'"), 'pause must set status to paused, not pending');
+    assert.ok(section.includes("w.status = WI_STATUS.PAUSED") || section.includes("w.status = 'paused'"),
+      'pause must set status to paused (via WI_STATUS.PAUSED or literal), not pending');
     assert.ok(section.includes("w._pausedBy = 'prd-pause'"), 'pause must set _pausedBy = prd-pause');
     assert.ok(!section.includes("delete w._pausedBy"), 'pause must NOT delete _pausedBy');
   });
 
   await test('plan pause and resume are symmetric — resume finds paused items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Resume looks for status === 'paused' && _pausedBy === 'prd-pause'
-    assert.ok(src.includes("w.status === 'paused' && w._pausedBy === 'prd-pause'"),
+    // Resume looks for status === WI_STATUS.PAUSED (or 'paused') && _pausedBy === 'prd-pause'
+    assert.ok(
+      src.includes("w.status === WI_STATUS.PAUSED && w._pausedBy === 'prd-pause'") ||
+      src.includes("w.status === 'paused' && w._pausedBy === 'prd-pause'"),
       'resume must look for paused + prd-pause tag');
     // Pause must set those exact values
     const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
-    assert.ok(pauseSection[0].includes("'paused'") && pauseSection[0].includes("'prd-pause'"),
+    assert.ok(
+      (pauseSection[0].includes("WI_STATUS.PAUSED") || pauseSection[0].includes("'paused'")) &&
+      pauseSection[0].includes("'prd-pause'"),
       'pause must set the values that resume looks for');
   });
 

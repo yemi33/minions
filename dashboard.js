@@ -792,8 +792,13 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 1e6) reject(new Error('Too large')); });
-    req.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    const timeout = setTimeout(() => {
+      req.destroy();
+      reject(new Error('Request body timeout after 30s'));
+    }, 30000);
+    req.on('data', chunk => { body += chunk; if (body.length > 1e6) { clearTimeout(timeout); reject(new Error('Too large')); } });
+    req.on('end', () => { clearTimeout(timeout); try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+    req.on('error', (e) => { clearTimeout(timeout); reject(e); });
   });
 }
 
@@ -1321,16 +1326,18 @@ const server = http.createServer(async (req, res) => {
       let item;
       mutateJsonFileLocked(planPath, (plan) => {
         const target = (plan.missing_features || []).find(f => f.id === body.itemId);
-        if (target) {
-          if (body.name !== undefined) target.name = body.name;
-          if (body.description !== undefined) target.description = body.description;
-          if (body.priority !== undefined) target.priority = body.priority;
-          if (body.estimated_complexity !== undefined) target.estimated_complexity = body.estimated_complexity;
-          if (body.status !== undefined) target.status = body.status;
-          item = target;
-        }
+        if (!target) return plan; // TOCTOU: item deleted between pre-check and lock acquisition
+        if (body.name !== undefined) target.name = body.name;
+        if (body.description !== undefined) target.description = body.description;
+        if (body.priority !== undefined) target.priority = body.priority;
+        if (body.estimated_complexity !== undefined) target.estimated_complexity = body.estimated_complexity;
+        if (body.status !== undefined) target.status = body.status;
+        item = target;
         return plan;
       }, { defaultValue: preCheck });
+
+      // If item was deleted between pre-check and lock, return 404
+      if (!item) return jsonReply(res, 404, { error: 'item not found in plan (deleted concurrently)' });
 
       // Feature 3: Sync edits to materialized work item if still pending
       let workItemSynced = false;
@@ -1929,8 +1936,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           mutateJsonFileLocked(wiPath, (items) => {
             if (!Array.isArray(items)) return items;
             for (const w of items) {
-              if (w.sourcePlan === body.file && w.status === 'paused' && w._pausedBy === 'prd-pause') {
-                w.status = 'pending';
+              if (w.sourcePlan === body.file && w.status === WI_STATUS.PAUSED && w._pausedBy === 'prd-pause') {
+                w.status = WI_STATUS.PENDING;
                 delete w._pausedBy;
                 w._resumedAt = new Date().toISOString();
                 resumedItemIds.push(w.id);
@@ -1991,7 +1998,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
               // Keep completed items as-is, reset everything else to pending.
               if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
 
-              if (w.status === 'dispatched') {
+              if (w.status === WI_STATUS.DISPATCHED) {
                 // Kill the agent working on this item, if any.
                 const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
                 if (activeEntry) {
@@ -2017,8 +2024,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
                 }
               }
 
-              if (w.status !== 'paused') reset++;
-              w.status = 'paused';
+              if (w.status !== WI_STATUS.PAUSED) reset++;
+              w.status = WI_STATUS.PAUSED;
               w._pausedBy = 'prd-pause';
               delete w._resumedAt;
               delete w.dispatched_at;
@@ -2674,18 +2681,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           try {
             const prdDir = path.join(MINIONS_DIR, 'prd');
             if (fs.existsSync(prdDir)) {
-              for (const f of fs.readdirSync(prdDir)) {
-                if (!f.endsWith('.json')) continue;
-                const prd = safeJson(path.join(prdDir, f));
+              for (const prdFile of fs.readdirSync(prdDir)) {
+                if (!prdFile.endsWith('.json')) continue;
+                const prd = safeJson(path.join(prdDir, prdFile));
                 if (!prd || prd.source_plan !== planFile) continue;
                 if (prd.status === 'paused' || prd.status === 'rejected') continue;
                 // Found an active PRD linked to this plan — pause it
                 prd.status = 'paused';
                 prd.pausedAt = new Date().toISOString();
                 prd.pausedBy = 'plan-steering';
-                safeWrite(path.join(prdDir, f), prd);
-                pausedPrd = f;
-                // Pause work items (reuse pause logic inline)
+                safeWrite(path.join(prdDir, prdFile), prd);
+                pausedPrd = prdFile;
+                // Pause work items linked to this PRD (sourcePlan = PRD filename)
                 const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
                 for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
                 const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
@@ -2694,45 +2701,45 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                 const resetItemIds = new Set();
                 for (const wiPath of wiPaths) {
                   try {
-                    const items = safeJson(wiPath);
-                    if (!items) continue;
-                    let changed = false;
-                    for (const w of items) {
-                      if (w.sourcePlan !== f) continue;
-                      if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
-                      if (w.status === 'dispatched') {
-                        const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
-                        if (activeEntry) {
-                          const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
-                          try {
-                            const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
-                            if (agentStatus.pid) {
-                              try {
-                                const safePid = shared.validatePid(agentStatus.pid);
-                                if (process.platform === 'win32') {
-                                  require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-                                } else {
-                                  process.kill(safePid, 'SIGTERM');
-                                }
-                              } catch { /* process may be dead or invalid PID */ }
-                            }
-                            agentStatus.status = 'idle';
-                            delete agentStatus.currentTask;
-                            delete agentStatus.dispatched;
-                            safeWrite(statusPath, agentStatus);
-                          } catch { /* agent reset */ }
-                          killedAgents.add(activeEntry.agent);
+                    mutateJsonFileLocked(wiPath, (items) => {
+                      if (!Array.isArray(items)) return items;
+                      for (const w of items) {
+                        if (w.sourcePlan !== prdFile) continue;
+                        if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
+                        if (w.status === WI_STATUS.DISPATCHED) {
+                          const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
+                          if (activeEntry) {
+                            const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
+                            try {
+                              const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                              if (agentStatus.pid) {
+                                try {
+                                  const safePid = shared.validatePid(agentStatus.pid);
+                                  if (process.platform === 'win32') {
+                                    require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+                                  } else {
+                                    process.kill(safePid, 'SIGTERM');
+                                  }
+                                } catch { /* process may be dead or invalid PID */ }
+                              }
+                              agentStatus.status = 'idle';
+                              delete agentStatus.currentTask;
+                              delete agentStatus.dispatched;
+                              safeWrite(statusPath, agentStatus);
+                            } catch { /* agent reset */ }
+                            killedAgents.add(activeEntry.agent);
+                          }
                         }
+                        w.status = WI_STATUS.PAUSED;
+                        w._pausedBy = 'plan-steering';
+                        delete w.dispatched_at;
+                        delete w.dispatched_to;
+                        delete w.failReason;
+                        delete w.failedAt;
+                        if (w.id) resetItemIds.add(w.id);
                       }
-                      w.status = 'pending';
-                      delete w.dispatched_at;
-                      delete w.dispatched_to;
-                      delete w.failReason;
-                      delete w.failedAt;
-                      changed = true;
-                      if (w.id) resetItemIds.add(w.id);
-                    }
-                    if (changed) safeWrite(wiPath, items);
+                      return items;
+                    }, { defaultValue: [] });
                   } catch { /* reset work items */ }
                 }
                 if (resetItemIds.size > 0 || killedAgents.size > 0) {
