@@ -96,14 +96,12 @@ function rerenderPrdFromCache() {
 // Global fetch wrapper with timeout — prevents connection exhaustion from hung requests.
 // Use for all short API calls. Long-lived streams (CC, doc-chat) manage their own AbortControllers.
 function safeFetch(url, opts) {
-  const timeout = (opts && opts.timeout) || 15000;
-  if (opts) delete opts.timeout;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  const signal = (opts && opts.signal)
-    ? AbortSignal.any([opts.signal, controller.signal])
-    : controller.signal;
-  return fetch(url, Object.assign({}, opts, { signal })).finally(() => clearTimeout(timer));
+  var timeout = (opts && opts.timeout) || 15000;
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, timeout);
+  var fetchOpts = Object.assign({}, opts, { signal: controller.signal });
+  delete fetchOpts.timeout;
+  return fetch(url, fetchOpts).finally(function() { clearTimeout(timer); });
 }
 
 window.MinionsState = { getPageFromUrl, switchPage, getPrdRequeueState, setPrdRequeueState, clearPrdRequeueState, prunePrdRequeueState, rerenderPrdFromCache, safeFetch };
