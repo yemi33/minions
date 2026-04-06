@@ -24,13 +24,13 @@ function renderInbox(inbox) {
     const idx = inboxStart + i;
     return `<div class="inbox-item" data-file="notes/inbox/${escHtml(item.name)}">
       <div class="inbox-name" onclick="openModal(${idx})" style="cursor:pointer">
-        <span>${escHtml(item.name)}</span><span>${item.age}</span>
+        <span>${escHtml(item.name)}</span><span>${escHtml(item.age || '')}</span>
       </div>
       <div class="inbox-preview" onclick="openModal(${idx})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
       <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();promoteToKB('${escHtml(item.name)}')">Add to Knowledge Base</button>
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="event.stopPropagation();openInboxInExplorer('${escHtml(item.name)}')">Open in Explorer</button>
-        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" onclick="event.stopPropagation();deleteInboxItem('${escHtml(item.name)}')">Delete</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();promoteToKB(this.dataset.inboxName)">Add to Knowledge Base</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();openInboxInExplorer(this.dataset.inboxName)">Open in Explorer</button>
+        <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();deleteInboxItem(this.dataset.inboxName)">Delete</button>
       </div>
     </div>`;
   }).join('');
