@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.512 (2026-04-07)
+
+### Fixes
+-  decomposed items count as done in PRD progress and plan status
+
 ## 0.1.511 (2026-04-07)
 
 ### Features
