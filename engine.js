@@ -1098,11 +1098,19 @@ function materializePlansAsWorkItems(config) {
           plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
           plan.lastSyncedFromPlan = ts();
 
-          // Handle PRD based on current status — auto-regenerate for any state
+          // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          if (prdStatus) {
-            log('info', `PRD ${file} invalidated (was ${prdStatus}) — queuing regeneration from revised plan`);
+          // Approved/paused/completed PRDs: flag stale — user must click Re-execute to regenerate
+          if (prdStatus && prdStatus !== 'awaiting-approval') {
+            plan.planStale = true;
+            safeWrite(path.join(PRD_DIR, file), plan);
+            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can re-execute from dashboard`);
+          }
+
+          // Awaiting-approval PRDs: auto-regenerate (no work started yet, safe to replace)
+          if (prdStatus === 'awaiting-approval') {
+            log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
             const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
