@@ -1681,18 +1681,24 @@ const server = http.createServer(async (req, res) => {
   async function handleAgentLive(req, res, match) {
     const agentId = match[1];
     const livePath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
-    const content = safeRead(livePath);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    if (!content) {
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const rawTail = parseInt(params.get('tail'));
+    if (params.has('tail') && isNaN(rawTail)) return jsonReply(res, 400, { error: 'tail must be a number' });
+    const tailBytes = isNaN(rawTail) ? 8192 : Math.max(1, Math.min(65536, rawTail));
+    // Read only the tail bytes from disk instead of entire file
+    try {
+      const stat = fs.statSync(livePath);
+      if (stat.size === 0) { res.end('No live output. Agent may not be running.'); return; }
+      const start = Math.max(0, stat.size - tailBytes);
+      const buf = Buffer.alloc(Math.min(tailBytes, stat.size));
+      const fd = fs.openSync(livePath, 'r');
+      fs.readSync(fd, buf, 0, buf.length, start);
+      fs.closeSync(fd);
+      res.end(buf.toString('utf8'));
+    } catch {
       res.end('No live output. Agent may not be running.');
-    } else {
-      // Return last N bytes via ?tail=N param (default last 8KB)
-      const params = new URL(req.url, 'http://localhost').searchParams;
-      const rawTail = parseInt(params.get('tail'));
-      if (params.has('tail') && isNaN(rawTail)) return jsonReply(res, 400, { error: 'tail must be a number' });
-      const tailBytes = isNaN(rawTail) ? 8192 : Math.max(1, Math.min(10000, rawTail));
-      res.end(content.length > tailBytes ? content.slice(-tailBytes) : content);
     }
     return;
   }

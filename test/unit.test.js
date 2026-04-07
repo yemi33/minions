@@ -6362,9 +6362,9 @@ async function testDashboardBugFixes() {
       'Should check for NaN tail values and return 400');
   });
 
-  await test('tail parameter is clamped to [1, 10000]', () => {
-    assert.ok(src.includes('Math.max(1, Math.min(10000'),
-      'Should clamp tail to [1, 10000] range');
+  await test('tail parameter is clamped to [1, 65536]', () => {
+    assert.ok(src.includes('Math.max(1, Math.min(65536'),
+      'Should clamp tail to [1, 65536] range');
   });
 
   // Bug #32: body.content validation
