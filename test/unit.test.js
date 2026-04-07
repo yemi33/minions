@@ -630,6 +630,47 @@ async function testQueriesAgents() {
     assert.ok(typeof detail.statusData === 'object');
     assert.ok(Array.isArray(detail.recentDispatches));
   });
+
+  await test('readHeadTail reads only head and tail for large files', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'big.log');
+    // Create a file >2KB: 1KB head marker + 2KB filler + 1KB tail marker
+    const headContent = 'HEAD_MARKER_START' + 'A'.repeat(1024 - 'HEAD_MARKER_START'.length);
+    const filler = 'B'.repeat(2048);
+    const tailContent = 'C'.repeat(1024 - 'TAIL_MARKER_END'.length) + 'TAIL_MARKER_END';
+    fs.writeFileSync(fp, headContent + filler + tailContent);
+    const { head, tail } = queries.readHeadTail(fp, 1024);
+    assert.strictEqual(head.length, 1024, 'head should be exactly 1024 bytes');
+    assert.strictEqual(tail.length, 1024, 'tail should be exactly 1024 bytes');
+    assert.ok(head.includes('HEAD_MARKER_START'), 'head should contain start of file');
+    assert.ok(tail.includes('TAIL_MARKER_END'), 'tail should contain end of file');
+    assert.ok(!head.includes('TAIL_MARKER_END'), 'head should not contain tail content');
+  });
+
+  await test('readHeadTail reads full file when small (<= 2KB)', () => {
+    const tmp = createTmpDir();
+    const fp = path.join(tmp, 'small.log');
+    const content = 'small file content here';
+    fs.writeFileSync(fp, content);
+    const { head, tail } = queries.readHeadTail(fp, 1024);
+    assert.strictEqual(head, content, 'head should be full file content');
+    assert.strictEqual(tail, content, 'tail should be full file content');
+  });
+
+  await test('readHeadTail returns empty strings for missing file', () => {
+    const { head, tail } = queries.readHeadTail('/nonexistent/path/file.log', 1024);
+    assert.strictEqual(head, '', 'head should be empty for missing file');
+    assert.strictEqual(tail, '', 'tail should be empty for missing file');
+  });
+
+  await test('getAgentStatus uses readHeadTail instead of safeRead for live-output.log', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    // Find the getAgentStatus function body and verify it uses readHeadTail
+    assert.ok(src.includes('readHeadTail(liveLogPath'),
+      'getAgentStatus should use readHeadTail for live-output.log');
+    assert.ok(!src.includes('safeRead(path.join(AGENTS_DIR, agentId, \'live-output.log\'))'),
+      'getAgentStatus should NOT use safeRead for live-output.log');
+  });
 }
 
 async function testQueriesWorkItems() {
