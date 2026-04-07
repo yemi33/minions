@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.555 (2026-04-07)
+
+### Features
+-  add pin/unpin button to inbox and KB document modals
+
+### Fixes
+-  move pin button to modal header next to Copy button
+- fetch actual build error logs instead of just reason string (#489)
+
 ## 0.1.552 (2026-04-07)
 
 ### Features
