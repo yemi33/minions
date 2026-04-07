@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { DONE_STATUSES } = require('./shared');
 const dir = path.resolve(__dirname, '..');
 
 console.log('=== Work Items (non-done) ===');
 let items = [];
 try { items = JSON.parse(fs.readFileSync(path.join(dir, 'work-items.json'), 'utf8')); } catch {}
-items.filter(i => i.status !== 'done').forEach(i => {
+items.filter(i => !DONE_STATUSES.has(i.status)).forEach(i => {
   console.log(i.id, (i.status || '').padEnd(12), (i.type || '').padEnd(12), (i.title || '').slice(0, 60));
 });
 

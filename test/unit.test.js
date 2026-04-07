@@ -1336,7 +1336,7 @@ async function testPrdStaleInvalidation() {
 
   await test('Stale PRD invalidation only targets awaiting-approval status', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes("prdStatus === 'awaiting-approval'"),
+    assert.ok(src.includes("prdStatus === PLAN_STATUS.AWAITING_APPROVAL"),
       'Auto-regeneration should only trigger for awaiting-approval PRDs');
   });
 
@@ -1375,7 +1375,7 @@ async function testPrdStaleInvalidation() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
       'engine.js should set planStale flag on approved PRDs when plan is revised');
-    assert.ok(src.includes("prdStatus === 'approved'"),
+    assert.ok(src.includes("prdStatus === PLAN_STATUS.APPROVED"),
       'Stale flag should be gated on approved status');
   });
 
@@ -1478,12 +1478,12 @@ async function testPrdStaleInvalidation() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // Approved PRDs get planStale flag, not deletion/regeneration
     const staleBlock = src.indexOf('plan.planStale = true');
-    const approvedCheck = src.lastIndexOf("prdStatus === 'approved'", staleBlock);
+    const approvedCheck = src.lastIndexOf("prdStatus === PLAN_STATUS.APPROVED", staleBlock);
     assert.ok(approvedCheck >= 0 && approvedCheck < staleBlock,
       'planStale flag should be set inside the approved status check');
     // The auto-regeneration (file deletion) is only in the awaiting-approval block
     const deleteCall = src.indexOf('fs.unlinkSync(path.join(PRD_DIR, file))');
-    const awaitingCheck = src.lastIndexOf("prdStatus === 'awaiting-approval'", deleteCall);
+    const awaitingCheck = src.lastIndexOf("prdStatus === PLAN_STATUS.AWAITING_APPROVAL", deleteCall);
     assert.ok(awaitingCheck >= 0 && awaitingCheck < deleteCall,
       'PRD file deletion should only happen inside the awaiting-approval check');
   });
@@ -2201,7 +2201,7 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
     const writeIdx = src.indexOf('mutateJsonFileLocked(workItemsPath,');
-    const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
+    const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, WI_STATUS.DISPATCHED, s.sourcePlan);");
     assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
       'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
     assert.ok(writeIdx < syncIdx,
@@ -3219,8 +3219,8 @@ async function testDiscoverFromWorkItems() {
   });
 
   await test('discoverFromWorkItems routes large/complex items differently', () => {
-    assert.ok(src.includes('implement:large'),
-      'Should use implement:large routing for high-complexity items');
+    assert.ok(src.includes('WORK_TYPE.IMPLEMENT_LARGE'),
+      'Should use WORK_TYPE.IMPLEMENT_LARGE routing for high-complexity items');
   });
 
   await test('discoverFromWorkItems supports shared-branch strategy', () => {
@@ -3234,7 +3234,7 @@ async function testDiscoverFromWorkItems() {
   });
 
   await test('discoverFromWorkItems filters pending/queued items only', () => {
-    assert.ok(src.includes("'pending'") && src.includes("'queued'"),
+    assert.ok(src.includes("WI_STATUS.PENDING") && src.includes("WI_STATUS.QUEUED"),
       'Should only discover work items in pending or queued status');
   });
 }
@@ -5122,12 +5122,12 @@ async function testMeetings() {
 
   // Meeting module
   await test('createMeeting generates ID and sets investigating status', () => {
-    assert.ok(meetingSrc.includes('MTG-') && meetingSrc.includes("status: 'investigating'"),
+    assert.ok(meetingSrc.includes('MTG-') && meetingSrc.includes("status: MEETING_STATUS.INVESTIGATING"),
       'Should generate MTG- ID and start in investigating status');
   });
 
   await test('meeting has 3 rounds: investigating → debating → concluding', () => {
-    assert.ok(meetingSrc.includes("'investigating'") && meetingSrc.includes("'debating'") && meetingSrc.includes("'concluding'"),
+    assert.ok(meetingSrc.includes("MEETING_STATUS.INVESTIGATING") && meetingSrc.includes("MEETING_STATUS.DEBATING") && meetingSrc.includes("MEETING_STATUS.CONCLUDING"),
       'Should support all 3 round statuses');
   });
 
@@ -5147,7 +5147,7 @@ async function testMeetings() {
   });
 
   await test('collectMeetingFindings auto-advances rounds', () => {
-    assert.ok(meetingSrc.includes('allSubmitted') && meetingSrc.includes("'debating'") && meetingSrc.includes("'concluding'"),
+    assert.ok(meetingSrc.includes('allSubmitted') && meetingSrc.includes("MEETING_STATUS.DEBATING") && meetingSrc.includes("MEETING_STATUS.CONCLUDING"),
       'Should advance to next round when all participants submit');
   });
 
@@ -6938,7 +6938,7 @@ async function testStatusMutationGuards() {
 
   await test('dashboard manual retry checks for done items', () => {
     // Find the manual retry handler section
-    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*'pending';\s*\n\s*item\._retryCount\s*=\s*0/);
+    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*WI_STATUS\.PENDING;\s*\n\s*item\._retryCount\s*=\s*0/);
     assert.ok(retryMatch, 'dashboard.js must have manual retry handler');
     // The section before the reset should have a done/completedAt guard or force check
     const retrySection = dashboardSrc.substring(

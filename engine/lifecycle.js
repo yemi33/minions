@@ -1144,7 +1144,7 @@ function handleDecompositionResult(stdout, meta, config) {
         data.push({
           id: sub.id,
           title: sub.name || sub.title || `Sub-task of ${parentId}`,
-          type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
+          type: (sub.estimated_complexity === 'large') ? WORK_TYPE.IMPLEMENT_LARGE : WORK_TYPE.IMPLEMENT,
           priority: sub.priority || p.priority || 'medium',
           description: sub.description || '',
           status: WI_STATUS.PENDING,

@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS } = shared;
+  WI_STATUS, DONE_STATUSES, DISPATCH_RESULT } = shared;
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 
@@ -162,7 +162,7 @@ function getAgentStatus(agentId) {
     const ageMs = latest.completed_at ? Date.now() - new Date(latest.completed_at).getTime() : Infinity;
     if (ageMs < 300000) { // 5 minutes
       return {
-        status: latest.result === 'error' ? 'error' : 'done',
+        status: latest.result === DISPATCH_RESULT.ERROR ? 'error' : 'done',
         task: latest.task || '',
         dispatch_id: latest.id,
         type: latest.type || '',
@@ -699,9 +699,9 @@ function getPrdInfo(config) {
 
   const byStatus = {};
   items.forEach(item => { const s = item.status || 'missing'; byStatus[s] = byStatus[s] || []; byStatus[s].push(item); });
-  const complete = (byStatus['done'] || []).length;
-  const inProgress = (byStatus['dispatched'] || []).length;
-  const paused = (byStatus['paused'] || []).length;
+  const complete = (byStatus[WI_STATUS.DONE] || []).length;
+  const inProgress = (byStatus[WI_STATUS.DISPATCHED] || []).length;
+  const paused = (byStatus[WI_STATUS.PAUSED] || []).length;
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round((complete / total) * 100) : 0;
 
@@ -713,7 +713,7 @@ function getPrdInfo(config) {
     const t = planTimings[wi.sourcePlan];
     if (wi.dispatched_at) { const d = new Date(wi.dispatched_at).getTime(); if (!t.firstDispatched || d < t.firstDispatched) t.firstDispatched = d; }
     if (wi.completedAt) { const c = new Date(wi.completedAt).getTime(); if (!t.lastCompleted || c > t.lastCompleted) t.lastCompleted = c; }
-    if (wi.status !== 'done') t.allDone = false;
+    if (!DONE_STATUSES.has(wi.status)) t.allDone = false;
   }
 
   const progress = {

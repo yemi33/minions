@@ -185,7 +185,7 @@ function runCleanup(config, verbose = false) {
               if (!fs.existsSync(checkDir)) continue;
               for (const pf of fs.readdirSync(checkDir).filter(f => f.endsWith('.json'))) {
                 const plan = safeJson(path.join(checkDir, pf));
-                if (plan?.branch_strategy === 'shared-branch' && plan?.feature_branch && plan?.status !== 'completed') {
+                if (plan?.branch_strategy === 'shared-branch' && plan?.feature_branch && plan?.status !== shared.PLAN_STATUS.COMPLETED) {
                   const planBranch = sanitizeBranch(plan.feature_branch).toLowerCase();
                   if (dirLower.includes(planBranch)) {
                     isProtected = true;

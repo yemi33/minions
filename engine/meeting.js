@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid, log, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
+const { safeJson, safeWrite, safeRead, uid, log, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT, MEETING_STATUS } = shared;
 const queries = require('./queries');
 const { getDispatch, getConfig } = queries;
 const { renderPlaybook } = require('./playbook');
@@ -47,7 +47,7 @@ function createMeeting({ title, agenda, participants }) {
   const id = 'MTG-' + uid();
   const meeting = {
     id, title, agenda,
-    status: 'investigating',
+    status: MEETING_STATUS.INVESTIGATING,
     round: 1,
     participants: participants || [],
     createdBy: 'human',
@@ -78,13 +78,13 @@ function discoverMeetingWork(config) {
   );
 
   for (const meeting of meetings) {
-    if (meeting.status === 'completed') continue;
+    if (meeting.status === MEETING_STATUS.COMPLETED) continue;
 
     const round = meeting.round || 1;
     const roundName = meeting.status; // investigating, debating, concluding
     const agents = config.agents || {};
 
-    if (roundName === 'concluding') {
+    if (roundName === MEETING_STATUS.CONCLUDING) {
       // Pick the first non-busy participant as concluder (fallback to any participant)
       const busyAgents = new Set(
         (dispatch.active || []).map(d => d.agent).filter(Boolean)
@@ -138,8 +138,8 @@ function discoverMeetingWork(config) {
     // For investigate and debate rounds, dispatch all participants
     for (const agentId of meeting.participants) {
       // Skip if already submitted for this round
-      if (roundName === 'investigating' && meeting.findings?.[agentId]) continue;
-      if (roundName === 'debating' && meeting.debate?.[agentId]) continue;
+      if (roundName === MEETING_STATUS.INVESTIGATING && meeting.findings?.[agentId]) continue;
+      if (roundName === MEETING_STATUS.DEBATING && meeting.debate?.[agentId]) continue;
 
       const key = `meeting-${meeting.id}-r${round}-${agentId}`;
       if (activeKeys.has(key)) continue;
@@ -154,13 +154,13 @@ function discoverMeetingWork(config) {
         human_notes: humanNotes,
       };
 
-      if (roundName === 'debating') {
+      if (roundName === MEETING_STATUS.DEBATING) {
         vars.all_findings = Object.entries(meeting.findings || {}).map(([agent, f]) =>
           `### ${agents[agent]?.name || agent}\n\n${f.content || '(no findings)'}`
         ).join('\n\n---\n\n');
       }
 
-      const playbookName = roundName === 'investigating' ? 'meeting-investigate' : 'meeting-debate';
+      const playbookName = roundName === MEETING_STATUS.INVESTIGATING ? 'meeting-investigate' : 'meeting-debate';
       const prompt = renderPlaybook(playbookName, vars);
       if (!prompt) continue;
 
@@ -191,7 +191,7 @@ function discoverMeetingWork(config) {
 function collectMeetingFindings(meetingId, agentId, roundName, output) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return;
-  if (meeting.status === 'completed' || meeting.status === 'archived') {
+  if (meeting.status === MEETING_STATUS.COMPLETED || meeting.status === MEETING_STATUS.ARCHIVED) {
     log('info', `Ignoring late findings from ${agentId} for completed meeting ${meetingId}`);
     return;
   }
@@ -217,7 +217,7 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
   } else if (roundName === 'conclude') {
     meeting.conclusion = { content, agent: agentId, submittedAt: new Date().toISOString() };
     meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'conclusion', content, at: new Date().toISOString() });
-    meeting.status = 'completed';
+    meeting.status = MEETING_STATUS.COMPLETED;
     meeting.completedAt = new Date().toISOString();
 
     // Write transcript to inbox so agents learn from it (slug-based dedup)
@@ -238,18 +238,18 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
   // Check if all participants have submitted for this round
   const participantCount = meeting.participants.length;
   const allSubmitted =
-    (meeting.status === 'investigating' && Object.keys(meeting.findings || {}).length >= participantCount) ||
-    (meeting.status === 'debating' && Object.keys(meeting.debate || {}).length >= participantCount);
+    (meeting.status === MEETING_STATUS.INVESTIGATING && Object.keys(meeting.findings || {}).length >= participantCount) ||
+    (meeting.status === MEETING_STATUS.DEBATING && Object.keys(meeting.debate || {}).length >= participantCount);
 
   if (allSubmitted) {
     // Advance to next round
-    if (meeting.status === 'investigating') {
-      meeting.status = 'debating';
+    if (meeting.status === MEETING_STATUS.INVESTIGATING) {
+      meeting.status = MEETING_STATUS.DEBATING;
       meeting.round = 2;
       meeting.roundStartedAt = new Date().toISOString();
       log('info', `Meeting ${meetingId}: all findings in — advancing to debate`);
-    } else if (meeting.status === 'debating') {
-      meeting.status = 'concluding';
+    } else if (meeting.status === MEETING_STATUS.DEBATING) {
+      meeting.status = MEETING_STATUS.CONCLUDING;
       meeting.round = 3;
       meeting.roundStartedAt = new Date().toISOString();
       log('info', `Meeting ${meetingId}: all debate responses in — advancing to conclusion`);
@@ -291,11 +291,11 @@ function _killMeetingDispatches(meetingId) {
 
 function advanceMeetingRound(meetingId) {
   const meeting = getMeeting(meetingId);
-  if (!meeting || meeting.status === 'completed' || meeting.status === 'archived') return null;
+  if (!meeting || meeting.status === MEETING_STATUS.COMPLETED || meeting.status === MEETING_STATUS.ARCHIVED) return null;
   _killMeetingDispatches(meetingId);
-  if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
-  else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
-  else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = new Date().toISOString(); }
+  if (meeting.status === MEETING_STATUS.INVESTIGATING) { meeting.status = MEETING_STATUS.DEBATING; meeting.round = 2; }
+  else if (meeting.status === MEETING_STATUS.DEBATING) { meeting.status = MEETING_STATUS.CONCLUDING; meeting.round = 3; }
+  else if (meeting.status === MEETING_STATUS.CONCLUDING) { meeting.status = MEETING_STATUS.COMPLETED; meeting.completedAt = new Date().toISOString(); }
   else return meeting; // no change
   meeting.roundStartedAt = new Date().toISOString();
   saveMeeting(meeting);
@@ -306,7 +306,7 @@ function endMeeting(meetingId) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return null;
   _killMeetingDispatches(meetingId);
-  meeting.status = 'completed';
+  meeting.status = MEETING_STATUS.COMPLETED;
   meeting.completedAt = new Date().toISOString();
   saveMeeting(meeting);
   return meeting;
@@ -315,7 +315,7 @@ function endMeeting(meetingId) {
 function archiveMeeting(id) {
   const meeting = getMeeting(id);
   if (!meeting) return null;
-  meeting.status = 'archived';
+  meeting.status = MEETING_STATUS.ARCHIVED;
   meeting.archivedAt = new Date().toISOString();
   saveMeeting(meeting);
   return meeting;
@@ -323,8 +323,8 @@ function archiveMeeting(id) {
 
 function unarchiveMeeting(id) {
   const meeting = getMeeting(id);
-  if (!meeting || meeting.status !== 'archived') return null;
-  meeting.status = 'completed';
+  if (!meeting || meeting.status !== MEETING_STATUS.ARCHIVED) return null;
+  meeting.status = MEETING_STATUS.COMPLETED;
   delete meeting.archivedAt;
   saveMeeting(meeting);
   return meeting;
@@ -349,34 +349,34 @@ function checkMeetingTimeouts(config) {
     || ENGINE_DEFAULTS.meetingRoundTimeout;
 
   for (const meeting of meetings) {
-    if (meeting.status === 'completed') continue;
+    if (meeting.status === MEETING_STATUS.COMPLETED) continue;
     if (!meeting.roundStartedAt) continue;
 
     const elapsed = Date.now() - new Date(meeting.roundStartedAt).getTime();
     if (elapsed < timeout) continue;
 
-    const respondedCount = meeting.status === 'investigating'
+    const respondedCount = meeting.status === MEETING_STATUS.INVESTIGATING
       ? Object.keys(meeting.findings || {}).length
-      : meeting.status === 'debating'
+      : meeting.status === MEETING_STATUS.DEBATING
         ? Object.keys(meeting.debate || {}).length
         : 0;
     const totalCount = meeting.participants.length;
 
-    if (meeting.status === 'investigating') {
+    if (meeting.status === MEETING_STATUS.INVESTIGATING) {
       log('warn', `Meeting ${meeting.id}: round 1 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to debate`);
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 1 timed out — ${respondedCount}/${totalCount} findings received`, at: new Date().toISOString() });
-      meeting.status = 'debating';
+      meeting.status = MEETING_STATUS.DEBATING;
       meeting.round = 2;
       meeting.roundStartedAt = new Date().toISOString();
       saveMeeting(meeting);
-    } else if (meeting.status === 'debating') {
+    } else if (meeting.status === MEETING_STATUS.DEBATING) {
       log('warn', `Meeting ${meeting.id}: round 2 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to conclusion`);
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 2 timed out — ${respondedCount}/${totalCount} debate responses received`, at: new Date().toISOString() });
-      meeting.status = 'concluding';
+      meeting.status = MEETING_STATUS.CONCLUDING;
       meeting.round = 3;
       meeting.roundStartedAt = new Date().toISOString();
       saveMeeting(meeting);
-    } else if (meeting.status === 'concluding') {
+    } else if (meeting.status === MEETING_STATUS.CONCLUDING) {
       log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — auto-summarizing`);
       // Synthesize a conclusion from available findings and debate rather than leaving it empty
       const findingsSummary = Object.entries(meeting.findings || {}).map(([agent, f]) =>
@@ -388,7 +388,7 @@ function checkMeetingTimeouts(config) {
       const autoConclusion = `*Auto-generated — conclusion round timed out.*\n\n## Key Findings\n${findingsSummary || '(none)'}\n\n## Debate Summary\n${debateSummary || '(none)'}`;
       meeting.conclusion = { content: autoConclusion, agent: 'system', submittedAt: new Date().toISOString() };
       meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'conclusion', content: autoConclusion, at: new Date().toISOString() });
-      meeting.status = 'completed';
+      meeting.status = MEETING_STATUS.COMPLETED;
       meeting.completedAt = new Date().toISOString();
 
       // Write transcript to inbox (same as normal conclusion path)

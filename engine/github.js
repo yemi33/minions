@@ -424,7 +424,7 @@ async function reconcilePrs(config) {
         agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
         branch,
         reviewStatus: 'pending',
-        status: 'active',
+        status: PR_STATUS.ACTIVE,
         created: ghPr.created_at || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],

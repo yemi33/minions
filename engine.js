@@ -165,7 +165,7 @@ function resolveDependencyBranches(depIds, sourcePlan, project, config) {
     const prPath = shared.projectPrPath(p);
     const prs = safeJson(prPath) || [];
     for (const pr of prs) {
-      if (!pr.branch || pr.status !== 'active') continue;
+      if (!pr.branch || pr.status !== PR_STATUS.ACTIVE) continue;
       const linked = (pr.prdItems || []).some(id =>
         depWorkItems.find(w => w.id === id)
       );
@@ -435,7 +435,7 @@ function spawnAgent(dispatchItem, config) {
   const agentContext = buildAgentContext(agentId, config, project);
 
   // Safety check: warn if a write-capable task is running in the main repo without a worktree
-  if (cwd === rootDir && ['implement', 'implement:large', 'fix', 'test', 'verify', 'plan-to-prd'].includes(type)) {
+  if (cwd === rootDir && [WORK_TYPE.IMPLEMENT, WORK_TYPE.IMPLEMENT_LARGE, WORK_TYPE.FIX, WORK_TYPE.TEST, WORK_TYPE.VERIFY, WORK_TYPE.PLAN_TO_PRD].includes(type)) {
     log('warn', `Agent ${agentId} running ${type} task in main repo (no worktree) for ${id} — changes may land on master directly`);
   }
 
@@ -764,7 +764,7 @@ function spawnAgent(dispatchItem, config) {
 // completeDispatch — now in engine/dispatch.js
 
 // ─── Dependency Gate ─────────────────────────────────────────────────────────
-// Returns: true (deps met), false (deps pending), 'failed' (dep failed — propagate)
+// Returns: true (deps met), false (deps pending), WI_STATUS.FAILED (dep failed — propagate)
 function areDependenciesMet(item, config) {
   const deps = item.depends_on;
   if (!deps || deps.length === 0) return true;
@@ -795,7 +795,7 @@ function areDependenciesMet(item, config) {
       log('warn', `Dependency ${depId} not found for ${item.id} (plan: ${sourcePlan}) — treating as unmet`);
       return false;
     }
-    if (depItem.status === WI_STATUS.FAILED) return 'failed';
+    if (depItem.status === WI_STATUS.FAILED) return WI_STATUS.FAILED;
     if (!PRD_MET_STATUSES.has(depItem.status)) return false; // Pending, dispatched, or retrying — wait (legacy aliases accepted)
   }
   return true;
@@ -1016,20 +1016,20 @@ function materializePlansAsWorkItems(config) {
           plan.lastSyncedFromPlan = new Date().toISOString();
 
           // Handle PRD based on current status
-          const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
+          const prdStatus = plan.status || (plan.requires_approval ? PLAN_STATUS.AWAITING_APPROVAL : null);
 
           // Approved/executing PRDs: flag as stale but don't disrupt in-flight work
-          if (prdStatus === 'approved' || prdStatus === 'completed') {
+          if (prdStatus === PLAN_STATUS.APPROVED || prdStatus === PLAN_STATUS.COMPLETED) {
             plan.planStale = true;
             log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
           }
 
           // Awaiting-approval PRDs: invalidate, carry over completed items, delete old PRD, queue regeneration
-          if (prdStatus === 'awaiting-approval') {
+          if (prdStatus === PLAN_STATUS.AWAITING_APPROVAL) {
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
-            const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
+            const completedStatuses = DONE_STATUSES; // includes legacy aliases for backward compat
             const completedItems = (plan.missing_features || [])
               .filter(f => completedStatuses.has(f.status))
               .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -1052,10 +1052,10 @@ function materializePlansAsWorkItems(config) {
                 const newItem = {
                   id: 'W-' + shared.uid(),
                   title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
-                  type: 'plan-to-prd',
+                  type: WORK_TYPE.PLAN_TO_PRD,
                   priority: 'high',
                   description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${file}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
-                  status: 'pending',
+                  status: WI_STATUS.PENDING,
                   created: ts(),
                   createdBy: 'engine:plan-revision',
                   project: targetProject.name,
@@ -1090,17 +1090,17 @@ function materializePlansAsWorkItems(config) {
 
     // Human approval gate: plans start as 'awaiting-approval' and must be approved before work begins
     // Plans without a status (legacy) or with status 'approved' are allowed through
-    const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
-    if (planStatus === 'awaiting-approval') {
+    const planStatus = plan.status || (plan.requires_approval ? PLAN_STATUS.AWAITING_APPROVAL : null);
+    if (planStatus === PLAN_STATUS.AWAITING_APPROVAL) {
       if (config.engine?.autoApprovePlans) {
         const approvedAt = new Date().toISOString();
         mutateJsonFileLocked(path.join(PRD_DIR, file), (p) => {
-          p.status = 'approved';
+          p.status = PLAN_STATUS.APPROVED;
           p.approvedAt = approvedAt;
           p.approvedBy = 'auto-mode';
           return p;
         });
-        plan.status = 'approved'; // keep in-memory copy in sync for rest of loop
+        plan.status = PLAN_STATUS.APPROVED; // keep in-memory copy in sync for rest of loop
         log('info', `Auto-approved plan: ${file}`);
       } else {
         continue; // Skip — waiting for human approval
@@ -1200,10 +1200,10 @@ function materializePlansAsWorkItems(config) {
         newItems.push({
           id,
           title: `Implement: ${item.name}`,
-          type: complexity === 'large' ? 'implement:large' : 'implement',
+          type: complexity === 'large' ? WORK_TYPE.IMPLEMENT_LARGE : WORK_TYPE.IMPLEMENT,
           priority: item.priority || 'medium',
           description: `${item.description || ''}\n\n**Plan:** ${file}\n**Plan Item:** ${item.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
-          status: 'pending',
+          status: WI_STATUS.PENDING,
           created: ts(),
           createdBy: 'engine:plan-discovery',
           sourcePlan: file,
@@ -1480,7 +1480,7 @@ function discoverFromWorkItems(config, project) {
     // Dependency gate: skip items whose depends_on are not yet met; propagate failure
     if (item.depends_on && item.depends_on.length > 0) {
       const depStatus = areDependenciesMet(item, config);
-      if (depStatus === 'failed' && !isItemCompleted(item)) {
+      if (depStatus === WI_STATUS.FAILED && !isItemCompleted(item)) {
         item.status = WI_STATUS.FAILED;
         item.failReason = 'Dependency failed — cannot proceed';
         delete item._pendingReason;
@@ -1529,12 +1529,12 @@ function discoverFromWorkItems(config, project) {
       skipped.gated++; continue;
     }
 
-    let workType = item.type || 'implement';
+    let workType = item.type || WORK_TYPE.IMPLEMENT;
     if (workType === WORK_TYPE.IMPLEMENT && (item.complexity === 'large' || item.estimated_complexity === 'large')) {
       workType = WORK_TYPE.IMPLEMENT_LARGE;
     }
     // Auto-decompose large items before implementation
-    if (workType === 'implement:large' && !item._decomposed && !item._decomposing && config.engine?.autoDecompose !== false) {
+    if (workType === WORK_TYPE.IMPLEMENT_LARGE && !item._decomposed && !item._decomposing && config.engine?.autoDecompose !== false) {
       workType = WORK_TYPE.DECOMPOSE;
       item._decomposing = true;
       needsWrite = true;
@@ -1678,7 +1678,7 @@ function discoverFromWorkItems(config, project) {
       return freshItems;
     }, { defaultValue: [] });
     if (newWork.length > 0) {
-      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
+      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, WI_STATUS.DISPATCHED, s.sourcePlan);
     }
   }
 
@@ -1801,11 +1801,11 @@ function materializeSpecsAsWorkItems(config, project) {
 
       newItems.push({
         id: newId,
-        type: 'implement',
+        type: WORK_TYPE.IMPLEMENT,
         title: `Implement: ${info.title}`,
         description: `Implementation work from merged spec.\n\n**Spec:** \`${doc.file}\`\n**Source PR:** ${pr.id} — ${pr.title || ''}\n**PR URL:** ${pr.url || 'N/A'}\n\n## Summary\n\n${info.summary}\n\nRead the full spec at \`${doc.file}\` before starting.`,
         priority: info.priority,
-        status: 'queued',
+        status: WI_STATUS.QUEUED,
         created: ts(),
         createdBy: 'engine:spec-discovery',
         sourceSpec: doc.file,
@@ -1888,7 +1888,7 @@ function discoverCentralWorkItems(config) {
     const key = `central-work-${item.id}`;
     if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
 
-    const workType = item.type || 'implement';
+    const workType = item.type || WORK_TYPE.IMPLEMENT;
     const isFanOut = item.scope === 'fan-out';
 
     if (isFanOut) {
@@ -2228,16 +2228,16 @@ function discoverWork(config) {
         for (const f of fs.readdirSync(prdDir).filter(f => f.endsWith('.json'))) {
           if (completedPlanCache.has(f)) continue;
           const plan = safeJson(path.join(prdDir, f));
-          if (!plan?.missing_features || plan.status === 'completed') {
-            if (plan?.status === 'completed') completedPlanCache.add(f);
+          if (!plan?.missing_features || plan.status === PLAN_STATUS.COMPLETED) {
+            if (plan?.status === PLAN_STATUS.COMPLETED) completedPlanCache.add(f);
             continue;
           }
-          if (plan.status !== 'approved' && plan.status !== 'active') continue;
+          if (plan.status !== PLAN_STATUS.APPROVED && plan.status !== PLAN_STATUS.ACTIVE) continue;
           // Simulate the meta object checkPlanCompletion expects
           lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
           // If plan transitioned to completed, cache it
           const after = safeJson(path.join(prdDir, f));
-          if (after?.status === 'completed') completedPlanCache.add(f);
+          if (after?.status === PLAN_STATUS.COMPLETED) completedPlanCache.add(f);
         }
       }
     } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
@@ -2246,7 +2246,7 @@ function discoverWork(config) {
   // Gate reviews and fixes: do not dispatch until all implement items are complete
   const hasIncompleteImplements = projects.some(project => {
     const items = safeJson(projectWorkItemsPath(project)) || [];
-    return items.some(i => ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement'));
+    return items.some(i => [WI_STATUS.QUEUED, WI_STATUS.PENDING, WI_STATUS.DISPATCHED].includes(i.status) && (i.type || '').startsWith(WORK_TYPE.IMPLEMENT));
   });
   if (hasIncompleteImplements) {
     if (allReviews.length > 0) {
@@ -2348,12 +2348,12 @@ async function tickInner() {
       for (const file of prdFiles) {
         if (completedPlanCache.has(file)) continue;
         const plan = safeJson(path.join(PRD_DIR, file));
-        if (plan && plan.missing_features && plan.status !== 'completed') {
+        if (plan && plan.missing_features && plan.status !== PLAN_STATUS.COMPLETED) {
           checkPlanCompletion({ item: { sourcePlan: file } }, config);
           // If plan transitioned to completed, cache it
           const after = safeJson(path.join(PRD_DIR, file));
-          if (after?.status === 'completed') completedPlanCache.add(file);
-        } else if (plan?.status === 'completed') {
+          if (after?.status === PLAN_STATUS.COMPLETED) completedPlanCache.add(file);
+        } else if (plan?.status === PLAN_STATUS.COMPLETED) {
           completedPlanCache.add(file);
         }
       }
@@ -2496,7 +2496,7 @@ async function tickInner() {
   const slotsAvailable = maxConcurrent - activeCount;
 
   // Priority dispatch: fixes > reviews > plan-to-prd > implement > verify > other
-  const typePriority = { 'implement:large': 0, implement: 0, fix: 1, ask: 1, review: 2, test: 3, verify: 3, plan: 4, 'plan-to-prd': 4 };
+  const typePriority = { [WORK_TYPE.IMPLEMENT_LARGE]: 0, [WORK_TYPE.IMPLEMENT]: 0, [WORK_TYPE.FIX]: 1, [WORK_TYPE.ASK]: 1, [WORK_TYPE.REVIEW]: 2, [WORK_TYPE.TEST]: 3, [WORK_TYPE.VERIFY]: 3, [WORK_TYPE.PLAN]: 4, [WORK_TYPE.PLAN_TO_PRD]: 4 };
   const itemPriority = { high: 0, medium: 1, low: 2 };
   dispatch.pending.sort((a, b) => {
     const ta = typePriority[a.type] ?? 5, tb = typePriority[b.type] ?? 5;

@@ -439,7 +439,7 @@ async function reconcilePrs(config) {
         agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
         branch,
         reviewStatus: 'pending',
-        status: 'active',
+        status: PR_STATUS.ACTIVE,
         created: adoPr.creationDate || ts(),
         url: prUrl,
         prdItems: [confirmedItemId],
