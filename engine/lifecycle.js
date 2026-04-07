@@ -1189,52 +1189,18 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     meta._agentId = agentId;
     updateWorkItemStatus(meta, WI_STATUS.DONE, '');
   }
-  if (!effectiveSuccess && meta?.item?.id) {
-    // Auto-retry: read fresh _retryCount from file (not stale dispatch-time snapshot)
-    let retries = (meta.item._retryCount || 0);
+  // Failure retry is handled by completeDispatch in dispatch.js — not duplicated here.
+  // Only clear _decomposing flag on failure so decompose items don't get permanently stuck.
+  if (!effectiveSuccess && meta?.item?.id && type === WORK_TYPE.DECOMPOSE) {
     const wiPath = resolveWorkItemPath(meta);
-    try {
-      if (wiPath) {
-        const items = safeJson(wiPath) || [];
-        const wi = items.find(i => i.id === meta.item.id);
-        if (wi) retries = (wi._retryCount || 0); // Use fresh value from file
-      }
-    } catch { /* optional */ }
-
-    if (retries < ENGINE_DEFAULTS.maxRetries) {
-      log('info', `Agent failed for ${meta.item.id} — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
-      updateWorkItemStatus(meta, WI_STATUS.PENDING, '');
+    if (wiPath) {
       try {
-        if (wiPath) {
-          mutateJsonFileLocked(wiPath, data => {
-            if (!Array.isArray(data)) return data;
-            const wi = data.find(i => i.id === meta.item.id);
-            if (!wi) return data;
-            // Don't revert if already completed by another code path
-            if (wi.status === WI_STATUS.DONE || wi.completedAt) {
-              log('info', `Skip retry for ${meta.item.id} — already completed`);
-              return data;
-            }
-            wi._retryCount = retries + 1; wi.status = WI_STATUS.PENDING; delete wi.dispatched_at; delete wi.dispatched_to; delete wi.failReason;
-            if (type === WORK_TYPE.DECOMPOSE) delete wi._decomposing;
-            return data;
-          });
-        }
-      } catch (err) { log('warn', `Retry update: ${err.message}`); }
-    } else {
-      updateWorkItemStatus(meta, WI_STATUS.FAILED, `Agent failed (${ENGINE_DEFAULTS.maxRetries} retries exhausted)`);
-    }
-    // Clear _decomposing flag on failure so item doesn't get permanently stuck
-    if (type === WORK_TYPE.DECOMPOSE) {
-      try {
-        if (wiPath) {
-          mutateJsonFileLocked(wiPath, data => {
-            if (!Array.isArray(data)) return data;
-            const wi = data.find(i => i.id === meta.item.id);
-            if (wi) delete wi._decomposing;
-            return data;
-          });
-        }
+        mutateJsonFileLocked(wiPath, data => {
+          if (!Array.isArray(data)) return data;
+          const wi = data.find(i => i.id === meta.item.id);
+          if (wi) delete wi._decomposing;
+          return data;
+        });
       } catch (err) { log('warn', `Decompose cleanup: ${err.message}`); }
     }
   }

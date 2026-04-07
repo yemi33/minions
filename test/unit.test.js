@@ -6873,13 +6873,15 @@ async function testStatusMutationGuards() {
       'timeout reconciliation must use mutateJsonFileLocked, not raw safeWrite');
   });
 
-  // ─── Fix 3: lifecycle.js retry guards done items (already applied) ───────
+  // ─── Fix 3: lifecycle.js does NOT duplicate retry (dispatch.js owns it) ───
 
-  await test('lifecycle retry path guards against reverting done items', () => {
-    assert.ok(lifecycleSrc.includes("wi.status === WI_STATUS.DONE || wi.completedAt"),
-      'lifecycle retry must check wi.status === DONE || wi.completedAt before reverting');
-    assert.ok(lifecycleSrc.includes('Skip retry') && lifecycleSrc.includes('already completed'),
-      'lifecycle retry must log when skipping retry for already-completed item');
+  await test('lifecycle does not duplicate retry logic (handled by completeDispatch)', () => {
+    const hookBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(!hookBody.includes('updateWorkItemStatus(meta, WI_STATUS.PENDING'),
+      'runPostCompletionHooks must not set work items to PENDING (retry is in dispatch.js)');
   });
 
   // ─── Fix 4: dispatch.js retry guards done items (already applied) ────────
@@ -7846,24 +7848,12 @@ async function testAutoRecoveryAndAtomicity() {
       'handleDecompositionResult should not pre-read with safeJson before the lock');
   });
 
-  await test('retry path uses resolveWorkItemPath instead of inline path resolution', () => {
-    const hookBody = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('function runPostCompletionHooks('),
-      lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
-    );
-    assert.ok(hookBody.includes('resolveWorkItemPath(meta)'),
-      'Retry path must use resolveWorkItemPath helper');
-  });
-
-  await test('retry path uses mutateJsonFileLocked for status update', () => {
-    const hookBody = lifecycleSrc.slice(
-      lifecycleSrc.indexOf('Agent failed for'),
-      lifecycleSrc.indexOf('updateWorkItemStatus(meta, WI_STATUS.FAILED')
-    );
-    assert.ok(hookBody.includes('mutateJsonFileLocked(wiPath'),
-      'Retry status update must use mutateJsonFileLocked');
-    assert.ok(!hookBody.includes('shared.safeWrite(wiPath'),
-      'Retry status update must NOT use safeWrite');
+  await test('dispatch.js completeDispatch owns retry logic with resolveWorkItemPath', () => {
+    const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(dispatchSrc.includes('resolveWorkItemPath') || dispatchSrc.includes('lifecycle().resolveWorkItemPath'),
+      'completeDispatch retry must use resolveWorkItemPath for path resolution');
+    assert.ok(dispatchSrc.includes('retries < maxRetries'),
+      'completeDispatch must have retry count guard');
   });
 
   await test('no-PR detection uses resolveWorkItemPath and mutateJsonFileLocked', () => {
