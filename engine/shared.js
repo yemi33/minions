@@ -562,6 +562,14 @@ const MEETING_STATUS = {
   COMPLETED: 'completed', ARCHIVED: 'archived',
 };
 
+const DEFAULT_AGENT_METRICS = {
+  tasksCompleted: 0, tasksErrored: 0,
+  prsCreated: 0, prsApproved: 0, prsRejected: 0, prsMerged: 0,
+  reviewsDone: 0,
+  lastTask: null, lastCompleted: null,
+  totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0,
+};
+
 const DEFAULT_AGENTS = {
   ripley:  { name: 'Ripley',  emoji: '\u{1F3D7}\uFE0F',  role: 'Lead / Explorer', skills: ['architecture', 'codebase-exploration', 'design-review'] },
   dallas:  { name: 'Dallas',  emoji: '\u{1F527}',  role: 'Engineer', skills: ['implementation', 'typescript', 'docker', 'testing'] },
@@ -824,6 +832,7 @@ module.exports = {
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS,
+  DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
   getProjects,

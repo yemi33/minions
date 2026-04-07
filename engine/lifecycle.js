@@ -9,7 +9,7 @@ const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS } = shared;
+  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -734,8 +734,8 @@ async function updatePrAfterReview(agentId, pr, project, config) {
   const authorAgentId = (pr.agent || '').toLowerCase();
   if (authorAgentId && config.agents?.[authorAgentId]) {
     shared.mutateJsonFileLocked(path.join(ENGINE_DIR, 'metrics.json'), (metrics) => {
-      if (!metrics[authorAgentId]) metrics[authorAgentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      if (!metrics[authorAgentId]) metrics[authorAgentId] = { ...DEFAULT_AGENT_METRICS };
+      if (!metrics[agentId]) metrics[agentId] = { ...DEFAULT_AGENT_METRICS };
       metrics[agentId].reviewsDone = (metrics[agentId].reviewsDone || 0) + 1;
       return metrics;
     }, { defaultValue: {} });
@@ -847,7 +847,7 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (agentId && config.agents?.[agentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
     mutateJsonFileLocked(metricsPath, (metrics) => {
-      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      if (!metrics[agentId]) metrics[agentId] = { ...DEFAULT_AGENT_METRICS };
       metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
       return metrics;
     });
@@ -1010,8 +1010,7 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
   mutateJsonFileLocked(metricsPath, metrics => {
     metrics = metrics || {};
     if (!metrics[agentId]) {
-      metrics[agentId] = { tasksCompleted: 0, tasksErrored: 0, prsCreated: 0, prsApproved: 0, prsRejected: 0,
-        reviewsDone: 0, lastTask: null, lastCompleted: null, totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0 };
+      metrics[agentId] = { ...DEFAULT_AGENT_METRICS };
     }
     const m = metrics[agentId];
     m.lastTask = dispatchItem.task;
