@@ -638,6 +638,17 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'file-bug': {
+        const res = await _ccFetch('/api/issues/create', { title: action.title, description: action.description, project: action.project, labels: action.labels });
+        const d = await res.json();
+        if (d.url) {
+          status.innerHTML = '&#128027; Bug filed: <a href="' + escHtml(d.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(action.title) + '</a>';
+        } else {
+          status.innerHTML = '&#128027; Bug filed: <strong>' + escHtml(action.title) + '</strong>';
+        }
+        status.style.color = 'var(--green)';
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';

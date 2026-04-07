@@ -576,6 +576,7 @@ Available action types:
 - **link-pr**: Link an external PR for tracking. Fields: url (PR URL), title (optional), project (optional), autoObserve (bool, default true)
 - **archive-meeting**: Archive a completed meeting. Fields: id (meeting ID)
 - **update-routing**: Update the routing table. Fields: content (full routing.md content)
+- **file-bug**: File a bug as a GitHub issue on the project repo. Fields: title (short bug title), description (markdown body with repro steps, expected vs actual behavior), project (optional, defaults to first project), labels (optional array, defaults to ["bug"]). Use when the user says "file a bug", "create an issue", "report this", etc.
 
 ## Rules
 
@@ -3184,6 +3185,25 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
+  async function handleFileBug(req, res) {
+    try {
+      const body = await readBody(req);
+      if (!body.title) return jsonReply(res, 400, { error: 'title required' });
+      const project = shared.getProjects(CONFIG).find(p => body.project ? p.name === body.project : true);
+      if (!project) return jsonReply(res, 400, { error: 'no project found' });
+
+      const labels = (body.labels || ['bug']).join(',');
+      const bugBody = (body.description || '') + '\n\n---\n_Filed via Minions dashboard_';
+      const slug = project.repoHost === 'github' ? `${project.adoOrg}/${project.repoName}` : null;
+      if (!slug) return jsonReply(res, 400, { error: 'Bug filing currently supports GitHub repos only' });
+
+      const cmd = `gh issue create --repo "${slug}" --title "${body.title.replace(/"/g, '\\"')}" --body "${bugBody.replace(/"/g, '\\"')}" --label "${labels}" 2>&1`;
+      const result = shared.exec(cmd, { encoding: 'utf-8', timeout: 30000, windowsHide: true });
+      const urlMatch = result.match(/https:\/\/github\.com\/\S+/);
+      return jsonReply(res, 200, { ok: true, url: urlMatch ? urlMatch[0] : null, output: result.trim() });
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+  }
+
   async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
@@ -3876,6 +3896,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/projects/browse', desc: 'Open folder picker dialog, return selected path', handler: handleProjectsBrowse },
     { method: 'POST', path: '/api/projects/scan', desc: 'Scan a directory for git repos', params: 'path?, depth?', handler: handleProjectsScan },
     { method: 'POST', path: '/api/projects/add', desc: 'Auto-discover and add a project to config', params: 'path, name?', handler: handleProjectsAdd },
+
+    // Bug Filing
+    { method: 'POST', path: '/api/issues/create', desc: 'File a bug as a GitHub issue', params: 'title, description?, project?, labels?', handler: handleFileBug },
 
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
