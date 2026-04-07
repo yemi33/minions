@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.550 (2026-04-07)
+
+### Fixes
+-  use isGitRepo flag for update banner instead of diskCommit presence
+-  prefer git rev-parse over .minions-commit for disk version detection
+
 ## 0.1.548 (2026-04-07)
 
 ### Features
