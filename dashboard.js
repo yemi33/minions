@@ -2163,7 +2163,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Check if already queued
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
       const items = JSON.parse(safeRead(centralPath) || '[]');
-      const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
+      const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && w.status !== 'failed' && w.status !== 'cancelled');
       if (existing) return jsonReply(res, 200, { ok: true, id: existing.id, alreadyQueued: true });
 
       const id = 'W-' + shared.uid();
