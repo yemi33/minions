@@ -187,9 +187,11 @@ function checkTimeouts(config) {
                 blockingTimeout = Math.max(heartbeatTimeout, taskTimeout + 60000); // task timeout + 1min grace
                 isBlocking = true;
               }
-              // Bash with explicit long timeout (>5min)
-              if (name === 'Bash' && input.timeout && input.timeout > heartbeatTimeout) {
-                blockingTimeout = Math.max(heartbeatTimeout, input.timeout + 60000);
+              // Bash tool call — may be running a long build/install with no stdout
+              if (name === 'Bash') {
+                // Use explicit timeout if set, otherwise default to 10min for any Bash call
+                const bashTimeout = input.timeout || 600000;
+                blockingTimeout = Math.max(heartbeatTimeout, bashTimeout + 60000);
                 isBlocking = true;
               }
               break; // only check the most recent tool_use
