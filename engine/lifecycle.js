@@ -689,7 +689,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-function updatePrAfterReview(agentId, pr, project, config) {
+async function updatePrAfterReview(agentId, pr, project, config) {
 
   if (!pr?.id) return;
 
@@ -707,7 +707,7 @@ function updatePrAfterReview(agentId, pr, project, config) {
       const checkFn = host === 'github'
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
-      const liveStatus = checkFn(pr, projectObj);
+      const liveStatus = await checkFn(pr, projectObj);
       // Use live status only if it's a decisive verdict (not 'pending' — review may not have propagated yet)
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
@@ -1142,7 +1142,7 @@ function handleDecompositionResult(stdout, meta, config) {
   return 0;
 }
 
-function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
+async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
 
   const type = dispatchItem.type;
   const meta = dispatchItem.meta;
@@ -1319,7 +1319,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
+  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {

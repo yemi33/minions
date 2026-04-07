@@ -149,8 +149,8 @@ function checkTimeouts(config) {
 
         completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, 'Completed (detected from output)');
 
-        // Run post-completion hooks via shared helper
-        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config);
+        // Run post-completion hooks via shared helper (async — fire and forget in timeout context)
+        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
 
         if (hasProcess) {
           shared.killImmediate(activeProcesses.get(item.id)?.proc);

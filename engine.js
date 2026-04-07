@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
+const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./engine/queries');
 
@@ -141,6 +141,10 @@ const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt 
 // tempAgents imported from engine/routing.js
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 
+// Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
+// Cleared at the start of each tick cycle (see tickInner)
+const _failedRefCache = new Set();
+
 // Resolve dependency plan item IDs to their PR branches
 function resolveDependencyBranches(depIds, sourcePlan, project, config) {
   const results = []; // [{ branch, prId }]
@@ -171,9 +175,9 @@ function resolveDependencyBranches(depIds, sourcePlan, project, config) {
 }
 
 // Find an existing worktree already checked out on a given branch
-function findExistingWorktree(repoDir, branchName) {
+async function findExistingWorktree(repoDir, branchName) {
   try {
-    const out = exec(`git worktree list --porcelain`, { cwd: repoDir, stdio: 'pipe', timeout: 10000 }).toString();
+    const out = await execAsync(`git worktree list --porcelain`, { cwd: repoDir, timeout: 10000 });
     const branchRef = `branch refs/heads/${branchName}`;
     const lines = out.split('\n');
     for (let i = 0; i < lines.length; i++) {
@@ -215,17 +219,17 @@ function removeStaleIndexLock(rootDir) {
   } catch (e) { log('warn', 'git: ' + e.message); }
 }
 
-function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetries) {
+async function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetries) {
   let lastErr = null;
   const retries = Math.max(0, Number(worktreeCreateRetries) || 0);
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       if (attempt > 0) {
-        try { exec('git worktree prune', { ...gitOpts, cwd: rootDir, timeout: 15000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+        try { await execAsync('git worktree prune', { ...gitOpts, cwd: rootDir, timeout: 15000 }); } catch (e) { log('warn', 'git: ' + e.message); }
         removeStaleIndexLock(rootDir);
         log('warn', `Retrying git worktree add (attempt ${attempt + 1}/${retries + 1}) for ${path.basename(worktreePath)}`);
       }
-      exec(`git worktree add "${worktreePath}" ${args}`, { ...gitOpts, cwd: rootDir });
+      await execAsync(`git worktree add "${worktreePath}" ${args}`, { ...gitOpts, cwd: rootDir });
       return;
     } catch (err) {
       lastErr = err;
@@ -235,14 +239,14 @@ function runWorktreeAdd(rootDir, worktreePath, args, gitOpts, worktreeCreateRetr
   if (lastErr) throw lastErr;
 }
 
-function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts) {
+async function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts) {
   if (!branchName) return false;
-  const existingWt = findExistingWorktree(rootDir, branchName);
+  const existingWt = await findExistingWorktree(rootDir, branchName);
   if (existingWt && fs.existsSync(existingWt)) return true;
   if (!fs.existsSync(worktreePath)) return false;
   try {
-    exec(`git -C "${worktreePath}" rev-parse --is-inside-work-tree`, { ...gitOpts, timeout: 10000 });
-    exec(`git -C "${worktreePath}" rev-parse --abbrev-ref HEAD`, { ...gitOpts, timeout: 10000 });
+    await execAsync(`git -C "${worktreePath}" rev-parse --is-inside-work-tree`, { ...gitOpts, timeout: 10000 });
+    await execAsync(`git -C "${worktreePath}" rev-parse --abbrev-ref HEAD`, { ...gitOpts, timeout: 10000 });
     log('warn', `Recovered partially-created worktree for ${branchName} at ${worktreePath}`);
     return true;
   } catch {
@@ -250,7 +254,7 @@ function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts) {
   }
 }
 
-function spawnAgent(dispatchItem, config) {
+async function spawnAgent(dispatchItem, config) {
   const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
   const claudeConfig = config.claude || {};
   const engineConfig = config.engine || {};
@@ -279,12 +283,12 @@ function spawnAgent(dispatchItem, config) {
     worktreePath = path.resolve(rootDir, engineConfig.worktreeRoot || '../worktrees', wtDirName);
 
     // If branch is already checked out in an existing worktree, reuse it
-    const existingWt = findExistingWorktree(rootDir, branchName);
+    const existingWt = await findExistingWorktree(rootDir, branchName);
     if (existingWt) {
       worktreePath = existingWt;
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
-      try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
-      try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch (e) { log('warn', 'git: ' + e.message); }
+      try { await execAsync(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+      try { await execAsync(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch (e) { log('warn', 'git: ' + e.message); }
     } else if (['meeting', 'ask', 'explore', 'plan-to-prd', 'plan'].includes(type)) {
       // Read-only tasks — no worktree needed, run in rootDir
       log('info', `${type}: read-only task, no worktree needed — running in rootDir`);
@@ -295,18 +299,18 @@ function spawnAgent(dispatchItem, config) {
         if (!fs.existsSync(worktreePath)) {
           const isSharedBranch = meta?.branchStrategy === 'shared-branch' || meta?.useExistingBranch;
           // Prune stale worktree entries before creating (handles leftover entries from crashed runs)
-          try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+          try { await execAsync(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
           // Remove stale index.lock before creating worktree (Windows crashes can leave this behind)
           removeStaleIndexLock(rootDir);
 
           if (isSharedBranch) {
             log('info', `Creating worktree for shared branch: ${worktreePath} on ${branchName}`);
-            try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+            try { await execAsync(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
             try {
-              runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+              await runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (eShared) {
               if (eShared.message?.includes('already used by worktree') || eShared.message?.includes('already checked out')) {
-                const existingWtPath = findExistingWorktree(rootDir, branchName);
+                const existingWtPath = await findExistingWorktree(rootDir, branchName);
                 if (existingWtPath && fs.existsSync(existingWtPath)) {
                   log('info', `Shared branch ${branchName} already checked out at ${existingWtPath} — reusing`);
                   worktreePath = existingWtPath;
@@ -315,42 +319,42 @@ function spawnAgent(dispatchItem, config) {
                 // Branch doesn't exist yet (first item in plan) — create it from main
                 const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
                 log('info', `Shared branch ${branchName} not found — creating from ${mainRef}`);
-                runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
+                await runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
               } else { throw eShared; }
             }
           } else {
             log('info', `Creating worktree: ${worktreePath} on branch ${branchName}`);
             const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
             try {
-              runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
+              await runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
             } catch (e1) {
               const branchExists = e1.message?.includes('already exists');
               log('warn', `Worktree -b failed for ${branchName}: ${e1.message?.split('\n')[0]}`);
               if (!branchExists) {
                 // Transient error (lock, timeout) — prune, clean, and retry -b once more
                 log('info', `Retrying -b create after prune for ${branchName}`);
-                try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 15000 }); } catch { /* optional */ }
+                try { await execAsync(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 15000 }); } catch { /* optional */ }
                 removeStaleIndexLock(rootDir);
                 // Clean up partial worktree directory from failed attempt
                 try { if (fs.existsSync(worktreePath)) fs.rmSync(worktreePath, { recursive: true, force: true }); } catch { /* optional */ }
                 try {
-                  runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, 0);
+                  await runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, 0);
                 } catch (e1b) {
                   log('error', `Worktree -b retry also failed for ${branchName}: ${e1b.message?.split('\n')[0]}`);
                   throw e1b;
                 }
               } else {
                 // Branch already exists — try checkout without -b
-                try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
+                try { await execAsync(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
                 try {
-                  runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                  await runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                   log('info', `Reusing existing branch: ${branchName}`);
                 } catch (e2) {
                   // "already checked out" or "already used by worktree" — find and reuse or recover
                   const alreadyUsed = e2.message?.includes('already checked out') || e2.message?.includes('already used by worktree')
                     || e1.message?.includes('already checked out') || e1.message?.includes('already used by worktree');
                   if (alreadyUsed) {
-                    const existingWtPath = findExistingWorktree(rootDir, branchName);
+                    const existingWtPath = await findExistingWorktree(rootDir, branchName);
                     if (existingWtPath && fs.existsSync(existingWtPath)) {
                       // Bug fix: read dispatch under file lock so check-and-act is atomic
                       let activelyUsed = false;
@@ -369,12 +373,12 @@ function spawnAgent(dispatchItem, config) {
                       worktreePath = existingWtPath;
                     } else if (existingWtPath && !fs.existsSync(existingWtPath)) {
                       log('warn', `Branch ${branchName} tracked in missing dir ${existingWtPath} — pruning and recreating`);
-                      try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
-                      runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                      try { await execAsync(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+                      await runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                       log('info', `Recovered worktree for ${branchName} after stale entry prune`);
                     } else {
-                      try { exec(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
-                      runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
+                      try { await execAsync(`git worktree prune`, { ..._gitOpts, cwd: rootDir, timeout: 10000 }); } catch (e) { log('warn', 'git: ' + e.message); }
+                      await runWorktreeAdd(rootDir, worktreePath, `"${branchName}"`, _worktreeGitOpts, worktreeCreateRetries);
                     }
                   } else {
                     throw e2;
@@ -385,10 +389,10 @@ function spawnAgent(dispatchItem, config) {
           }
         } else if (meta?.branchStrategy === 'shared-branch') {
           log('info', `Pulling latest on shared branch ${branchName}`);
-          try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch (e) { log('warn', 'git: ' + e.message); }
+          try { await execAsync(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: worktreePath }); } catch (e) { log('warn', 'git: ' + e.message); }
         }
       } catch (err) {
-        if (recoverPartialWorktree(rootDir, worktreePath, branchName, _gitOpts)) {
+        if (await recoverPartialWorktree(rootDir, worktreePath, branchName, _gitOpts)) {
           cwd = worktreePath;
           log('warn', `Proceeding with recovered worktree after add failure for ${branchName}`);
         } else {
@@ -407,11 +411,17 @@ function spawnAgent(dispatchItem, config) {
         try {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
           for (const { branch: depBranch, prId } of depBranches) {
+            // Skip refs already known to be missing this tick (avoids repeated 30s ETIMEDOUT)
+            if (_failedRefCache.has(depBranch)) {
+              log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
+              continue;
+            }
             try {
-              exec(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir });
-              exec(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
+              await execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir });
+              await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
               log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
             } catch (mergeErr) {
+              _failedRefCache.add(depBranch);
               log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
             }
           }
@@ -704,7 +714,7 @@ function spawnAgent(dispatchItem, config) {
     }
 
     // Parse output and run all post-completion hooks
-    const { resultSummary, autoRecovered } = runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
+    const { resultSummary, autoRecovered } = await runPostCompletionHooks(dispatchItem, agentId, code, stdout, config);
 
     // Move from active to completed in dispatch (single source of truth for agent status)
     // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
@@ -2351,6 +2361,7 @@ async function tickInner() {
 
   const config = getConfig();
   tickCount++;
+  _failedRefCache.clear(); // Reset per-tick failed-ref cache
 
   // Helper: run a phase, log + continue on error
   const safe = (label, fn) => { try { fn(); } catch (e) { log('warn', `${label}: ${e.message}`); } };
@@ -2563,7 +2574,7 @@ async function tickInner() {
   for (const item of toDispatch) {
     if (!dispatched.has(item.id)) {
       let proc;
-      try { proc = spawnAgent(item, config); } catch (spawnErr) {
+      try { proc = await spawnAgent(item, config); } catch (spawnErr) {
         log('error', `spawnAgent exception for ${item.id}: ${spawnErr.message}`);
         proc = null;
       }

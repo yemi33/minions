@@ -8225,7 +8225,7 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
-    assert.ok(engineSrc.includes('const { resultSummary, autoRecovered } = runPostCompletionHooks'),
+    assert.ok(engineSrc.includes('const { resultSummary, autoRecovered } = await runPostCompletionHooks'),
       'engine.js must destructure autoRecovered from runPostCompletionHooks');
     assert.ok(engineSrc.includes('code === 0 || autoRecovered'),
       'engine.js must use autoRecovered to determine effectiveResult for completeDispatch');
@@ -8349,7 +8349,7 @@ async function testAutoRecoveryAndAtomicity() {
   const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
   const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 
-  await test('runPostCompletionHooks returns autoRecovered=true when failed agent created PR', () => {
+  await test('runPostCompletionHooks returns autoRecovered=true when failed agent created PR', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -8370,7 +8370,7 @@ async function testAutoRecoveryAndAtomicity() {
       };
 
       // code=1 simulates heartbeat timeout kill
-      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
+      const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, true,
         'autoRecovered should be true when failed implement agent created PR');
 
@@ -8383,7 +8383,7 @@ async function testAutoRecoveryAndAtomicity() {
     }
   });
 
-  await test('runPostCompletionHooks does NOT auto-recover non-implement types', () => {
+  await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -8405,7 +8405,7 @@ async function testAutoRecoveryAndAtomicity() {
                 pr: { id: 'PR-55', number: 55 } }
       };
 
-      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'reviewer', 1, output, mockConfig);
+      const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'reviewer', 1, output, mockConfig);
       assert.strictEqual(result.autoRecovered, false,
         'autoRecovered should be false for review type even with PR in output');
     } finally {
@@ -8414,7 +8414,7 @@ async function testAutoRecoveryAndAtomicity() {
     }
   });
 
-  await test('runPostCompletionHooks returns autoRecovered=false on normal success', () => {
+  await test('runPostCompletionHooks returns autoRecovered=false on normal success', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
     shared.safeWrite(prFile, []);
@@ -8435,7 +8435,7 @@ async function testAutoRecoveryAndAtomicity() {
       };
 
       // code=0 means normal success — autoRecovered should be false
-      const result = lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, output, mockConfig);
+      const result = await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, output, mockConfig);
       assert.strictEqual(result.autoRecovered, false,
         'autoRecovered should be false when agent succeeded normally (code=0)');
     } finally {
