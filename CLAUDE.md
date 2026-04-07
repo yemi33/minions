@@ -84,6 +84,35 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 
 All writes to shared JSON files use `mutateJsonFileLocked()` or `mutateDispatch()` which acquire file locks. **Never use `safeWrite()` for files that may be read-modify-written concurrently** (dispatch.json, work-items.json, pull-requests.json, metrics.json). Always use `mutateJsonFileLocked()` for atomic read-modify-write.
 
+### Concurrency & Lock Ordering
+
+Building on the concurrency-safe writes above, follow these rules when working with file locks:
+
+**Lock acquisition order:** When a single operation must acquire locks on multiple files, always lock in **alphabetical order by filename** (e.g., `dispatch.json` before `work-items.json`). This prevents deadlocks between concurrent agents/ticks.
+
+**Which helpers own which locks:**
+
+| Helper | Lock target |
+|--------|-------------|
+| `mutateDispatch()` | `engine/dispatch.json` (dedicated wrapper) |
+| `mutateJsonFileLocked()` | Caller-specified file path (general-purpose) |
+
+**Never hold two locks across an `await` boundary.** If you need data from two locked files, acquire the first lock, read/write, release it, then acquire the second. Holding a lock while awaiting an async operation (network call, process spawn, `setTimeout`) blocks all other consumers and risks deadlocks.
+
+```js
+// CORRECT — sequential short locks
+await mutateJsonFileLocked(fileA, data => { /* fast read-modify-write */ });
+await mutateJsonFileLocked(fileB, data => { /* fast read-modify-write */ });
+
+// WRONG — nested locks risk deadlock; long-held lock blocks consumers
+await mutateJsonFileLocked(fileA, async dataA => {
+  await mutateJsonFileLocked(fileB, dataB => { ... }); // ← deadlock risk
+  await someSlowOperation(); // ← blocks all fileA consumers
+});
+```
+
+**Keep lock callbacks fast.** Expensive operations (process kills, network calls, git commands) must happen *outside* the lock callback. Pattern: lock → read + filter → release → execute expensive ops → lock again if needed to write results.
+
 ## Constants — No Magic Strings or Numbers
 
 All status values, work types, and dispatch results are defined as constants in `engine/shared.js`. **Never use raw string literals for status comparisons or assignments.**
