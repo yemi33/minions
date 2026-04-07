@@ -25,6 +25,15 @@ function _detectPageChanges(data) {
   return changes;
 }
 
+// Change detection — skip renders for sections that haven't changed since last refresh
+const _sectionCache = {};
+function _changed(key, value) {
+  var json = JSON.stringify(value);
+  if (_sectionCache[key] === json) return false;
+  _sectionCache[key] = json;
+  return true;
+}
+
 function _processStatusUpdate(data) {
   // Detect fresh install — clear stale browser state if install ID changed
   if (data.installId) {
@@ -35,45 +44,43 @@ function _processStatusUpdate(data) {
     }
     localStorage.setItem('minions-install-id', data.installId);
   }
+  // Always update cheap elements
   document.getElementById('ts').textContent = new Date(data.timestamp).toLocaleTimeString();
   const engineState = (data.engine && data.engine.state) ? data.engine.state : 'stopped';
   document.getElementById('setup-banner').style.display = (!data.initialized && engineState !== 'stopped') ? 'block' : 'none';
-  renderAgents(data.agents);
-  renderPrdProgress(data.prdProgress);
-  _cachePrdItems(data.prdProgress);
-  renderInbox(data.inbox || []);
-  cmdUpdateAgentList(data.agents);
-  cmdUpdateProjectList(data.projects || []);
-  renderNotes(data.notes);
-  renderPrd(data.prd, data.prdProgress);
-  // Auto-approve badge
   const autoEl = document.getElementById('auto-approve-badge');
   if (autoEl) autoEl.innerHTML = data.autoMode?.approvePlans
     ? '<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--green);border:1px solid rgba(63,185,80,0.3)">AUTO-APPROVE</span>'
     : '';
-  // Inbox consolidation threshold from config
   const threshEl = document.getElementById('inbox-threshold');
   if (threshEl && data.autoMode?.inboxThreshold) threshEl.textContent = data.autoMode.inboxThreshold;
-  renderPrs(data.pullRequests || []);
-  renderArchiveButtons(data.archivedPrds || []);
-  renderEngineStatus(data.engine);
-  renderVersionBanner(data.version);
-  renderDispatch(data.dispatch);
+
+  // Render only changed sections
+  if (_changed('agents', data.agents)) { renderAgents(data.agents); cmdUpdateAgentList(data.agents); }
+  if (_changed('prdProgress', data.prdProgress)) { renderPrdProgress(data.prdProgress); _cachePrdItems(data.prdProgress); }
+  if (_changed('inbox', data.inbox)) renderInbox(data.inbox || []);
+  if (_changed('projects', data.projects)) { cmdUpdateProjectList(data.projects || []); renderProjects(data.projects || []); }
+  if (_changed('notes', data.notes)) renderNotes(data.notes);
+  if (_changed('prd', [data.prd, data.prdProgress])) renderPrd(data.prd, data.prdProgress);
+  if (_changed('prs', data.pullRequests)) renderPrs(data.pullRequests || []);
+  if (_changed('archivedPrds', data.archivedPrds)) renderArchiveButtons(data.archivedPrds || []);
+  if (_changed('engine', data.engine)) renderEngineStatus(data.engine);
+  if (_changed('version', data.version)) renderVersionBanner(data.version);
+  if (_changed('dispatch', data.dispatch)) renderDispatch(data.dispatch);
   window._lastDispatch = data.dispatch;
   window._lastWorkItems = data.workItems || [];
   window._lastStatus = data;
   prunePrdRequeueState(window._lastWorkItems);
-  renderEngineLog(data.engineLog || []);
-  renderProjects(data.projects || []);
-  renderMetrics(data.metrics || {});
-  renderWorkItems(data.workItems || []);
-  renderSkills(data.skills || []);
-  renderMcpServers(data.mcpServers || []);
-  renderSchedules(data.schedules || []);
-  renderMeetings(data.meetings || []);
-  if (typeof renderPipelines === 'function') renderPipelines(data.pipelines || []);
-  renderPinned(data.pinned || []);
-  // Update sidebar counts
+  if (_changed('engineLog', data.engineLog)) renderEngineLog(data.engineLog || []);
+  if (_changed('metrics', data.metrics)) renderMetrics(data.metrics || {});
+  if (_changed('workItems', data.workItems)) renderWorkItems(data.workItems || []);
+  if (_changed('skills', data.skills)) renderSkills(data.skills || []);
+  if (_changed('mcpServers', data.mcpServers)) renderMcpServers(data.mcpServers || []);
+  if (_changed('schedules', data.schedules)) renderSchedules(data.schedules || []);
+  if (_changed('meetings', data.meetings)) renderMeetings(data.meetings || []);
+  if (_changed('pipelines', data.pipelines) && typeof renderPipelines === 'function') renderPipelines(data.pipelines || []);
+  if (_changed('pinned', data.pinned)) renderPinned(data.pinned || []);
+  // Sidebar counts (cheap)
   const swi = document.getElementById('sidebar-wi');
   if (swi) swi.textContent = (data.workItems || []).length || '';
   const spr = document.getElementById('sidebar-pr');

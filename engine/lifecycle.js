@@ -277,6 +277,7 @@ function checkPlanCompletion(meta, config) {
   // Archive deferred until verify completes
 
   log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
+  return true;
 }
 
 // ─── Archive Plan ───────────────────────────────────────────────────────────

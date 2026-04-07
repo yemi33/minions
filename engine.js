@@ -1492,6 +1492,7 @@ function discoverFromWorkItems(config, project) {
   const prdSyncQueue = [];
   const skipped = { gated: 0, noAgent: 0 };
   let needsWrite = false;
+  const selfHealKeys = new Set(); // Collect keys for batched self-heal (1 lock instead of N)
 
   for (const item of items) {
     try {
@@ -1526,25 +1527,13 @@ function discoverFromWorkItems(config, project) {
     }
 
     const key = `work-${project?.name || 'default'}-${item.id}`;
-    // Self-heal: if an item is pending, stale completed/cooldown markers must not gate redispatch.
-    // This protects against persisted state drift from old runtime versions.
-    try {
-      mutateDispatch((dp) => {
-        const prev = Array.isArray(dp.completed) ? dp.completed : [];
-        const next = [];
-        for (let i = 0; i < prev.length; i++) {
-          if (prev[i].meta?.dispatchKey !== key) next.push(prev[i]);
-        }
-        dp.completed = next;
-        return dp;
-      });
-      dispatchCooldowns.delete(key);
-    } catch (e) { log('warn', 'self-heal dispatch state: ' + e.message); }
-    // Cooldown bypass for resumed items — clear in-memory cooldown so they dispatch immediately
+    // Self-heal: collect keys for batched dispatch.json cleanup (after the loop)
+    selfHealKeys.add(key);
+    dispatchCooldowns.delete(key);
+    // Cooldown bypass for resumed items
     if (item._resumedAt) {
-      dispatchCooldowns.delete(key);
       delete item._resumedAt;
-      safeWrite(projectWorkItemsPath(project), items);
+      needsWrite = true;
     }
     if (isAlreadyDispatched(key)) {
       if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
@@ -1694,6 +1683,16 @@ function discoverFromWorkItems(config, project) {
 
     setCooldown(key);
     } catch (err) { log('warn', `discoverFromWorkItems: skipping ${item.id}: ${err.message}`); }
+  }
+
+  // Batched self-heal: clear all stale completed entries in ONE lock acquisition
+  if (selfHealKeys.size > 0) {
+    try {
+      mutateDispatch((dp) => {
+        dp.completed = (Array.isArray(dp.completed) ? dp.completed : []).filter(d => !selfHealKeys.has(d.meta?.dispatchKey));
+        return dp;
+      });
+    } catch (e) { log('warn', 'batched self-heal: ' + e.message); }
   }
 
   // Auto-promote decomposed parents to done when all sub-tasks complete
@@ -2264,10 +2263,8 @@ function discoverWork(config) {
           }
           if (plan.status !== 'approved' && plan.status !== 'active') continue;
           // Simulate the meta object checkPlanCompletion expects
-          lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
-          // If plan transitioned to completed, cache it
-          const after = safeJson(path.join(prdDir, f));
-          if (after?.status === 'completed') completedPlanCache.add(f);
+          const completed = lifecycle.checkPlanCompletion({ item: { sourcePlan: f } }, config);
+          if (completed) completedPlanCache.add(f);
         }
       }
     } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
@@ -2379,10 +2376,8 @@ async function tickInner() {
         if (completedPlanCache.has(file)) continue;
         const plan = safeJson(path.join(PRD_DIR, file));
         if (plan && plan.missing_features && plan.status !== 'completed') {
-          checkPlanCompletion({ item: { sourcePlan: file } }, config);
-          // If plan transitioned to completed, cache it
-          const after = safeJson(path.join(PRD_DIR, file));
-          if (after?.status === 'completed') completedPlanCache.add(file);
+          const completed = checkPlanCompletion({ item: { sourcePlan: file } }, config);
+          if (completed) completedPlanCache.add(file);
         } else if (plan?.status === 'completed') {
           completedPlanCache.add(file);
         }

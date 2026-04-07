@@ -2264,12 +2264,12 @@ async function testStateIntegrity() {
       'Auto-retry should clear completed dedupe entry for the same dispatch key');
   });
 
-  await test('Pending work-item discovery self-heals stale dispatch gates', () => {
+  await test('Pending work-item discovery self-heals stale dispatch gates (batched)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('Self-heal: if an item is pending'),
-      'Pending discovery should include stale gate self-heal guard');
-    assert.ok(src.includes("dp.completed.filter(d => d.meta?.dispatchKey !== key)"),
-      'Pending discovery should clear completed dedupe marker for pending item key');
+    assert.ok(src.includes('selfHealKeys'),
+      'Discovery should collect keys for batched self-heal');
+    assert.ok(src.includes('selfHealKeys.has(d.meta?.dispatchKey)'),
+      'Batched self-heal should filter completed entries by collected keys');
     assert.ok(src.includes('dispatchCooldowns.delete(key);'),
       'Pending discovery should clear in-memory cooldown for pending item key');
   });
