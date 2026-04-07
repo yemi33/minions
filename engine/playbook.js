@@ -133,7 +133,7 @@ function resolveTaskContext(item, config) {
       try {
         const plans = fs.readdirSync(path.join(MINIONS_DIR, 'plans')).filter(f => f.endsWith('.md') || f.endsWith('.json'));
         // Check work-items to find which plan file this agent created
-        const workItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+        const workItems = queries.getWorkItems();
         const agentPlanItems = workItems.filter(w =>
           w.type === WORK_TYPE.PLAN && w.dispatched_to === agent.id && w.status === WI_STATUS.DONE && w._planFileName
         ).sort((a, b) => (b.completedAt || '').localeCompare(a.completedAt || ''));

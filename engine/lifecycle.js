@@ -30,20 +30,7 @@ function checkPlanCompletion(meta, config) {
   const projects = shared.getProjects(config);
 
   // Collect work items from ALL projects + central (PRD items can be in either)
-  let allWorkItems = [];
-  for (const p of projects) {
-    try {
-      const wi = safeJson(shared.projectWorkItemsPath(p)) || [];
-      allWorkItems = allWorkItems.concat(wi);
-    } catch { /* optional */ }
-  }
-  // Also check central work-items.json (for no-project setups)
-  try {
-    const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-    for (const w of central) {
-      if (!allWorkItems.some(existing => existing.id === w.id)) allWorkItems.push(w);
-    }
-  } catch { /* optional */ }
+  const allWorkItems = queries.getWorkItems(config);
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
@@ -329,19 +316,7 @@ function archivePlan(planFile, plan, projects, config) {
     if (plan.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
 
     // Collect work items for this plan
-    let allWorkItems = [];
-    for (const p of projects) {
-      try {
-        const wi = safeJson(shared.projectWorkItemsPath(p)) || [];
-        allWorkItems = allWorkItems.concat(wi);
-      } catch { /* optional */ }
-    }
-    try {
-      const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-      for (const w of central) {
-        if (!allWorkItems.some(existing => existing.id === w.id)) allWorkItems.push(w);
-      }
-    } catch { /* optional */ }
+    const allWorkItems = queries.getWorkItems(config);
     const planItems = allWorkItems.filter(w => w.sourcePlan === planFile);
     const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
 

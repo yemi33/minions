@@ -149,16 +149,8 @@ function resolveDependencyBranches(depIds, sourcePlan, project, config) {
   const projects = shared.getProjects(config);
 
   // Find work items for each dependency plan item
-  const depWorkItems = [];
-  for (const p of projects) {
-    const wiPath = shared.projectWorkItemsPath(p);
-    const items = safeJson(wiPath) || [];
-    for (const wi of items) {
-      if (depIds.includes(wi.id)) {
-        depWorkItems.push(wi);
-      }
-    }
-  }
+  const allItems = queries.getWorkItems(config);
+  const depWorkItems = allItems.filter(wi => depIds.includes(wi.id));
 
   // Find PR branches for each dependency work item
   for (const p of projects) {
@@ -811,13 +803,7 @@ function areDependenciesMet(item, config) {
   const projects = getProjects(config);
 
   // Collect work items from ALL projects (dependencies can be cross-project)
-  let allWorkItems = [];
-  for (const p of projects) {
-    try {
-      const wi = safeJson(projectWorkItemsPath(p)) || [];
-      allWorkItems = allWorkItems.concat(wi);
-    } catch (e) { log('warn', 'read project work items for deps: ' + e.message); }
-  }
+  const allWorkItems = queries.getWorkItems(config);
   // PRD item statuses that count as "done" for dep resolution
   const PRD_MET_STATUSES = DONE_STATUSES;
 
@@ -1159,13 +1145,7 @@ function materializePlansAsWorkItems(config) {
     const statusFilter = ['missing', 'planned'];
     // Also materialize in-pr/done items that never got a work item (race with PR status sync)
     const allExistingWiIds = new Set();
-    for (const p of allProjects) {
-      for (const w of (safeJson(projectWorkItemsPath(p)) || [])) {
-        if (w.id) allExistingWiIds.add(w.id);
-      }
-    }
-    // Also check central work-items.json
-    for (const w of (safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [])) {
+    for (const w of queries.getWorkItems()) {
       if (w.id) allExistingWiIds.add(w.id);
     }
     const items = plan.missing_features.filter(f =>
@@ -2258,10 +2238,9 @@ function discoverWork(config) {
   }
 
   // Gate reviews and fixes: do not dispatch until all implement items are complete
-  const hasIncompleteImplements = projects.some(project => {
-    const items = safeJson(projectWorkItemsPath(project)) || [];
-    return items.some(i => ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement'));
-  });
+  const hasIncompleteImplements = queries.getWorkItems(config).some(i =>
+    ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement')
+  );
   if (hasIncompleteImplements) {
     if (allReviews.length > 0) {
       log('info', `Gating ${allReviews.length} reviews — implement items still in progress`);
