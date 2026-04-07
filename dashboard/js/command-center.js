@@ -639,12 +639,12 @@ async function ccExecuteAction(action) {
         break;
       }
       case 'file-bug': {
-        const res = await _ccFetch('/api/issues/create', { title: action.title, description: action.description, project: action.project, labels: action.labels });
+        const res = await _ccFetch('/api/issues/create', { title: action.title, description: action.description, labels: action.labels });
         const d = await res.json();
         if (d.url) {
           status.innerHTML = '&#128027; Bug filed: <a href="' + escHtml(d.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(action.title) + '</a>';
         } else {
-          status.innerHTML = '&#128027; Bug filed: <strong>' + escHtml(action.title) + '</strong>';
+          status.innerHTML = '&#128027; Bug filed: <strong>' + escHtml(action.title) + '</strong> — <a href="https://github.com/yemi33/minions/issues" target="_blank" style="color:var(--blue)">view issues</a>';
         }
         status.style.color = 'var(--green)';
         break;

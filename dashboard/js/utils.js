@@ -199,4 +199,42 @@ function renderMd(s) {
   return '<div class="md-content">' + html + '</div>';
 }
 
-window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText };
+function openBugReport() {
+  document.getElementById('modal-title').textContent = 'Report a Bug';
+  document.getElementById('modal-body').innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:12px">' +
+      '<p style="color:var(--muted);font-size:12px;margin:0">File a bug on the Minions repo (yemi33/minions).</p>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Title' +
+        '<input id="bug-title" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text)" placeholder="Short description of the bug"></label>' +
+      '<label style="color:var(--text);font-size:var(--text-md)">Description' +
+        '<textarea id="bug-desc" rows="6" style="display:block;width:100%;margin-top:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);resize:vertical;font-family:inherit" placeholder="Steps to reproduce, expected vs actual behavior..."></textarea></label>' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px">' +
+        '<button onclick="closeModal()" class="pr-pager-btn">Cancel</button>' +
+        '<button onclick="submitBugReport()" style="padding:6px 16px;background:var(--red);color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer">File Bug</button>' +
+      '</div>' +
+    '</div>';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function submitBugReport() {
+  var title = document.getElementById('bug-title')?.value?.trim();
+  var desc = document.getElementById('bug-desc')?.value?.trim();
+  if (!title) { alert('Title is required'); return; }
+  try { closeModal(); } catch {}
+  showToast('cmd-toast', 'Filing bug...', true);
+  try {
+    var res = await fetch('/api/issues/create', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title, description: desc || '' })
+    });
+    var d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Failed');
+    if (d.url) {
+      showToast('cmd-toast', 'Bug filed — <a href="' + d.url + '" target="_blank" style="color:var(--blue)">view issue</a>', true);
+    } else {
+      showToast('cmd-toast', 'Bug filed', true);
+    }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+}
+
+window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };

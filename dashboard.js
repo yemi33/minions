@@ -576,7 +576,7 @@ Available action types:
 - **link-pr**: Link an external PR for tracking. Fields: url (PR URL), title (optional), project (optional), autoObserve (bool, default true)
 - **archive-meeting**: Archive a completed meeting. Fields: id (meeting ID)
 - **update-routing**: Update the routing table. Fields: content (full routing.md content)
-- **file-bug**: File a bug on the Minions repo (yemi33/minions). Fields: title (short bug title), description (markdown body with repro steps, expected vs actual behavior), labels (optional array, defaults to ["bug"]). Use when the user says "file a bug", "create an issue", "report this", etc. This is for bugs in Minions itself, not the user's project.
+- **file-bug**: File a bug on the Minions repo (yemi33/minions). Fields: title (short bug title), description (markdown body), labels (optional array, defaults to ["bug"]). Trigger phrases: "file a bug", "file an issue", "report a bug", "create an issue", "this is a bug", "log a bug". This is for bugs in Minions itself, not the user's project. When filing, include repro steps and relevant context from the conversation in the description. If the user hasn't provided repro steps, ask before filing.
 
 ## Rules
 
@@ -3190,15 +3190,40 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       if (!body.title) return jsonReply(res, 400, { error: 'title required' });
 
+      // Check gh CLI is available
+      try { shared.exec('gh --version', { encoding: 'utf-8', timeout: 5000, windowsHide: true }); }
+      catch { return jsonReply(res, 500, { error: 'gh CLI not installed. Run: npm install -g gh' }); }
+
       const repo = 'yemi33/minions';
       const labels = (body.labels || ['bug']).join(',');
       const bugBody = (body.description || '') + '\n\n---\n_Filed via Minions dashboard_';
 
-      const cmd = `gh issue create --repo "${repo}" --title "${body.title.replace(/"/g, '\\"')}" --body "${bugBody.replace(/"/g, '\\"')}" --label "${labels}" 2>&1`;
-      const result = shared.exec(cmd, { encoding: 'utf-8', timeout: 30000, windowsHide: true });
-      const urlMatch = result.match(/https:\/\/github\.com\/\S+/);
-      return jsonReply(res, 200, { ok: true, url: urlMatch ? urlMatch[0] : null, output: result.trim() });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
+      // Write body to temp file to avoid shell escaping issues with quotes, backticks, newlines
+      const tmpBody = path.join(ENGINE_DIR, 'tmp', `bug-body-${Date.now()}.md`);
+      safeWrite(tmpBody, bugBody);
+      const safeTitle = body.title.replace(/["`$\\]/g, '');
+      try {
+        const cmd = `gh issue create --repo "${repo}" --title "${safeTitle}" --body-file "${tmpBody}" --label "${labels}" 2>&1`;
+        const result = shared.exec(cmd, { encoding: 'utf-8', timeout: 30000, windowsHide: true });
+        shared.safeUnlink(tmpBody);
+        // Detect gh errors in output
+        if (result.includes('authentication') || result.includes('auth login')) {
+          return jsonReply(res, 401, { error: 'GitHub auth required. Run: gh auth login' });
+        }
+        const urlMatch = result.match(/https:\/\/github\.com\/\S+/);
+        if (!urlMatch) {
+          return jsonReply(res, 500, { error: 'Issue may not have been created: ' + result.trim().slice(0, 200) });
+        }
+        return jsonReply(res, 200, { ok: true, url: urlMatch[0], output: result.trim() });
+      } catch (e) {
+        shared.safeUnlink(tmpBody);
+        throw e;
+      }
+    } catch (e) {
+      const msg = e.message || '';
+      if (msg.includes('ENOENT') || msg.includes('not found')) return jsonReply(res, 500, { error: 'gh CLI not found. Install from https://cli.github.com/' });
+      return jsonReply(res, 500, { error: msg });
+    }
   }
 
   async function handleCommandCenterNewSession(req, res) {
