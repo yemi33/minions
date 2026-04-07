@@ -658,9 +658,8 @@ const commands = {
     const config = getConfig();
     const { getProjects, projectWorkItemsPath } = require('./shared');
     const projects = getProjects(config);
-    const targetProject = opts.project
-      ? projects.find(p => p.name?.toLowerCase() === opts.project?.toLowerCase()) || projects[0]
-      : projects[0];
+    const { resolveProject } = require('./shared');
+    const targetProject = resolveProject(opts.project, projects);
     const wiPath = projectWorkItemsPath(targetProject);
     const items = safeJson(wiPath) || [];
 
@@ -704,9 +703,8 @@ const commands = {
     const config = getConfig();
     const { getProjects } = require('./shared');
     const projects = getProjects(config);
-    const targetProject = projectName
-      ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || projects[0]
-      : projects[0];
+    const { resolveProject } = require('./shared');
+    const targetProject = resolveProject(projectName, projects);
 
     if (!targetProject) {
       console.log('No projects configured. Run: minions add <dir>');

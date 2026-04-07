@@ -9,7 +9,7 @@ const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS } = shared;
+  ENGINE_DEFAULTS, resolveProject } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -151,14 +151,15 @@ function checkPlanCompletion(meta, config) {
 
   // Resolve the primary project for writing new work items (PR, verify)
   const projectName = plan.project;
-  const primaryProject = projectName
-    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
+  const primaryProject = resolveProject(projectName, projects);
   if (!primaryProject) {
     log('warn', `Plan ${planFile}: no primary project found — skipping PR/verify creation`);
     return;
   }
   const wiPath = shared.projectWorkItemsPath(primaryProject);
-  const workItems = safeJson(wiPath) || [];
+
+  // Collect new items to add, then write atomically
+  const newItems = [];
 
   // 3. For shared-branch plans, create PR work item
   if (plan.branch_strategy === 'shared-branch' && plan.feature_branch && wiPath) {
@@ -168,7 +169,7 @@ function checkPlanCompletion(meta, config) {
       const featureBranch = plan.feature_branch;
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
-      workItems.push({
+      newItems.push({
         id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
         type: 'implement', priority: 'high',
         description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.\n\n**Branch:** \`${featureBranch}\`\n**Target:** \`${mainBranch}\`\n\n## Completed Items\n${itemSummary}`,
@@ -176,7 +177,6 @@ function checkPlanCompletion(meta, config) {
         sourcePlan: planFile, itemType: 'pr',
         branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
       });
-      shared.safeWrite(wiPath, workItems);
     }
   }
 
@@ -257,7 +257,7 @@ function checkPlanCompletion(meta, config) {
       prSummary,
     ].join('\n');
 
-    workItems.push({
+    newItems.push({
       id: verifyId,
       title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
       type: 'verify',
@@ -270,8 +270,15 @@ function checkPlanCompletion(meta, config) {
       itemType: 'verify',
       project: projectName,
     });
-    shared.safeWrite(wiPath, workItems);
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+  }
+
+  // Atomically append new work items under file lock
+  if (newItems.length > 0) {
+    mutateJsonFileLocked(wiPath, (items) => {
+      items.push(...newItems);
+      return items;
+    }, { defaultValue: [] });
   }
 
   // Archive deferred until verify completes
@@ -567,12 +574,16 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
     const files = sourcePlan ? [sourcePlan] : require('fs').readdirSync(prdDir).filter(f => f.endsWith('.json'));
     for (const pf of files) {
       const fpath = path.join(prdDir, pf);
-      const plan = safeJson(fpath);
-      if (!plan?.missing_features) continue;
-      const feature = plan.missing_features.find(f => f.id === itemId);
+      const peek = safeJson(fpath);
+      if (!peek?.missing_features) continue;
+      const feature = peek.missing_features.find(f => f.id === itemId);
       if (feature && feature.status !== status) {
-        feature.status = status;
-        shared.safeWrite(fpath, plan);
+        mutateJsonFileLocked(fpath, (plan) => {
+          if (!plan?.missing_features) return plan;
+          const f = plan.missing_features.find(f => f.id === itemId);
+          if (f) f.status = status;
+          return plan;
+        });
         return;
       }
     }
@@ -818,12 +829,17 @@ async function handlePostMerge(pr, project, config, newStatus) {
       const planFiles = fs.readdirSync(prdDir).filter(f => f.endsWith('.json'));
       let updated = 0;
       for (const pf of planFiles) {
-        const plan = safeJson(path.join(prdDir, pf));
-        if (!plan?.missing_features) continue;
-        const feature = plan.missing_features.find(f => f.id === mergedItemId);
+        const prdPath = path.join(prdDir, pf);
+        const peek = safeJson(prdPath);
+        if (!peek?.missing_features) continue;
+        const feature = peek.missing_features.find(f => f.id === mergedItemId);
         if (feature && feature.status !== WI_STATUS.DONE) {
-          feature.status = WI_STATUS.DONE;
-          shared.safeWrite(path.join(prdDir, pf), plan);
+          mutateJsonFileLocked(prdPath, (plan) => {
+            if (!plan?.missing_features) return plan;
+            const f = plan.missing_features.find(f => f.id === mergedItemId);
+            if (f) f.status = WI_STATUS.DONE;
+            return plan;
+          });
           updated++;
         }
       }
@@ -835,15 +851,20 @@ async function handlePostMerge(pr, project, config, newStatus) {
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
     for (const wiPath of wiPaths) {
       try {
-        const items = safeJson(wiPath);
-        if (!items) continue;
-        const item = items.find(i => i.id === mergedItemId);
+        const peek = safeJson(wiPath);
+        if (!peek) continue;
+        const item = peek.find(i => i.id === mergedItemId);
         if (item && item.status !== WI_STATUS.DONE) {
           log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          item.status = WI_STATUS.DONE;
-          item.completedAt = ts();
-          item._mergedVia = pr.id;
-          shared.safeWrite(wiPath, items);
+          mutateJsonFileLocked(wiPath, (items) => {
+            const wi = items.find(i => i.id === mergedItemId);
+            if (wi && wi.status !== WI_STATUS.DONE) {
+              wi.status = WI_STATUS.DONE;
+              wi.completedAt = ts();
+              wi._mergedVia = pr.id;
+            }
+            return items;
+          }, { defaultValue: [] });
           break;
         }
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
@@ -1122,7 +1143,7 @@ function handleDecompositionResult(stdout, meta, config) {
         data.push({
           id: sub.id,
           title: sub.name || sub.title || `Sub-task of ${parentId}`,
-          type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
+          type: (sub.estimated_complexity === 'large') ? WORK_TYPE.IMPLEMENT_LARGE : WORK_TYPE.IMPLEMENT,
           priority: sub.priority || p.priority || 'medium',
           description: sub.description || '',
           status: WI_STATUS.PENDING,

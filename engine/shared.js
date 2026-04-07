@@ -528,6 +528,37 @@ function projectPrPath(project) {
   return path.join(projectStateDir(project), 'pull-requests.json');
 }
 
+/**
+ * Resolve a project by name (case-insensitive) from a list.
+ * Falls back to the first project if no match found.
+ * @param {string} name - Project name to look up (may be null/undefined)
+ * @param {Array} projects - Array of project objects (from getProjects)
+ * @returns {Object|undefined} The matched project, or projects[0], or undefined
+ */
+function resolveProject(name, projects) {
+  if (!name) return projects[0];
+  const lower = name.toLowerCase();
+  return projects.find(p => p.name?.toLowerCase() === lower) || projects[0];
+}
+
+/**
+ * Update PR author metrics (approved/rejected count) in metrics.json.
+ * @param {string} authorId - Agent ID (lowercase) that authored the PR
+ * @param {string} reviewStatus - 'approved' or 'changes-requested'
+ */
+function updatePrMetrics(authorId, reviewStatus) {
+  if (!authorId) return;
+  try {
+    const metricsPath = path.join(__dirname, 'metrics.json');
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics[authorId]) metrics[authorId] = {};
+      if (reviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+      else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+      return metrics;
+    });
+  } catch (err) { log('warn', `Metrics update: ${err.message}`); }
+}
+
 // ── ID Generation ────────────────────────────────────────────────────────────
 
 function nextWorkItemId(items, prefix) {
@@ -713,10 +744,12 @@ module.exports = {
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
   getProjects,
+  resolveProject,
   projectRoot,
   projectStateDir,
   projectWorkItemsPath,
   projectPrPath,
+  updatePrMetrics,
   getPrLinks,
   addPrLink,
   nextWorkItemId,

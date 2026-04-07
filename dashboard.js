@@ -22,7 +22,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, PLAN_STATUS, WORK_TYPE, MEETING_STATUS, PR_STATUS, PIPELINE_STATUS } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -242,7 +242,7 @@ function getMcpServers() {
   try {
     const home = os.homedir();
     const claudeJsonPath = path.join(home, '.claude.json');
-    const data = JSON.parse(safeRead(claudeJsonPath) || '{}');
+    const data = safeJsonObj(claudeJsonPath);
     const servers = data.mcpServers || {};
     return Object.entries(servers).map(([name, cfg]) => ({
       name,
@@ -688,7 +688,7 @@ try {
 function persistDocSessions() {
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
-  safeWrite(DOC_SESSIONS_PATH, obj);
+  mutateJsonFileLocked(DOC_SESSIONS_PATH, () => obj);
 }
 
 // Resolve session from any store (CC global or doc-specific)
@@ -950,7 +950,7 @@ function cleanDispatchEntries(matchFn) {
 
 function spawnEngine() {
   const controlPath = path.join(ENGINE_DIR, 'control.json');
-  safeWrite(controlPath, { state: 'stopped', pid: null, restarted_at: new Date().toISOString() });
+  mutateJsonFileLocked(controlPath, () => ({ state: 'stopped', pid: null, restarted_at: new Date().toISOString() }));
   const { spawn: cpSpawn } = require('child_process');
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
@@ -1022,9 +1022,9 @@ const server = http.createServer(async (req, res) => {
       if (fromArchive) {
         const plan = safeJson(prdPath);
         if (!plan) return jsonReply(res, 500, { error: 'Could not parse PRD file' });
-        plan.status = 'approved';
+        plan.status = PLAN_STATUS.APPROVED;
         delete plan.completedAt;
-        safeWrite(activePath, plan);
+        safeWrite(activePath, plan); // New file (restoring from archive), not a concurrent read-modify-write
       }
 
       // Trigger completion check
@@ -1039,7 +1039,7 @@ const server = http.createServer(async (req, res) => {
       }) || PROJECTS[0] || null;
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
-        const items = JSON.parse(safeRead(wiPath) || '[]');
+        const items = safeJsonArr(wiPath);
         const verify = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
         if (verify) {
           return jsonReply(res, 200, { ok: true, verifyId: verify.id });
@@ -1073,12 +1073,12 @@ const server = http.createServer(async (req, res) => {
         const item = items.find(i => i.id === id);
         if (!item) return items;
         // Don't reset completed items unless explicitly forced
-        if ((item.status === 'done' || item.completedAt) && !body.force) {
+        if ((item.status === WI_STATUS.DONE || item.completedAt) && !body.force) {
           found = 'already_done';
           return items;
         }
         found = true;
-        item.status = 'pending';
+        item.status = WI_STATUS.PENDING;
         item._retryCount = 0; // Reset retry counter on manual retry
         delete item.dispatched_at;
         delete item.dispatched_to;
@@ -1107,11 +1107,12 @@ const server = http.createServer(async (req, res) => {
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
-        if (cooldowns[dispatchKey]) {
-          delete cooldowns[dispatchKey];
-          safeWrite(cooldownPath, cooldowns);
-        }
+        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
+          if (cooldowns[dispatchKey]) {
+            delete cooldowns[dispatchKey];
+          }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       return jsonReply(res, 200, { ok: true, id });
@@ -1158,12 +1159,12 @@ const server = http.createServer(async (req, res) => {
       // Clean cooldown entries so item can be re-created immediately
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
-        let cleaned = false;
-        for (const key of Object.keys(cooldowns)) {
-          if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
-        }
-        if (cleaned) safeWrite(cooldownPath, cooldowns);
+        mutateJsonFileLocked(cooldownPath, (cooldowns) => {
+          for (const key of Object.keys(cooldowns)) {
+            if (key.includes(id)) { delete cooldowns[key]; }
+          }
+          return cooldowns;
+        });
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
       invalidateStatusCache();
@@ -1251,7 +1252,7 @@ const server = http.createServer(async (req, res) => {
       }
       const id = 'W-' + shared.uid();
       const item = {
-        id, title: body.title, type: body.type || 'implement',
+        id, title: body.title, type: body.type || WORK_TYPE.IMPLEMENT,
         priority: body.priority || 'medium', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
@@ -1338,20 +1339,19 @@ const server = http.createServer(async (req, res) => {
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
       // Write as a work item with type 'plan' — user must explicitly execute plan-to-prd after reviewing
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
       const item = {
-        id, title: body.title, type: 'plan',
+        id, title: body.title, type: WORK_TYPE.PLAN,
         priority: body.priority || 'high', description: body.description || '',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+        status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
         branchStrategy: body.branch_strategy || 'parallel',
       };
       if (body.project) item.project = body.project;
       if (body.agent) item.agent = body.agent;
-      items.push(item);
-      safeWrite(wiPath, items);
+      mutateJsonFileLocked(wiPath, (items) => {
+        items.push(item);
+        return items;
+      }, { defaultValue: [] });
       return jsonReply(res, 200, { ok: true, id, agent: body.agent || '' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1371,7 +1371,7 @@ const server = http.createServer(async (req, res) => {
         generated_by: 'dashboard',
         generated_at: new Date().toISOString().slice(0, 10),
         plan_summary: body.name,
-        status: 'approved',
+        status: PLAN_STATUS.APPROVED,
         requires_approval: false,
         branch_strategy: 'parallel',
         missing_features: [{
@@ -1422,18 +1422,19 @@ const server = http.createServer(async (req, res) => {
       }
       for (const wiPath of wiSyncPaths) {
         try {
-          const items = safeJson(wiPath);
-          const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-          if (wi && wi.status === 'pending') {
-            if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
-            if (body.description !== undefined) wi.description = body.description;
-            if (body.priority !== undefined) wi.priority = body.priority;
-            if (body.estimated_complexity !== undefined) {
-              wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+          mutateJsonFileLocked(wiPath, (items) => {
+            const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
+            if (wi && wi.status === WI_STATUS.PENDING) {
+              if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
+              if (body.description !== undefined) wi.description = body.description;
+              if (body.priority !== undefined) wi.priority = body.priority;
+              if (body.estimated_complexity !== undefined) {
+                wi.type = body.estimated_complexity === 'large' ? WORK_TYPE.IMPLEMENT_LARGE : WORK_TYPE.IMPLEMENT;
+              }
+              workItemSynced = true;
             }
-            safeWrite(wiPath, items);
-            workItemSynced = true;
-          }
+            return items;
+          }, { defaultValue: [] });
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -1447,36 +1448,29 @@ const server = http.createServer(async (req, res) => {
       if (!body.source || !body.itemId) return jsonReply(res, 400, { error: 'source and itemId required' });
       const planPath = resolvePlanPath(body.source);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
-      const plan = safeJsonObj(planPath);
-      if (!plan) return jsonReply(res, 500, { error: 'failed to read plan file' });
-      const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
-      if (idx < 0) return jsonReply(res, 404, { error: 'item not found in plan' });
-
-      plan.missing_features.splice(idx, 1);
-      safeWrite(planPath, plan);
+      let itemNotFound = false;
+      mutateJsonFileLocked(planPath, (plan) => {
+        const idx = (plan.missing_features || []).findIndex(f => f.id === body.itemId);
+        if (idx < 0) { itemNotFound = true; return plan; }
+        plan.missing_features.splice(idx, 1);
+        return plan;
+      });
+      if (itemNotFound) return jsonReply(res, 404, { error: 'item not found in plan' });
 
       // Also remove any materialized work item for this plan item
       let cancelled = false;
-      for (const proj of PROJECTS) {
-        const wiPath = shared.projectWorkItemsPath(proj);
+      const allWiPaths = PROJECTS.map(proj => shared.projectWorkItemsPath(proj));
+      allWiPaths.push(path.join(MINIONS_DIR, 'work-items.json'));
+      for (const wiPath of allWiPaths) {
         try {
-          const items = safeJson(wiPath);
-          const before = items.length;
-          const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
-          if (filtered.length < before) {
-            safeWrite(wiPath, filtered);
-            cancelled = true;
-          }
+          mutateJsonFileLocked(wiPath, (items) => {
+            const before = items.length;
+            const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
+            if (filtered.length < before) cancelled = true;
+            return filtered;
+          }, { defaultValue: [] });
         } catch (e) { console.error('work item cleanup:', e.message); }
       }
-      // Also check central work-items
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      try {
-        const items = safeJson(centralPath);
-        const before = items.length;
-        const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
-        if (filtered.length < before) { safeWrite(centralPath, filtered); cancelled = true; }
-      } catch (e) { console.error('central work item cleanup:', e.message); }
 
       // Clean dispatch entries for this item
       cleanDispatchEntries(d =>
@@ -1491,7 +1485,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-      const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+      const dispatch = safeJsonObj(dispatchPath);
       const active = dispatch.active || [];
       const cancelled = [];
 
@@ -1503,10 +1497,15 @@ const server = http.createServer(async (req, res) => {
         // Kill agent process
         const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
         try {
-          const status = JSON.parse(safeRead(statusPath) || '{}');
-          if (status.pid) {
+          // Read PID first, then kill outside lock, then update status atomically
+          let pidToKill = null;
+          try {
+            const status = safeJsonObj(statusPath);
+            pidToKill = status.pid || null;
+          } catch { /* status unreadable */ }
+          if (pidToKill) {
             try {
-              const safePid = shared.validatePid(status.pid);
+              const safePid = shared.validatePid(pidToKill);
               if (process.platform === 'win32') {
                 require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
               } else {
@@ -1514,10 +1513,12 @@ const server = http.createServer(async (req, res) => {
               }
             } catch { /* process may be dead or invalid PID */ }
           }
-          status.status = 'idle';
-          delete status.currentTask;
-          delete status.dispatched;
-          safeWrite(statusPath, status);
+          mutateJsonFileLocked(statusPath, (status) => {
+            status.status = 'idle';
+            delete status.currentTask;
+            delete status.dispatched;
+            return status;
+          });
         } catch (e) { console.error('agent cancel:', e.message); }
 
         cancelled.push({ agent: d.agent, task: d.task });
@@ -1867,9 +1868,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
-    const centralWi = JSON.parse(safeRead(path.join(MINIONS_DIR, 'work-items.json')) || '[]');
+    const centralWi = safeJsonArr(path.join(MINIONS_DIR, 'work-items.json'));
     const completedPrdFiles = new Set(
-      centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
+      centralWi.filter(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.status === WI_STATUS.DONE && w.planFile)
         .map(w => w.planFile)
     );
     const plans = [];
@@ -2008,12 +2009,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
-      plan.status = 'approved';
-      plan.approvedAt = new Date().toISOString();
-      plan.approvedBy = body.approvedBy || os.userInfo().username;
-      delete plan.pausedAt;
-      safeWrite(planPath, plan);
+      mutateJsonFileLocked(planPath, (plan) => {
+        plan.status = PLAN_STATUS.APPROVED;
+        plan.approvedAt = new Date().toISOString();
+        plan.approvedBy = body.approvedBy || os.userInfo().username;
+        delete plan.pausedAt;
+        return plan;
+      });
 
       // Resume paused work items across all projects
       let resumed = 0;
@@ -2061,10 +2063,11 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
-      plan.status = 'paused';
-      plan.pausedAt = new Date().toISOString();
-      safeWrite(planPath, plan);
+      mutateJsonFileLocked(planPath, (plan) => {
+        plan.status = PLAN_STATUS.PAUSED;
+        plan.pausedAt = new Date().toISOString();
+        return plan;
+      });
 
       // Propagate pause to materialized work items across all projects:
       // kill any active agent process and reset non-completed items back to pending.
@@ -2077,40 +2080,26 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const killedAgents = new Set();
       const resetItemIds = new Set();
 
-      // Read dispatch inside the lock so PID list is consistent with state being modified
-      mutateJsonFileLocked(dispatchPath, (dispatch) => {
-        for (const wiPath of wiPaths) {
-          try {
-            const items = safeJson(wiPath);
-            if (!items) continue;
-            let changed = false;
+      // Phase 1: Short lock on dispatch to snapshot active entries, then release
+      const pidsToKill = []; // { pid, agent, statusPath }
+      const dispatch = safeJson(dispatchPath) || { pending: [], active: [], completed: [] };
+
+      // Phase 2: Update work items with their own locks, collect agents to kill
+      for (const wiPath of wiPaths) {
+        try {
+          mutateJsonFileLocked(wiPath, (items) => {
             for (const w of items) {
               if (w.sourcePlan !== body.file) continue;
-              // Keep completed items as-is, reset everything else to pending.
               if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
 
               if (w.status === WI_STATUS.DISPATCHED) {
-                // Kill the agent working on this item, if any.
                 const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
                 if (activeEntry) {
                   const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                   try {
-                    const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
-                    if (agentStatus.pid) {
-                      try {
-                        const safePid = shared.validatePid(agentStatus.pid);
-                        if (process.platform === 'win32') {
-                          require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-                        } else {
-                          process.kill(safePid, 'SIGTERM');
-                        }
-                      } catch { /* process may be dead or invalid PID */ }
-                    }
-                    agentStatus.status = 'idle';
-                    delete agentStatus.currentTask;
-                    delete agentStatus.dispatched;
-                    safeWrite(statusPath, agentStatus);
-                  } catch (e) { console.error('agent reset:', e.message); }
+                    const agentStatus = safeJsonObj(statusPath);
+                    if (agentStatus.pid) pidsToKill.push({ pid: agentStatus.pid, agent: activeEntry.agent, statusPath });
+                  } catch { /* status unreadable */ }
                   killedAgents.add(activeEntry.agent);
                 }
               }
@@ -2123,23 +2112,50 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
               delete w.dispatched_to;
               delete w.failReason;
               delete w.failedAt;
-              changed = true;
               if (w.id) resetItemIds.add(w.id);
             }
-            if (changed) safeWrite(wiPath, items);
-          } catch (e) { console.error('reset work items:', e.message); }
-        }
+            return items;
+          }, { defaultValue: [] });
+        } catch (e) { console.error('reset work items:', e.message); }
+      }
 
-        // Remove dispatch active entries for reset items or killed agents.
-        dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
-        dispatch.active = dispatch.active.filter(d => {
-          const itemId = d.meta?.item?.id;
-          if (itemId && resetItemIds.has(itemId)) return false;
-          if (killedAgents.has(d.agent)) return false;
-          return true;
-        });
-        return dispatch;
-      }, { defaultValue: { pending: [], active: [], completed: [] } });
+      // Phase 3: Kill processes outside any lock
+      for (const { pid } of pidsToKill) {
+        try {
+          const safePid = shared.validatePid(pid);
+          if (process.platform === 'win32') {
+            require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+          } else {
+            process.kill(safePid, 'SIGTERM');
+          }
+        } catch { /* process may be dead or invalid PID */ }
+      }
+
+      // Phase 4: Reset agent statuses atomically
+      for (const { statusPath } of pidsToKill) {
+        try {
+          mutateJsonFileLocked(statusPath, (agentStatus) => {
+            agentStatus.status = 'idle';
+            delete agentStatus.currentTask;
+            delete agentStatus.dispatched;
+            return agentStatus;
+          });
+        } catch (e) { console.error('agent reset:', e.message); }
+      }
+
+      // Phase 5: Update dispatch entries
+      if (resetItemIds.size > 0 || killedAgents.size > 0) {
+        mutateJsonFileLocked(dispatchPath, (dp) => {
+          dp.active = Array.isArray(dp.active) ? dp.active : [];
+          dp.active = dp.active.filter(d => {
+            const itemId = d.meta?.item?.id;
+            if (itemId && resetItemIds.has(itemId)) return false;
+            if (killedAgents.has(d.agent)) return false;
+            return true;
+          });
+          return dp;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
+      }
 
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'paused', resetWorkItems: reset });
@@ -2161,7 +2177,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (!fs.existsSync(sourcePlanPath)) return jsonReply(res, 400, { error: `Source plan not found: ${plan.source_plan}` });
 
       // Collect completed item IDs from the old PRD to carry over
-      const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
+      const completedStatuses = DONE_STATUSES; // includes legacy aliases for backward compat
       const completedItems = (plan.missing_features || [])
         .filter(f => completedStatuses.has(f.status))
         .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -2171,13 +2187,14 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const config = queries.getConfig();
       for (const p of getProjects(config)) {
         const projWiPath = projectWorkItemsPath(p);
-        const projItems = safeJson(projWiPath);
-        if (!projItems) continue;
-        const filtered = projItems.filter(w => {
-          if (w.sourcePlan !== body.file) return true; // different plan, keep
-          return completedStatuses.has(w.status); // keep completed, remove pending/failed
-        });
-        if (filtered.length < projItems.length) safeWrite(projWiPath, filtered);
+        try {
+          mutateJsonFileLocked(projWiPath, (projItems) => {
+            return projItems.filter(w => {
+              if (w.sourcePlan !== body.file) return true; // different plan, keep
+              return completedStatuses.has(w.status); // keep completed, remove pending/failed
+            });
+          }, { defaultValue: [] });
+        } catch { /* project may not have WI file */ }
       }
 
       // Delete old PRD — agent will write replacement at same path
@@ -2185,30 +2202,30 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
 
-      // Dedup: check if already queued
-      const alreadyQueued = items.find(w =>
-        w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
-      );
-      if (alreadyQueued) return jsonReply(res, 200, { id: alreadyQueued.id, alreadyQueued: true });
-
+      // Dedup check + atomic insert
       const completedContext = completedItems.length > 0
         ? `\n\n**Previously completed items (preserve their status in the new PRD):**\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
         : '';
 
       const id = 'W-' + shared.uid();
-      items.push({
-        id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
-        type: 'plan-to-prd', priority: 'high',
-        description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
-        project: plan.project || '', planFile: plan.source_plan,
-        _targetPrdFile: body.file,
-      });
-      safeWrite(wiPath, items);
+      let alreadyQueued = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        const existing = items.find(w =>
+          w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
+        );
+        if (existing) { alreadyQueued = existing; return items; }
+        items.push({
+          id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
+          type: WORK_TYPE.PLAN_TO_PRD, priority: 'high',
+          description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
+          project: plan.project || '', planFile: plan.source_plan,
+          _targetPrdFile: body.file,
+        });
+        return items;
+      }, { defaultValue: [] });
+      if (alreadyQueued) return jsonReply(res, 200, { id: alreadyQueued.id, alreadyQueued: true });
       return jsonReply(res, 200, { id, file: plan.source_plan });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
@@ -2229,13 +2246,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const id = 'W-' + shared.uid();
       mutateJsonFileLocked(centralPath, (items) => {
         if (!Array.isArray(items)) items = [];
-        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && w.status !== 'failed' && w.status !== 'cancelled');
+        const existing = items.find(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === body.file && w.status !== WI_STATUS.FAILED && w.status !== WI_STATUS.CANCELLED);
         if (existing) { existingId = existing.id; return items; }
         items.push({
           id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
-          type: 'plan-to-prd', priority: 'high',
+          type: WORK_TYPE.PLAN_TO_PRD, priority: 'high',
           description: 'Plan file: plans/' + body.file,
-          status: 'pending', created: new Date().toISOString(),
+          status: WI_STATUS.PENDING, created: new Date().toISOString(),
           createdBy: 'dashboard:execute', project: body.project || '',
           planFile: body.file,
         });
@@ -2252,12 +2269,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
-      plan.status = 'rejected';
-      plan.rejectedAt = new Date().toISOString();
-      plan.rejectedBy = body.rejectedBy || os.userInfo().username;
-      if (body.reason) plan.rejectionReason = body.reason;
-      safeWrite(planPath, plan);
+      mutateJsonFileLocked(planPath, (plan) => {
+        plan.status = PLAN_STATUS.REJECTED;
+        plan.rejectedAt = new Date().toISOString();
+        plan.rejectedBy = body.rejectedBy || os.userInfo().username;
+        if (body.reason) plan.rejectionReason = body.reason;
+        return plan;
+      });
       return jsonReply(res, 200, { ok: true, status: 'rejected' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -2285,27 +2303,24 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       for (const wiInfo of wiPaths) {
         try {
-          const items = safeJson(wiInfo.path);
-          const filtered = [];
-          for (const w of items) {
-            if (w.sourcePlan === body.source) {
-              materializedPlanItemIds.add(w.id);
-              if (w.status === 'pending' || w.status === 'failed') {
-                // Delete — will re-materialize on next tick with updated plan data
-                reset++;
-                deletedItemIds.push(w.id);
+          mutateJsonFileLocked(wiInfo.path, (items) => {
+            const filtered = [];
+            for (const w of items) {
+              if (w.sourcePlan === body.source) {
+                materializedPlanItemIds.add(w.id);
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
+                  reset++;
+                  deletedItemIds.push(w.id);
+                } else {
+                  kept++;
+                  filtered.push(w);
+                }
               } else {
-                // dispatched or done — leave alone
-                kept++;
                 filtered.push(w);
               }
-            } else {
-              filtered.push(w);
             }
-          }
-          if (filtered.length < items.length) {
-            safeWrite(wiInfo.path, filtered);
-          }
+            return filtered;
+          }, { defaultValue: [] });
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -2335,7 +2350,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Read PRD content before deleting to get source_plan for cleanup
       let prdSourcePlan = null;
       if (body.file.endsWith('.json')) {
-        try { prdSourcePlan = JSON.parse(safeRead(planPath) || '{}').source_plan || null; } catch {}
+        try { prdSourcePlan = safeJsonObj(planPath).source_plan || null; } catch {}
       }
       safeUnlink(planPath);
 
@@ -2347,13 +2362,11 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
       for (const wiPath of wiPaths) {
         try {
-          const items = safeJsonArr(wiPath);
-          if (!items) continue;
-          const filtered = items.filter(w => w.sourcePlan !== body.file);
-          if (filtered.length < items.length) {
+          mutateJsonFileLocked(wiPath, (items) => {
+            const filtered = items.filter(w => w.sourcePlan !== body.file);
             cleaned += items.length - filtered.length;
-            safeWrite(wiPath, filtered);
-          }
+            return filtered;
+          }, { defaultValue: [] });
         } catch (e) { console.error('plan cleanup:', e.message); }
       }
 
@@ -2368,16 +2381,15 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (prdSourcePlan) {
         try {
           const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-          const centralItems = safeJson(centralPath) || [];
-          let changed = false;
-          for (const w of centralItems) {
-            if (w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === prdSourcePlan) {
-              w.status = 'cancelled';
-              w._cancelledBy = 'prd-deleted';
-              changed = true;
+          mutateJsonFileLocked(centralPath, (centralItems) => {
+            for (const w of centralItems) {
+              if (w.type === WORK_TYPE.PLAN_TO_PRD && w.status === WI_STATUS.DONE && w.planFile === prdSourcePlan) {
+                w.status = WI_STATUS.CANCELLED;
+                w._cancelledBy = 'prd-deleted';
+              }
             }
-          }
-          if (changed) safeWrite(centralPath, centralItems);
+            return centralItems;
+          }, { defaultValue: [] });
         } catch (e) { console.error('plan-to-prd cleanup:', e.message); }
       }
 
@@ -2404,18 +2416,21 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       let archivedSource = null;
       if (body.file.endsWith('.json')) {
         try {
-          const prd = JSON.parse(safeRead(archivePath) || '{}');
-          prd.status = 'archived';
-          prd.archivedAt = new Date().toISOString();
-          safeWrite(archivePath, prd);
+          let sourcePlan = null;
+          mutateJsonFileLocked(archivePath, (prd) => {
+            prd.status = 'archived';
+            prd.archivedAt = new Date().toISOString();
+            sourcePlan = prd.source_plan || null;
+            return prd;
+          });
           // Also archive linked source plan
-          if (prd.source_plan) {
-            const mdPath = path.join(PLANS_DIR, prd.source_plan);
+          if (sourcePlan) {
+            const mdPath = path.join(PLANS_DIR, sourcePlan);
             if (fs.existsSync(mdPath)) {
               const planArchive = path.join(PLANS_DIR, 'archive');
               if (!fs.existsSync(planArchive)) fs.mkdirSync(planArchive, { recursive: true });
-              fs.renameSync(mdPath, path.join(planArchive, prd.source_plan));
-              archivedSource = prd.source_plan;
+              fs.renameSync(mdPath, path.join(planArchive, sourcePlan));
+              archivedSource = sourcePlan;
             }
           }
         } catch { /* optional */ }
@@ -2463,28 +2478,32 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
-      plan.status = 'revision-requested';
-      plan.revision_feedback = body.feedback;
-      plan.revisionRequestedAt = new Date().toISOString();
-      plan.revisionRequestedBy = body.requestedBy || os.userInfo().username;
-      safeWrite(planPath, plan);
+      let planSummary = '';
+      let planProject = '';
+      mutateJsonFileLocked(planPath, (plan) => {
+        plan.status = PLAN_STATUS.REVISION_REQUESTED;
+        plan.revision_feedback = body.feedback;
+        plan.revisionRequestedAt = new Date().toISOString();
+        plan.revisionRequestedBy = body.requestedBy || os.userInfo().username;
+        planSummary = plan.plan_summary || '';
+        planProject = plan.project || '';
+        return plan;
+      });
 
       // Create a work item to revise the plan
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
-      items.push({
-        id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
-        type: 'plan-to-prd', priority: 'high',
-        description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
-        project: plan.project || '',
-        planFile: body.file,
-      });
-      safeWrite(wiPath, items);
+      mutateJsonFileLocked(wiPath, (items) => {
+        items.push({
+          id, title: 'Revise plan: ' + (planSummary || body.file),
+          type: WORK_TYPE.PLAN_TO_PRD, priority: 'high',
+          description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:revision',
+          project: planProject,
+          planFile: body.file,
+        });
+        return items;
+      }, { defaultValue: [] });
       return jsonReply(res, 200, { ok: true, status: 'revision-requested', workItemId: id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -2510,7 +2529,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         sourcePlanFile = body.sourcePlan;
       } else {
         // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
-        const prd = JSON.parse(safeRead(prdPath) || '{}');
+        const prd = safeJsonObj(prdPath);
         if (prd.source_plan) {
           sourcePlanFile = prd.source_plan;
         } else {
@@ -2560,11 +2579,14 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       safeWrite(sourcePlanPath, result.content);
 
       // Step 2: Pause the old PRD so it stops materializing items
-      const prd = JSON.parse(safeRead(prdPath) || '{}');
-      prd.status = 'revision-requested';
-      prd.revision_feedback = body.instruction;
-      prd.revisionRequestedAt = new Date().toISOString();
-      safeWrite(prdPath, prd);
+      let prdProject = '';
+      mutateJsonFileLocked(prdPath, (prd) => {
+        prd.status = PLAN_STATUS.REVISION_REQUESTED;
+        prd.revision_feedback = body.instruction;
+        prd.revisionRequestedAt = new Date().toISOString();
+        prdProject = prd.project || '';
+        return prd;
+      });
 
       // Step 3: Clean up pending/failed work items from old PRD
       let reset = 0, kept = 0;
@@ -2575,22 +2597,23 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const deletedItemIds = [];
       for (const wiInfo of wiPaths) {
         try {
-          const items = safeJson(wiInfo.path);
-          const filtered = [];
-          for (const w of items) {
-            if (w.sourcePlan === body.source) {
-              if (w.status === 'pending' || w.status === 'failed') {
-                reset++;
-                deletedItemIds.push(w.id);
+          mutateJsonFileLocked(wiInfo.path, (items) => {
+            const filtered = [];
+            for (const w of items) {
+              if (w.sourcePlan === body.source) {
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
+                  reset++;
+                  deletedItemIds.push(w.id);
+                } else {
+                  kept++;
+                  filtered.push(w);
+                }
               } else {
-                kept++;
                 filtered.push(w);
               }
-            } else {
-              filtered.push(w);
             }
-          }
-          if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
+            return filtered;
+          }, { defaultValue: [] });
         } catch (e) { console.error('work item deletion:', e.message); }
       }
       for (const itemId of deletedItemIds) {
@@ -2601,22 +2624,22 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
       const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let centralItems = [];
-      try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
       const wiId = 'W-' + shared.uid();
-      centralItems.push({
-        id: wiId,
-        title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
-        type: 'plan-to-prd',
-        priority: 'high',
-        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
-        status: 'pending',
-        created: new Date().toISOString(),
-        createdBy: 'dashboard:revise-and-regenerate',
-        project: prd.project || '',
-        planFile: sourcePlanFile,
-      });
-      safeWrite(centralWiPath, centralItems);
+      mutateJsonFileLocked(centralWiPath, (centralItems) => {
+        centralItems.push({
+          id: wiId,
+          title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
+          type: WORK_TYPE.PLAN_TO_PRD,
+          priority: 'high',
+          description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
+          status: WI_STATUS.PENDING,
+          created: new Date().toISOString(),
+          createdBy: 'dashboard:revise-and-regenerate',
+          project: prdProject,
+          planFile: sourcePlanFile,
+        });
+        return centralItems;
+      }, { defaultValue: [] });
 
       return jsonReply(res, 200, {
         ok: true,
@@ -2760,7 +2783,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (body.filePath && /^meetings\//.test(body.filePath) && isJson) {
           try {
             const mtg = safeJson(fullPath);
-            if (mtg && (mtg.status === 'completed' || mtg.status === 'archived')) {
+            if (mtg && (mtg.status === MEETING_STATUS.COMPLETED || mtg.status === MEETING_STATUS.ARCHIVED)) {
               return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
             }
           } catch { /* proceed with write if can't read */ }
@@ -2779,18 +2802,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                 if (!prdFile.endsWith('.json')) continue;
                 const prd = safeJson(path.join(prdDir, prdFile));
                 if (!prd || prd.source_plan !== planFile) continue;
-                if (prd.status === 'paused' || prd.status === 'rejected') continue;
+                if (prd.status === PLAN_STATUS.PAUSED || prd.status === PLAN_STATUS.REJECTED) continue;
                 // Found an active PRD linked to this plan — pause it
-                prd.status = 'paused';
-                prd.pausedAt = new Date().toISOString();
-                prd.pausedBy = 'plan-steering';
-                safeWrite(path.join(prdDir, prdFile), prd);
+                mutateJsonFileLocked(path.join(prdDir, prdFile), (p) => {
+                  p.status = PLAN_STATUS.PAUSED;
+                  p.pausedAt = new Date().toISOString();
+                  p.pausedBy = 'plan-steering';
+                  return p;
+                });
                 pausedPrd = prdFile;
                 // Pause work items linked to this PRD (sourcePlan = PRD filename)
                 const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
                 for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
                 const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-                const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+                const dispatch = safeJsonObj(dispatchPath);
                 const killedAgents = new Set();
                 const resetItemIds = new Set();
                 for (const wiPath of wiPaths) {
@@ -2805,10 +2830,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                           if (activeEntry) {
                             const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                             try {
-                              const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
-                              if (agentStatus.pid) {
+                              // Read PID, kill outside lock, then update atomically
+                              let pidToKill = null;
+                              try {
+                                const st = safeJsonObj(statusPath);
+                                pidToKill = st.pid || null;
+                              } catch { /* status unreadable */ }
+                              if (pidToKill) {
                                 try {
-                                  const safePid = shared.validatePid(agentStatus.pid);
+                                  const safePid = shared.validatePid(pidToKill);
                                   if (process.platform === 'win32') {
                                     require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
                                   } else {
@@ -2816,10 +2846,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                                   }
                                 } catch { /* process may be dead or invalid PID */ }
                               }
-                              agentStatus.status = 'idle';
-                              delete agentStatus.currentTask;
-                              delete agentStatus.dispatched;
-                              safeWrite(statusPath, agentStatus);
+                              mutateJsonFileLocked(statusPath, (agentStatus) => {
+                                agentStatus.status = 'idle';
+                                delete agentStatus.currentTask;
+                                delete agentStatus.dispatched;
+                                return agentStatus;
+                              });
                             } catch { /* agent reset */ }
                             killedAgents.add(activeEntry.agent);
                           }
@@ -3114,8 +3146,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         workSources: { pullRequests: { enabled: true, cooldownMinutes: 30 }, workItems: { enabled: true, cooldownMinutes: 0 } }
       };
 
-      config.projects.push(project);
-      safeWrite(configPath, config);
+      mutateJsonFileLocked(configPath, (cfg) => {
+        cfg.projects = cfg.projects || [];
+        cfg.projects.push(project);
+        return cfg;
+      });
       reloadConfig(); // Update in-memory project list immediately
 
       // Create project-local state files
@@ -3333,24 +3368,24 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!id) id = 'schedule';
     }
 
-    reloadConfig();
-    if (!CONFIG.schedules) CONFIG.schedules = [];
-
-    // If auto-generated ID collides, append a short numeric suffix
-    if (CONFIG.schedules.some(s => s.id === id)) {
-      let suffix = 2;
-      while (CONFIG.schedules.some(s => s.id === `${id}-${suffix}`)) suffix++;
-      id = `${id}-${suffix}`;
-    }
-
-    const sched = { id, cron, title, type: type || 'implement', enabled: enabled !== false };
+    const sched = { id, cron, title, type: type || WORK_TYPE.IMPLEMENT, enabled: enabled !== false };
     if (project) sched.project = project;
     if (agent) sched.agent = agent;
     if (description) sched.description = description;
     if (priority) sched.priority = priority;
 
-    CONFIG.schedules.push(sched);
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
+    mutateJsonFileLocked(path.join(MINIONS_DIR, 'config.json'), (config) => {
+      if (!config.schedules) config.schedules = [];
+      // If auto-generated ID collides, append a short numeric suffix
+      if (config.schedules.some(s => s.id === sched.id)) {
+        let suffix = 2;
+        while (config.schedules.some(s => s.id === `${sched.id}-${suffix}`)) suffix++;
+        sched.id = `${sched.id}-${suffix}`;
+      }
+      config.schedules.push(sched);
+      return config;
+    });
+    reloadConfig();
     invalidateStatusCache();
     return jsonReply(res, 200, { ok: true, schedule: sched });
   }
@@ -3360,23 +3395,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const { id, cron, title, type, project, agent, description, priority, enabled } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
 
+    let schedNotFound = false;
+    let updatedSched = null;
+    mutateJsonFileLocked(path.join(MINIONS_DIR, 'config.json'), (config) => {
+      if (!config.schedules) { schedNotFound = true; return config; }
+      const sched = config.schedules.find(s => s.id === id);
+      if (!sched) { schedNotFound = true; return config; }
+
+      if (cron !== undefined) sched.cron = cron;
+      if (title !== undefined) sched.title = title;
+      if (type !== undefined) sched.type = type;
+      if (project !== undefined) sched.project = project || null;
+      if (agent !== undefined) sched.agent = agent || null;
+      if (description !== undefined) sched.description = description;
+      if (priority !== undefined) sched.priority = priority;
+      if (enabled !== undefined) sched.enabled = enabled;
+      updatedSched = { ...sched };
+      return config;
+    });
+    if (schedNotFound) return jsonReply(res, 404, { error: 'Schedule not found' });
     reloadConfig();
-    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
-    const sched = CONFIG.schedules.find(s => s.id === id);
-    if (!sched) return jsonReply(res, 404, { error: 'Schedule not found' });
-
-    if (cron !== undefined) sched.cron = cron;
-    if (title !== undefined) sched.title = title;
-    if (type !== undefined) sched.type = type;
-    if (project !== undefined) sched.project = project || null;
-    if (agent !== undefined) sched.agent = agent || null;
-    if (description !== undefined) sched.description = description;
-    if (priority !== undefined) sched.priority = priority;
-    if (enabled !== undefined) sched.enabled = enabled;
-
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
     invalidateStatusCache();
-    return jsonReply(res, 200, { ok: true, schedule: sched });
+    return jsonReply(res, 200, { ok: true, schedule: updatedSched });
   }
 
   async function handleSchedulesDelete(req, res) {
@@ -3384,13 +3424,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     const { id } = body;
     if (!id) return jsonReply(res, 400, { error: 'id required' });
 
+    let schedNotFound = false;
+    mutateJsonFileLocked(path.join(MINIONS_DIR, 'config.json'), (config) => {
+      if (!config.schedules) { schedNotFound = true; return config; }
+      const idx = config.schedules.findIndex(s => s.id === id);
+      if (idx < 0) { schedNotFound = true; return config; }
+      config.schedules.splice(idx, 1);
+      return config;
+    });
+    if (schedNotFound) return jsonReply(res, 404, { error: 'Schedule not found' });
     reloadConfig();
-    if (!CONFIG.schedules) return jsonReply(res, 404, { error: 'No schedules configured' });
-    const idx = CONFIG.schedules.findIndex(s => s.id === id);
-    if (idx < 0) return jsonReply(res, 404, { error: 'Schedule not found' });
-
-    CONFIG.schedules.splice(idx, 1);
-    safeWrite(path.join(MINIONS_DIR, 'config.json'), CONFIG);
     invalidateStatusCache();
     return jsonReply(res, 200, { ok: true });
   }
@@ -3435,66 +3478,67 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       const configPath = path.join(MINIONS_DIR, 'config.json');
-      const config = safeJson(configPath) || {};
-      if (!config.engine) config.engine = {};
-      if (!config.claude) config.claude = {};
-      if (!config.agents) config.agents = {};
+      mutateJsonFileLocked(configPath, (config) => {
+        if (!config.engine) config.engine = {};
+        if (!config.claude) config.claude = {};
+        if (!config.agents) config.agents = {};
 
-      if (body.engine) {
-        const e = body.engine;
-        const D = shared.ENGINE_DEFAULTS;
-        // Numeric fields: { key: [min, max?] }
-        const numericFields = {
-          tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
-          agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
-          worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
-          idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
-          meetingRoundTimeout: [60000],
-          versionCheckInterval: [60000],
-        };
-        for (const [key, [min, max]] of Object.entries(numericFields)) {
-          if (e[key] !== undefined) {
-            let val = Number(e[key]) || D[key];
-            val = Math.max(min, val);
-            if (max !== undefined) val = Math.min(max, val);
-            config.engine[key] = val;
+        if (body.engine) {
+          const e = body.engine;
+          const D = shared.ENGINE_DEFAULTS;
+          // Numeric fields: { key: [min, max?] }
+          const numericFields = {
+            tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
+            agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
+            worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
+            idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
+            meetingRoundTimeout: [60000],
+            versionCheckInterval: [60000],
+          };
+          for (const [key, [min, max]] of Object.entries(numericFields)) {
+            if (e[key] !== undefined) {
+              let val = Number(e[key]) || D[key];
+              val = Math.max(min, val);
+              if (max !== undefined) val = Math.min(max, val);
+              config.engine[key] = val;
+            }
+          }
+          // String fields
+          if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
+          // Boolean fields
+          for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
+            if (e[key] !== undefined) config.engine[key] = !!e[key];
+          }
+          // Eval loop settings
+          if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
+          if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        }
+
+        if (body.claude) {
+          for (const key of ['allowedTools', 'outputFormat']) {
+            if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
+          }
+          if (body.claude.permissionMode !== undefined) {
+            const valid = ['bypassPermissions', 'auto', 'default'];
+            config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
           }
         }
-        // String fields
-        if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
-        // Boolean fields
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
-          if (e[key] !== undefined) config.engine[key] = !!e[key];
-        }
-        // Eval loop settings
-        if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
-        if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
-      }
 
-      if (body.claude) {
-        for (const key of ['allowedTools', 'outputFormat']) {
-          if (body.claude[key] !== undefined) config.claude[key] = String(body.claude[key]);
-        }
-        if (body.claude.permissionMode !== undefined) {
-          const valid = ['bypassPermissions', 'auto', 'default'];
-          config.claude.permissionMode = valid.includes(body.claude.permissionMode) ? body.claude.permissionMode : 'bypassPermissions';
-        }
-      }
-
-      if (body.agents) {
-        for (const [id, updates] of Object.entries(body.agents)) {
-          if (!config.agents[id]) continue;
-          if (updates.role !== undefined) config.agents[id].role = String(updates.role);
-          if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
-          if (updates.monthlyBudgetUsd !== undefined) {
-            const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
-            if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
-            else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+        if (body.agents) {
+          for (const [id, updates] of Object.entries(body.agents)) {
+            if (!config.agents[id]) continue;
+            if (updates.role !== undefined) config.agents[id].role = String(updates.role);
+            if (updates.skills !== undefined) config.agents[id].skills = Array.isArray(updates.skills) ? updates.skills : String(updates.skills).split(',').map(s => s.trim()).filter(Boolean);
+            if (updates.monthlyBudgetUsd !== undefined) {
+              const val = updates.monthlyBudgetUsd === '' || updates.monthlyBudgetUsd === null ? undefined : Number(updates.monthlyBudgetUsd);
+              if (val === undefined || isNaN(val)) delete config.agents[id].monthlyBudgetUsd;
+              else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
+            }
           }
         }
-      }
 
-      safeWrite(configPath, config);
+        return config;
+      });
       // Refresh in-memory CONFIG so subsequent reads see the update
       reloadConfig();
       invalidateStatusCache();
@@ -3514,11 +3558,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleSettingsReset(req, res) {
     try {
-      const config = queries.getConfig();
-      config.engine = { ...shared.ENGINE_DEFAULTS };
-      config.claude = { ...shared.DEFAULT_CLAUDE };
-      config.agents = { ...shared.DEFAULT_AGENTS };
-      safeWrite(path.join(MINIONS_DIR, 'config.json'), config);
+      mutateJsonFileLocked(path.join(MINIONS_DIR, 'config.json'), (config) => {
+        config.engine = { ...shared.ENGINE_DEFAULTS };
+        config.claude = { ...shared.DEFAULT_CLAUDE };
+        config.agents = { ...shared.DEFAULT_AGENTS };
+        return config;
+      });
       reloadConfig();
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
@@ -3639,15 +3684,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const paths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
       for (const wiPath of paths) {
-        const items = JSON.parse(safeRead(wiPath) || '[]');
-        const item = items.find(i => i.id === id);
-        if (!item) continue;
-        item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
-        safeWrite(wiPath, items);
-        const agent = item.dispatched_to || item.agent || 'unknown';
+        let foundItem = null;
+        mutateJsonFileLocked(wiPath, (items) => {
+          const item = items.find(i => i.id === id);
+          if (item) {
+            item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
+            foundItem = { ...item };
+          }
+          return items;
+        }, { defaultValue: [] });
+        if (!foundItem) continue;
+        const agent = foundItem.dispatched_to || foundItem.agent || 'unknown';
         const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
           '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
-          '**Item:** ' + (item.title || id) + '\n' +
+          '**Item:** ' + (foundItem.title || id) + '\n' +
           '**Agent:** ' + agent + '\n' +
           (comment ? '**Feedback:** ' + comment + '\n' : '');
         const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
@@ -3726,7 +3776,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Determine project
       reloadConfig();
       const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
+      const targetProject = shared.resolveProject(projectName, projects);
       const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
 
       // Extract PR number from URL
@@ -3745,7 +3795,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           agent: 'human',
           branch: '',
           reviewStatus: autoObserve ? 'pending' : 'none',
-          status: autoObserve ? 'active' : 'linked',
+          status: autoObserve ? PR_STATUS.ACTIVE : 'linked',
           created: new Date().toISOString(),
           url,
           prdItems: [],
@@ -3946,8 +3996,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { updateRunStage, getActiveRun } = require('./engine/pipeline');
       const run = getActiveRun(body.id);
       if (!run) return jsonReply(res, 404, { error: 'No active run' });
-      if (run.stages[body.stageId]?.status !== 'waiting-human') return jsonReply(res, 400, { error: 'Stage is not waiting for human' });
-      updateRunStage(body.id, run.runId, body.stageId, { status: 'completed', completedAt: new Date().toISOString() });
+      if (run.stages[body.stageId]?.status !== PIPELINE_STATUS.WAITING_HUMAN) return jsonReply(res, 400, { error: 'Stage is not waiting for human' });
+      updateRunStage(body.id, run.runId, body.stageId, { status: PIPELINE_STATUS.COMPLETED, completedAt: new Date().toISOString() });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
     }},
@@ -4034,9 +4084,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Engine
     { method: 'POST', path: '/api/engine/wakeup', desc: 'Trigger immediate engine tick via control.json signal', handler: async (req, res) => {
       const controlPath = path.join(MINIONS_DIR, 'engine', 'control.json');
-      const control = shared.safeJson(controlPath) || {};
-      control._wakeupAt = Date.now();
-      shared.safeWrite(controlPath, control);
+      shared.mutateJsonFileLocked(controlPath, (control) => {
+        control._wakeupAt = Date.now();
+        return control;
+      });
       return jsonReply(res, 200, { ok: true, message: 'Wakeup signal sent' });
     }},
     { method: 'POST', path: '/api/engine/restart', desc: 'Force-kill engine and restart immediately', handler: handleEngineRestart },
