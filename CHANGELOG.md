@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.530 (2026-04-07)
+
+### Fixes
+-  post-review live check ignores 'pending' to prevent review loop
+-  auto-dispatch fix when review agent requests changes
+
 ## 0.1.528 (2026-04-07)
 
 ### Features
