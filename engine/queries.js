@@ -254,7 +254,9 @@ function getAgentDetail(id) {
   const agentDir = path.join(AGENTS_DIR, id);
   const charter = safeRead(path.join(agentDir, 'charter.md')) || 'No charter found.';
   const history = safeRead(path.join(agentDir, 'history.md')) || 'No history yet.';
-  const outputLog = safeRead(path.join(agentDir, 'output.log')) || '';
+  // Only send last 50KB of output.log — full logs can be megabytes and slow down the API
+  let outputLog = safeRead(path.join(agentDir, 'output.log')) || '';
+  if (outputLog.length > 50000) outputLog = '…(truncated — showing last 50KB)\n\n' + outputLog.slice(-50000);
 
   const statusData = getAgentStatus(id); // derives from dispatch.json
 

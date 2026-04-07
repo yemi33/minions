@@ -33,6 +33,11 @@ async function openAgentDetail(id) {
     '<span style="color:var(--muted)">' + escHtml(agent.lastAction) + '</span>' +
     (agent.resultSummary ? '<div style="margin-top:4px;font-size:11px;color:var(--text);line-height:1.4">' + renderMd(agent.resultSummary.slice(0, 300)) + '</div>' : '');
 
+  // Show panel immediately with loading state — don't wait for API
+  document.getElementById('detail-content').innerHTML = '<div style="padding:24px;text-align:center;color:var(--muted)">Loading...</div>';
+  document.getElementById('detail-overlay').classList.add('open');
+  document.getElementById('detail-panel').classList.add('open');
+
   try {
     const detail = await safeFetch('/api/agent/' + id).then(r => r.json());
     renderDetailTabs(detail);
@@ -46,8 +51,6 @@ async function openAgentDetail(id) {
       '</div>';
   }
 
-  document.getElementById('detail-overlay').classList.add('open');
-  document.getElementById('detail-panel').classList.add('open');
 }
 
 window.MinionsAgents = { renderAgents, openAgentDetail };
