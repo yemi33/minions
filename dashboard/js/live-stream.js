@@ -153,13 +153,39 @@ async function sendSteering() {
       const d = await res.json().catch(() => ({}));
       if (pending) { pending.textContent = '\u26A0 Failed: ' + (d.error || 'unknown'); pending.style.opacity = '1'; }
     } else {
-      if (pending) pending.textContent = '\u2713 Queued — agent will see this on next turn';
+      if (pending) {
+        pending.textContent = '\u2713 Sent — waiting for agent to respond...';
+        // Poll for agent acknowledgment (new output after steering)
+        let ackChecks = 0;
+        const ackInterval = setInterval(async () => {
+          ackChecks++;
+          if (ackChecks > 30) { // Give up after 30s
+            clearInterval(ackInterval);
+            if (pending.textContent.includes('waiting')) pending.textContent = '\u2713 Sent — agent may respond shortly';
+            return;
+          }
+          try {
+            const liveRes = await fetch('/api/agent/' + encodeURIComponent(currentAgentId) + '/live-output');
+            const text = await liveRes.text();
+            // Check if there's new output after the [human-steering] line
+            const steerIdx = text.lastIndexOf('[human-steering]');
+            if (steerIdx >= 0) {
+              const afterSteer = text.slice(steerIdx + 100);
+              // Look for assistant response (JSON with type:assistant or readable text)
+              if (afterSteer.length > 200 && (afterSteer.includes('"type":"assistant"') || afterSteer.includes('"type":"text"'))) {
+                clearInterval(ackInterval);
+                pending.textContent = '\u2713 Agent acknowledged';
+                pending.style.color = 'var(--green)';
+              }
+            }
+          } catch {}
+        }, 1000);
+      }
     }
   } catch (e) {
     const pending = document.getElementById('steer-pending');
     if (pending) { pending.textContent = '\u26A0 ' + e.message; pending.style.opacity = '1'; }
   } finally {
-    // Resume polling after a short delay so the log has the [human-steering] line
     setTimeout(() => { _steerInFlight = false; refreshLiveOutput(); }, 500);
   }
 }
