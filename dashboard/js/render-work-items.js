@@ -175,8 +175,8 @@ async function submitWorkItemEdit(id, source, e) {
   const refsRaw = document.getElementById('wi-edit-refs')?.value || '';
   const references = refsRaw.split('\n').filter(function(l) { return l.trim(); }).map(function(l) {
     var parts = l.split('|').map(function(s) { return s.trim(); });
-    return { url: parts[0], title: parts[1] || parts[0], type: parts[2] || 'link' };
-  });
+    return { url: parts[0] || '', title: parts[1] || parts[0] || '', type: parts[2] || 'link' };
+  }).filter(function(r) { return r.url; });
   const acRaw = document.getElementById('wi-edit-ac')?.value || '';
   const acceptanceCriteria = acRaw.split('\n').filter(function(l) { return l.trim(); });
   if (!title) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Title is required'); return; }
@@ -387,8 +387,8 @@ async function _submitCreateWorkItem(e) {
   const refsRaw = document.getElementById('wi-new-refs')?.value || '';
   const references = refsRaw.split('\n').filter(l => l.trim()).map(l => {
     const parts = l.split('|').map(s => s.trim());
-    return { url: parts[0], title: parts[1] || parts[0], type: parts[2] || 'link' };
-  });
+    return { url: parts[0] || '', title: parts[1] || parts[0] || '', type: parts[2] || 'link' };
+  }).filter(r => r.url);
 
   try {
     const body = { title, description: desc, type, priority };
