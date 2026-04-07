@@ -174,51 +174,70 @@ const LOCK_STALE_MS = 60000; // 60 seconds — force-remove locks older than thi
 
 function withFileLock(lockPath, fn, {
   timeoutMs = 5000,
-  retryDelayMs = 25
+  retryDelayMs = 25,
+  retries = 0,
+  retryBackoffMs = 1000
 } = {}) {
-  const start = Date.now();
-  let fd = null;
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const dir = path.dirname(lockPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fd = fs.openSync(lockPath, 'wx');
-      break;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      // Check for stale lock — if lock file is older than LOCK_STALE_MS, force-remove it
+  let lastErr = null;
+  const maxAttempts = 1 + Math.max(0, retries);
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      // Exponential backoff between retry attempts: retryBackoffMs * 2^(attempt-1)
+      const backoff = retryBackoffMs * Math.pow(2, attempt - 1);
+      sleepMs(backoff);
+    }
+    const start = Date.now();
+    let fd = null;
+    while (Date.now() - start < timeoutMs) {
       try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-          try {
-            fs.unlinkSync(lockPath);
-          } catch (unlinkErr) {
-            // ENOENT: another process deleted the lock between stat and unlink — safe to retry
-            if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
+        const dir = path.dirname(lockPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fd = fs.openSync(lockPath, 'wx');
+        break;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        // Check for stale lock — if lock file is older than LOCK_STALE_MS, force-remove it
+        try {
+          const stat = fs.statSync(lockPath);
+          if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+            try {
+              fs.unlinkSync(lockPath);
+            } catch (unlinkErr) {
+              // ENOENT: another process deleted the lock between stat and unlink — safe to retry
+              if (unlinkErr.code !== 'ENOENT') throw unlinkErr;
+            }
+            continue; // lock just removed — retry immediately
           }
-          continue; // lock just removed — retry immediately
+        } catch (staleErr) {
+          // ENOENT from statSync: lock file disappeared between EEXIST and stat — retry will succeed
+          if (staleErr.code !== 'ENOENT') throw staleErr;
         }
-      } catch (staleErr) {
-        // ENOENT from statSync: lock file disappeared between EEXIST and stat — retry will succeed
-        if (staleErr.code !== 'ENOENT') throw staleErr;
+        sleepMs(retryDelayMs);
       }
-      sleepMs(retryDelayMs);
+    }
+    if (fd === null) {
+      lastErr = new Error(`Lock timeout: ${lockPath}`);
+      continue; // retry if attempts remain
+    }
+
+    try {
+      return fn();
+    } finally {
+      try { fs.closeSync(fd); } catch { /* cleanup */ }
+      try { fs.unlinkSync(lockPath); } catch { /* cleanup */ }
     }
   }
-  if (fd === null) throw new Error(`Lock timeout: ${lockPath}`);
-
-  try {
-    return fn();
-  } finally {
-    try { fs.closeSync(fd); } catch { /* cleanup */ }
-    try { fs.unlinkSync(lockPath); } catch { /* cleanup */ }
-  }
+  throw lastErr;
 }
 
 function mutateJsonFileLocked(filePath, mutateFn, {
-  defaultValue = {}
+  defaultValue = {},
+  lockRetries,
+  lockRetryBackoffMs
 } = {}) {
   const lockPath = `${filePath}.lock`;
+  const retries = lockRetries ?? ENGINE_DEFAULTS.lockRetries;
+  const retryBackoffMs = lockRetryBackoffMs ?? ENGINE_DEFAULTS.lockRetryBackoffMs;
   return withFileLock(lockPath, () => {
     let data = safeJson(filePath);
     if (data === null || typeof data !== 'object') data = Array.isArray(defaultValue) ? [...defaultValue] : { ...defaultValue };
@@ -229,7 +248,7 @@ function mutateJsonFileLocked(filePath, mutateFn, {
     const finalData = next === undefined ? data : next;
     safeWrite(filePath, finalData);
     return finalData;
-  });
+  }, { retries, retryBackoffMs });
 }
 
 /**
@@ -479,6 +498,8 @@ const ENGINE_DEFAULTS = {
   versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
   logFlushInterval: 5000, // 5s — how often to flush buffered log entries to disk
   logBufferSize: 50, // flush immediately when buffer exceeds this many entries
+  lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
+  lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
