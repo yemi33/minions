@@ -2160,22 +2160,25 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const planPath = path.join(MINIONS_DIR, 'plans', body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
 
-      // Check if already queued
+      // Atomic check-and-insert to prevent duplicates and races with engine
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      const items = JSON.parse(safeRead(centralPath) || '[]');
-      const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && w.status !== 'failed' && w.status !== 'cancelled');
-      if (existing) return jsonReply(res, 200, { ok: true, id: existing.id, alreadyQueued: true });
-
+      let existingId = null;
       const id = 'W-' + shared.uid();
-      items.push({
-        id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
-        type: 'plan-to-prd', priority: 'high',
-        description: 'Plan file: plans/' + body.file,
-        status: 'pending', created: new Date().toISOString(),
-        createdBy: 'dashboard:execute', project: body.project || '',
-        planFile: body.file,
-      });
-      safeWrite(centralPath, items);
+      mutateJsonFileLocked(centralPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && w.status !== 'failed' && w.status !== 'cancelled');
+        if (existing) { existingId = existing.id; return items; }
+        items.push({
+          id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
+          type: 'plan-to-prd', priority: 'high',
+          description: 'Plan file: plans/' + body.file,
+          status: 'pending', created: new Date().toISOString(),
+          createdBy: 'dashboard:execute', project: body.project || '',
+          planFile: body.file,
+        });
+        return items;
+      }, { defaultValue: [] });
+      if (existingId) return jsonReply(res, 200, { ok: true, id: existingId, alreadyQueued: true });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
