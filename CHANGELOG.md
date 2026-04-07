@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.523 (2026-04-07)
+
+### Other
+- perf: parallelize ADO PR polling within each project
+
 ## 0.1.522 (2026-04-07)
 
 ### Features
