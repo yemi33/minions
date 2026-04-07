@@ -216,9 +216,13 @@ async function kbOpenItem(category, file) {
   try {
     const content = await fetch('/api/knowledge/' + category + '/' + encodeURIComponent(file)).then(r => r.text());
     const display = content.replace(/^---[\s\S]*?---\n*/m, '');
+    var pk = kbPinKey(category, file);
+    var pinned = isPinned(pk);
     document.getElementById('modal-title').textContent = file;
     const modalBody = document.getElementById('modal-body');
-    modalBody.innerHTML = renderMd(display);
+    modalBody.innerHTML =
+      '<div style="margin-bottom:12px"><button class="pr-pager-btn pin-btn' + (pinned ? ' pinned' : '') + '" style="font-size:10px;padding:3px 10px" data-pin-key="' + escHtml(pk) + '" onclick="_togglePinAndRefresh(this.dataset.pinKey,\'kb\');kbOpenItem(\'' + escHtml(category) + '\',\'' + escHtml(file) + '\')">' + (pinned ? 'Unpin' : 'Pin to top') + '</button></div>' +
+      renderMd(display);
     _modalDocContext = { title: file, content: display, selection: '' };
     _modalFilePath = 'knowledge/' + category + '/' + file; showModalQa();
     // Clear notification badge when opening this document
