@@ -6107,6 +6107,9 @@ async function main() {
 
     // Build fix escalation (#484)
     await testBuildFixEscalation();
+
+    // Branch-level dispatch mutex (#493)
+    await testBranchMutex();
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -9284,6 +9287,191 @@ async function testBuildFixEscalation() {
     assert.ok(max > 0, 'maxBuildFixAttempts must be positive');
     assert.strictEqual(max, Math.floor(max), 'maxBuildFixAttempts must be an integer');
     assert.strictEqual(max, 3, 'default maxBuildFixAttempts should be 3');
+  });
+}
+
+// ─── Branch Mutex (#493) ───────────────────────────────────────────────────
+
+async function testBranchMutex() {
+  console.log('\n── Branch Mutex (#493): prevent concurrent dispatch to same branch ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const cooldownSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
+
+  // ── Source-level tests ──
+
+  await test('cooldown.js exports isBranchActive helper', () => {
+    assert.ok(cooldownSrc.includes('function isBranchActive('), 'Should define isBranchActive function');
+    assert.ok(cooldownSrc.includes('isBranchActive'), 'Should export isBranchActive');
+  });
+
+  await test('isBranchActive uses sanitizeBranch for normalized comparison', () => {
+    assert.ok(cooldownSrc.includes('sanitizeBranch(branch)') || cooldownSrc.includes('sanitizeBranch(d'),
+      'isBranchActive should normalize branch names via sanitizeBranch');
+  });
+
+  await test('engine.js imports isBranchActive from cooldown', () => {
+    assert.ok(engineSrc.includes('isBranchActive'),
+      'engine.js should import isBranchActive from cooldown module');
+  });
+
+  await test('dispatch loop tracks lockedBranches from active dispatches', () => {
+    assert.ok(engineSrc.includes('lockedBranches'),
+      'Dispatch loop should build lockedBranches set from active dispatches');
+  });
+
+  await test('dispatch loop skips items with locked branch', () => {
+    const loopMatch = engineSrc.match(/lockedBranches[\s\S]*?busyAgents\.add\(item\.agent\)/);
+    assert.ok(loopMatch, 'Should have lockedBranches guard in dispatch loop');
+    assert.ok(loopMatch[0].includes('lockedBranches.has(itemBranch)'),
+      'Should check if item branch is in lockedBranches');
+    assert.ok(loopMatch[0].includes('continue'),
+      'Should skip items with locked branch');
+  });
+
+  await test('dispatch loop adds newly dispatched branches to lockedBranches', () => {
+    assert.ok(engineSrc.includes('lockedBranches.add(itemBranch)'),
+      'Should track branches being dispatched to prevent two pending items on same branch');
+  });
+
+  await test('discoverFromWorkItems checks branch mutex before dispatch', () => {
+    assert.ok(engineSrc.includes("item._pendingReason !== 'branch_locked'") || engineSrc.includes("'branch_locked'"),
+      'Should annotate work items blocked by branch mutex');
+    assert.ok(engineSrc.includes('Branch mutex: skipping'),
+      'Should log when skipping due to branch mutex');
+  });
+
+  await test('discoverFromPrs checks branch mutex', () => {
+    const prDiscoverSection = engineSrc.match(/function discoverFromPrs[\s\S]*?return newWork/);
+    assert.ok(prDiscoverSection, 'discoverFromPrs should exist');
+    assert.ok(prDiscoverSection[0].includes('isBranchActive'),
+      'discoverFromPrs should check isBranchActive before creating PR dispatch items');
+  });
+
+  await test('skipReason includes branch_locked for dashboard visibility', () => {
+    assert.ok(engineSrc.includes("reason = 'branch_locked'"),
+      'Should set skipReason to branch_locked for pending items waiting on a locked branch');
+  });
+
+  await test('postLockedBranches built from post-dispatch active set', () => {
+    assert.ok(engineSrc.includes('postLockedBranches'),
+      'Skip-reason annotation should rebuild locked branches from post-dispatch state');
+  });
+
+  // ── Behavioral tests ──
+
+  await test('isBranchActive logic: returns conflict for matching branch, null otherwise', () => {
+    // Behavioral test: simulate the isBranchActive algorithm directly
+    const { sanitizeBranch } = shared;
+    function isBranchActiveLogic(branch, activeDispatches) {
+      if (!branch) return null;
+      const normalized = sanitizeBranch(branch);
+      return activeDispatches.find(d => {
+        const dBranch = d.meta?.branch;
+        return dBranch && sanitizeBranch(dBranch) === normalized;
+      }) || null;
+    }
+
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-abc123' } },
+      { id: 'ripley-review-2', agent: 'ripley', meta: { branch: 'work/P-xyz789' } },
+    ];
+
+    const conflict = isBranchActiveLogic('work/P-abc123', active);
+    assert.ok(conflict, 'Should return conflicting dispatch for active branch');
+    assert.strictEqual(conflict.id, 'dallas-impl-1', 'Should return the matching active dispatch');
+
+    const noConflict = isBranchActiveLogic('work/P-new-branch', active);
+    assert.strictEqual(noConflict, null, 'Should return null for non-active branch');
+
+    const nullBranch = isBranchActiveLogic(null, active);
+    assert.strictEqual(nullBranch, null, 'Should return null for null branch');
+
+    const emptyBranch = isBranchActiveLogic('', active);
+    assert.strictEqual(emptyBranch, null, 'Should return null for empty branch');
+  });
+
+  await test('dispatch loop branch mutex: same branch blocked, different branch allowed', () => {
+    // Simulate the dispatch loop logic
+    const { sanitizeBranch } = shared;
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-abc123' } },
+    ];
+    const pending = [
+      { id: 'ralph-fix-1', agent: 'ralph', type: 'fix', meta: { branch: 'work/P-abc123' } },  // same branch — blocked
+      { id: 'ripley-review-1', agent: 'ripley', type: 'review', meta: { branch: 'work/P-xyz789' } },  // different branch — allowed
+      { id: 'lambert-impl-1', agent: 'lambert', type: 'implement', meta: { branch: 'work/P-new' } },  // different branch — allowed
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    const lockedBranches = new Set();
+    for (const d of active) {
+      if (d.meta?.branch) lockedBranches.add(sanitizeBranch(d.meta.branch));
+    }
+    const toDispatch = [];
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) continue;
+      const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
+      if (itemBranch && lockedBranches.has(itemBranch)) continue;
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+      if (itemBranch) lockedBranches.add(itemBranch);
+    }
+
+    assert.strictEqual(toDispatch.length, 2, 'Should dispatch 2 items (skip the one with conflicting branch)');
+    assert.ok(!toDispatch.find(d => d.id === 'ralph-fix-1'), 'Should NOT dispatch ralph-fix-1 (branch locked by dallas)');
+    assert.ok(toDispatch.find(d => d.id === 'ripley-review-1'), 'Should dispatch ripley-review-1 (different branch)');
+    assert.ok(toDispatch.find(d => d.id === 'lambert-impl-1'), 'Should dispatch lambert-impl-1 (different branch)');
+  });
+
+  await test('dispatch loop prevents two pending items on same branch in same tick', () => {
+    const { sanitizeBranch } = shared;
+    const active = [];
+    const pending = [
+      { id: 'dallas-impl-1', agent: 'dallas', type: 'implement', meta: { branch: 'work/P-abc123' } },
+      { id: 'ralph-fix-1', agent: 'ralph', type: 'fix', meta: { branch: 'work/P-abc123' } }, // same branch
+    ];
+
+    const busyAgents = new Set();
+    const lockedBranches = new Set();
+    const toDispatch = [];
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) continue;
+      const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
+      if (itemBranch && lockedBranches.has(itemBranch)) continue;
+      toDispatch.push(item);
+      busyAgents.add(item.agent);
+      if (itemBranch) lockedBranches.add(itemBranch);
+    }
+
+    assert.strictEqual(toDispatch.length, 1, 'Should only dispatch first item');
+    assert.strictEqual(toDispatch[0].id, 'dallas-impl-1', 'First item wins the branch lock');
+  });
+
+  await test('items without branches are not blocked by branch mutex', () => {
+    const { sanitizeBranch } = shared;
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-abc123' } },
+    ];
+    const pending = [
+      { id: 'ripley-plan-1', agent: 'ripley', type: 'plan', meta: {} },  // no branch — should dispatch
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    const lockedBranches = new Set();
+    for (const d of active) {
+      if (d.meta?.branch) lockedBranches.add(sanitizeBranch(d.meta.branch));
+    }
+    const toDispatch = [];
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) continue;
+      const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
+      if (itemBranch && lockedBranches.has(itemBranch)) continue;
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 1, 'Branch-less items should not be blocked');
+    assert.strictEqual(toDispatch[0].id, 'ripley-plan-1');
   });
 }
 
