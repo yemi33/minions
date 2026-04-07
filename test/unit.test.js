@@ -8601,33 +8601,8 @@ async function testDashboardResilience() {
       violations.join('\n'));
   });
 
-  await test('engine.js and engine/*.js: no safeWrite calls target work-items.json or pull-requests.json', () => {
-    const filesToCheck = [
-      { name: 'engine.js', src: fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') },
-    ];
-    const engineDir = path.join(MINIONS_DIR, 'engine');
-    for (const f of fs.readdirSync(engineDir).filter(f => f.endsWith('.js'))) {
-      filesToCheck.push({ name: `engine/${f}`, src: fs.readFileSync(path.join(engineDir, f), 'utf8') });
-    }
-    const violations = [];
-    for (const { name, src } of filesToCheck) {
-      const lines = src.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.trim().startsWith('//') || line.trim().startsWith('*')) continue;
-        if (line.includes('safeWrite(') && (
-          line.includes('work-items') || line.includes('wiPath') || line.includes('projWiPath') ||
-          line.includes('centralWiPath') || line.includes('centralPath, centralItems') ||
-          line.includes('pull-requests') || line.includes('prPath') || line.includes('prFilePath')
-        )) {
-          violations.push(`${name}:${i + 1}: ${line.trim()}`);
-        }
-      }
-    }
-    assert.strictEqual(violations.length, 0,
-      'No safeWrite calls should target work-items.json or pull-requests.json in engine files — use mutateWorkItems/mutatePullRequests instead.\nViolations:\n' +
-      violations.join('\n'));
-  });
+  // Note: engine.js and engine/*.js safeWrite grep-verification test belongs in PR-415/PR-416
+  // which convert those files. This PR (P-w4n9f1j6-d) only converts dashboard.js.
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
