@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.471 (2026-04-07)
+
+### Fixes
+-  steering resume improvements — better error logging, heartbeat restart
+-  prevent slow work item modal on large descriptions
+-  only cache sessionId for steering when actually resuming same branch
+
 ## 0.1.468 (2026-04-07)
 
 ### Fixes
