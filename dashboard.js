@@ -576,6 +576,30 @@ Available action types:
 - **update-routing**: Update the routing table. Fields: content (full routing.md content)
 - **file-bug**: File a bug on the Minions repo (yemi33/minions). Fields: title (short bug title), description (markdown body), labels (optional array, defaults to ["bug"]). Trigger phrases: "file a bug", "file an issue", "report a bug", "create an issue", "this is a bug", "log a bug". This is for bugs in Minions itself, not the user's project. When filing, include repro steps and relevant context from the conversation in the description. If the user hasn't provided repro steps, ask before filing.
 
+## Domain Terminology — Minions-Specific Meanings
+
+Many common English words have specific meanings in the Minions context. **When a user mentions any of these terms, always check Minions state first** before falling back to a generic interpretation. If no Minions state exists for the term, you may answer generically but should note the disambiguation (e.g. "No Minions schedules are configured — did you mean cron schedules in general?").
+
+| Term | Minions meaning | Where to check |
+|------|-----------------|----------------|
+| schedules | \`config.schedules[]\` — recurring cron-style task definitions | \`GET /api/schedules\` or read \`config.json\` |
+| pipelines | \`pipelines/*.json\` — multi-stage execution plans with stages, triggers, and runs | \`GET /api/pipelines\` or read \`pipelines/\` dir |
+| agents | Named Minions agents (Dallas, Ripley, etc.) with roles, charters, and status | \`config.agents\`, \`agents/\` dir |
+| inbox | \`notes/inbox/\` — incoming agent findings awaiting consolidation | \`GET /api/inbox\` |
+| work items | \`projects/<name>/work-items.json\` — dispatch units assigned to agents | \`GET /api/work-items\` |
+| plans | \`plans/*.md\` — structured multi-step plan files | \`GET /api/plans\` or read \`plans/\` dir |
+| PRD | \`prd/*.json\` — structured PRD files with items, acceptance criteria, dependencies | \`GET /api/prd-items\` or read \`prd/\` dir |
+| PRs | \`projects/<name>/pull-requests.json\` — tracked pull requests per project | \`GET /api/pull-requests/all\` |
+| dispatch | \`engine/dispatch.json\` — active agent task queue (pending/active/completed) | \`GET /api/status\` |
+| tick | Engine orchestration cycle (~60s) — the heartbeat that drives all polling and dispatch | \`GET /api/status\` for tick count |
+| routing | \`routing.md\` — maps work types to agents (e.g. implement → dallas) | \`GET /api/settings/routing\` or read \`routing.md\` |
+| knowledge / KB | \`knowledge/\` — structured knowledge base entries by category | \`GET /api/knowledge\` |
+| notes | \`notes.md\` — consolidated team notes (merged from inbox) | \`GET /api/notes-full\` |
+| pinned | \`pinned.md\` — critical context injected into ALL agent prompts | \`GET /api/pinned\` |
+| meetings | \`meetings/\` — structured multi-round agent debates (investigate → debate → conclude) | \`GET /api/meetings\` |
+
+**Contract:** For any term in this table, resolve it against Minions state first. Only fall back to generic interpretation if the Minions context yields no results.
+
 ## Rules
 
 1. **Use tools proactively.** Read files before answering — don't guess from the state snapshot alone.
@@ -611,6 +635,22 @@ function buildCCStatePreamble() {
     ? schedules.map(s => `- ${s.id}: "${s.title}" (cron: ${s.cron}, type: ${s.type || 'implement'}, ${s.enabled === false ? 'disabled' : 'enabled'})`).join('\n')
     : '(none configured)';
 
+  let pipelineSummary = '(none configured)';
+  try {
+    const { getPipelines, getPipelineRuns } = require('./engine/pipeline');
+    const pipelines = getPipelines();
+    if (pipelines.length > 0) {
+      const runs = getPipelineRuns();
+      pipelineSummary = pipelines.map(p => {
+        const pRuns = runs[p.id] || [];
+        const lastRun = pRuns.length > 0 ? pRuns[pRuns.length - 1] : null;
+        const lastStatus = lastRun ? ` (last run: ${lastRun.status})` : '';
+        const triggerInfo = p.trigger && p.trigger.cron ? `, cron: ${p.trigger.cron}` : ', manual';
+        return `- ${p.id}: "${p.title}" (${p.stages ? p.stages.length : 0} stages${triggerInfo}, ${p.enabled === false ? 'disabled' : 'enabled'})${lastStatus}`;
+      }).join('\n');
+    }
+  } catch {}
+
   return `### Agents
 ${agents}
 
@@ -626,6 +666,9 @@ ${projects}
 
 ### Scheduled Tasks
 ${schedSummary}
+
+### Pipelines
+${pipelineSummary}
 
 ### Dashboard API (all endpoints)
 ${_getApiRoutesSummary()}
