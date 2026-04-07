@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.493 (2026-04-07)
+
+### Fixes
+-  reconcile agent completions during engine downtime (closes #376) (#385)
+-  settings button shows modal immediately with loading state
+-  CC respects user scroll position — no auto-scroll when reading history
+-  steering feedback — toast notification, ensure polling resumes
+-  remove pipelines/ from git tracking — user-local config
+
 ## 0.1.488 (2026-04-07)
 
 ### Fixes
