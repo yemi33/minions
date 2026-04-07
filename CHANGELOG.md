@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.498 (2026-04-07)
+
+### Features
+-  sidebar tooltips for Schedules and Pipelines
+
+### Fixes
+-  sidebar badges for plans, meetings, and pipelines
+
 ## 0.1.496 (2026-04-07)
 
 ### Fixes
