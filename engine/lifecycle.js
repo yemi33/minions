@@ -712,11 +712,11 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-function updatePrAfterReview(agentId, pr, project) {
+function updatePrAfterReview(agentId, pr, project, config) {
 
   if (!pr?.id) return;
 
-  const config = getConfig();
+  if (!config) config = getConfig();
   const reviewerName = config.agents[agentId]?.name || agentId;
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
@@ -1322,7 +1322,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
     }
   }
 
-  if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project);
+  if (type === WORK_TYPE.REVIEW) updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {
