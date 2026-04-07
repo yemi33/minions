@@ -1503,20 +1503,29 @@ async function discoverFromPrs(config, project) {
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
+      let reviewNote = `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`;
+      if (pr.buildErrorLog) {
+        reviewNote += `\n\n## Build Error Log\n\n\`\`\`\n${pr.buildErrorLog}\n\`\`\``;
+      }
+
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
-        review_note: `Build is failing: ${pr.buildFailReason || 'Check CI pipeline for details'}. Fix the build errors and push.`,
+        review_note: reviewNote,
       }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
 
       // Notify the author agent about the build failure
       if (pr.agent && !pr._buildFailNotified) {
-        writeInboxAlert(`build-fail-${pr.agent}-${pr.id}`,
-          `# Build Failure Notification\n\n` +
+        let alertBody = `# Build Failure Notification\n\n` +
           `**Your PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
-          `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
-          `A fix agent has been dispatched to address this. Review the fix when complete.\n`
-        );
+          `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n`;
+        if (pr.buildErrorLog) {
+          // Include first 30 lines of error log in notification (full log in fix agent prompt)
+          const logPreview = pr.buildErrorLog.split('\n').slice(0, 30).join('\n');
+          alertBody += `**Error preview:**\n\`\`\`\n${logPreview}\n\`\`\`\n\n`;
+        }
+        alertBody += `A fix agent has been dispatched to address this. Review the fix when complete.\n`;
+        writeInboxAlert(`build-fail-${pr.agent}-${pr.id}`, alertBody);
         // Mark notified to prevent duplicate alerts
         try {
           const prPath = projectPrPath(project);

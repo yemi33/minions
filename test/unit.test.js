@@ -5987,6 +5987,9 @@ async function main() {
     // Dashboard resilience: safeFetch, auto-reload, CC reset
     await testDashboardResilience();
 
+    // Build error log feature
+    await testBuildErrorLogFeature();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -8943,6 +8946,125 @@ async function testDashboardResilience() {
 }
 
 // ─── Test Isolation Verification ────────────────────────────────────────────
+
+async function testBuildErrorLogFeature() {
+  console.log('\n── Build Error Log Feature (W-mnp8iyqe0ogn) ──');
+
+  await test('ado.js has fetchAdoBuildErrorLog function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('async function fetchAdoBuildErrorLog('),
+      'ado.js must define fetchAdoBuildErrorLog');
+  });
+
+  await test('ado.js has adoFetchText helper for raw text responses', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('async function adoFetchText('),
+      'ado.js must define adoFetchText for build log fetching (logs are plain text, not JSON)');
+  });
+
+  await test('ado.js extracts buildId from targetUrl', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('buildId=(\\d+)'),
+      'fetchAdoBuildErrorLog must extract buildId from targetUrl regex');
+  });
+
+  await test('ado.js fetches build timeline and failed task logs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('_apis/build/builds/') && src.includes('/timeline'),
+      'Should fetch build timeline API');
+    assert.ok(src.includes('/logs/'),
+      'Should fetch individual task logs');
+    assert.ok(src.includes("r.result === 'failed'"),
+      'Should filter for failed records');
+  });
+
+  await test('ado.js truncates build error log to max lines', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('BUILD_ERROR_LOG_MAX_LINES'),
+      'Should use configurable max lines constant for truncation');
+    assert.ok(src.includes('truncated, showing last'),
+      'Should include truncation notice when log exceeds limit');
+  });
+
+  await test('ado.js sets buildErrorLog on PR when transitioning to failing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('pr.buildErrorLog = errorLog'),
+      'Should store fetched error log on PR entry');
+    assert.ok(src.includes("buildStatus === 'failing'") && src.includes('fetchAdoBuildErrorLog'),
+      'Should only fetch error log when transitioning to failing');
+  });
+
+  await test('ado.js clears buildErrorLog when build recovers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes("delete pr.buildErrorLog"),
+      'Should clean up buildErrorLog when build status changes away from failing');
+  });
+
+  await test('github.js has fetchGhBuildErrorLog function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('async function fetchGhBuildErrorLog('),
+      'github.js must define fetchGhBuildErrorLog');
+  });
+
+  await test('github.js fetches check run annotations for error details', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('/check-runs/') && src.includes('/annotations'),
+      'Should fetch check run annotations API');
+    assert.ok(src.includes('annotation_level'),
+      'Should filter annotations by level');
+  });
+
+  await test('github.js falls back to Actions job log when no annotations', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('/actions/jobs/') && src.includes('/logs'),
+      'Should fall back to Actions job logs API');
+  });
+
+  await test('github.js sets buildErrorLog on PR when transitioning to failing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('pr.buildErrorLog = errorLog'),
+      'Should store fetched error log on PR entry');
+    assert.ok(src.includes('fetchGhBuildErrorLog(slug, failedRuns)'),
+      'Should pass failed runs to log fetcher');
+  });
+
+  await test('github.js clears buildErrorLog when build recovers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes("delete pr.buildErrorLog"),
+      'Should clean up buildErrorLog when build status changes away from failing');
+  });
+
+  await test('engine.js includes buildErrorLog in fix agent prompt', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('pr.buildErrorLog'),
+      'Should reference buildErrorLog when constructing fix dispatch');
+    assert.ok(src.includes('Build Error Log'),
+      'Should include build error log section in review_note');
+  });
+
+  await test('engine.js includes build error preview in inbox notification', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('logPreview') && src.includes('Error preview'),
+      'Should include a truncated preview of build errors in inbox alert');
+  });
+
+  await test('ado.js clears buildErrorLog on PR close/merge', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Find the merge/abandon block — use the status check as anchor, then forward to handlePostMerge
+    const anchor = src.indexOf('newStatus === PR_STATUS.MERGED || newStatus === PR_STATUS.ABANDONED');
+    const closeBlock = src.slice(anchor, src.indexOf('handlePostMerge', anchor) + 50);
+    assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
+      'Should clear buildErrorLog when PR is merged/abandoned');
+  });
+
+  await test('github.js clears buildErrorLog on PR close/merge', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const anchor = src.indexOf('newStatus === PR_STATUS.MERGED || newStatus === PR_STATUS.ABANDONED');
+    const closeBlock = src.slice(anchor, src.indexOf('handlePostMerge', anchor) + 50);
+    assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
+      'Should clear buildErrorLog when PR is merged/abandoned');
+  });
+}
 
 async function testIsolationVerification() {
   console.log('\n── Test Isolation Verification ──');

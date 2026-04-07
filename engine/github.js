@@ -94,6 +94,61 @@ async function ghApiWithBackoff(endpoint, slug) {
   return result;
 }
 
+const BUILD_ERROR_LOG_MAX_LINES = 150;
+
+/**
+ * Fetch actual build/compiler error logs from GitHub when a check run fails.
+ * Tries annotations first (structured error messages), then falls back to the
+ * Actions job log. Returns truncated log text or null if unavailable.
+ */
+async function fetchGhBuildErrorLog(slug, failedRuns) {
+  try {
+    const logParts = [];
+
+    for (const run of (failedRuns || []).slice(0, 3)) {
+      if (!run?.id) continue;
+
+      // Try annotations first — these contain structured compiler/lint errors
+      try {
+        const annotations = await ghApi(`/check-runs/${run.id}/annotations`, slug);
+        if (Array.isArray(annotations) && annotations.length > 0) {
+          const formatted = annotations
+            .filter(a => a.annotation_level === 'failure' || a.annotation_level === 'warning')
+            .map(a => `${a.path || ''}:${a.start_line || ''} [${a.annotation_level}] ${a.message || ''}`)
+            .join('\n');
+          if (formatted) {
+            logParts.push(`--- ${run.name || 'Check'} (annotations) ---\n${formatted}`);
+            continue; // annotations are sufficient for this run
+          }
+        }
+      } catch { /* fall through to job log */ }
+
+      // Fallback: fetch the full Actions job log
+      try {
+        const cmd = `gh api "repos/${slug}/actions/jobs/${run.id}/logs" 2>&1`;
+        const result = await execAsync(cmd, { timeout: 15000, encoding: 'utf-8' });
+        if (result && !result.includes('Not Found')) {
+          logParts.push(`--- ${run.name || 'Check'} ---\n${result}`);
+        }
+      } catch { /* skip individual log fetch failures */ }
+    }
+
+    if (logParts.length === 0) return null;
+
+    // Join and truncate to last N lines
+    const combined = logParts.join('\n\n');
+    const lines = combined.split('\n');
+    if (lines.length > BUILD_ERROR_LOG_MAX_LINES) {
+      return `... (truncated, showing last ${BUILD_ERROR_LOG_MAX_LINES} lines)\n` +
+        lines.slice(-BUILD_ERROR_LOG_MAX_LINES).join('\n');
+    }
+    return combined;
+  } catch (e) {
+    log('warn', `Failed to fetch GitHub build error log: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── Shared PR Polling Loop ─────────────────────────────────────────────────
 
 async function forEachActiveGhPr(config, callback) {
@@ -237,6 +292,7 @@ async function pollPrStatus(config) {
         if (pr.buildStatus && pr.buildStatus !== 'none') {
           delete pr.buildStatus;
           delete pr.buildFailReason;
+          delete pr.buildErrorLog;
           delete pr._buildFailNotified;
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
@@ -334,8 +390,21 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
-          if (buildStatus !== 'failing') delete pr._buildFailNotified;
+          if (buildStatus !== 'failing') {
+            delete pr._buildFailNotified;
+            delete pr.buildErrorLog;
+          }
           updated = true;
+
+          // Fetch actual compiler/build error logs when transitioning to failing
+          if (buildStatus === 'failing') {
+            const failedRuns = runs.filter(r => r.conclusion === 'failure' || r.conclusion === 'timed_out');
+            const errorLog = await fetchGhBuildErrorLog(slug, failedRuns);
+            if (errorLog) {
+              pr.buildErrorLog = errorLog;
+              log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
+            }
+          }
         }
       }
     }
