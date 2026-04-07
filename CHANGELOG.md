@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.547 (2026-04-07)
+
+### Fixes
+- remap sequential PRD item IDs to prevent cross-PRD collisions (#474)
+
 ## 0.1.546 (2026-04-07)
 
 ### Features
