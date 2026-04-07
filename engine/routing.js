@@ -107,9 +107,9 @@ function resolveAgent(workType, config, authorAgent = null) {
   const route = routes[workType] || routes['implement'];
   const agents = config.agents || {};
 
-  // Resolve _author_ token
-  let preferred = route.preferred === '_author_' ? authorAgent : route.preferred;
-  let fallback = route.fallback === '_author_' ? authorAgent : route.fallback;
+  // Resolve special tokens: _author_ → PR author, _any_ → first idle agent
+  let preferred = route.preferred === '_author_' ? authorAgent : route.preferred === '_any_' ? null : route.preferred;
+  let fallback = route.fallback === '_author_' ? authorAgent : route.fallback === '_any_' ? null : route.fallback;
 
   const isAvailable = (id) => {
     if (!agents[id] || !isAgentIdle(id) || _claimedAgents.has(id)) return false;

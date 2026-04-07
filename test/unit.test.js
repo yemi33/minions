@@ -2370,15 +2370,13 @@ async function testStateIntegrity() {
       'pendingFix should be cleared after addToDispatch in discoverWork');
   });
 
-  await test('Work-item dispatched sync writes work items before PRD status sync', () => {
+  await test('PRD dispatched sync deferred to spawnAgent, not discovery (#480)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
-    const writeIdx = src.indexOf('mutateWorkItems(projectWorkItemsPath(project), () => items)');
-    const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
-    assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
-      'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
-    assert.ok(writeIdx < syncIdx,
-      'work item write must happen before PRD dispatched sync to reduce divergence windows');
+    // PRD sync should NOT happen in discovery — it's deferred to spawnAgent
+    assert.ok(!src.includes("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan })"),
+      'discoverFromWorkItems must NOT queue PRD sync (deferred to spawnAgent)');
+    assert.ok(src.includes("syncPrdItemStatus(meta.item.id, WI_STATUS.DISPATCHED, meta.item.sourcePlan)"),
+      'spawnAgent must sync PRD item status after successful spawn');
   });
 
   await test('Auto-retry reads live work-item retry count before decision', () => {
@@ -3321,7 +3319,7 @@ async function testResolveAgent() {
   const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
 
   await test('resolveAgent resolves _author_ token to authorAgent', () => {
-    assert.ok(src.includes("route.preferred === '_author_' ? authorAgent : route.preferred"),
+    assert.ok(src.includes("route.preferred === '_author_' ? authorAgent"),
       'Should resolve _author_ token to the authorAgent parameter');
   });
 
@@ -3348,6 +3346,21 @@ async function testResolveAgent() {
   await test('resolveAgent excludes preferred and fallback from idle pool', () => {
     assert.ok(src.includes('id !== preferred && id !== fallback'),
       'Idle pool should exclude preferred/fallback to avoid rechecking');
+  });
+
+  await test('resolveAgent resolves _any_ token to null (falls through to any-idle)', () => {
+    assert.ok(src.includes("_any_"),
+      'routing.js should handle the _any_ token');
+    assert.ok(src.includes("route.fallback === '_any_' ? null"),
+      'Should resolve _any_ to null so it falls through to any-idle agent path');
+  });
+
+  await test('routing.md uses _any_ as fix fallback', () => {
+    const routing = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
+    assert.ok(routing.includes('| fix | _author_ | _any_ |'),
+      'routing.md fix row should use _any_ as fallback');
+    assert.ok(routing.includes('`_any_`'),
+      'routing.md should document the _any_ token');
   });
 }
 
@@ -5387,6 +5400,24 @@ async function testDispatchCycleIntegration() {
       'engine.js must define tickInner');
     assert.ok(engineSrc.includes('slotsAvailable') && engineSrc.includes('maxConcurrent'),
       'tickInner must check slotsAvailable derived from maxConcurrent');
+  });
+
+  // ── Deferred dispatch status (#480) (2 tests) ──
+
+  await test('Discovery does NOT set status to dispatched — deferred to spawnAgent', () => {
+    // The discover phase should NOT mutate work item status to DISPATCHED.
+    // Status is set in spawnAgent after the agent process is actually running.
+    assert.ok(engineSrc.includes("defer until spawnAgent succeeds (#480)"),
+      'engine.js must have the deferred dispatch comment marker from #480');
+    assert.ok(!engineSrc.includes("item.status = WI_STATUS.DISPATCHED;\n    item.dispatched_at = ts();\n    item.dispatched_to = agentId"),
+      'Discovery must NOT set item.status = DISPATCHED with dispatched_at and dispatched_to inline');
+  });
+
+  await test('spawnAgent sets dispatched status and syncs PRD after spawn', () => {
+    assert.ok(engineSrc.includes("wi.status = WI_STATUS.DISPATCHED"),
+      'spawnAgent must set WI_STATUS.DISPATCHED on the work item');
+    assert.ok(engineSrc.includes("syncPrdItemStatus(meta.item.id, WI_STATUS.DISPATCHED, meta.item.sourcePlan)"),
+      'spawnAgent must sync PRD item status after successful spawn');
   });
 
   // ── Agent spawn (3 tests) ──

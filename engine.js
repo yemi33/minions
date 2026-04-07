@@ -798,9 +798,9 @@ async function spawnAgent(dispatchItem, config) {
     return dispatch;
   });
 
-  // Atomically stamp dispatched_to/dispatched_at on the originating work item (#402)
-  // The discover phase sets these via safeWrite which can race with concurrent writes;
-  // this locked write ensures the fields are persisted reliably.
+  // Atomically stamp dispatched status on the originating work item (#402, #480).
+  // Status is set here (after spawn succeeds) rather than during discovery, so items
+  // never show as "dispatched" before an agent process is actually running.
   if (meta?.item?.id) {
     try {
       let wiPath = null;
@@ -822,6 +822,12 @@ async function spawnAgent(dispatchItem, config) {
         }, { defaultValue: [] });
       }
     } catch (e) { log('warn', `stamp dispatched_to on work item ${meta.item.id}: ${e.message}`); }
+
+    // Sync PRD item status now that spawn succeeded (#480)
+    if (meta.item.sourcePlan) {
+      try { syncPrdItemStatus(meta.item.id, WI_STATUS.DISPATCHED, meta.item.sourcePlan); }
+      catch (e) { log('warn', `PRD sync after spawn: ${e.message}`); }
+    }
   }
 
   return proc;
@@ -1547,7 +1553,7 @@ function discoverFromWorkItems(config, project) {
   const items = safeJson(projectWorkItemsPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
-  const prdSyncQueue = [];
+  // PRD status sync deferred to spawnAgent (after successful spawn) — see #480
   const skipped = { gated: 0, noAgent: 0 };
   let needsWrite = false;
   const selfHealKeys = new Set(); // Collect keys for batched self-heal (1 lock instead of N)
@@ -1682,12 +1688,9 @@ function discoverFromWorkItems(config, project) {
       continue;
     }
 
-    // Mark item as dispatched BEFORE adding to newWork (prevents race on next tick)
-    item.status = WI_STATUS.DISPATCHED;
-    item.dispatched_at = ts();
-    item.dispatched_to = agentId;
+    // Don't set dispatched status here — defer until spawnAgent succeeds (#480).
+    // The dispatch queue dedup (isAlreadyDispatched) and cooldown prevent re-discovery.
     delete item._pendingReason;
-    prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });
 
     newWork.push({
       type: workType,
@@ -1729,12 +1732,9 @@ function discoverFromWorkItems(config, project) {
     }
   }
 
-  // Write back updated statuses (always, since we mark items dispatched before newWork check)
+  // Write back updated statuses (e.g. _pendingReason deletions, decomposed parents)
   if (newWork.length > 0 || needsWrite) {
     mutateWorkItems(projectWorkItemsPath(project), () => items);
-    if (newWork.length > 0) {
-      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
-    }
   }
 
   const skipTotal = skipped.gated + skipped.noAgent;
@@ -2100,6 +2100,8 @@ function discoverCentralWorkItems(config) {
         });
       }
 
+      // Fan-out: set dispatched eagerly — multi-agent dispatch is all-or-nothing
+      // (each agent gets its own dispatch item; parent tracks the full agent set).
       mutations.set(item.id, {
         status: WI_STATUS.DISPATCHED,
         dispatched_at: ts(),
@@ -2206,12 +2208,8 @@ function discoverCentralWorkItems(config) {
         continue;
       }
 
-      const dispatchMutation = {
-        status: WI_STATUS.DISPATCHED,
-        dispatched_at: ts(),
-        dispatched_to: agentId,
-      };
-      mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, dispatchMutation));
+      // Don't set dispatched status here — defer until spawnAgent succeeds (#480).
+      // The dispatch queue dedup and cooldown prevent re-discovery.
 
       newWork.push({
         type: workType,
