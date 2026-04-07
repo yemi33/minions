@@ -9,7 +9,7 @@ const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS } = shared;
+  ENGINE_DEFAULTS, resolveProject } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -151,8 +151,7 @@ function checkPlanCompletion(meta, config) {
 
   // Resolve the primary project for writing new work items (PR, verify)
   const projectName = plan.project;
-  const primaryProject = projectName
-    ? projects.find(p => p.name?.toLowerCase() === projectName?.toLowerCase()) : projects[0];
+  const primaryProject = resolveProject(projectName, projects);
   if (!primaryProject) {
     log('warn', `Plan ${planFile}: no primary project found — skipping PR/verify creation`);
     return;

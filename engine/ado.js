@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS, updatePrMetrics } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -213,18 +213,7 @@ async function pollPrStatus(config) {
       updated = true;
       // Update author metrics when verdict changes to approved/rejected
       if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
-        const authorId = (pr.agent || '').toLowerCase();
-        if (authorId) {
-          try {
-            const metricsPath = path.join(__dirname, 'metrics.json');
-            mutateJsonFileLocked(metricsPath, (metrics) => {
-              if (!metrics[authorId]) metrics[authorId] = {};
-              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-              return metrics;
-            });
-          } catch (err) { log('warn', `Metrics update: ${err.message}`); }
-        }
+        updatePrMetrics((pr.agent || '').toLowerCase(), newReviewStatus);
       }
     }
 

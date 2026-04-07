@@ -3683,7 +3683,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Determine project
       reloadConfig();
       const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
+      const targetProject = shared.resolveProject(projectName, projects);
       const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
 
       // Extract PR number from URL

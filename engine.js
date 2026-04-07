@@ -1046,7 +1046,7 @@ function materializePlansAsWorkItems(config) {
             if (planContent) {
               const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
               const allProjects = getProjects(config);
-              const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
+              const targetProject = shared.resolveProject(projectName, allProjects);
               if (targetProject) {
                 const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
                 const newItem = {
@@ -1116,7 +1116,8 @@ function materializePlansAsWorkItems(config) {
 
     const defaultProjectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
     const allProjects = getProjects(config);
-    const defaultProject = allProjects.find(p => p.name?.toLowerCase() === defaultProjectName.toLowerCase());
+    const lower = defaultProjectName.toLowerCase();
+    const defaultProject = allProjects.find(p => p.name?.toLowerCase() === lower);
     // No project found — use central work-items.json (engine works without projects)
     const useCentral = !defaultProject;
 
@@ -1146,7 +1147,7 @@ function materializePlansAsWorkItems(config) {
         itemsByProject.get('_central').items.push(item);
       } else {
         const itemProjectName = item.project || defaultProjectName;
-        const itemProject = allProjects.find(p => p.name?.toLowerCase() === itemProjectName.toLowerCase()) || defaultProject;
+        const itemProject = shared.resolveProject(itemProjectName, allProjects) || defaultProject;
         if (!itemProject) continue;
         if (!itemsByProject.has(itemProject.name)) {
           itemsByProject.set(itemProject.name, { project: itemProject, items: [] });
