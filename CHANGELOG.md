@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.526 (2026-04-07)
+
+### Features
+- Add Concurrency & Lock Ordering section to CLAUDE.md (#409)
+-  9 test isolation verification tests — run last to detect pollution
+
+### Fixes
+-  write dispatched_to and dispatched_at to work items on dispatch (closes #402) (#433)
+
 ## 0.1.523 (2026-04-07)
 
 ### Other
