@@ -474,10 +474,10 @@ function spawnAgent(dispatchItem, config) {
     try {
       const sessionFile = safeJson(path.join(AGENTS_DIR, agentId, 'session.json'));
       if (sessionFile?.sessionId && sessionFile.savedAt) {
-        cachedSessionId = sessionFile.sessionId;
         const sessionAge = Date.now() - new Date(sessionFile.savedAt).getTime();
         const sameBranch = branchName && sessionFile.branch && sessionFile.branch === branchName;
         if (sessionAge < 2 * 60 * 60 * 1000 && sameBranch) {
+          cachedSessionId = sessionFile.sessionId;
           args.push('--resume', sessionFile.sessionId);
           log('info', `Resuming session ${sessionFile.sessionId} for ${agentId} on branch ${branchName} (age: ${Math.round(sessionAge / 60000)}min)`);
         }
