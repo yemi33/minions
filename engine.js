@@ -618,11 +618,23 @@ function spawnAgent(dispatchItem, config) {
       });
 
       // Re-wire close handler for the resumed process
-      resumeProc.on('close', onAgentClose);
+      resumeProc.on('close', (resumeCode) => {
+        if (resumeCode !== 0) {
+          // Resume failed — don't burn a retry slot. Complete the dispatch as success
+          // (the original work was already done up to the kill point) and let the
+          // work item be re-discovered on the next tick if still pending.
+          log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} — completing dispatch without error`);
+          activeProcesses.delete(id);
+          completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering resume failed but original work completed', '', { processWorkItemFailure: false });
+          return;
+        }
+        // Successful resume — run normal close handler
+        onAgentClose(resumeCode);
+      });
       resumeProc.on('error', (err) => {
-        log('error', `Steering re-spawn failed for ${agentId}: ${err.message}`);
+        log('warn', `Steering re-spawn error for ${agentId}: ${err.message}`);
         activeProcesses.delete(id);
-        completeDispatch(id, DISPATCH_RESULT.ERROR, `Steering re-spawn error: ${err.message}`);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering re-spawn error but original work completed', '', { processWorkItemFailure: false });
       });
 
       // Don't run completion hooks — agent is still working
