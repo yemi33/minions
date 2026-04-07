@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.483 (2026-04-07)
+
+### Fixes
+-  harden bug filing — proper escaping, error handling, direct UI button
+
 ## 0.1.482 (2026-04-07)
 
 ### Features
