@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.527 (2026-04-07)
+
+### Features
+- Replace direct safeJson reads of work-items.json with getWorkItems() (#424)
+
 ## 0.1.526 (2026-04-07)
 
 ### Features
