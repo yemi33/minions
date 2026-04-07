@@ -6,7 +6,7 @@ const _pageCounters = {
   home:      function(d) { return (d.dispatch?.completed || []).length; },
   work:      function(d) { return (d.workItems || []).length + '|' + (d.workItems || []).filter(function(w) { return w.status === 'done' || w.status === 'failed'; }).length; },
   plans:     function(d) { return (d.prdProgress?.complete || 0) + '|' + (d.plans || []).length; },
-  prs:       function(d) { return (d.pullRequests || []).filter(function(p) { return p.status === 'merged'; }).length; },
+  prs:       function(d) { return (d.pullRequests || []).length + '|' + (d.pullRequests || []).filter(function(p) { return p.status === 'merged'; }).length; },
   inbox:     function(d) { return (d.inbox || []).length + '|' + (d.notes?.content || '').length; },
   meetings:  function(d) { return (d.meetings || []).reduce(function(s, m) { return s + (m.round || 0); }, 0); },
   pipelines: function(d) { return (d.pipelines || []).reduce(function(s, p) { return s + (p.runs || []).length; }, 0); },
