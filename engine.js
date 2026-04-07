@@ -562,6 +562,12 @@ function spawnAgent(dispatchItem, config) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
 
+    // Clear stale session if resume failed — prevents burning all retries on the same bad session
+    if (code !== 0 && cachedSessionId && stderr.includes('No conversation found')) {
+      log('warn', `Stale session ${cachedSessionId} for ${agentId} — clearing session.json`);
+      try { shared.safeUnlink(path.join(AGENTS_DIR, agentId, 'session.json')); } catch {}
+    }
+
     // Check if this was a steering kill — re-spawn with resume
     const procInfo = activeProcesses.get(id);
     if (procInfo?._steeringMessage) {

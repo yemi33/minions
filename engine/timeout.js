@@ -211,6 +211,8 @@ function checkTimeouts(config) {
     if (!hasProcess && silentMs > effectiveTimeout && Date.now() > engineRestartGraceUntil) {
       // No tracked process AND no recent output past effective timeout AND grace period expired → orphaned
       log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
+      // Clear session so retry starts fresh
+      try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
       deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
     } else if (hasProcess && silentMs > effectiveTimeout) {
       // Has process but no output past effective timeout → hung
@@ -220,6 +222,8 @@ function checkTimeouts(config) {
         shared.killGracefully(procInfo.proc, 5000);
         activeProcesses.delete(item.id);
       }
+      // Clear session so retry starts fresh instead of resuming the killed session
+      try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
       deadItems.push({ item, reason: `Hung — no output for ${silentSec}s` });
     }
     // If has process and recent output → healthy, let it run
