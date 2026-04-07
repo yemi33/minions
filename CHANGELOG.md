@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.540 (2026-04-07)
+
+### Features
+-  pipeline modal live-polls every 4s while active run is open
+
 ## 0.1.539 (2026-04-07)
 
 ### Features
