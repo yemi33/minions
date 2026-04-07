@@ -8697,7 +8697,9 @@ async function testIsolationVerification() {
   });
 
   await test('no _test-* files in real prd/ after test run', () => {
-    const testFiles = fs.readdirSync(path.join(shared.MINIONS_DIR, 'prd')).filter(f => f.startsWith('_test-'));
+    const dir = path.join(shared.MINIONS_DIR, 'prd');
+    if (!fs.existsSync(dir)) return;
+    const testFiles = fs.readdirSync(dir).filter(f => f.startsWith('_test-'));
     assert.strictEqual(testFiles.length, 0, 'Found: ' + testFiles.join(', '));
   });
 
