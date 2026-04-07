@@ -241,12 +241,13 @@ function renderPlaybook(type, vars) {
   content += `**Never delete, move, or overwrite files in \`knowledge/\`.** The sweep (consolidation engine) is the only process that writes to \`knowledge/\`. If you think a KB file is wrong, note it in your learnings file — do not touch \`knowledge/\` directly.\n`;
 
   // Inject learnings requirement
-  content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
-  content += `After completing your task, you MUST write a findings/learnings file to:\n`;
   const timeStamp = new Date().toISOString().slice(11, 16).replace(':', '');
   const inboxSlug = [vars.agent_id || 'agent', vars.task_id || '', dateStamp(), timeStamp].filter(Boolean).join('-');
+  content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
+  content += `After completing your task, write **one** findings file to:\n`;
   content += `\`${MINIONS_DIR}/notes/inbox/${inboxSlug}.md\`\n\n`;
-  content += `Include:\n`;
+  content += `**IMPORTANT: Write exactly ONE inbox file per task.** If the playbook above already specifies an inbox path, use THAT path instead and include your learnings in the same document. Do NOT create a second file — duplicates clog consolidation.\n\n`;
+  content += `Include in your findings file:\n`;
   content += `- What you learned about the codebase\n`;
   content += `- Patterns you discovered or established\n`;
   content += `- Gotchas or warnings for future agents\n`;
