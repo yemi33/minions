@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.456 (2026-04-07)
+
+### Fixes
+-  pre-dispatch live vote check prevents reviewing approved PRs
+
 ## 0.1.455 (2026-04-07)
 
 ### Fixes
