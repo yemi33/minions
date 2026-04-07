@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.457 (2026-04-07)
+
+### Fixes
+-  shared-branch worktree creates branch from main if not found
+-  pre-dispatch live vote check prevents reviewing approved PRs
+
 ## 0.1.455 (2026-04-07)
 
 ### Fixes
