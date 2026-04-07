@@ -588,9 +588,18 @@ function getWorkItems(config) {
     }
   }
 
+  // Cross-reference with dispatch (fill in agent from active dispatch if missing on work item)
+  const dispatch = getDispatch();
+  const activeByWiId = new Map((dispatch.active || []).map(d => [d.meta?.item?.id, d.agent]));
+  for (const item of allItems) {
+    if (item.status === 'dispatched' && !item.dispatched_to && !item.agent) {
+      const activeAgent = activeByWiId.get(item.id);
+      if (activeAgent) item.dispatched_to = activeAgent;
+    }
+  }
+
   // Cross-reference with PRs
   const allPrs = getPullRequests(config);
-  const dispatch = getDispatch();
   for (const item of allItems) {
     if (item._pr && !item._prUrl) {
       const prId = String(item._pr).replace('PR-', '');
