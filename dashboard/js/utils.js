@@ -8,6 +8,33 @@ const _deletedIds = new Map(); // key → expiry timestamp
 function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppress for 10s
 function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
 
+// Temporary pin-to-top — UI-only, stored in localStorage, does not affect agents
+const PINS_KEY = 'minions-pinned-items';
+let _pinsCache = null;
+function invalidatePinsCache() { _pinsCache = null; }
+function getPinnedItems() {
+  if (_pinsCache) return _pinsCache;
+  try { _pinsCache = JSON.parse(localStorage.getItem(PINS_KEY) || '[]'); } catch { _pinsCache = []; }
+  return _pinsCache;
+}
+function isPinned(key) { return getPinnedItems().includes(key); }
+function togglePin(key) {
+  const pins = getPinnedItems();
+  const idx = pins.indexOf(key);
+  if (idx >= 0) pins.splice(idx, 1); else pins.unshift(key);
+  localStorage.setItem(PINS_KEY, JSON.stringify(pins));
+  invalidatePinsCache();
+  return idx < 0; // true if now pinned
+}
+function inboxPinKey(name) { return 'notes/inbox/' + name; }
+function kbPinKey(cat, file) { return 'knowledge/' + cat + '/' + file; }
+function _togglePinAndRefresh(key, source) {
+  var pinned = togglePin(key);
+  showToast('cmd-toast', pinned ? 'Pinned to top' : 'Unpinned', true);
+  if (source === 'inbox') renderInbox(inboxData);
+  else if (source === 'kb') renderKnowledgeBase();
+}
+
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -217,12 +244,19 @@ function _renderMdChunked(fullText) {
     var target = pos + MD_CHUNK_SIZE;
     var searchStart = Math.max(pos + Math.floor(MD_CHUNK_SIZE * 0.7), pos);
     var searchEnd = Math.min(target + 500, fullText.length);
-    var slice = fullText.slice(searchStart, searchEnd);
-    var lastBlank = slice.lastIndexOf('\n\n');
-    var best;
-    if (lastBlank !== -1) {
-      best = searchStart + lastBlank + 2;
-    } else {
+    // Find the last \n\n in [searchStart, searchEnd] that isn't inside a code fence
+    var fencesBefore = (fullText.slice(pos, searchStart).match(/```/g) || []).length;
+    var inFence = (fencesBefore % 2) === 1;
+    var best = null;
+    for (var si = searchStart; si < searchEnd - 1; si++) {
+      if (fullText[si] === '`' && fullText[si + 1] === '`' && fullText[si + 2] === '`') {
+        inFence = !inFence;
+        si += 2;
+      } else if (!inFence && fullText[si] === '\n' && fullText[si + 1] === '\n') {
+        best = si + 2;
+      }
+    }
+    if (best === null) {
       var nl = fullText.indexOf('\n', target);
       best = (nl !== -1 && nl - target < 500) ? nl + 1 : target;
     }

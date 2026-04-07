@@ -9,6 +9,23 @@ let _ccAbortController = null;
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
+function _ccFindPinTarget(query) {
+  for (var i = 0; i < (inboxData || []).length; i++) {
+    if (inboxData[i].name.toLowerCase().includes(query)) {
+      return { key: inboxPinKey(inboxData[i].name), label: inboxData[i].name };
+    }
+  }
+  for (var [cat, items] of Object.entries(_kbData || {})) {
+    if (!Array.isArray(items)) continue;
+    for (var j = 0; j < items.length; j++) {
+      if ((items[j].title || '').toLowerCase().includes(query) || (items[j].file || '').toLowerCase().includes(query)) {
+        return { key: kbPinKey(cat, items[j].file), label: items[j].title || items[j].file };
+      }
+    }
+  }
+  return null;
+}
+
 function ccAbort() {
   if (_ccAbortController) {
     _ccAbortController.abort();
@@ -165,6 +182,26 @@ function _renderQueueIndicator() {
 }
 
 async function _ccDoSend(message, skipUserMsg) {
+  // Client-side /pin and /unpin — no LLM round-trip needed
+  var pinMatch = message.match(/^\/(pin|unpin)\s+(.+)/i);
+  if (pinMatch) {
+    if (!skipUserMsg) ccAddMessage('user', escHtml(message));
+    var pinAction = pinMatch[1].toLowerCase();
+    var pinQuery = pinMatch[2].toLowerCase().trim();
+    var found = _ccFindPinTarget(pinQuery);
+    if (found) {
+      var wasPinned = isPinned(found.key);
+      if (pinAction === 'pin' && !wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Pinned <strong>' + escHtml(found.label) + '</strong> to top'); }
+      else if (pinAction === 'unpin' && wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Unpinned <strong>' + escHtml(found.label) + '</strong>'); }
+      else { ccAddMessage('assistant', '<strong>' + escHtml(found.label) + '</strong> is already ' + (wasPinned ? 'pinned' : 'unpinned')); }
+      showToast('cmd-toast', pinAction === 'pin' ? 'Pinned to top' : 'Unpinned', true);
+      renderInbox(inboxData); renderKnowledgeBase();
+    } else {
+      ccAddMessage('assistant', 'No inbox or KB item matching "' + escHtml(pinQuery) + '"');
+    }
+    return;
+  }
+
   _ccSending = true;
   _ccAbortController = new AbortController();
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}

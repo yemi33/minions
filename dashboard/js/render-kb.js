@@ -32,40 +32,61 @@ function renderKnowledgeBase() {
   const listEl = document.getElementById('kb-list');
   const countEl = document.getElementById('kb-count');
 
-  // Count total (skip non-array keys like lastSwept)
-  let total = 0;
-  for (const [k, v] of Object.entries(_kbData)) if (Array.isArray(v)) total += v.length;
-  countEl.textContent = total;
+  invalidatePinsCache();
 
-  // Last swept timestamp
+  // Single pass: flatten all KB items and count pinned
+  const allItems = [];
+  let pinnedCount = 0;
+  for (const [cat, catItems] of Object.entries(_kbData)) {
+    if (!Array.isArray(catItems)) continue;
+    for (const item of catItems) {
+      const entry = { ...item, category: cat };
+      allItems.push(entry);
+      if (isPinned(kbPinKey(cat, item.file))) pinnedCount++;
+    }
+  }
+  countEl.textContent = allItems.length;
+
   const sweptEl = document.getElementById('kb-swept-time');
   if (sweptEl) sweptEl.textContent = _kbData.lastSwept ? 'swept ' + timeSinceStr(new Date(_kbData.lastSwept)) : '';
 
-  if (total === 0) {
+  if (allItems.length === 0) {
     tabsEl.innerHTML = '';
     listEl.innerHTML = '<p class="empty">No knowledge entries yet. Notes are classified here after consolidation.</p>';
     return;
   }
 
+  if (_kbActiveTab === 'pinned' && pinnedCount === 0) _kbActiveTab = 'all';
+
   // Render tabs
-  let tabsHtml = '<button class="kb-tab ' + (_kbActiveTab === 'all' ? 'active' : '') + '" onclick="kbSetTab(\'all\')">All <span class="badge">' + total + '</span></button>';
-  for (const [cat, items] of Object.entries(_kbData)) {
-    if (!Array.isArray(items) || items.length === 0) continue;
+  let tabsHtml = '';
+  if (pinnedCount > 0) {
+    tabsHtml += '<button class="kb-tab ' + (_kbActiveTab === 'pinned' ? 'active' : '') + '" style="color:var(--yellow)" onclick="kbSetTab(\'pinned\')">Pinned <span class="badge">' + pinnedCount + '</span></button>';
+  }
+  tabsHtml += '<button class="kb-tab ' + (_kbActiveTab === 'all' ? 'active' : '') + '" onclick="kbSetTab(\'all\')">All <span class="badge">' + allItems.length + '</span></button>';
+  for (const [cat, catArr] of Object.entries(_kbData)) {
+    if (!Array.isArray(catArr) || catArr.length === 0) continue;
     const label = KB_CAT_LABELS[cat] || cat;
-    tabsHtml += '<button class="kb-tab ' + (_kbActiveTab === cat ? 'active' : '') + '" onclick="kbSetTab(\'' + cat + '\')">' + label + ' <span class="badge">' + items.length + '</span></button>';
+    tabsHtml += '<button class="kb-tab ' + (_kbActiveTab === cat ? 'active' : '') + '" onclick="kbSetTab(\'' + cat + '\')">' + label + ' <span class="badge">' + catArr.length + '</span></button>';
   }
   tabsEl.innerHTML = tabsHtml;
 
-  // Collect items for active tab
-  let items = [];
-  if (_kbActiveTab === 'all') {
-    for (const [cat, catItems] of Object.entries(_kbData)) {
-      if (!Array.isArray(catItems)) continue;
-      for (const item of catItems) items.push({ ...item, category: cat });
-    }
+  // Filter items for active tab
+  let items;
+  if (_kbActiveTab === 'pinned') {
+    items = allItems.filter(i => isPinned(kbPinKey(i.category, i.file)));
+  } else if (_kbActiveTab === 'all') {
+    items = allItems.slice();
     items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   } else {
-    items = (_kbData[_kbActiveTab] || []).map(i => ({ ...i, category: _kbActiveTab }));
+    items = allItems.filter(i => i.category === _kbActiveTab);
+  }
+
+  // Stable sort — pinned items float to top (skip on pinned tab where all are pinned)
+  if (_kbActiveTab !== 'pinned') {
+    items.sort(function(a, b) {
+      return (isPinned(kbPinKey(a.category, a.file)) ? 0 : 1) - (isPinned(kbPinKey(b.category, b.file)) ? 0 : 1);
+    });
   }
 
   if (items.length === 0) {
@@ -82,9 +103,13 @@ function renderKnowledgeBase() {
   listEl.innerHTML = pageItems.map(item => {
     const icon = KB_CAT_ICONS[item.category] || '\u{1F4C4}';
     const label = KB_CAT_LABELS[item.category] || item.category;
-    return '<div class="kb-item" data-file="knowledge/' + escHtml(item.category) + '/' + escHtml(item.file) + '" onclick="kbOpenItem(\'' + escHtml(item.category) + '\', \'' + escHtml(item.file) + '\')">' +
+    var pinKey = kbPinKey(item.category, item.file);
+    var pinned = isPinned(pinKey);
+    return '<div class="kb-item' + (pinned ? ' item-pinned' : '') + '" data-file="knowledge/' + escHtml(item.category) + '/' + escHtml(item.file) + '" onclick="kbOpenItem(\'' + escHtml(item.category) + '\', \'' + escHtml(item.file) + '\')">' +
       '<div class="kb-item-body">' +
-        '<div class="kb-item-title">' + icon + ' ' + escHtml(item.title) + '</div>' +
+        '<div class="kb-item-title">' + icon + ' ' + escHtml(item.title) +
+          ' <button class="pr-pager-btn pin-btn' + (pinned ? ' pinned' : '') + '" style="font-size:9px;padding:1px 6px;margin-left:6px;vertical-align:middle" data-pin-key="' + escHtml(pinKey) + '" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,\'kb\')">' + (pinned ? 'Unpin' : 'Pin') + '</button>' +
+        '</div>' +
         '<div class="kb-item-meta">' +
           '<span>' + label + '</span>' +
           (item.agent ? '<span>' + escHtml(item.agent) + '</span>' : '') +

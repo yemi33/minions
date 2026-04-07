@@ -7,7 +7,12 @@ function _inboxPrev() { if (_inboxPage > 0) { _inboxPage--; renderInbox(inboxDat
 function _inboxNext() { _inboxPage++; renderInbox(inboxData); }
 
 function renderInbox(inbox) {
+  invalidatePinsCache();
   inbox = inbox.filter(function(item) { return !isDeleted('inbox:' + item.name); });
+  // Stable sort — pinned items float to top
+  inbox.sort(function(a, b) {
+    return (isPinned(inboxPinKey(a.name)) ? 0 : 1) - (isPinned(inboxPinKey(b.name)) ? 0 : 1);
+  });
   inboxData = inbox;
   const list = document.getElementById('inbox-list');
   const count = document.getElementById('inbox-count');
@@ -22,12 +27,15 @@ function renderInbox(inbox) {
 
   list.innerHTML = pageInbox.map((item, i) => {
     const idx = inboxStart + i;
-    return `<div class="inbox-item" data-file="notes/inbox/${escHtml(item.name)}">
+    const pk = inboxPinKey(item.name);
+    const pinned = isPinned(pk);
+    return `<div class="inbox-item${pinned ? ' item-pinned' : ''}" data-file="notes/inbox/${escHtml(item.name)}">
       <div class="inbox-name" onclick="openModal(${idx})" style="cursor:pointer">
         <span>${escHtml(item.name)}</span><span>${escHtml(item.age || '')}</span>
       </div>
       <div class="inbox-preview" onclick="openModal(${idx})" style="cursor:pointer">${escHtml(item.content.slice(0,200))}</div>
       <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
+        <button class="pr-pager-btn pin-btn${pinned ? ' pinned' : ''}" style="font-size:9px;padding:2px 8px" data-pin-key="${escHtml(pk)}" onclick="event.stopPropagation();_togglePinAndRefresh(this.dataset.pinKey,'inbox')">${pinned ? 'Unpin' : 'Pin'}</button>
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();promoteToKB(this.dataset.inboxName)">Add to Knowledge Base</button>
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();openInboxInExplorer(this.dataset.inboxName)">Open in Explorer</button>
         <button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" data-inbox-name="${escHtml(item.name)}" onclick="event.stopPropagation();deleteInboxItem(this.dataset.inboxName)">Delete</button>

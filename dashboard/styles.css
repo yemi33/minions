@@ -154,6 +154,7 @@
   .kb-item { display: flex; align-items: flex-start; gap: var(--space-5); padding: var(--space-4) 0; border-bottom: 1px solid var(--border); cursor: pointer; transition: background var(--transition-fast); }
   .kb-item:hover { background: var(--surface2); }
   .kb-item:last-child { border-bottom: none; }
+  .kb-item.item-pinned { border-left: 3px solid var(--yellow); padding-left: var(--space-4); background: rgba(210, 153, 34, 0.05); }
   .kb-item-body { flex: 1; min-width: 0; }
   .kb-item-title { font-size: var(--text-md); color: var(--text); font-weight: 500; }
   .kb-item-meta { font-size: var(--text-sm); color: var(--muted); margin-top: var(--space-1); display: flex; gap: var(--space-4); }
@@ -211,6 +212,10 @@
   .notes-preview:hover { border-color: var(--blue); }
   .inbox-item { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: var(--radius-sm); padding: var(--space-5) var(--space-6); cursor: pointer; }
   .inbox-item:hover { border-color: var(--blue); border-left-color: var(--blue); }
+  .item-pinned { border-left-color: var(--yellow); background: rgba(210, 153, 34, 0.05); }
+  .item-pinned:hover { border-left-color: var(--yellow); }
+  .pin-btn { color: var(--muted); border-color: var(--border); }
+  .pin-btn.pinned { color: var(--yellow); border-color: var(--yellow); }
   .inbox-name { font-weight: 500; font-size: var(--text-md); color: var(--purple); margin-bottom: var(--space-2); display: flex; justify-content: space-between; }
   .inbox-preview { font-size: var(--text-base); color: var(--muted); line-height: 1.5; max-height: 60px; overflow: hidden; }
 
