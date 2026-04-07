@@ -184,7 +184,6 @@ function executeTaskStage(stage, stageState, run, config) {
       createdIds.push(id);
     }
   });
-
   return { status: PIPELINE_STATUS.RUNNING, artifacts: { workItems: createdIds } };
 }
 
@@ -278,7 +277,7 @@ async function executePlanStage(stage, stageState, run, config) {
 
   safeWrite(filePath, content);
 
-  // Create plan-to-prd work item
+  // Create plan-to-prd work item — atomic write to prevent race with dispatch status updates
   const wiPath = path.join(__dirname, '..', 'work-items.json');
   const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
   mutateWorkItems(wiPath, workItems => {

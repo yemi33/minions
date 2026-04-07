@@ -2322,8 +2322,8 @@ async function testStateIntegrity() {
       'Central discovery must self-heal pending→dispatched with needsWrite');
     assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('item.dispatched_to'),
       'Central discovery must populate dispatched_to from active dispatch entry');
-    assert.ok(centralFn.includes('else if (needsWrite) safeWrite(centralPath, items)'),
-      'Central discovery must persist self-heal changes via needsWrite even when newWork is empty');
+    assert.ok(centralFn.includes('newWork.length > 0 || needsWrite') && centralFn.includes('mutateJsonFileLocked(centralPath'),
+      'Central discovery must persist changes via atomic mutateJsonFileLocked when newWork or needsWrite');
   });
 
   await test('Close handler skips duplicate completion after timeout finalization', () => {

@@ -2200,8 +2200,10 @@ function discoverCentralWorkItems(config) {
     } catch (err) { log('warn', `discoverCentralWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
-  if (newWork.length > 0) safeWrite(centralPath, items);
-  else if (needsWrite) safeWrite(centralPath, items);
+  if (newWork.length > 0 || needsWrite) {
+    // Atomic write — prevents race with async discoverPipelineWork and dashboard API
+    mutateJsonFileLocked(centralPath, () => items, { defaultValue: [] });
+  }
   return newWork;
 }
 
@@ -2249,24 +2251,33 @@ function discoverWork(config) {
     if (scheduledWork.length > 0) {
       const { createMeeting, getMeetings } = require('./engine/meeting');
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      const items = safeJson(centralPath) || [];
-      let added = 0;
+      // Separate meetings (no work-items write) from task items
+      const taskItems = [];
       for (const item of scheduledWork) {
         if (item.type === WORK_TYPE.MEETING) {
-          // Create a real multi-agent meeting instead of a single-agent work item
           const sched = (config.schedules || []).find(s => s.id === item._scheduleId);
           const participants = (sched && sched.participants) || [];
           const meeting = createMeeting({ title: item.title, agenda: item.description, participants });
           log('info', `Scheduled meeting created: ${item._scheduleId} → ${meeting.id} (${participants.length} participants)`);
         } else {
-          if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED)) {
-            items.push(item);
-            added++;
-            log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
-          }
+          taskItems.push(item);
         }
       }
-      if (added > 0) safeWrite(centralPath, items);
+      if (taskItems.length > 0) {
+        // Atomic write — prevents race with dispatch status updates on central work-items.json
+        mutateJsonFileLocked(centralPath, (items) => {
+          if (!Array.isArray(items)) items = [];
+          let added = 0;
+          for (const item of taskItems) {
+            if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED)) {
+              items.push(item);
+              added++;
+              log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+            }
+          }
+          return items;
+        }, { defaultValue: [] });
+      }
     }
   } catch (e) { log('warn', 'discover scheduled work: ' + e.message); }
 
