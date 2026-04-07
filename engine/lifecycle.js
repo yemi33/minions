@@ -717,7 +717,7 @@ function updatePrAfterReview(agentId, pr, project, config) {
   if (!pr?.id) return;
 
   if (!config) config = getConfig();
-  const reviewerName = config.agents[agentId]?.name || agentId;
+  const reviewerName = config.agents?.[agentId]?.name || agentId;
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
