@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.481 (2026-04-07)
+
+### Features
+-  file bugs as GitHub issues from CC or doc-chat
+- Buffer log() writes to reduce lock contention
+- Cache getStatus() JSON serialization and add mtime-based invalidation
+- Add mtime-based caching to getPrdInfo()
+- Optimize getAgentStatus() to read only head+tail of live-output.log
+- Fix unlocked metrics.json in lifecycle.js post-merge hook
+- Fix unlocked metrics.json read-modify-write in trackEngineUsage
+- Limit SSE initial live-stream payload to last 64KB
+
+### Fixes
+-  stamp dispatched_to on already-dispatched early-exit path
+-  add optional chaining for config.agents in updatePrAfterReview
+-  pass config to updatePrAfterReview to fix test failure
+
+### Other
+- docs: document bug filing feature in README and CLAUDE.md
+
 ## 0.1.473 (2026-04-07)
 
 ### Fixes
