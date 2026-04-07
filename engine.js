@@ -631,10 +631,11 @@ function spawnAgent(dispatchItem, config) {
 
       // Re-wire close handler for the resumed process
       resumeProc.on('close', (resumeCode) => {
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        try { fs.unlinkSync(steerPromptPath); } catch { /* cleanup */ }
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
           activeProcesses.delete(id);
-          // Don't burn a retry slot — complete as success so work item stays done/dispatched
           completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering resume failed but original work completed', '', { processWorkItemFailure: false });
           return;
         }

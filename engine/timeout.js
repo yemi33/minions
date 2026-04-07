@@ -57,18 +57,19 @@ function checkIdleThreshold(config) {
 function checkSteering(config) {
   const activeProcesses = engine().activeProcesses;
   for (const [id, info] of activeProcesses) {
+    // Skip if already being steered (prevents double-kill race)
+    if (info._steeringMessage || info._steeringAt) continue;
+
     const steerPath = path.join(AGENTS_DIR, info.agentId, 'steer.md');
     let steerMtime;
     try { steerMtime = fs.statSync(steerPath).mtimeMs; } catch { continue; } // ENOENT = no steering message
 
     const sessionId = info.sessionId;
     if (!sessionId) {
-      // No sessionId yet — check stale (>5 min means it'll never arrive)
       if (Date.now() - steerMtime > 300000) {
         log('warn', `Steering: no sessionId for ${info.agentId} after 5m — deleting stale message`);
         try { fs.unlinkSync(steerPath); } catch {}
       }
-      // Leave steer.md in place — retry next tick when sessionId may be available
       continue;
     }
 
@@ -78,13 +79,11 @@ function checkSteering(config) {
 
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
-    // Kill current process
     shared.killImmediate(info.proc);
 
-    // Store steering context for re-spawn on close
     info._steeringMessage = message;
     info._steeringSessionId = sessionId;
-    info._steeringAt = Date.now(); // prevent timeout checker from treating this as orphaned
+    info._steeringAt = Date.now();
   }
 }
 
