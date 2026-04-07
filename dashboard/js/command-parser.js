@@ -11,11 +11,15 @@ function cmdUpdateProjectList(projects) {
   cmdProjects = (projects || []).map(p => ({ name: p.name, description: p.description || '' }));
 }
 
-function showToast(id, msg, ok) {
+function showToast(id, msg, ok, durationMs) {
   const el = document.getElementById(id);
   el.className = 'cmd-toast ' + (ok ? 'success' : 'error');
-  el.textContent = msg;
-  setTimeout(() => { el.className = 'cmd-toast'; }, 4000);
+  if (msg.includes('<a ') || msg.includes('<strong>')) {
+    el.innerHTML = msg;
+  } else {
+    el.textContent = msg;
+  }
+  setTimeout(() => { el.className = 'cmd-toast'; }, durationMs || (msg.includes('<a ') ? 15000 : 4000));
 }
 
 function detectWorkItemType(text) {
