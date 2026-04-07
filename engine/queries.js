@@ -13,6 +13,35 @@ const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
   WI_STATUS } = shared;
 
+/**
+ * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
+ * For files <= 2*bytes, reads the whole file. Returns { head, tail } strings.
+ * Returns { head: '', tail: '' } on any error.
+ */
+function readHeadTail(filePath, bytes = 1024) {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = stat.size;
+    if (size === 0) return { head: '', tail: '' };
+    if (size <= bytes * 2) {
+      const full = fs.readFileSync(filePath, 'utf8');
+      return { head: full, tail: full };
+    }
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const headBuf = Buffer.alloc(bytes);
+      fs.readSync(fd, headBuf, 0, bytes, 0);
+      const tailBuf = Buffer.alloc(bytes);
+      fs.readSync(fd, tailBuf, 0, bytes, size - bytes);
+      return { head: headBuf.toString('utf8'), tail: tailBuf.toString('utf8') };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return { head: '', tail: '' };
+  }
+}
+
 // ── Paths ───────────────────────────────────────────────────────────────────
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -130,19 +159,20 @@ function getAgentStatus(agentId) {
       branch: active.meta?.branch || '',
       started_at: active.started_at || active.created_at || null,
     };
-    // Detect permission-waiting: check live output for non-bypass permission mode
+    // Detect permission-waiting: read only head+tail of live-output.log (max 2KB total)
     try {
-      const liveLog = shared.safeRead(path.join(AGENTS_DIR, agentId, 'live-output.log'));
-      if (liveLog) {
-        // Check init message for permission mode
-        const initMatch = liveLog.match(/"permissionMode"\s*:\s*"([^"]+)"/);
+      const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+      const { head, tail } = readHeadTail(liveLogPath, 1024);
+      if (head) {
+        // Check init message (in head) for permission mode
+        const initMatch = head.match(/"permissionMode"\s*:\s*"([^"]+)"/);
         if (initMatch && initMatch[1] !== 'bypassPermissions') {
           result._permissionMode = initMatch[1];
         }
-        // Check if agent has been silent for >60s (possible permission prompt wait)
-        const lastLine = liveLog.trimEnd().split('\n').pop();
+        // Check if agent has been silent for >60s (use tail for recent activity)
+        const lastLine = tail.trimEnd().split('\n').pop();
         if (lastLine && lastLine.includes('"type":"assistant"') && lastLine.includes('"tool_use"')) {
-          const liveStat = fs.statSync(path.join(AGENTS_DIR, agentId, 'live-output.log'));
+          const liveStat = fs.statSync(liveLogPath);
           const silentMs = Date.now() - liveStat.mtimeMs;
           if (silentMs > 60000 && result._permissionMode) {
             result._warning = 'Possibly waiting for permission approval — agent is not in bypass mode';
@@ -746,6 +776,7 @@ module.exports = {
 
   // Helpers
   timeSince,
+  readHeadTail, // exported for testing
 
   // Core state
   getConfig, getControl, getDispatch, getDispatchQueue,
