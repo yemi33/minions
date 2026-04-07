@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.551 (2026-04-07)
+
+### Fixes
+- mark stale build status on ADO auth failure, bypass 6-tick cadence for recovery (#483)
+
 ## 0.1.550 (2026-04-07)
 
 ### Fixes
