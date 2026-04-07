@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.496 (2026-04-07)
+
+### Fixes
+-  new PRs trigger red dot notification on Pull Requests page
+- lock timeout retry with backoff to prevent tick cascade failures (#389)
+- GitHub PR poll backoff for inaccessible repos (closes #377) (#386)
+-  reconcile agent completions during engine downtime (closes #376) (#385)
+-  settings button shows modal immediately with loading state
+-  CC respects user scroll position — no auto-scroll when reading history
+-  steering feedback — toast notification, ensure polling resumes
+-  remove pipelines/ from git tracking — user-local config
+
 ## 0.1.488 (2026-04-07)
 
 ### Fixes
