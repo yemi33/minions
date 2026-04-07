@@ -319,6 +319,11 @@ function spawnAgent(dispatchItem, config) {
                   log('info', `Shared branch ${branchName} already checked out at ${existingWtPath} — reusing`);
                   worktreePath = existingWtPath;
                 } else { throw eShared; }
+              } else if (eShared.message?.includes('invalid reference') || eShared.message?.includes('not a valid ref')) {
+                // Branch doesn't exist yet (first item in plan) — create it from main
+                const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                log('info', `Shared branch ${branchName} not found — creating from ${mainRef}`);
+                runWorktreeAdd(rootDir, worktreePath, `-b "${branchName}" ${mainRef}`, _worktreeGitOpts, worktreeCreateRetries);
               } else { throw eShared; }
             }
           } else {
