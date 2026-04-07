@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.517 (2026-04-07)
+
+### Features
+-  decomposed PRD items show WIP while children run, DONE when all complete
+
 ## 0.1.516 (2026-04-07)
 
 ### Fixes
