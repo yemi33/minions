@@ -550,18 +550,18 @@ async function planDelete(file) {
 
 async function planArchive(file, btn) {
   _stopPlanPoll();
-  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Archiving...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
-  function resetBtn() { if (btn) { btn.textContent = btn.dataset.origText || 'Archive'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  markDeleted('plan:' + file);
+  try { closeModal(); } catch { /* may not be open */ }
+  showToast('cmd-toast', 'Plan archived', true);
   try {
     const res = await fetch('/api/plans/archive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file })
     });
     const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('json')) { resetBtn(); alert('Archive failed — dashboard may need a restart'); return; }
+    if (!ct.includes('json')) { refresh(); return; }
     const d = await res.json().catch(() => ({}));
     if (res.ok && d.ok) {
-      try { closeModal(); } catch { /* may not be open */ }
       var msg = 'Archived';
       if (d.archivedSource) msg += ' PRD + source plan (' + d.archivedSource + ')';
       if (d.cancelledItems) msg += ', cancelled ' + d.cancelledItems + ' pending item(s)';
@@ -721,25 +721,16 @@ async function triggerVerify(file, btn) {
 }
 
 async function planUnarchive(file, btn) {
-  if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Restoring...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
-  function resetBtn() { if (btn) { btn.textContent = btn.dataset.origText || 'Unarchive'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  try { closeModal(); } catch {}
+  showToast('cmd-toast', 'Restored from archive', true);
   try {
     const res = await fetch('/api/plans/unarchive', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file })
     });
-    const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('json')) { resetBtn(); alert('Unarchive failed — dashboard may need a restart'); return; }
-    const d = await res.json().catch(() => ({}));
-    if (res.ok && d.ok) {
-      showToast('cmd-toast', 'Restored from archive', true);
-      refreshPlans();
-      refresh();
-    } else {
-      resetBtn();
-      alert('Unarchive failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
+    if (res.ok) { refreshPlans(); refresh(); }
+    else { const d = await res.json().catch(() => ({})); alert('Unarchive failed: ' + (d.error || 'unknown')); refresh(); }
+  } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
 window.MinionsPlans = { openCreatePlanModal, refreshPlans, derivePlanStatus, renderPlans, openArchivedPlansModal, planExecute, planSubmitRevise, planShowRevise, planHideRevise, planView, planApprove, planArchive, planUnarchive, planDelete, planPause, planReject, planDiscuss, planOpenInDocChat, planRegeneratePRD, openVerifyGuide, triggerVerify };
