@@ -3504,6 +3504,96 @@ async function testDiscoverFromWorkItems() {
   });
 }
 
+// ─── engine.js — buildWorkItemDispatchVars Tests ─────────────────────────────
+
+async function testBuildWorkItemDispatchVars() {
+  console.log('\n── engine.js — buildWorkItemDispatchVars ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('buildWorkItemDispatchVars function exists and is exported', () => {
+    assert.ok(src.includes('function buildWorkItemDispatchVars('),
+      'engine.js must define buildWorkItemDispatchVars');
+    assert.ok(src.includes('buildWorkItemDispatchVars') && src.includes('module.exports'),
+      'buildWorkItemDispatchVars must be exported');
+  });
+
+  await test('buildWorkItemDispatchVars sets references from item', () => {
+    assert.ok(src.includes("vars.references = refs ? '## References"),
+      'Should format references into markdown');
+  });
+
+  await test('buildWorkItemDispatchVars sets acceptance_criteria from item', () => {
+    assert.ok(src.includes("vars.acceptance_criteria = ac ? '## Acceptance Criteria"),
+      'Should format acceptance criteria into markdown');
+  });
+
+  await test('buildWorkItemDispatchVars reads notes via getNotes()', () => {
+    // Must use getNotes() instead of inline fs.readFileSync for notes.md
+    assert.ok(src.includes('getNotes()'),
+      'Should use getNotes() from queries.js');
+  });
+
+  await test('buildWorkItemDispatchVars handles checkpoint context', () => {
+    assert.ok(src.includes('checkpoint.json') && src.includes('needsReview'),
+      'Should read checkpoint.json and return needsReview flag');
+  });
+
+  await test('buildWorkItemDispatchVars handles ASK work type', () => {
+    assert.ok(src.includes("workType === WORK_TYPE.ASK") && src.includes('vars.question'),
+      'Should set question var for ASK work type');
+  });
+
+  await test('buildWorkItemDispatchVars calls resolveTaskContext', () => {
+    // The function must call resolveTaskContext to inject implicit context
+    const fnBody = src.slice(src.indexOf('function buildWorkItemDispatchVars('));
+    const fnEnd = fnBody.indexOf('\nfunction ');
+    const fn = fnBody.slice(0, fnEnd);
+    assert.ok(fn.includes('resolveTaskContext(item, config)'),
+      'Should call resolveTaskContext within buildWorkItemDispatchVars');
+  });
+
+  await test('buildWorkItemDispatchVars returns expected shape', () => {
+    const fnBody = src.slice(src.indexOf('function buildWorkItemDispatchVars('));
+    const fnEnd = fnBody.indexOf('\nfunction ');
+    const fn = fnBody.slice(0, fnEnd);
+    assert.ok(fn.includes('needsReview') && fn.includes('checkpointCount'),
+      'Should return { needsReview, checkpointCount }');
+  });
+
+  await test('discoverFromWorkItems calls buildWorkItemDispatchVars', () => {
+    assert.ok(src.includes('buildWorkItemDispatchVars(item, vars, config'),
+      'discoverFromWorkItems should call buildWorkItemDispatchVars');
+  });
+
+  await test('discoverCentralWorkItems calls buildWorkItemDispatchVars', () => {
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    assert.ok(centralFn.includes('buildWorkItemDispatchVars(item, vars, config'),
+      'discoverCentralWorkItems should call buildWorkItemDispatchVars');
+  });
+
+  await test('no inline fs.readFileSync for notes.md in discovery functions', () => {
+    // After extraction, discovery functions should not have inline notes.md reads
+    const discoverWI = src.slice(src.indexOf('function discoverFromWorkItems('), src.indexOf('function normalizeAc('));
+    const centralWI = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    const notesReadPattern = /fs\.readFileSync\(path\.join\(MINIONS_DIR,\s*'notes\.md'\)/g;
+    const wiMatches = discoverWI.match(notesReadPattern) || [];
+    const centralMatches = centralWI.match(notesReadPattern) || [];
+    assert.strictEqual(wiMatches.length, 0,
+      'discoverFromWorkItems should not have inline fs.readFileSync for notes.md');
+    assert.strictEqual(centralMatches.length, 0,
+      'discoverCentralWorkItems should not have inline fs.readFileSync for notes.md');
+  });
+
+  await test('buildWorkItemDispatchVars supports includeNotes option', () => {
+    const fnBody = src.slice(src.indexOf('function buildWorkItemDispatchVars('));
+    const fnEnd = fnBody.indexOf('\nfunction ');
+    const fn = fnBody.slice(0, fnEnd);
+    assert.ok(fn.includes('includeNotes'),
+      'Should support includeNotes option for fan-out (no notes unless ASK)');
+  });
+}
+
 // ─── engine.js — checkTimeouts Tests ────────────────────────────────────────
 
 async function testCheckTimeouts() {
@@ -5703,6 +5793,7 @@ async function main() {
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testDiscoverFromWorkItems();
+    await testBuildWorkItemDispatchVars();
     await testCheckTimeouts();
     await testAddToDispatch();
     await testExtractSkills();
@@ -6323,9 +6414,11 @@ async function testCheckpointResume() {
   });
 
   await test('checkpoint_context defaults to empty string when no checkpoint', () => {
-    const matches = engineSrc.match(/vars\.checkpoint_context\s*=\s*''/g);
-    assert.ok(matches && matches.length >= 2,
-      'Should default checkpoint_context to empty string in both project and central dispatch paths');
+    // buildWorkItemDispatchVars consolidates checkpoint logic — one default in the shared function
+    assert.ok(engineSrc.includes("vars.checkpoint_context = ''"),
+      'Should default checkpoint_context to empty string in buildWorkItemDispatchVars');
+    assert.ok(engineSrc.includes('function buildWorkItemDispatchVars'),
+      'Checkpoint logic should be consolidated in buildWorkItemDispatchVars');
   });
 
   await test('implement.md playbook includes checkpoint_context', () => {
