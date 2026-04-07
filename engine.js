@@ -1097,13 +1097,12 @@ function materializePlansAsWorkItems(config) {
                     title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
                     type: 'plan-to-prd',
                     priority: 'high',
-                    description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${file}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
+                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
                     status: 'pending',
                     created: ts(),
                     createdBy: 'engine:plan-revision',
                     project: targetProject.name,
                     planFile: plan.source_plan,
-                    _targetPrdFile: file,
                   });
                   safeWrite(centralWiPath, centralItems);
                   log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
