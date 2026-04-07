@@ -876,6 +876,10 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
       const linkedPrId = Object.keys(prLinks).find(prId => prLinks[prId] === wi.id);
       if (linkedPrId) exactPr = allPrs.find(pr => pr.id === linkedPrId) || { id: linkedPrId };
     }
+    // Branch-based matching: PR branch contains the work item ID (e.g. work/P-k7m2v9a1)
+    if (!exactPr) {
+      exactPr = allPrs.find(pr => pr.branch && pr.branch.includes(wi.id));
+    }
     if (exactPr) {
       wi.status = WI_STATUS.DONE;
       wi._pr = exactPr.id;
