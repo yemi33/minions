@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.469 (2026-04-07)
+
+### Fixes
+-  only cache sessionId for steering when actually resuming same branch
+
 ## 0.1.468 (2026-04-07)
 
 ### Fixes
