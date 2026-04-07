@@ -937,7 +937,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 // ─── Inbox Consolidation (extracted to engine/consolidation.js) ──────────────
 
 const { consolidateInbox } = require('./engine/consolidation');
-const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview } = require('./engine/ado');
+const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry } = require('./engine/ado');
 const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
@@ -2447,7 +2447,8 @@ async function tickInner() {
 
   // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
-  if (tickCount % 6 === 0) {
+  // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
+  if (tickCount % 6 === 0 || needsAdoPollRetry()) {
     try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
