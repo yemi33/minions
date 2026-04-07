@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, mutateJsonFileLocked, WI_STATUS } = shared;
+const { safeJson, safeWrite, mutateJsonFileLocked, ts, WI_STATUS } = shared;
 
 const SCHEDULE_RUNS_PATH = path.join(__dirname, 'schedule-runs.json');
 
@@ -126,7 +126,7 @@ function discoverScheduledWork(config) {
         priority: sched.priority || 'medium',
         description: sched.description || sched.title,
         status: WI_STATUS.PENDING,
-        created: new Date().toISOString(),
+        created: ts(),
         createdBy: 'scheduler',
         agent: sched.agent || null,
         project: sched.project || null,
@@ -134,7 +134,7 @@ function discoverScheduledWork(config) {
       });
 
       // Record run time inside the lock
-      runs[sched.id] = new Date().toISOString();
+      runs[sched.id] = ts();
     }
   }, { defaultValue: {} });
 

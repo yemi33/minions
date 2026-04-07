@@ -9,7 +9,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { safeJson, safeRead, getProjects, log, dateStamp, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeJson, safeRead, getProjects, log, ts, dateStamp, WI_STATUS, WORK_TYPE, PR_STATUS, DISPATCH_RESULT } = shared;
 const { getConfig, getDispatch, getNotes, getAgentCharter, getPrs, AGENTS_DIR } = queries;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
@@ -241,7 +241,7 @@ function renderPlaybook(type, vars) {
   content += `**Never delete, move, or overwrite files in \`knowledge/\`.** The sweep (consolidation engine) is the only process that writes to \`knowledge/\`. If you think a KB file is wrong, note it in your learnings file — do not touch \`knowledge/\` directly.\n`;
 
   // Inject learnings requirement
-  const timeStamp = new Date().toISOString().slice(11, 16).replace(':', '');
+  const timeStamp = ts().slice(11, 16).replace(':', '');
   const inboxSlug = [vars.agent_id || 'agent', vars.task_id || '', dateStamp(), timeStamp].filter(Boolean).join('-');
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
   content += `After completing your task, write **one** findings file to:\n`;

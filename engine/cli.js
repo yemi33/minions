@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeRead, safeJson, safeWrite, ts, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus,
   MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
@@ -174,7 +174,7 @@ const commands = {
               if (wi && wi.status !== WI_STATUS.DISPATCHED) {
                 wi.status = WI_STATUS.DISPATCHED;
                 wi.dispatched_to = wi.dispatched_to || agentId;
-                wi.dispatched_at = wi.dispatched_at || new Date().toISOString();
+                wi.dispatched_at = wi.dispatched_at || ts();
                 safeWrite(wiPath, wiItems);
               }
             } catch (err) { console.log(`    Warning: failed to sync work item status: ${err.message}`); }
@@ -273,8 +273,8 @@ const commands = {
                   const wi = items.find(w => w.id === item.meta.item.id);
                   if (wi) {
                     wi.status = status;
-                    if (isSuccess) { wi.completedAt = new Date().toISOString(); delete wi.failReason; }
-                    else { wi.failedAt = new Date().toISOString(); wi.failReason = 'Completed while engine was down'; }
+                    if (isSuccess) { wi.completedAt = ts(); delete wi.failReason; }
+                    else { wi.failedAt = ts(); wi.failReason = 'Completed while engine was down'; }
                     safeWrite(wiPath, items);
                   }
                 }

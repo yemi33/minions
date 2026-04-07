@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { exec, runFile, cleanChildEnv, killGracefully, killImmediate } = require('./shared');
+const { exec, runFile, cleanChildEnv, killGracefully, killImmediate, ts } = require('./shared');
 
 const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
 
@@ -83,7 +83,7 @@ if (!claudeBin) {
 const tmpDir = path.join(__dirname, 'tmp');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const debugPath = path.join(tmpDir, 'spawn-debug.log');
-fs.writeFileSync(debugPath, `spawn-agent.js at ${new Date().toISOString()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
+fs.writeFileSync(debugPath, `spawn-agent.js at ${ts()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
 
 // When resuming a session, skip system prompt (it's baked into the session)
 const isResume = extraArgs.includes('--resume');
@@ -119,7 +119,7 @@ if (_sysPromptFileSupported === null) {
       ? spawnSync(claudeBin, ['--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true })
       : spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
-    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: new Date().toISOString() })); } catch { /* optional */ }
+    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: ts() })); } catch { /* optional */ }
   } catch { _sysPromptFileSupported = true; /* assume supported */ }
 }
 if (!isResume) try {

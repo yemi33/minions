@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { safeWrite, safeUnlink, uid, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked } = shared;
+const { safeWrite, safeUnlink, uid, ts, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked } = shared;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
 const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
@@ -28,7 +28,7 @@ function trackEngineUsage(category, usage) {
       cat.cacheRead += usage.cacheRead || 0;
       cat.cacheCreation = (cat.cacheCreation || 0) + (usage.cacheCreation || 0);
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = ts().slice(0, 10);
       if (!metrics._daily) metrics._daily = {};
       if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
       const daily = metrics._daily[today];
