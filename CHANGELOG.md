@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.549 (2026-04-07)
+
+### Fixes
+-  prefer git rev-parse over .minions-commit for disk version detection
+
 ## 0.1.548 (2026-04-07)
 
 ### Features
