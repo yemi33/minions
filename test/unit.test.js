@@ -469,6 +469,28 @@ async function testEngineDefaults() {
     assert.ok(shared.DEFAULT_CLAUDE.allowedTools);
   });
 
+  await test('DEFAULT_AGENT_METRICS has all required metric fields', () => {
+    const m = shared.DEFAULT_AGENT_METRICS;
+    assert.ok(m !== undefined, 'DEFAULT_AGENT_METRICS must be exported');
+    const expectedFields = ['tasksCompleted', 'tasksErrored', 'prsCreated', 'prsApproved',
+      'prsRejected', 'prsMerged', 'reviewsDone', 'lastTask', 'lastCompleted',
+      'totalCostUsd', 'totalInputTokens', 'totalOutputTokens', 'totalCacheRead'];
+    for (const field of expectedFields) {
+      assert.ok(field in m, `DEFAULT_AGENT_METRICS missing field: ${field}`);
+    }
+    // Numeric fields default to 0, nullable fields default to null
+    assert.strictEqual(m.tasksCompleted, 0);
+    assert.strictEqual(m.lastTask, null);
+    assert.strictEqual(m.lastCompleted, null);
+  });
+
+  await test('DEFAULT_AGENT_METRICS spread creates independent copy', () => {
+    const a = { ...shared.DEFAULT_AGENT_METRICS };
+    const b = { ...shared.DEFAULT_AGENT_METRICS };
+    a.tasksCompleted = 5;
+    assert.strictEqual(b.tasksCompleted, 0, 'Spread must create independent copy');
+  });
+
   await test('KB_CATEGORIES has expected categories', () => {
     assert.ok(shared.KB_CATEGORIES.includes('architecture'));
     assert.ok(shared.KB_CATEGORIES.includes('conventions'));
