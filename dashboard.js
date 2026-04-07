@@ -22,7 +22,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -1381,9 +1381,6 @@ const server = http.createServer(async (req, res) => {
       if (!body.title || !body.title.trim()) return jsonReply(res, 400, { error: 'title is required' });
       // Write as a work item with type 'plan' — user must explicitly execute plan-to-prd after reviewing
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
       const item = {
         id, title: body.title, type: 'plan',
@@ -1393,8 +1390,7 @@ const server = http.createServer(async (req, res) => {
       };
       if (body.project) item.project = body.project;
       if (body.agent) item.agent = body.agent;
-      items.push(item);
-      safeWrite(wiPath, items);
+      mutateWorkItems(wiPath, items => { items.push(item); });
       return jsonReply(res, 200, { ok: true, id, agent: body.agent || '' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -1465,18 +1461,18 @@ const server = http.createServer(async (req, res) => {
       }
       for (const wiPath of wiSyncPaths) {
         try {
-          const items = safeJson(wiPath);
-          const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-          if (wi && wi.status === 'pending') {
-            if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
-            if (body.description !== undefined) wi.description = body.description;
-            if (body.priority !== undefined) wi.priority = body.priority;
-            if (body.estimated_complexity !== undefined) {
-              wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+          mutateWorkItems(wiPath, items => {
+            const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
+            if (wi && wi.status === 'pending') {
+              if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
+              if (body.description !== undefined) wi.description = body.description;
+              if (body.priority !== undefined) wi.priority = body.priority;
+              if (body.estimated_complexity !== undefined) {
+                wi.type = body.estimated_complexity === 'large' ? 'implement:large' : 'implement';
+              }
+              workItemSynced = true;
             }
-            safeWrite(wiPath, items);
-            workItemSynced = true;
-          }
+          });
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -1500,26 +1496,21 @@ const server = http.createServer(async (req, res) => {
 
       // Also remove any materialized work item for this plan item
       let cancelled = false;
+      const allWiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) {
-        const wiPath = shared.projectWorkItemsPath(proj);
+        allWiPaths.push(shared.projectWorkItemsPath(proj));
+      }
+      for (const wiPath of allWiPaths) {
         try {
-          const items = safeJson(wiPath);
-          const before = items.length;
-          const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
-          if (filtered.length < before) {
-            safeWrite(wiPath, filtered);
-            cancelled = true;
-          }
+          mutateWorkItems(wiPath, items => {
+            const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
+            if (filtered.length < items.length) {
+              cancelled = true;
+              return filtered;
+            }
+          });
         } catch (e) { console.error('work item cleanup:', e.message); }
       }
-      // Also check central work-items
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      try {
-        const items = safeJson(centralPath);
-        const before = items.length;
-        const filtered = items.filter(w => !(w.sourcePlan === body.source && w.id === body.itemId));
-        if (filtered.length < before) { safeWrite(centralPath, filtered); cancelled = true; }
-      } catch (e) { console.error('central work item cleanup:', e.message); }
 
       // Clean dispatch entries for this item
       cleanDispatchEntries(d =>
@@ -2130,52 +2121,51 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       mutateJsonFileLocked(dispatchPath, (dispatch) => {
         for (const wiPath of wiPaths) {
           try {
-            const items = safeJson(wiPath);
-            if (!items) continue;
-            let changed = false;
-            for (const w of items) {
-              if (w.sourcePlan !== body.file) continue;
-              // Keep completed items as-is, reset everything else to pending.
-              if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
+            mutateWorkItems(wiPath, items => {
+              let changed = false;
+              for (const w of items) {
+                if (w.sourcePlan !== body.file) continue;
+                // Keep completed items as-is, reset everything else to pending.
+                if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
 
-              if (w.status === WI_STATUS.DISPATCHED) {
-                // Kill the agent working on this item, if any.
-                const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
-                if (activeEntry) {
-                  const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
-                  try {
-                    const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
-                    if (agentStatus.pid) {
-                      try {
-                        const safePid = shared.validatePid(agentStatus.pid);
-                        if (process.platform === 'win32') {
-                          require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-                        } else {
-                          process.kill(safePid, 'SIGTERM');
-                        }
-                      } catch { /* process may be dead or invalid PID */ }
-                    }
-                    agentStatus.status = 'idle';
-                    delete agentStatus.currentTask;
-                    delete agentStatus.dispatched;
-                    safeWrite(statusPath, agentStatus);
-                  } catch (e) { console.error('agent reset:', e.message); }
-                  killedAgents.add(activeEntry.agent);
+                if (w.status === WI_STATUS.DISPATCHED) {
+                  // Kill the agent working on this item, if any.
+                  const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
+                  if (activeEntry) {
+                    const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
+                    try {
+                      const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                      if (agentStatus.pid) {
+                        try {
+                          const safePid = shared.validatePid(agentStatus.pid);
+                          if (process.platform === 'win32') {
+                            require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+                          } else {
+                            process.kill(safePid, 'SIGTERM');
+                          }
+                        } catch { /* process may be dead or invalid PID */ }
+                      }
+                      agentStatus.status = 'idle';
+                      delete agentStatus.currentTask;
+                      delete agentStatus.dispatched;
+                      safeWrite(statusPath, agentStatus);
+                    } catch (e) { console.error('agent reset:', e.message); }
+                    killedAgents.add(activeEntry.agent);
+                  }
                 }
-              }
 
-              if (w.status !== WI_STATUS.PAUSED) reset++;
-              w.status = WI_STATUS.PAUSED;
-              w._pausedBy = 'prd-pause';
-              delete w._resumedAt;
-              delete w.dispatched_at;
-              delete w.dispatched_to;
-              delete w.failReason;
-              delete w.failedAt;
-              changed = true;
-              if (w.id) resetItemIds.add(w.id);
-            }
-            if (changed) safeWrite(wiPath, items);
+                if (w.status !== WI_STATUS.PAUSED) reset++;
+                w.status = WI_STATUS.PAUSED;
+                w._pausedBy = 'prd-pause';
+                delete w._resumedAt;
+                delete w.dispatched_at;
+                delete w.dispatched_to;
+                delete w.failReason;
+                delete w.failedAt;
+                changed = true;
+                if (w.id) resetItemIds.add(w.id);
+              }
+            });
           } catch (e) { console.error('reset work items:', e.message); }
         }
 
@@ -2220,13 +2210,15 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const config = queries.getConfig();
       for (const p of getProjects(config)) {
         const projWiPath = projectWorkItemsPath(p);
-        const projItems = safeJson(projWiPath);
-        if (!projItems) continue;
-        const filtered = projItems.filter(w => {
-          if (w.sourcePlan !== body.file) return true; // different plan, keep
-          return completedStatuses.has(w.status); // keep completed, remove pending/failed
-        });
-        if (filtered.length < projItems.length) safeWrite(projWiPath, filtered);
+        try {
+          mutateWorkItems(projWiPath, items => {
+            const filtered = items.filter(w => {
+              if (w.sourcePlan !== body.file) return true; // different plan, keep
+              return completedStatuses.has(w.status); // keep completed, remove pending/failed
+            });
+            if (filtered.length < items.length) return filtered;
+          });
+        } catch { /* project may not have work items */ }
       }
 
       // Delete old PRD — agent will write replacement at same path
@@ -2234,30 +2226,29 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
-
-      // Dedup: check if already queued
-      const alreadyQueued = items.find(w =>
-        w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
-      );
-      if (alreadyQueued) return jsonReply(res, 200, { id: alreadyQueued.id, alreadyQueued: true });
 
       const completedContext = completedItems.length > 0
         ? `\n\n**Previously completed items (preserve their status in the new PRD):**\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
         : '';
 
       const id = 'W-' + shared.uid();
-      items.push({
-        id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
-        type: 'plan-to-prd', priority: 'high',
-        description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
-        project: plan.project || '', planFile: plan.source_plan,
-        _targetPrdFile: body.file,
+      let alreadyQueuedId = null;
+      mutateWorkItems(wiPath, items => {
+        // Dedup: check if already queued
+        const alreadyQueued = items.find(w =>
+          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+        );
+        if (alreadyQueued) { alreadyQueuedId = alreadyQueued.id; return; }
+        items.push({
+          id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
+          type: 'plan-to-prd', priority: 'high',
+          description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
+          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
+          project: plan.project || '', planFile: plan.source_plan,
+          _targetPrdFile: body.file,
+        });
       });
-      safeWrite(wiPath, items);
+      if (alreadyQueuedId) return jsonReply(res, 200, { id: alreadyQueuedId, alreadyQueued: true });
       return jsonReply(res, 200, { id, file: plan.source_plan });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
@@ -2334,27 +2325,26 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       for (const wiInfo of wiPaths) {
         try {
-          const items = safeJson(wiInfo.path);
-          const filtered = [];
-          for (const w of items) {
-            if (w.sourcePlan === body.source) {
-              materializedPlanItemIds.add(w.id);
-              if (w.status === 'pending' || w.status === 'failed') {
-                // Delete — will re-materialize on next tick with updated plan data
-                reset++;
-                deletedItemIds.push(w.id);
+          mutateWorkItems(wiInfo.path, items => {
+            const filtered = [];
+            for (const w of items) {
+              if (w.sourcePlan === body.source) {
+                materializedPlanItemIds.add(w.id);
+                if (w.status === 'pending' || w.status === 'failed') {
+                  // Delete — will re-materialize on next tick with updated plan data
+                  reset++;
+                  deletedItemIds.push(w.id);
+                } else {
+                  // dispatched or done — leave alone
+                  kept++;
+                  filtered.push(w);
+                }
               } else {
-                // dispatched or done — leave alone
-                kept++;
                 filtered.push(w);
               }
-            } else {
-              filtered.push(w);
             }
-          }
-          if (filtered.length < items.length) {
-            safeWrite(wiInfo.path, filtered);
-          }
+            if (filtered.length < items.length) return filtered;
+          });
         } catch (e) { console.error('work item sync:', e.message); }
       }
 
@@ -2396,13 +2386,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       }
       for (const wiPath of wiPaths) {
         try {
-          const items = safeJsonArr(wiPath);
-          if (!items) continue;
-          const filtered = items.filter(w => w.sourcePlan !== body.file);
-          if (filtered.length < items.length) {
-            cleaned += items.length - filtered.length;
-            safeWrite(wiPath, filtered);
-          }
+          mutateWorkItems(wiPath, items => {
+            const filtered = items.filter(w => w.sourcePlan !== body.file);
+            if (filtered.length < items.length) {
+              cleaned += items.length - filtered.length;
+              return filtered;
+            }
+          });
         } catch (e) { console.error('plan cleanup:', e.message); }
       }
 
@@ -2417,16 +2407,14 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       if (prdSourcePlan) {
         try {
           const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-          const centralItems = safeJson(centralPath) || [];
-          let changed = false;
-          for (const w of centralItems) {
-            if (w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === prdSourcePlan) {
-              w.status = 'cancelled';
-              w._cancelledBy = 'prd-deleted';
-              changed = true;
+          mutateWorkItems(centralPath, items => {
+            for (const w of items) {
+              if (w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === prdSourcePlan) {
+                w.status = 'cancelled';
+                w._cancelledBy = 'prd-deleted';
+              }
             }
-          }
-          if (changed) safeWrite(centralPath, centralItems);
+          });
         } catch (e) { console.error('plan-to-prd cleanup:', e.message); }
       }
 
@@ -2521,19 +2509,17 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Create a work item to revise the plan
       const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let items = [];
-      const existing = safeRead(wiPath);
-      if (existing) { try { items = JSON.parse(existing); } catch {} }
       const id = 'W-' + shared.uid();
-      items.push({
-        id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
-        type: 'plan-to-prd', priority: 'high',
-        description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
-        project: plan.project || '',
-        planFile: body.file,
+      mutateWorkItems(wiPath, items => {
+        items.push({
+          id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
+          type: 'plan-to-prd', priority: 'high',
+          description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
+          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
+          project: plan.project || '',
+          planFile: body.file,
+        });
       });
-      safeWrite(wiPath, items);
       return jsonReply(res, 200, { ok: true, status: 'revision-requested', workItemId: id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -2624,22 +2610,23 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const deletedItemIds = [];
       for (const wiInfo of wiPaths) {
         try {
-          const items = safeJson(wiInfo.path);
-          const filtered = [];
-          for (const w of items) {
-            if (w.sourcePlan === body.source) {
-              if (w.status === 'pending' || w.status === 'failed') {
-                reset++;
-                deletedItemIds.push(w.id);
+          mutateWorkItems(wiInfo.path, items => {
+            const filtered = [];
+            for (const w of items) {
+              if (w.sourcePlan === body.source) {
+                if (w.status === 'pending' || w.status === 'failed') {
+                  reset++;
+                  deletedItemIds.push(w.id);
+                } else {
+                  kept++;
+                  filtered.push(w);
+                }
               } else {
-                kept++;
                 filtered.push(w);
               }
-            } else {
-              filtered.push(w);
             }
-          }
-          if (filtered.length < items.length) safeWrite(wiInfo.path, filtered);
+            if (filtered.length < items.length) return filtered;
+          });
         } catch (e) { console.error('work item deletion:', e.message); }
       }
       for (const itemId of deletedItemIds) {
@@ -2650,22 +2637,21 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       // Step 4: Dispatch plan-to-prd to regenerate PRD from revised plan
       const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-      let centralItems = [];
-      try { centralItems = JSON.parse(safeRead(centralWiPath) || '[]'); } catch {}
       const wiId = 'W-' + shared.uid();
-      centralItems.push({
-        id: wiId,
-        title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
-        type: 'plan-to-prd',
-        priority: 'high',
-        description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
-        status: 'pending',
-        created: new Date().toISOString(),
-        createdBy: 'dashboard:revise-and-regenerate',
-        project: prd.project || '',
-        planFile: sourcePlanFile,
+      mutateWorkItems(centralWiPath, items => {
+        items.push({
+          id: wiId,
+          title: 'Regenerate PRD from revised plan: ' + sourcePlanFile,
+          type: 'plan-to-prd',
+          priority: 'high',
+          description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
+          status: 'pending',
+          created: new Date().toISOString(),
+          createdBy: 'dashboard:revise-and-regenerate',
+          project: prd.project || '',
+          planFile: sourcePlanFile,
+        });
       });
-      safeWrite(centralWiPath, centralItems);
 
       return jsonReply(res, 200, {
         ok: true,
@@ -3728,24 +3714,27 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const projects = shared.getProjects(CONFIG);
       const paths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const p of projects) paths.push(shared.projectWorkItemsPath(p));
+      let found = null;
       for (const wiPath of paths) {
-        const items = JSON.parse(safeRead(wiPath) || '[]');
-        const item = items.find(i => i.id === id);
-        if (!item) continue;
-        item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
-        safeWrite(wiPath, items);
-        const agent = item.dispatched_to || item.agent || 'unknown';
-        const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
-          '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
-          '**Item:** ' + (item.title || id) + '\n' +
-          '**Agent:** ' + agent + '\n' +
-          (comment ? '**Feedback:** ' + comment + '\n' : '');
-        const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
-        safeWrite(inboxPath, feedbackNote);
-        invalidateStatusCache();
-        return jsonReply(res, 200, { ok: true });
+        mutateWorkItems(wiPath, items => {
+          const item = items.find(i => i.id === id);
+          if (item && !found) {
+            item._humanFeedback = { rating, comment: comment || '', at: new Date().toISOString() };
+            found = { agent: item.dispatched_to || item.agent || 'unknown', title: item.title || id };
+          }
+        });
+        if (found) break;
       }
-      return jsonReply(res, 404, { error: 'Work item not found' });
+      if (!found) return jsonReply(res, 404, { error: 'Work item not found' });
+      const feedbackNote = '# Human Feedback on ' + id + '\n\n' +
+        '**Rating:** ' + (rating === 'up' ? '👍 Good' : '👎 Needs improvement') + '\n' +
+        '**Item:** ' + found.title + '\n' +
+        '**Agent:** ' + found.agent + '\n' +
+        (comment ? '**Feedback:** ' + comment + '\n' : '');
+      const inboxPath = path.join(MINIONS_DIR, 'notes', 'inbox', found.agent + '-feedback-' + new Date().toISOString().slice(0, 10) + '-' + shared.uid().slice(0, 4) + '.md');
+      safeWrite(inboxPath, feedbackNote);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true });
     }},
 
     // Pinned notes
