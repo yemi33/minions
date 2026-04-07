@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.521 (2026-04-07)
+
+### Features
+-  test isolation — tests no longer pollute production data
+
+### Other
+- perf: reduce curl timeout to 5s, cache getDispatch() reads
+
 ## 0.1.519 (2026-04-07)
 
 ### Other
