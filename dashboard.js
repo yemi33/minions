@@ -192,8 +192,8 @@ async function checkNpmVersion() {
     _npmVersionCache = { latest: version || null, checkedAt: new Date().toISOString() };
     _npmVersionCacheTs = now;
   } catch (e) {
-    console.error('[version-check] npm view failed:', e.message?.split('\n')[0]);
-    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: e.message?.split('\n')[0] || 'check failed' };
+    console.error('[version-check] npm view failed:', e.message?.split('\n')?.[0]);
+    _npmVersionCache = _npmVersionCache || { latest: null, checkedAt: null, error: e.message?.split('\n')?.[0] || 'check failed' };
   }
   return _npmVersionCache;
 }
@@ -3816,7 +3816,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       // Determine project
       reloadConfig();
       const projects = shared.getProjects(CONFIG);
-      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : projects[0];
+      const targetProject = projectName ? projects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) : (projects[0] || null);
       const prPath = targetProject ? shared.projectPrPath(targetProject) : path.join(MINIONS_DIR, 'pull-requests.json');
 
       // Extract PR number from URL
