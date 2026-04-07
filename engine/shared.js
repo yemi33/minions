@@ -738,6 +738,34 @@ function killImmediate(proc) {
   }
 }
 
+// ─── Work Items & Pull Requests Mutation Helpers ────────────────────────────
+
+/**
+ * Atomic read-modify-write for work-items JSON files.
+ * Wraps mutateJsonFileLocked with defaultValue of [].
+ * @param {string} filePath - Path to the work-items JSON file
+ * @param {Function} mutator - Receives the array, mutates in place or returns new value
+ */
+function mutateWorkItems(filePath, mutator) {
+  return mutateJsonFileLocked(filePath, (data) => {
+    if (!Array.isArray(data)) data = [];
+    return mutator(data) || data;
+  }, { defaultValue: [] });
+}
+
+/**
+ * Atomic read-modify-write for pull-requests JSON files.
+ * Wraps mutateJsonFileLocked with defaultValue of [].
+ * @param {string} filePath - Path to the pull-requests JSON file
+ * @param {Function} mutator - Receives the array, mutates in place or returns new value
+ */
+function mutatePullRequests(filePath, mutator) {
+  return mutateJsonFileLocked(filePath, (data) => {
+    if (!Array.isArray(data)) data = [];
+    return mutator(data) || data;
+  }, { defaultValue: [] });
+}
+
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
@@ -753,6 +781,8 @@ module.exports = {
   safeUnlink,
   withFileLock,
   mutateJsonFileLocked,
+  mutateWorkItems,
+  mutatePullRequests,
   uid,
   uniquePath,
   writeToInbox,
