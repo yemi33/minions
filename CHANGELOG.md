@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.548 (2026-04-07)
+
+### Features
+-  auto-enrich linked PRs, progressive markdown rendering, KB sort
+- extract buildWorkItemDispatchVars() from duplicated discovery code (#467)
+- Replace JSON.parse(safeRead()) with safeJsonArr/safeJsonObj in dashboard.js (#465)
+
+### Fixes
+- remap sequential PRD item IDs to prevent cross-PRD collisions (#474)
+
 ## 0.1.546 (2026-04-07)
 
 ### Features
