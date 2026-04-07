@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.468 (2026-04-07)
+
+### Fixes
+-  plan-to-prd and plan tasks skip worktree creation
+-  plan execute uses mutateJsonFileLocked for atomic check-and-insert
+
 ## 0.1.466 (2026-04-07)
 
 ### Fixes
