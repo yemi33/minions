@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.467 (2026-04-07)
+
+### Fixes
+-  plan execute uses mutateJsonFileLocked for atomic check-and-insert
+
 ## 0.1.466 (2026-04-07)
 
 ### Fixes
