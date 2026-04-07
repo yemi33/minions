@@ -84,6 +84,7 @@ function checkSteering(config) {
     // Store steering context for re-spawn on close
     info._steeringMessage = message;
     info._steeringSessionId = sessionId;
+    info._steeringAt = Date.now(); // prevent timeout checker from treating this as orphaned
   }
 }
 
@@ -203,6 +204,10 @@ function checkTimeouts(config) {
 
     const effectiveTimeout = isBlocking ? blockingTimeout : heartbeatTimeout;
 
+    // Skip recently-steered agents — they're being killed and re-spawned
+    const procInfo = activeProcesses.get(item.id);
+    if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
+
     if (!hasProcess && silentMs > effectiveTimeout && Date.now() > engineRestartGraceUntil) {
       // No tracked process AND no recent output past effective timeout AND grace period expired → orphaned
       log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
@@ -242,6 +247,9 @@ function checkTimeouts(config) {
         if (item.status !== WI_STATUS.DISPATCHED) continue;
         // Never revert completed items
         if (item.completedAt || item.status === WI_STATUS.DONE) continue;
+        // Skip recently-steered agents (being killed and re-spawned)
+        const steerInfo = activeProcesses.get(item.id) || [...activeProcesses.values()].find(p => p.agentId && item.dispatched_to === p.agentId);
+        if (steerInfo?._steeringAt && Date.now() - steerInfo._steeringAt < 60000) continue;
         // Check if any active dispatch references this item
         const projectNames = getProjects(config).map(p => p.name);
         const possibleKeys = [
