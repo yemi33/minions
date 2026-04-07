@@ -139,9 +139,10 @@ async function sendSteering() {
   const el = document.getElementById('live-messages');
   if (el) {
     el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) +
-      '<div id="steer-pending" style="font-size:9px;opacity:0.7;margin-top:2px">Sending...</div></div>';
+      '<div id="steer-pending" style="font-size:9px;opacity:0.7;margin-top:2px">\u2197 Sending...</div></div>';
     el.scrollTop = el.scrollHeight;
   }
+  showToast('cmd-toast', 'Steering message sent to ' + currentAgentId, true);
 
   try {
     const res = await fetch('/api/agents/steer', {
@@ -186,7 +187,13 @@ async function sendSteering() {
     const pending = document.getElementById('steer-pending');
     if (pending) { pending.textContent = '\u26A0 ' + e.message; pending.style.opacity = '1'; }
   } finally {
-    setTimeout(() => { _steerInFlight = false; refreshLiveOutput(); }, 500);
+    // Resume polling — delay slightly so the [human-steering] line is in the log
+    setTimeout(() => {
+      _steerInFlight = false;
+      refreshLiveOutput();
+      // Ensure polling continues (may have stopped if tab switched during steering)
+      if (!livePollingInterval && currentTab === 'live') startLivePolling();
+    }, 1000);
   }
 }
 
