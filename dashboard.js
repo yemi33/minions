@@ -1511,15 +1511,25 @@ const server = http.createServer(async (req, res) => {
       'Connection': 'keep-alive',
     });
 
-    // Send initial content
+    // Send initial content — tail only (last 64KB by default) to avoid memory spikes
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const tailBytes = Math.max(0, parseInt(params.get('tail') || '65536', 10) || 65536);
     let offset = 0;
     try {
-      const content = fs.readFileSync(liveLogPath, 'utf8');
-      if (content.length > 0) {
-        safeWrite(`data: ${JSON.stringify(content)}\n\n`);
-        offset = Buffer.byteLength(content, 'utf8');
+      const stat = fs.statSync(liveLogPath);
+      const fileSize = stat.size;
+      if (fileSize > 0) {
+        const readStart = Math.max(0, fileSize - tailBytes);
+        const readLen = fileSize - readStart;
+        const fd = fs.openSync(liveLogPath, 'r');
+        const buf = Buffer.alloc(readLen);
+        fs.readSync(fd, buf, 0, readLen, readStart);
+        fs.closeSync(fd);
+        const content = buf.toString('utf8');
+        if (content) safeWrite(`data: ${JSON.stringify(content)}\n\n`);
+        offset = fileSize;
       }
-    } catch { /* optional */ }
+    } catch { /* optional — file may not exist yet */ }
 
     // Watch for changes using fs.watchFile (cross-platform, works on Windows)
     const watcher = () => {
