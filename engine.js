@@ -1504,6 +1504,10 @@ function discoverFromWorkItems(config, project) {
     }
     if (isAlreadyDispatched(key)) {
       if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+      if (!item.dispatched_to) {
+        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+        if (existing?.agent) { item.dispatched_to = existing.agent; needsWrite = true; }
+      }
       if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
       skipped.gated++; continue;
     }
