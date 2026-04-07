@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.487 (2026-04-07)
+
+### Features
+-  steering shows acknowledgment status — Sent → waiting → acknowledged
+
+### Fixes
+-  CC always delegates exploration to agents instead of doing it itself
+
 ## 0.1.485 (2026-04-07)
 
 ### Fixes
