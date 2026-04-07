@@ -220,8 +220,11 @@ async function submitBugReport() {
   var title = document.getElementById('bug-title')?.value?.trim();
   var desc = document.getElementById('bug-desc')?.value?.trim();
   if (!title) { alert('Title is required'); return; }
-  try { closeModal(); } catch {}
-  showToast('cmd-toast', 'Filing bug...', true);
+
+  // Show progress inside the modal
+  var btn = document.querySelector('#modal button[onclick="submitBugReport()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Filing...'; }
+
   try {
     var res = await fetch('/api/issues/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -229,12 +232,27 @@ async function submitBugReport() {
     });
     var d = await res.json();
     if (!res.ok) throw new Error(d.error || 'Failed');
-    if (d.url) {
-      showToast('cmd-toast', 'Bug filed — <a href="' + d.url + '" target="_blank" style="color:var(--blue)">view issue</a>', true);
-    } else {
-      showToast('cmd-toast', 'Bug filed', true);
+
+    // Show success inside the modal
+    document.getElementById('modal-body').innerHTML =
+      '<div style="padding:24px;text-align:center">' +
+        '<div style="font-size:32px;margin-bottom:12px">&#128027;</div>' +
+        '<div style="color:var(--green);font-weight:600;margin-bottom:8px">Bug filed!</div>' +
+        (d.url ? '<a href="' + escHtml(d.url) + '" target="_blank" style="color:var(--blue);font-size:13px">View issue on GitHub</a>' : '<span style="color:var(--muted);font-size:12px">Issue created on yemi33/minions</span>') +
+        '<div style="margin-top:16px"><button onclick="closeModal()" style="padding:6px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;color:var(--text)">Close</button></div>' +
+      '</div>';
+  } catch (e) {
+    // Show error inside the modal — let user retry
+    if (btn) { btn.disabled = false; btn.textContent = 'File Bug'; }
+    var errDiv = document.getElementById('bug-error');
+    if (!errDiv) {
+      errDiv = document.createElement('div');
+      errDiv.id = 'bug-error';
+      errDiv.style.cssText = 'color:var(--red);font-size:12px;padding:8px;background:rgba(248,81,73,0.1);border-radius:4px';
+      btn?.parentElement?.parentElement?.appendChild(errDiv);
     }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+    errDiv.textContent = 'Error: ' + e.message;
+  }
 }
 
 window.MinionsUtils = { wakeEngine, escHtml, renderMd, normalizePlanFile, timeAgo, statusColor, llmCopyBtn, copyLlmText, openBugReport, submitBugReport };
