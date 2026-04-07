@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.537 (2026-04-07)
+
+### Fixes
+-  handlePlansExecute dedup allows re-execute after completion
+-  plan regenerate/execute always queues fresh plan-to-prd (#449)
+
 ## 0.1.535 (2026-04-07)
 
 ### Features
