@@ -240,7 +240,7 @@ function getMcpServers() {
   try {
     const home = os.homedir();
     const claudeJsonPath = path.join(home, '.claude.json');
-    const data = JSON.parse(safeRead(claudeJsonPath) || '{}');
+    const data = safeJsonObj(claudeJsonPath);
     const servers = data.mcpServers || {};
     return Object.entries(servers).map(([name, cfg]) => ({
       name,
@@ -1082,7 +1082,7 @@ const server = http.createServer(async (req, res) => {
       }) || PROJECTS[0] || null;
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
-        const items = JSON.parse(safeRead(wiPath) || '[]');
+        const items = safeJsonArr(wiPath);
         const verify = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
         if (verify) {
           return jsonReply(res, 200, { ok: true, verifyId: verify.id });
@@ -1150,7 +1150,7 @@ const server = http.createServer(async (req, res) => {
       // Clear cooldown so item isn't blocked by exponential backoff
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        const cooldowns = safeJsonObj(cooldownPath);
         if (cooldowns[dispatchKey]) {
           delete cooldowns[dispatchKey];
           safeWrite(cooldownPath, cooldowns);
@@ -1201,7 +1201,7 @@ const server = http.createServer(async (req, res) => {
       // Clean cooldown entries so item can be re-created immediately
       try {
         const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
-        const cooldowns = JSON.parse(safeRead(cooldownPath) || '{}');
+        const cooldowns = safeJsonObj(cooldownPath);
         let cleaned = false;
         for (const key of Object.keys(cooldowns)) {
           if (key.includes(id)) { delete cooldowns[key]; cleaned = true; }
@@ -1525,7 +1525,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-      const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+      const dispatch = safeJsonObj(dispatchPath);
       const active = dispatch.active || [];
       const cancelled = [];
 
@@ -1537,7 +1537,7 @@ const server = http.createServer(async (req, res) => {
         // Kill agent process
         const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
         try {
-          const status = JSON.parse(safeRead(statusPath) || '{}');
+          const status = safeJsonObj(statusPath);
           if (status.pid) {
             try {
               const safePid = shared.validatePid(status.pid);
@@ -1907,7 +1907,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
-    const centralWi = JSON.parse(safeRead(path.join(MINIONS_DIR, 'work-items.json')) || '[]');
+    const centralWi = safeJsonArr(path.join(MINIONS_DIR, 'work-items.json'));
     const completedPrdFiles = new Set(
       centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
         .map(w => w.planFile)
@@ -2048,7 +2048,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
+      const plan = safeJsonObj(planPath);
       plan.status = 'approved';
       plan.approvedAt = new Date().toISOString();
       plan.approvedBy = body.approvedBy || os.userInfo().username;
@@ -2101,7 +2101,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
+      const plan = safeJsonObj(planPath);
       plan.status = 'paused';
       plan.pausedAt = new Date().toISOString();
       safeWrite(planPath, plan);
@@ -2134,7 +2134,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
                   if (activeEntry) {
                     const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                     try {
-                      const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                      const agentStatus = safeJsonObj(statusPath);
                       if (agentStatus.pid) {
                         try {
                           const safePid = shared.validatePid(agentStatus.pid);
@@ -2293,7 +2293,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file) return jsonReply(res, 400, { error: 'file required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
+      const plan = safeJsonObj(planPath);
       plan.status = 'rejected';
       plan.rejectedAt = new Date().toISOString();
       plan.rejectedBy = body.rejectedBy || os.userInfo().username;
@@ -2375,7 +2375,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Read PRD content before deleting to get source_plan for cleanup
       let prdSourcePlan = null;
       if (body.file.endsWith('.json')) {
-        try { prdSourcePlan = JSON.parse(safeRead(planPath) || '{}').source_plan || null; } catch {}
+        try { prdSourcePlan = safeJsonObj(planPath).source_plan || null; } catch {}
       }
       safeUnlink(planPath);
 
@@ -2442,7 +2442,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       let archivedSource = null;
       if (body.file.endsWith('.json')) {
         try {
-          const prd = JSON.parse(safeRead(archivePath) || '{}');
+          const prd = safeJsonObj(archivePath);
           prd.status = 'archived';
           prd.archivedAt = new Date().toISOString();
           safeWrite(archivePath, prd);
@@ -2501,7 +2501,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const body = await readBody(req);
       if (!body.file || !body.feedback) return jsonReply(res, 400, { error: 'file and feedback required' });
       const planPath = resolvePlanPath(body.file);
-      const plan = JSON.parse(safeRead(planPath) || '{}');
+      const plan = safeJsonObj(planPath);
       plan.status = 'revision-requested';
       plan.revision_feedback = body.feedback;
       plan.revisionRequestedAt = new Date().toISOString();
@@ -2546,7 +2546,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         sourcePlanFile = body.sourcePlan;
       } else {
         // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
-        const prd = JSON.parse(safeRead(prdPath) || '{}');
+        const prd = safeJsonObj(prdPath);
         if (prd.source_plan) {
           sourcePlanFile = prd.source_plan;
         } else {
@@ -2596,7 +2596,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       safeWrite(sourcePlanPath, result.content);
 
       // Step 2: Pause the old PRD so it stops materializing items
-      const prd = JSON.parse(safeRead(prdPath) || '{}');
+      const prd = safeJsonObj(prdPath);
       prd.status = 'revision-requested';
       prd.revision_feedback = body.instruction;
       prd.revisionRequestedAt = new Date().toISOString();
@@ -2826,7 +2826,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                 const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
                 for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
                 const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-                const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+                const dispatch = safeJsonObj(dispatchPath);
                 const killedAgents = new Set();
                 const resetItemIds = new Set();
                 for (const wiPath of wiPaths) {
@@ -2841,7 +2841,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                           if (activeEntry) {
                             const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                             try {
-                              const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                              const agentStatus = safeJsonObj(statusPath);
                               if (agentStatus.pid) {
                                 try {
                                   const safePid = shared.validatePid(agentStatus.pid);
