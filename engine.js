@@ -1350,7 +1350,7 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
 /**
  * Scan pull-requests.json for PRs needing review or fixes
  */
-function discoverFromPrs(config, project) {
+async function discoverFromPrs(config, project) {
   const src = project?.workSources?.pullRequests || config.workSources?.pullRequests;
   if (!src?.enabled) return [];
 
@@ -2226,7 +2226,7 @@ function discoverCentralWorkItems(config) {
  * Run all work discovery sources and queue new items
  * Priority: fix (0) > ask (1) > review (1) > implement (2) > work-items (3) > central (4)
  */
-function discoverWork(config) {
+async function discoverWork(config) {
   resetClaimedAgents(); // Reset per-tick agent claims for fair distribution
   const projects = getProjects(config);
   let allFixes = [], allReviews = [], allWorkItems = [];
@@ -2240,7 +2240,7 @@ function discoverWork(config) {
     if (!root || !fs.existsSync(root)) continue;
 
     // Source 1: Pull Requests → fixes, reviews, build-test
-    const prWork = discoverFromPrs(config, project);
+    const prWork = await discoverFromPrs(config, project);
     allFixes.push(...prWork.filter(w => w.type === WORK_TYPE.FIX));
     allReviews.push(...prWork.filter(w => w.type === WORK_TYPE.REVIEW));
     allWorkItems.push(...prWork.filter(w => w.type === WORK_TYPE.TEST));
@@ -2550,7 +2550,7 @@ async function tickInner() {
 
   // 3. Discover new work from sources
   let discoveryOk = true;
-  try { discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); discoveryOk = false; }
+  try { await discoverWork(config); } catch (e) { log('warn', 'discoverWork: ' + e.message); discoveryOk = false; }
 
   // 4. Update snapshot
   safe('updateSnapshot', () => updateSnapshot(config));
