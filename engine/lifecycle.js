@@ -717,7 +717,7 @@ function updatePrAfterReview(agentId, pr, project, config) {
   if (!pr?.id) return;
 
   if (!config) config = getConfig();
-  const reviewerName = config.agents[agentId]?.name || agentId;
+  const reviewerName = config.agents?.[agentId]?.name || agentId;
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
@@ -853,10 +853,11 @@ async function handlePostMerge(pr, project, config, newStatus) {
   const agentId = (pr.agent || '').toLowerCase();
   if (agentId && config.agents?.[agentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath) || {};
-    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
-    shared.safeWrite(metricsPath, metrics);
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
+      return metrics;
+    });
   }
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
