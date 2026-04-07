@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.516 (2026-04-07)
+
+### Fixes
+-  graph view shows decomposed items as green with children listed
+
 ## 0.1.515 (2026-04-07)
 
 ### Features
