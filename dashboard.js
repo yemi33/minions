@@ -264,20 +264,59 @@ function parsePinnedEntries(content) {
 }
 
 let _statusCache = null;
+let _statusCacheJson = null; // cached JSON.stringify(_statusCache) — avoids double-serialization for SSE
 let _statusCacheTs = 0;
 const STATUS_CACHE_TTL = 10000; // 10s — reduces expensive aggregation frequency; mutations call invalidateStatusCache()
 const _statusStreamClients = new Set();
 let _statusPushTimer = null;
 let _lastStatusHash = '';
 
+// mtime-based cache invalidation — skip full rebuild if no tracked files changed
+const _mtimeTrackedFiles = () => {
+  const files = [
+    path.join(ENGINE_DIR, 'dispatch.json'),
+    path.join(ENGINE_DIR, 'control.json'),
+    path.join(ENGINE_DIR, 'log.json'),
+    path.join(ENGINE_DIR, 'metrics.json'),
+  ];
+  // Add per-project work-items.json
+  for (const p of PROJECTS) {
+    if (p.localPath) files.push(path.join(p.localPath, '.minions', 'work-items.json'));
+  }
+  // Central work-items.json
+  files.push(path.join(MINIONS_DIR, 'work-items.json'));
+  return files;
+};
+let _lastMtimes = {}; // { filePath: mtimeMs }
+
+function _getMtimes() {
+  const result = {};
+  for (const fp of _mtimeTrackedFiles()) {
+    try { result[fp] = fs.statSync(fp).mtimeMs; } catch { result[fp] = 0; }
+  }
+  return result;
+}
+
+function _mtimesChanged(prev, curr) {
+  for (const fp of Object.keys(curr)) {
+    if (prev[fp] !== curr[fp]) return true;
+  }
+  // Also check if keys differ (new files appeared)
+  for (const fp of Object.keys(prev)) {
+    if (!(fp in curr)) return true;
+  }
+  return false;
+}
+
 function invalidateStatusCache() {
   _statusCache = null;
+  _statusCacheJson = null;
   // Push to SSE clients (debounced 500ms to avoid flooding during batch mutations)
   if (_statusPushTimer) return;
   _statusPushTimer = setTimeout(() => {
     _statusPushTimer = null;
     if (_statusStreamClients.size === 0) return;
-    const data = JSON.stringify(getStatus());
+    const data = getStatusJson();
     for (const res of _statusStreamClients) {
       try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
     }
@@ -286,7 +325,11 @@ function invalidateStatusCache() {
 
 function getStatus() {
   const now = Date.now();
-  if (_statusCache && (now - _statusCacheTs) < STATUS_CACHE_TTL) return _statusCache;
+  if (_statusCache && (now - _statusCacheTs) < STATUS_CACHE_TTL) {
+    // Within TTL — check mtimes for early return (skip full rebuild if nothing changed)
+    const currMtimes = _getMtimes();
+    if (!_mtimesChanged(_lastMtimes, currMtimes)) return _statusCache;
+  }
 
   // Reload config on each cache miss — picks up external changes (minions init, minions add)
   reloadConfig();
@@ -352,17 +395,27 @@ function getStatus() {
     timestamp: new Date().toISOString(),
   };
   _statusCacheTs = now;
+  _statusCacheJson = null; // invalidate cached JSON — will be lazily rebuilt by getStatusJson()
+  _lastMtimes = _getMtimes();
   return _statusCache;
+}
+
+/** Return cached JSON string of status — single stringify, reused by SSE and /api/status */
+function getStatusJson() {
+  getStatus(); // ensure _statusCache is fresh
+  if (!_statusCacheJson) {
+    _statusCacheJson = JSON.stringify(_statusCache);
+  }
+  return _statusCacheJson;
 }
 
 // Periodic push for engine-driven changes (dispatch.json, control.json) that bypass invalidateStatusCache
 setInterval(() => {
   if (_statusStreamClients.size === 0) return;
-  const status = getStatus();
-  const hash = require('crypto').createHash('md5').update(JSON.stringify(status)).digest('hex');
+  const data = getStatusJson();
+  const hash = require('crypto').createHash('md5').update(data).digest('hex');
   if (hash === _lastStatusHash) return;
   _lastStatusHash = hash;
-  const data = JSON.stringify(status);
   for (const res of _statusStreamClients) {
     try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
   }
@@ -3500,7 +3553,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleStatus(req, res) {
     try {
-      return jsonReply(res, 200, getStatus(), req);
+      // Use pre-serialized JSON to avoid double-stringify in jsonReply
+      const json = getStatusJson();
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.statusCode = 200;
+      const ae = req && req.headers && req.headers['accept-encoding'] || '';
+      if (ae.includes('gzip') && json.length > 1024) {
+        res.setHeader('Content-Encoding', 'gzip');
+        res.end(zlib.gzipSync(json));
+      } else {
+        res.end(json);
+      }
     } catch (e) {
       return jsonReply(res, 500, { error: e.message }, req);
     }
@@ -3548,7 +3612,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: '/api/status', desc: 'Full dashboard status snapshot (agents, PRDs, work items, dispatch, etc.)', handler: handleStatus },
     { method: 'GET', path: '/api/status-stream', desc: 'SSE stream of real-time status updates', handler: (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-      res.write('data: ' + JSON.stringify(getStatus()) + '\n\n');
+      res.write('data: ' + getStatusJson() + '\n\n');
       _statusStreamClients.add(res);
       req.on('close', () => _statusStreamClients.delete(res));
     }},
