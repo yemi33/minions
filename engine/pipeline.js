@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
@@ -159,32 +159,32 @@ function executeTaskStage(stage, stageState, run, config) {
   const items = stage.items || [{ title: stage.title, description: stage.description || '', type: stage.taskType || 'explore', agent: stage.agent }];
   const count = stage.count || items.length;
   const wiPath = path.join(__dirname, '..', 'work-items.json');
-  const workItems = safeJson(wiPath) || [];
   const createdIds = [];
 
-  for (let i = 0; i < count; i++) {
-    const item = items[i % items.length];
-    const id = `PL-${run.runId.slice(4, 12)}-${stage.id}-${i}`;
-    if (workItems.some(w => w.id === id)) { createdIds.push(id); continue; }
-    workItems.push({
-      id,
-      title: item.title || stage.title,
-      description: item.description || stage.description || '',
-      type: item.type || stage.taskType || 'explore',
-      priority: item.priority || stage.priority || 'medium',
-      // Only set agent if explicitly specified — otherwise engine routing assigns any available agent
-      ...(item.agent || stage.agent ? { agent: item.agent || stage.agent } : {}),
-      status: WI_STATUS.PENDING,
-      created: ts(),
-      createdBy: 'pipeline:' + run.pipelineId,
-      branch: `pipeline/${run.pipelineId}/${stage.id}`,
-      _pipelineRun: run.runId,
-      _pipelineStage: stage.id,
-    });
-    createdIds.push(id);
-  }
+  mutateWorkItems(wiPath, workItems => {
+    for (let i = 0; i < count; i++) {
+      const item = items[i % items.length];
+      const id = `PL-${run.runId.slice(4, 12)}-${stage.id}-${i}`;
+      if (workItems.some(w => w.id === id)) { createdIds.push(id); continue; }
+      workItems.push({
+        id,
+        title: item.title || stage.title,
+        description: item.description || stage.description || '',
+        type: item.type || stage.taskType || 'explore',
+        priority: item.priority || stage.priority || 'medium',
+        // Only set agent if explicitly specified — otherwise engine routing assigns any available agent
+        ...(item.agent || stage.agent ? { agent: item.agent || stage.agent } : {}),
+        status: WI_STATUS.PENDING,
+        created: ts(),
+        createdBy: 'pipeline:' + run.pipelineId,
+        branch: `pipeline/${run.pipelineId}/${stage.id}`,
+        _pipelineRun: run.runId,
+        _pipelineStage: stage.id,
+      });
+      createdIds.push(id);
+    }
+  });
 
-  safeWrite(wiPath, workItems);
   return { status: PIPELINE_STATUS.RUNNING, artifacts: { workItems: createdIds } };
 }
 
@@ -280,24 +280,24 @@ async function executePlanStage(stage, stageState, run, config) {
 
   // Create plan-to-prd work item
   const wiPath = path.join(__dirname, '..', 'work-items.json');
-  const workItems = safeJson(wiPath) || [];
   const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
-  if (!workItems.some(w => w.id === wiId)) {
-    workItems.push({
-      id: wiId,
-      title: `Convert plan to PRD: ${path.basename(filePath)}`,
-      type: WORK_TYPE.PLAN_TO_PRD,
-      priority: 'high',
-      status: WI_STATUS.PENDING,
-      planFile: path.basename(filePath),
-      created: ts(),
-      createdBy: 'pipeline:' + run.pipelineId,
-      branch: `pipeline/${run.pipelineId}/${stage.id}`,
-      _pipelineRun: run.runId,
-      _pipelineStage: stage.id,
-    });
-    safeWrite(wiPath, workItems);
-  }
+  mutateWorkItems(wiPath, workItems => {
+    if (!workItems.some(w => w.id === wiId)) {
+      workItems.push({
+        id: wiId,
+        title: `Convert plan to PRD: ${path.basename(filePath)}`,
+        type: WORK_TYPE.PLAN_TO_PRD,
+        priority: 'high',
+        status: WI_STATUS.PENDING,
+        planFile: path.basename(filePath),
+        created: ts(),
+        createdBy: 'pipeline:' + run.pipelineId,
+        branch: `pipeline/${run.pipelineId}/${stage.id}`,
+        _pipelineRun: run.runId,
+        _pipelineStage: stage.id,
+      });
+    }
+  });
 
   return {
     status: PIPELINE_STATUS.RUNNING,

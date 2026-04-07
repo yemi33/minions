@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 const { setCooldownFailure } = require('./cooldown');
 
-const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked,
+const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   getProjects, projectWorkItemsPath, log, ts, dateStamp,
   WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
@@ -146,20 +146,19 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         try {
           const wiPath = lifecycle().resolveWorkItemPath(item.meta);
           if (wiPath) {
-            const items = safeJson(wiPath);
-            if (!items || !Array.isArray(items)) throw new Error('work items unreadable');
-            const wi = items.find(i => i.id === item.meta.item.id);
-            if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
-              wi._retryCount = retries + 1;
-              wi.status = WI_STATUS.PENDING;
-              wi._lastRetryReason = reason || '';
-              wi._lastRetryAt = ts();
-              delete wi.failReason;
-              delete wi.failedAt;
-              delete wi.dispatched_at;
-              delete wi.dispatched_to;
-              safeWrite(wiPath, items);
-            }
+            mutateWorkItems(wiPath, items => {
+              const wi = items.find(i => i.id === item.meta.item.id);
+              if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
+                wi._retryCount = retries + 1;
+                wi.status = WI_STATUS.PENDING;
+                wi._lastRetryReason = reason || '';
+                wi._lastRetryAt = ts();
+                delete wi.failReason;
+                delete wi.failedAt;
+                delete wi.dispatched_at;
+                delete wi.dispatched_to;
+              }
+            });
           }
         } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
       } else {

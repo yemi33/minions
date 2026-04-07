@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, execSilent, projectPrPath, getPrLinks, addPrLink,
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS } = shared;
 const { trackEngineUsage } = require('./llm');
@@ -145,7 +145,6 @@ function checkPlanCompletion(meta, config) {
     return;
   }
   const wiPath = shared.projectWorkItemsPath(primaryProject);
-  const workItems = safeJson(wiPath) || [];
 
   // 3. For shared-branch plans, create PR work item
   if (plan.branch_strategy === 'shared-branch' && plan.feature_branch && wiPath) {
@@ -155,15 +154,16 @@ function checkPlanCompletion(meta, config) {
       const featureBranch = plan.feature_branch;
       const mainBranch = shared.resolveMainBranch(primaryProject.localPath, primaryProject.mainBranch);
       const itemSummary = doneItems.map(w => '- ' + w.id + ': ' + w.title.replace('Implement: ', '')).join('\n');
-      workItems.push({
-        id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
-        type: 'implement', priority: 'high',
-        description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.\n\n**Branch:** \`${featureBranch}\`\n**Target:** \`${mainBranch}\`\n\n## Completed Items\n${itemSummary}`,
-        status: WI_STATUS.PENDING, created: ts(), createdBy: 'engine:plan-completion',
-        sourcePlan: planFile, itemType: 'pr',
-        branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
+      mutateWorkItems(wiPath, workItems => {
+        workItems.push({
+          id, title: `Create PR for plan: ${plan.plan_summary || planFile}`,
+          type: 'implement', priority: 'high',
+          description: `All plan items from \`${planFile}\` are complete on branch \`${featureBranch}\`.\n\n**Branch:** \`${featureBranch}\`\n**Target:** \`${mainBranch}\`\n\n## Completed Items\n${itemSummary}`,
+          status: WI_STATUS.PENDING, created: ts(), createdBy: 'engine:plan-completion',
+          sourcePlan: planFile, itemType: 'pr',
+          branch: featureBranch, branchStrategy: 'shared-branch', project: projectName,
+        });
       });
-      shared.safeWrite(wiPath, workItems);
     }
   }
 
@@ -244,20 +244,21 @@ function checkPlanCompletion(meta, config) {
       prSummary,
     ].join('\n');
 
-    workItems.push({
-      id: verifyId,
-      title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
-      type: 'verify',
-      priority: 'high',
-      description,
-      status: WI_STATUS.PENDING,
-      created: ts(),
-      createdBy: 'engine:plan-verification',
-      sourcePlan: planFile,
-      itemType: 'verify',
-      project: projectName,
+    mutateWorkItems(wiPath, workItems => {
+      workItems.push({
+        id: verifyId,
+        title: `Verify plan: ${(plan.plan_summary || planFile).slice(0, 80)}`,
+        type: 'verify',
+        priority: 'high',
+        description,
+        status: WI_STATUS.PENDING,
+        created: ts(),
+        createdBy: 'engine:plan-verification',
+        sourcePlan: planFile,
+        itemType: 'verify',
+        project: projectName,
+      });
     });
-    shared.safeWrite(wiPath, workItems);
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
   }
 
@@ -811,17 +812,18 @@ async function handlePostMerge(pr, project, config, newStatus) {
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
     for (const wiPath of wiPaths) {
       try {
-        const items = safeJson(wiPath);
-        if (!items) continue;
-        const item = items.find(i => i.id === mergedItemId);
-        if (item && item.status !== WI_STATUS.DONE) {
-          log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-          item.status = WI_STATUS.DONE;
-          item.completedAt = ts();
-          item._mergedVia = pr.id;
-          shared.safeWrite(wiPath, items);
-          break;
-        }
+        let found = false;
+        mutateWorkItems(wiPath, items => {
+          const item = items.find(i => i.id === mergedItemId);
+          if (item && item.status !== WI_STATUS.DONE) {
+            log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
+            item.status = WI_STATUS.DONE;
+            item.completedAt = ts();
+            item._mergedVia = pr.id;
+            found = true;
+          }
+        });
+        if (found) break;
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
   }
