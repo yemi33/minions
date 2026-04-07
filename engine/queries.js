@@ -547,6 +547,7 @@ function getKnowledgeBaseEntries() {
       });
     }
   }
+  entries.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   _kbCache = entries;
   _kbCacheTs = now;
   return entries;

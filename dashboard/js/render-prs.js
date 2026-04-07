@@ -20,7 +20,7 @@ function prRow(pr) {
   const prId = pr.id || '—';
   return '<tr>' +
     '<td><span class="pr-id">' + escHtml(String(prId)) + '</span></td>' +
-    '<td><a class="pr-title" href="' + escHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escHtml(pr.title || 'Untitled') + '</a></td>' +
+    '<td><a class="pr-title" href="' + escHtml(safeUrl(url)) + '" target="_blank" rel="noopener">' + escHtml(pr.title || 'Untitled') + '</a>' + (pr.description ? '<div class="pr-desc">' + escHtml(pr.description.length > 120 ? pr.description.slice(0, 120) + '...' : pr.description) + '</div>' : '') + '</td>' +
     '<td><span class="pr-agent">' + escHtml(pr.agent || '—') + '</span></td>' +
     '<td><span class="pr-branch">' + escHtml(pr.branch || '—') + '</span></td>' +
     '<td><span class="pr-badge ' + reviewClass + '">' + escHtml(reviewLabel) + '</span></td>' +

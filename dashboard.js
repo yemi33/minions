@@ -230,7 +230,11 @@ function getDiskVersion() {
     try { diskVersion = require('@yemi33/minions/package.json').version; } catch {}
   }
   let diskCommit = null;
-  try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+  // First try .minions-commit (written by minions init from source repo), then fall back to git
+  try { diskCommit = fs.readFileSync(path.join(MINIONS_DIR, '.minions-commit'), 'utf8').trim() || null; } catch {}
+  if (!diskCommit) {
+    try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+  }
   _diskVersionCache = { diskVersion, diskCommit };
   _diskVersionCacheTs = now;
   return _diskVersionCache;
@@ -3822,6 +3826,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         prs.push({
           id: prId,
           title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
+          description: '',
           agent: 'human',
           branch: '',
           reviewStatus: autoObserve ? 'pending' : 'none',
@@ -3837,7 +3842,47 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }, { defaultValue: [] });
       if (duplicate) return jsonReply(res, 400, { error: 'PR already tracked' });
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, id: prId });
+      jsonReply(res, 200, { ok: true, id: prId });
+
+      // Async-enrich: fetch title, description, branch, author from GitHub/ADO API
+      (async () => {
+        try {
+          let prData = null;
+          const ghMatch = url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+          const adoMatch = url.match(/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)\/pullrequest\/(\d+)/);
+          if (ghMatch) {
+            const slug = ghMatch[1];
+            const result = await shared.execAsync(`gh api "repos/${slug}/pulls/${prNum}"`, { timeout: 15000, encoding: 'utf-8' });
+            const d = JSON.parse(result);
+            prData = { title: d.title, description: d.body, branch: d.head?.ref, author: d.user?.login };
+          } else if (adoMatch) {
+            const [, adoOrg, adoProj, adoRepo] = adoMatch;
+            try {
+              const { getAdoToken } = require('./engine/ado');
+              const token = await getAdoToken();
+              if (token) {
+                const apiUrl = `https://dev.azure.com/${adoOrg}/${adoProj}/_apis/git/repositories/${adoRepo}/pullrequests/${prNum}?api-version=7.1`;
+                const result = await shared.execAsync(`curl -s --max-time 10 -H "Authorization: Bearer ${token}" "${apiUrl}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+                const d = JSON.parse(result);
+                prData = { title: d.title, description: d.description, branch: d.sourceRefName?.replace('refs/heads/', ''), author: d.createdBy?.displayName };
+              }
+            } catch { /* ADO token may not be available */ }
+          }
+          if (!prData) return;
+          mutateJsonFileLocked(prPath, (prs) => {
+            const pr = prs.find(p => p.id === prId);
+            if (!pr) return prs;
+            if (!title && prData.title) pr.title = prData.title.slice(0, 120);
+            if (prData.description) pr.description = prData.description.slice(0, 500);
+            if (!pr.branch && prData.branch) pr.branch = prData.branch;
+            if (pr.agent === 'human' && prData.author) pr.agent = prData.author;
+            return prs;
+          }, { defaultValue: [] });
+          invalidateStatusCache();
+        } catch (e) {
+          shared.log('warn', `PR link enrichment failed for ${prId}: ${e.message}`);
+        }
+      })();
     }},
 
     { method: 'POST', path: '/api/pull-requests/delete', desc: 'Remove a PR from tracking', params: 'id, project?', handler: async (req, res) => {

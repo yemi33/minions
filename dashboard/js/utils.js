@@ -60,8 +60,11 @@ function copyLlmText(btn) {
  */
 function renderMd(s) {
   if (!s) return '';
-  // Truncate excessively long inputs to prevent regex backtracking
-  if (s.length > 10000) s = s.slice(0, 10000) + '\n\n…(truncated)';
+  if (s.length > 10000) return _renderMdChunked(s);
+  return _renderMdCore(s);
+}
+
+function _renderMdCore(s) {
   let html = escHtml(s);
 
   // 1. Extract code blocks and inline code into placeholders (protect from other transforms)
@@ -197,6 +200,78 @@ function renderMd(s) {
   html = html.replace(/\x00CB(\d+)\x00/g, function(_, idx) { return codeSlots[idx]; });
 
   return '<div class="md-content">' + html + '</div>';
+}
+
+var MD_CHUNK_SIZE = 10000;
+var _mdChunkUid = 0;
+
+function _renderMdChunked(fullText) {
+  // Split at blank-line boundaries to avoid breaking code blocks and other multi-line elements
+  var chunks = [];
+  var pos = 0;
+  while (pos < fullText.length) {
+    if (pos + MD_CHUNK_SIZE >= fullText.length) {
+      chunks.push(fullText.slice(pos));
+      break;
+    }
+    var target = pos + MD_CHUNK_SIZE;
+    var searchStart = Math.max(pos + Math.floor(MD_CHUNK_SIZE * 0.7), pos);
+    var searchEnd = Math.min(target + 500, fullText.length);
+    var slice = fullText.slice(searchStart, searchEnd);
+    var lastBlank = slice.lastIndexOf('\n\n');
+    var best;
+    if (lastBlank !== -1) {
+      best = searchStart + lastBlank + 2;
+    } else {
+      var nl = fullText.indexOf('\n', target);
+      best = (nl !== -1 && nl - target < 500) ? nl + 1 : target;
+    }
+    chunks.push(fullText.slice(pos, best));
+    pos = best;
+  }
+
+  var firstHtml = _renderMdCore(chunks[0]);
+  var uid = '_mdChunk' + (++_mdChunkUid);
+  if (chunks.length <= 1) return firstHtml;
+
+  var sentinel = '<div id="' + uid + '" style="padding:12px 0;color:var(--muted);font-size:11px">Loading more content...</div>';
+
+  setTimeout(function() {
+    var el = document.getElementById(uid);
+    if (!el) return;
+    var scrollParent = el.closest('.modal-body') || el.parentElement;
+    var idx = 1;
+    var obs = null;
+    function loadNext() {
+      if (idx >= chunks.length) {
+        if (obs) obs.disconnect();
+        el.remove();
+        return;
+      }
+      el.insertAdjacentHTML('beforebegin', _renderMdCore(chunks[idx]));
+      idx++;
+      if (idx >= chunks.length) {
+        if (obs) obs.disconnect();
+        el.remove();
+      }
+    }
+    if (typeof IntersectionObserver !== 'undefined') {
+      obs = new IntersectionObserver(function(entries) {
+        if (!entries[0].isIntersecting) return;
+        loadNext();
+        // Yield to browser for paint before re-observing, so rapid chunk loads don't block rendering
+        if (idx < chunks.length && el.parentNode) {
+          obs.unobserve(el);
+          requestAnimationFrame(function() { if (el.parentNode) obs.observe(el); });
+        }
+      }, { root: scrollParent, rootMargin: '200px' });
+      obs.observe(el);
+    } else {
+      var timer = setInterval(function() { loadNext(); if (idx >= chunks.length) clearInterval(timer); }, 100);
+    }
+  }, 0);
+
+  return firstHtml + sentinel;
 }
 
 function openBugReport() {

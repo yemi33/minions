@@ -80,9 +80,11 @@ prd/guides/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# Minions runtime directories
+# Minions runtime directories and local install markers
 .minions/
 .squad/
+.minions-version
+.minions-commit
 worktrees/
 reports/
 

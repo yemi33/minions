@@ -381,10 +381,12 @@ function planHideRevise(file) {
 
 let _planPollInterval = null;
 let _planPollFile = null;
+let _planPollLastRaw = null;
 
 function _stopPlanPoll() {
   if (_planPollInterval) { clearInterval(_planPollInterval); _planPollInterval = null; }
   _planPollFile = null;
+  _planPollLastRaw = null;
 }
 
 function _renderPlanModal(normalizedFile, raw, lastMod) {
@@ -488,6 +490,7 @@ async function planView(file) {
     const raw = await planRes.text();
 
     const { title, text } = _renderPlanModal(normalizedFile, raw, lastMod);
+    _planPollLastRaw = raw;
 
     _modalDocContext = { title, content: text, selection: '' };
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
@@ -502,7 +505,7 @@ async function planView(file) {
       }
       fetch('/api/plans/' + encodeURIComponent(normalizedFile))
         .then(function(r) { return r.text().then(function(raw) { return { raw: raw, lastMod: r.headers.get('Last-Modified') }; }); })
-        .then(function(d) { if (_planPollFile === normalizedFile) _renderPlanModal(normalizedFile, d.raw, d.lastMod); })
+        .then(function(d) { if (_planPollFile === normalizedFile && d.raw !== _planPollLastRaw) { _planPollLastRaw = d.raw; _renderPlanModal(normalizedFile, d.raw, d.lastMod); } })
         .catch(function() {});
     }, 3000);
   } catch (e) { console.error(e); }
