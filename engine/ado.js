@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -21,7 +21,7 @@ function engine() {
 let _adoTokenCache = { token: null, expiresAt: 0 };
 let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
 
-function getAdoToken() {
+async function getAdoToken() {
   if (_adoTokenCache.token && Date.now() < _adoTokenCache.expiresAt) {
     return _adoTokenCache.token;
   }
@@ -30,8 +30,9 @@ function getAdoToken() {
   try {
     // azureauth supports multiple --mode flags as an ordered fallback chain:
     // tries IWA (Integrated Windows Auth) first, falls back to broker if unavailable.
-    const token = exec('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
-      timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true    }).trim();
+    // Uses execAsync to avoid blocking the event loop on Windows (spawnSync ETIMEDOUT).
+    const token = (await execAsync('azureauth ado token --mode iwa --mode broker --output token --timeout 1', {
+      timeout: 15000, encoding: 'utf-8', windowsHide: true    })).trim();
     if (token && token.startsWith('eyJ')) {
       _adoTokenCache = { token, expiresAt: Date.now() + 30 * 60 * 1000 };
       _adoTokenFailedUntil = 0;
@@ -56,7 +57,7 @@ async function adoFetch(url, token, _retryCount = 0) {
     // Invalidate cached token — it's likely expired
     _adoTokenCache = { token: null, expiresAt: 0 };
     if (_retryCount < MAX_RETRIES) {
-      const freshToken = getAdoToken();
+      const freshToken = await getAdoToken();
       if (freshToken) {
         log('info', 'ADO token expired mid-session — refreshed and retrying');
         return adoFetch(url, freshToken, _retryCount + 1);
@@ -132,7 +133,7 @@ async function forEachActivePr(config, token, callback) {
 // ─── PR Status Polling ───────────────────────────────────────────────────────
 
 async function pollPrStatus(config) {
-  const token = getAdoToken();
+  const token = await getAdoToken();
   if (!token) {
     log('warn', 'Skipping PR status poll — no ADO token available');
     return;
@@ -287,7 +288,7 @@ async function pollPrStatus(config) {
 // ─── Poll Human Comments on PRs ──────────────────────────────────────────────
 
 async function pollPrHumanComments(config) {
-  const token = getAdoToken();
+  const token = await getAdoToken();
   if (!token) return;
 
   const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
@@ -361,7 +362,7 @@ async function pollPrHumanComments(config) {
  * in pull-requests.json, and add them. Matches PRs to work items by branch name.
  */
 async function reconcilePrs(config) {
-  const token = getAdoToken();
+  const token = await getAdoToken();
   if (!token) {
     log('warn', 'Skipping PR reconciliation — no ADO token available');
     return;
@@ -486,19 +487,19 @@ async function reconcilePrs(config) {
 }
 
 /**
- * Fetch live review status for a single PR from ADO (synchronous).
+ * Fetch live review status for a single PR from ADO (async).
  * Returns 'approved', 'changes-requested', 'waiting', or 'pending'.
  * Returns null if the check fails (token unavailable, API error).
  * Used as a pre-dispatch gate to avoid dispatching reviews for already-approved PRs.
  */
-function checkLiveReviewStatus(pr, project) {
+async function checkLiveReviewStatus(pr, project) {
   try {
-    const token = getAdoToken();
+    const token = await getAdoToken();
     if (!token) return null;
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = (pr.id || '').replace(/^PR-/, '');
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
-    const result = exec(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
+    const result = await execAsync(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
     const prData = JSON.parse(result);
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';

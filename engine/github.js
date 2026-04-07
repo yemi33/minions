@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -69,10 +69,10 @@ function resetSlugBackoff(slug) {
 }
 
 /** Run a `gh api` call and parse JSON result. Returns null on failure. */
-function ghApi(endpoint, slug) {
+async function ghApi(endpoint, slug) {
   try {
     const cmd = `gh api "repos/${slug}${endpoint}"`;
-    const result = exec(cmd, { timeout: 30000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const result = await execAsync(cmd, { timeout: 30000, encoding: 'utf-8' });
     return JSON.parse(result);
   } catch (e) {
     log('warn', `GitHub API error (${endpoint}): ${e.message}`);
@@ -84,8 +84,8 @@ function ghApi(endpoint, slug) {
  * Run a `gh api` call with per-slug backoff tracking. Returns null on failure.
  * On success, resets the slug's backoff. On failure, increments it.
  */
-function ghApiWithBackoff(endpoint, slug) {
-  const result = ghApi(endpoint, slug);
+async function ghApiWithBackoff(endpoint, slug) {
+  const result = await ghApi(endpoint, slug);
   if (result === null) {
     recordSlugFailure(slug);
   } else {
@@ -112,7 +112,7 @@ async function forEachActiveGhPr(config, callback) {
     if (activePrs.length === 0) continue;
 
     // Probe repo accessibility before iterating PRs — avoids N warnings per inaccessible repo
-    const probe = ghApi('', slug);
+    const probe = await ghApi('', slug);
     if (probe === null) {
       recordSlugFailure(slug);
       continue;
@@ -171,7 +171,7 @@ async function forEachActiveGhPr(config, callback) {
       if (updated) {
         // Also update title/author/branch if still placeholder
         if (pr.title.includes('polling...') || pr.agent === 'human') {
-          const prData = ghApi(`/pulls/${prNum}`, slug);
+          const prData = await ghApi(`/pulls/${prNum}`, slug);
           if (prData) {
             if (pr.title.includes('polling...')) pr.title = (prData.title || pr.title).slice(0, 120);
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
@@ -203,7 +203,7 @@ async function forEachActiveGhPr(config, callback) {
 
 async function pollPrStatus(config) {
   const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
-    const prData = ghApi(`/pulls/${prNum}`, slug);
+    const prData = await ghApi(`/pulls/${prNum}`, slug);
     if (!prData) return false;
 
     let updated = false;
@@ -243,7 +243,7 @@ async function pollPrStatus(config) {
     }
 
     // Review status from GitHub reviews
-    const reviews = ghApi(`/pulls/${prNum}/reviews`, slug);
+    const reviews = await ghApi(`/pulls/${prNum}/reviews`, slug);
     if (reviews && Array.isArray(reviews)) {
       // Get latest review per user
       const latestByUser = new Map();
@@ -306,7 +306,7 @@ async function pollPrStatus(config) {
 
     // Check status / checks
     if (prData.state === 'open' && prData.head?.sha) {
-      const checksData = ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
+      const checksData = await ghApi(`/commits/${prData.head.sha}/check-runs`, slug);
       if (checksData && checksData.check_runs) {
         const runs = checksData.check_runs;
         let buildStatus = 'none';
@@ -352,11 +352,11 @@ async function pollPrStatus(config) {
 async function pollPrHumanComments(config) {
   const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
     // Get issue comments (general PR comments)
-    const comments = ghApi(`/issues/${prNum}/comments`, slug);
+    const comments = await ghApi(`/issues/${prNum}/comments`, slug);
     if (!comments || !Array.isArray(comments)) return false;
 
     // Also get review comments (inline code comments)
-    const reviewComments = ghApi(`/pulls/${prNum}/comments`, slug);
+    const reviewComments = await ghApi(`/pulls/${prNum}/comments`, slug);
     const allComments = [
       ...(comments || []).map(c => ({ ...c, _type: 'issue' })),
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
@@ -438,7 +438,7 @@ async function reconcilePrs(config) {
     if (isSlugInBackoff(slug)) continue;
 
     // Fetch open PRs
-    const prsData = ghApi('/pulls?state=open&per_page=100', slug);
+    const prsData = await ghApi('/pulls?state=open&per_page=100', slug);
     if (!prsData || !Array.isArray(prsData)) {
       recordSlugFailure(slug);
       continue;
@@ -541,12 +541,12 @@ async function reconcilePrs(config) {
  * Fetch live review status for a single PR from GitHub. Returns 'approved', 'changes-requested',
  * 'waiting', or 'pending'. Returns null if the check fails.
  */
-function checkLiveReviewStatus(pr, project) {
+async function checkLiveReviewStatus(pr, project) {
   try {
     const slug = getRepoSlug(project);
     if (!slug) return null;
     const prNum = (pr.id || '').replace(/^PR-/, '');
-    const reviews = ghApi(`/pulls/${prNum}/reviews`, slug);
+    const reviews = await ghApi(`/pulls/${prNum}/reviews`, slug);
     if (!reviews || !Array.isArray(reviews)) return null;
     const latestByUser = new Map();
     for (const r of reviews) {

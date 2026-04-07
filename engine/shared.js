@@ -304,7 +304,7 @@ function writeToInbox(agentId, slug, content, _inboxDir) {
 // ── Process Spawning ────────────────────────────────────────────────────────
 // All child process calls go through these to ensure windowsHide: true
 
-const { execSync: _execSync, spawnSync: _spawnSync, spawn: _spawn } = require('child_process');
+const { execSync: _execSync, spawnSync: _spawnSync, spawn: _spawn, exec: _cbExec } = require('child_process');
 
 function exec(cmd, opts = {}) {
   return _execSync(cmd, { windowsHide: true, ...opts });
@@ -320,6 +320,31 @@ function runFile(file, args, opts = {}) {
 
 function execSilent(cmd, opts = {}) {
   return _execSync(cmd, { stdio: 'pipe', windowsHide: true, ...opts });
+}
+
+/**
+ * Async version of exec() — runs a shell command without blocking the event loop.
+ * Returns a Promise that resolves with { stdout, stderr } or rejects on error/timeout.
+ * Drop-in replacement for sync `exec()` in async contexts.
+ *
+ * @param {string} cmd - Shell command to run
+ * @param {object} opts - Options (same as child_process.exec: timeout, cwd, encoding, env, etc.)
+ * @returns {Promise<string>} stdout (trimmed if encoding is set)
+ */
+function execAsync(cmd, opts = {}) {
+  const { timeout, ...rest } = opts;
+  return new Promise((resolve, reject) => {
+    const child = _cbExec(cmd, { windowsHide: true, encoding: 'utf8', ...rest, timeout: timeout || 30000 }, (err, stdout, stderr) => {
+      if (err) {
+        err.stderr = stderr;
+        err.stdout = stdout;
+        return reject(err);
+      }
+      resolve(stdout);
+    });
+    // Safety: ensure child is killed if parent process exits
+    child.unref && child.unref();
+  });
 }
 
 /**
@@ -787,6 +812,7 @@ module.exports = {
   uniquePath,
   writeToInbox,
   exec,
+  execAsync,
   execSilent,
   resolveMainBranch,
   run,
