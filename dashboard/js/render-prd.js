@@ -109,7 +109,14 @@ function renderPrdProgress(prog) {
   }
 
   // PRD item statuses: missing → dispatched → done
-  const statusBadge = (s) => {
+  const statusBadge = (s, itemId) => {
+    // Decomposed: show WIP if children still running, DONE if all children done
+    if (s === 'decomposed' && itemId) {
+      const children = (window._lastWorkItems || []).filter(w => w.parent_id === itemId);
+      const allChildrenDone = children.length > 0 && children.every(c => c.status === 'done');
+      if (allChildrenDone) { s = 'done'; }
+      else { s = 'dispatched'; } // show as WIP while children are running
+    }
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
       'dispatched': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
@@ -173,7 +180,7 @@ function renderPrdProgress(prog) {
     }
 
     return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
-      statusBadge(i.status) +
+      statusBadge(i.status, i.id) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
       '<span class="prd-item-name" title="' + escHtml(i.name) + '">' + escHtml(i.name) + '</span>' +
       wiLabel +
@@ -325,8 +332,13 @@ function renderPrdProgress(prog) {
       if (d > maxDepth) maxDepth = d;
     });
 
-    const statusColor = (s) => {
-      if (s === 'done' || s === 'decomposed') return 'var(--green)';
+    const statusColor = (s, itemId) => {
+      if (s === 'decomposed' && itemId) {
+        const ch = (window._lastWorkItems || []).filter(w => w.parent_id === itemId);
+        if (ch.length > 0 && ch.every(c => c.status === 'done')) return 'var(--green)';
+        return 'var(--yellow)'; // children still running
+      }
+      if (s === 'done') return 'var(--green)';
       if (s === 'dispatched') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
@@ -341,7 +353,7 @@ function renderPrdProgress(prog) {
       html += '<div style="flex:1;min-width:0">' +
         '<div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;text-align:center">' + colLabel + '</div>';
       for (const i of col) {
-        const borderColor = statusColor(i.status);
+        const borderColor = statusColor(i.status, i.id);
         const src = escHtml(i.source || '');
         const iid = escHtml(i.id || '');
         const agentId = wi[i.id]?.dispatched_to || '';
@@ -353,7 +365,7 @@ function renderPrdProgress(prog) {
           'style="background:var(--surface2);border:1px solid var(--border);border-left:3px solid ' + borderColor + ';' + wipAnim +
           'border-radius:4px;padding:6px 8px;margin-bottom:6px;cursor:pointer;font-size:11px">' +
           '<div style="display:flex;align-items:center;gap:4px;margin-bottom:2px">' +
-            statusBadge(i.status) +
+            statusBadge(i.status, i.id) +
             '<span style="font-weight:600;color:var(--text)">' + escHtml(i.id) + '</span>' +
           '</div>' +
           '<div style="color:var(--text);font-size:11px;line-height:1.3;margin-bottom:3px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">' + escHtml(i.name) + '</div>' +
