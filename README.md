@@ -235,7 +235,7 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 The web dashboard at `http://localhost:7331` provides:
 
 - **Projects bar** — all linked projects with descriptions (hover for full text)
-- **Command Center** — add work items, notes, plans (multi-project via `#project` tags). "make a plan for..." auto-detection, "remember" keyword, `--parallel`/`--shared` flags, arrow key history, Past Commands modal. Session state persists across refreshes.
+- **Command Center** — add work items, notes, plans (multi-project via `#project` tags). "make a plan for..." auto-detection, "remember" keyword, `--parallel`/`--shared` flags, arrow key history, Past Commands modal. Session state persists across refreshes. File bugs as GitHub issues ("file this as a bug").
 - **Minions Members** — agent cards with status and result summary, click for charter/history/output detail panel
   - **Live Output tab** — real-time streaming output for working agents (auto-refreshes every 3s)
 - **Work Items** — paginated table (20/page) with status, source, type, priority, assigned agent, linked PRs, fan-out badges, retry/delete/archive with optimistic updates

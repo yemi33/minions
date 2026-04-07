@@ -248,7 +248,7 @@ The dashboard is assembled from fragments in `dashboard/` at startup: `styles.cs
 
 ## Dashboard API
 
-All endpoints self-documented via `GET /api/routes`. Key endpoints: `GET /api/status`, `POST /api/work-items`, `POST /api/work-items/update`, `POST /api/work-items/feedback`, `POST /api/knowledge`, `GET/POST /api/pinned`, `POST /api/engine/wakeup`, `GET /api/agent/:id/live-stream` (SSE), `POST /api/settings/reset`.
+All endpoints self-documented via `GET /api/routes`. Key endpoints: `GET /api/status`, `POST /api/work-items`, `POST /api/work-items/update`, `POST /api/work-items/feedback`, `POST /api/knowledge`, `GET/POST /api/pinned`, `POST /api/engine/wakeup`, `GET /api/agent/:id/live-stream` (SSE), `POST /api/settings/reset`, `POST /api/issues/create` (file GitHub issues via `gh` CLI).
 
 ## Human Contributions
 
