@@ -48,7 +48,7 @@ function renderMeetings(meetings) {
     const dt = m.completedAt || m.createdAt;
     const timeStr = dt ? new Date(dt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
 
-    return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openMeetingDetail(\'' + escHtml(m.id) + '\')">' +
+    return '<div data-file="meetings/' + escHtml(m.id) + '.json" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer;position:relative" onclick="openMeetingDetail(\'' + escHtml(m.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:13px">' + escHtml(m.title) + '</strong>' +
         '<div style="display:flex;align-items:center;gap:8px">' +
@@ -78,6 +78,7 @@ function renderMeetings(meetings) {
     el.innerHTML += '<div style="text-align:center;margin-top:8px"><button class="pr-pager-btn" style="font-size:10px" onclick="_toggleArchivedMeetings()">' +
       (_showArchived ? 'Hide' : 'Show') + ' ' + archived.length + ' archived</button></div>';
   }
+  restoreNotifBadges();
 }
 
 function _mtgPrev() { if (_mtgPage > 0) { _mtgPage--; refresh(); } }
