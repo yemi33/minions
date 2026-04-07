@@ -31,12 +31,10 @@ const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);
-let projectNames = PROJECTS.map(p => p.name || 'Project').join(' + ');
 
 function reloadConfig() {
   CONFIG = queries.getConfig();
   PROJECTS = _getProjects(CONFIG);
-  projectNames = PROJECTS.map(p => p.name || 'Project').join(' + ');
 }
 
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
@@ -106,7 +104,7 @@ function buildDashboardHtml() {
 }
 
 let HTML_RAW = buildDashboardHtml();
-let HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
+let HTML = HTML_RAW;
 let HTML_GZ = zlib.gzipSync(HTML);
 let HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
 
@@ -118,7 +116,7 @@ function rebuildDashboardHtml() {
     const newRaw = buildDashboardHtml();
     if (newRaw === HTML_RAW) return; // no changes
     HTML_RAW = newRaw;
-    HTML = HTML_RAW.replace('Minions Mission Control', `Minions Mission Control — ${projectNames}`);
+    HTML = HTML_RAW;
     HTML_GZ = zlib.gzipSync(HTML);
     HTML_ETAG = '"' + require('crypto').createHash('md5').update(HTML).digest('hex') + '"';
     console.log('  Dashboard hot-reloaded');
