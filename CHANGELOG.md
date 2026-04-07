@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.511 (2026-04-07)
+
+### Features
+-  abort and retrigger buttons for active pipeline runs
+
+### Fixes
+-  decomposed badge uses static style (no pulse animation)
+-  PRD regeneration uses unique filename instead of reusing old name
+-  PRD filenames are unique — engine generates collision-free name
+-  PRD view shows all projects, not just the first one
+-  bug report shows feedback inside modal, not hidden toast
+
+### Other
+- simplify: remove dead g.project field, fix archived PRD view too
+
 ## 0.1.504 (2026-04-07)
 
 ### Features
