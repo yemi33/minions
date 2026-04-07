@@ -1012,6 +1012,7 @@ function createReviewFeedbackForAuthor(reviewerAgentId, pr, config) {
 }
 
 function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount, model) {
+  if (!agentId || agentId.startsWith('temp-') || agentId === 'agent1' || agentId === 'reviewer' || agentId.startsWith('_test')) return;
 
   const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
   mutateJsonFileLocked(metricsPath, metrics => {

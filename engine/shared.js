@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
+const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
 const LOG_PATH = path.join(__dirname, 'log.json');
 

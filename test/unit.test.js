@@ -31,6 +31,30 @@ function cleanupTmpDirs() {
   }
 }
 
+function createTestMinionsDir() {
+  const dir = createTmpDir();
+  for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'plans/archive', 'projects', 'notes/inbox', 'notes/archive', 'knowledge', 'agents']) {
+    fs.mkdirSync(path.join(dir, d), { recursive: true });
+  }
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ projects: [], agents: {}, engine: {} }));
+  fs.writeFileSync(path.join(dir, 'engine', 'dispatch.json'), JSON.stringify({ pending: [], active: [], completed: [] }));
+  fs.writeFileSync(path.join(dir, 'engine', 'metrics.json'), '{}');
+  fs.writeFileSync(path.join(dir, 'engine', 'log.json'), '[]');
+  fs.writeFileSync(path.join(dir, 'work-items.json'), '[]');
+
+  process.env.MINIONS_TEST_DIR = dir;
+  // Bust require cache so modules re-resolve MINIONS_DIR
+  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+    try { delete require.cache[require.resolve(mod)]; } catch {}
+  }
+  return function restore() {
+    delete process.env.MINIONS_TEST_DIR;
+    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+      try { delete require.cache[require.resolve(mod)]; } catch {}
+    }
+  };
+}
+
 async function test(name, fn, cleanup) {
   try {
     await fn();
@@ -3608,17 +3632,21 @@ async function testRunPostCompletionHooks() {
 async function testCheckPlanCompletionIdempotency() {
   console.log('\n── lifecycle.js — checkPlanCompletion Idempotency (functional) ──');
 
-  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const restore = createTestMinionsDir();
+  const lifecycle = require('../engine/lifecycle');
+  const sharedIsolated = require('../engine/shared');
+  const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
   const testPlanFile = '_test-idempotency.json';
   const testProjectName = '_test-idem-proj';
 
-  // Paths that checkPlanCompletion will use (derived from MINIONS_DIR)
-  const prdDir = path.join(MINIONS_DIR, 'prd');
+  // Paths that checkPlanCompletion will use (derived from isolated MINIONS_DIR)
+  const prdDir = path.join(testMinionsDir, 'prd');
   const prdArchiveDir = path.join(prdDir, 'archive');
-  const plansDir = path.join(MINIONS_DIR, 'plans');
+  const plansDir = path.join(testMinionsDir, 'plans');
   const plansArchiveDir = path.join(plansDir, 'archive');
-  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
-  const projectStateDir = path.join(MINIONS_DIR, 'projects', testProjectName);
+  const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+  const projectStateDir = path.join(testMinionsDir, 'projects', testProjectName);
 
   // Ensure dirs exist
   for (const d of [prdDir, prdArchiveDir, plansDir, plansArchiveDir, inboxDir, projectStateDir]) {
@@ -3803,6 +3831,8 @@ async function testCheckPlanCompletionIdempotency() {
     assert.strictEqual(prItems2.length, 1,
       'Second call should not create additional PR work items');
   }, cleanup);
+
+  restore();
 }
 
 // ─── Verify Workflow Tests ──────────────────────────────────────────────────
@@ -3810,17 +3840,26 @@ async function testCheckPlanCompletionIdempotency() {
 async function testVerifyWorkflow() {
   console.log('\n── lifecycle.js — Verify Workflow ──');
 
-  const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+  const restore = createTestMinionsDir();
+  const lifecycle = require('../engine/lifecycle');
+  const sharedIsolated = require('../engine/shared');
+  const testMinionsDir = sharedIsolated.MINIONS_DIR;
+
   const testPlanFile = '_test-verify-flow.json';
   const testProjectName = 'verify-test-proj';
   const tmpDir = createTmpDir();
-  const prdDir = path.join(MINIONS_DIR, 'prd');
+  const prdDir = path.join(testMinionsDir, 'prd');
   const prdArchiveDir = path.join(prdDir, 'archive');
-  const plansDir = path.join(MINIONS_DIR, 'plans');
+  const plansDir = path.join(testMinionsDir, 'plans');
   const plansArchiveDir = path.join(plansDir, 'archive');
-  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
-  const projectStateDir = path.join(MINIONS_DIR, 'projects', testProjectName);
+  const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+  const projectStateDir = path.join(testMinionsDir, 'projects', testProjectName);
   const guidesDir = path.join(prdDir, 'guides');
+
+  // Ensure test-specific dirs exist
+  for (const d of [prdDir, prdArchiveDir, plansDir, plansArchiveDir, inboxDir, projectStateDir, guidesDir]) {
+    fs.mkdirSync(d, { recursive: true });
+  }
 
   function makePrd(overrides = {}) {
     return {
@@ -4018,7 +4057,7 @@ async function testVerifyWorkflow() {
       { id: 'PR-1', branch: 'work/VF-001', status: 'active', prdItems: ['VF-001'] },
     ]);
     // Link PR to work item
-    shared.safeWrite(shared.PR_LINKS_PATH, { 'PR-1': 'VF-001' });
+    shared.safeWrite(sharedIsolated.PR_LINKS_PATH, { 'PR-1': 'VF-001' });
 
     lifecycle.checkPlanCompletion(meta, config);
 
@@ -4146,6 +4185,7 @@ async function testVerifyWorkflow() {
   });
 
   cleanup();
+  restore();
 }
 
 // ─── spawn-agent.js Tests ───────────────────────────────────────────────────
@@ -6677,65 +6717,74 @@ async function testEmptyProjectsGuards() {
   });
 
   // ── Functional: checkPlanCompletion with empty projects ──
+  // Use isolated test dir so functional tests don't pollute production state
+  {
+    const restoreEpg = createTestMinionsDir();
+    const lifecycleIsolated = require('../engine/lifecycle');
+    const sharedIsolated = require('../engine/shared');
+    const testMinionsDir = sharedIsolated.MINIONS_DIR;
 
-  const testPlanFile = '_test-empty-proj.json';
-  const prdDir = path.join(MINIONS_DIR, 'prd');
-  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
-  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-  fs.mkdirSync(prdDir, { recursive: true });
-  fs.mkdirSync(inboxDir, { recursive: true });
+    const testPlanFile = '_test-empty-proj.json';
+    const prdDir = path.join(testMinionsDir, 'prd');
+    const inboxDir = path.join(testMinionsDir, 'notes', 'inbox');
+    const centralWiPath = path.join(testMinionsDir, 'work-items.json');
+    fs.mkdirSync(prdDir, { recursive: true });
+    fs.mkdirSync(inboxDir, { recursive: true });
 
-  function cleanupEmptyProj() {
-    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-empty-proj'));
-    for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
-    try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
-    try { fs.unlinkSync(centralWiPath); } catch {}
+    function cleanupEmptyProj() {
+      const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('_test-empty-proj'));
+      for (const f of inboxFiles) { try { fs.unlinkSync(path.join(inboxDir, f)); } catch {} }
+      try { fs.unlinkSync(path.join(prdDir, testPlanFile)); } catch {}
+      try { fs.unlinkSync(centralWiPath); } catch {}
+    }
+
+    await test('checkPlanCompletion: empty projects[] does not crash, skips PR/verify creation', () => {
+      // Write a PRD with all items done
+      const prd = {
+        plan_summary: 'Empty proj test',
+        project: null,
+        branch_strategy: 'parallel',
+        missing_features: [
+          { id: 'EP-001', title: 'Feature A', acceptance_criteria: ['AC1'] },
+        ],
+      };
+      shared.safeWrite(path.join(prdDir, testPlanFile), prd);
+
+      // Write matching work items to central location (no project dir)
+      shared.safeWrite(centralWiPath, [
+        { id: 'EP-001', title: 'Implement: Feature A', type: 'implement', status: 'done',
+          sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
+      ]);
+
+      const meta = { item: { sourcePlan: testPlanFile } };
+      const config = { projects: [] };
+
+      // Should not throw
+      lifecycleIsolated.checkPlanCompletion(meta, config);
+
+      // The completion summary inbox IS written (before project resolution), but
+      // no verify work item should be created since there's no project for it.
+      // The _completionNotified flag is set before the project guard (to prevent re-runs).
+      const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+      assert.strictEqual(completedPlan._completionNotified, true,
+        '_completionNotified should still be set even with empty projects');
+      assert.strictEqual(completedPlan.status, 'completed',
+        'Plan status should be marked completed');
+    }, cleanupEmptyProj);
+
+    // ── Functional: syncPrsFromOutput with empty projects ──
+
+    await test('syncPrsFromOutput: empty projects[] returns 0 without crash', () => {
+      const output = '{"type":"result","message":{"content":[{"type":"tool_result","content":"https://github.com/org/repo/pull/999"}]}}';
+      const config = { projects: [] };
+      const meta = {};
+
+      const result = lifecycleIsolated.syncPrsFromOutput(output, 'test-agent', meta, config);
+      assert.strictEqual(result, 0, 'Should return 0 when projects is empty and no meta project');
+    });
+
+    restoreEpg();
   }
-
-  await test('checkPlanCompletion: empty projects[] does not crash, skips PR/verify creation', () => {
-    // Write a PRD with all items done
-    const prd = {
-      plan_summary: 'Empty proj test',
-      project: null,
-      branch_strategy: 'parallel',
-      missing_features: [
-        { id: 'EP-001', title: 'Feature A', acceptance_criteria: ['AC1'] },
-      ],
-    };
-    shared.safeWrite(path.join(prdDir, testPlanFile), prd);
-
-    // Write matching work items to central location (no project dir)
-    shared.safeWrite(centralWiPath, [
-      { id: 'EP-001', title: 'Implement: Feature A', type: 'implement', status: 'done',
-        sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
-    ]);
-
-    const meta = { item: { sourcePlan: testPlanFile } };
-    const config = { projects: [] };
-
-    // Should not throw
-    lifecycle.checkPlanCompletion(meta, config);
-
-    // The completion summary inbox IS written (before project resolution), but
-    // no verify work item should be created since there's no project for it.
-    // The _completionNotified flag is set before the project guard (to prevent re-runs).
-    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
-    assert.strictEqual(completedPlan._completionNotified, true,
-      '_completionNotified should still be set even with empty projects');
-    assert.strictEqual(completedPlan.status, 'completed',
-      'Plan status should be marked completed');
-  }, cleanupEmptyProj);
-
-  // ── Functional: syncPrsFromOutput with empty projects ──
-
-  await test('syncPrsFromOutput: empty projects[] returns 0 without crash', () => {
-    const output = '{"type":"result","message":{"content":[{"type":"tool_result","content":"https://github.com/org/repo/pull/999"}]}}';
-    const config = { projects: [] };
-    const meta = {};
-
-    const result = lifecycle.syncPrsFromOutput(output, 'test-agent', meta, config);
-    assert.strictEqual(result, 0, 'Should return 0 when projects is empty and no meta project');
-  });
 }
 
 // ─── P-r7w2k9m4: PR write race condition fixes ─────────────────────────────

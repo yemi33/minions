@@ -7,11 +7,12 @@ const path = require('path');
 const shared = require('./shared');
 const { safeWrite, safeUnlink, uid, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked } = shared;
 
-const MINIONS_DIR = path.resolve(__dirname, '..');
-const ENGINE_DIR = __dirname;
+const MINIONS_DIR = shared.MINIONS_DIR;
+const ENGINE_DIR = path.join(MINIONS_DIR, 'engine');
 
 function trackEngineUsage(category, usage) {
   if (!usage) return;
+  if (category && (category.startsWith('_test') || category.startsWith('test-'))) return;
   try {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
     mutateJsonFileLocked(metricsPath, (metrics) => {
