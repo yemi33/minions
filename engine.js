@@ -794,6 +794,32 @@ function spawnAgent(dispatchItem, config) {
     return dispatch;
   });
 
+  // Atomically stamp dispatched_to/dispatched_at on the originating work item (#402)
+  // The discover phase sets these via safeWrite which can race with concurrent writes;
+  // this locked write ensures the fields are persisted reliably.
+  if (meta?.item?.id) {
+    try {
+      let wiPath = null;
+      if (meta.source === 'central-work-item' || meta.source === 'central-work-item-fanout') {
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      } else if (meta.source === 'work-item' && meta.project?.name) {
+        wiPath = projectWorkItemsPath({ name: meta.project.name, localPath: meta.project.localPath });
+      }
+      if (wiPath) {
+        mutateJsonFileLocked(wiPath, (items) => {
+          if (!Array.isArray(items)) return items;
+          const wi = items.find(i => i.id === meta.item.id);
+          if (wi) {
+            wi.dispatched_to = wi.dispatched_to || agentId;
+            wi.dispatched_at = wi.dispatched_at || startedAt;
+            if (wi.status !== WI_STATUS.DISPATCHED) wi.status = WI_STATUS.DISPATCHED;
+          }
+          return items;
+        }, { defaultValue: [] });
+      }
+    } catch (e) { log('warn', `stamp dispatched_to on work item ${meta.item.id}: ${e.message}`); }
+  }
+
   return proc;
 }
 
