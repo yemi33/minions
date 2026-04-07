@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.528 (2026-04-07)
+
+### Features
+- Convert engine/ safeWrite calls on work-items.json to mutateWorkItems() (#415)
+
 ## 0.1.527 (2026-04-07)
 
 ### Features
