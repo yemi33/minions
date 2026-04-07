@@ -1396,7 +1396,7 @@ function discoverFromPrs(config, project) {
       // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
       try {
         const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
-        const liveStatus = checkFn(pr, project);
+        const liveStatus = await checkFn(pr, project);
         if (liveStatus && liveStatus !== 'pending') {
           log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was pending) — skipping review`);
           pr.reviewStatus = liveStatus;
