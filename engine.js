@@ -84,7 +84,7 @@ function validateConfig(config) {
 }
 
 const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, projectPrPath, getAdoOrgBase, sanitizeBranch, parseSkillFrontmatter, safeReadDir,
-  ts, logTs, dateStamp, log } = shared;
+  logTs, dateStamp, log } = shared;
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
