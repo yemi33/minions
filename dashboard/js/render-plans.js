@@ -476,6 +476,12 @@ async function planView(file) {
   _stopPlanPoll();
   try {
     const normalizedFile = normalizePlanFile(file);
+
+    // Show modal immediately with loading state
+    document.getElementById('modal-title').textContent = normalizedFile;
+    document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+    document.getElementById('modal').classList.add('open');
+
     const planRes = await fetch('/api/plans/' + encodeURIComponent(normalizedFile));
     const lastMod = planRes.headers.get('Last-Modified');
     const resolvedPath = planRes.headers.get('X-Resolved-Path');
@@ -487,7 +493,6 @@ async function planView(file) {
     _modalFilePath = resolvedPath || ((normalizedFile.endsWith('.json') ? 'prd/' : 'plans/') + normalizedFile); showModalQa();
     const card = findCardForFile(_modalFilePath);
     if (card) clearNotifBadge(card);
-    document.getElementById('modal').classList.add('open');
 
     // Live-poll while modal is open
     _planPollFile = normalizedFile;
@@ -625,6 +630,9 @@ async function planDiscuss(file) {
 
 async function planOpenInDocChat(file) {
   try {
+    document.getElementById('modal-title').textContent = file;
+    document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+    document.getElementById('modal').classList.add('open');
     const normalizedFile = normalizePlanFile(file);
     const planRes = await fetch('/api/plans/' + encodeURIComponent(normalizedFile));
     const resolvedPath = planRes.headers.get('X-Resolved-Path');
