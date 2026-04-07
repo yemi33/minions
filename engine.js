@@ -1081,6 +1081,31 @@ function materializePlansAsWorkItems(config) {
     const plan = safeJson(path.join(PRD_DIR, file));
     if (!plan?.missing_features) continue;
 
+    // ID collision prevention: remap sequential IDs (P-001, P-002) to globally unique P-<uid> IDs.
+    // Agents are instructed to use P-<uuid> format but sometimes generate sequential IDs,
+    // which collide across PRDs causing phantom done/dispatched status (see #466).
+    const SEQUENTIAL_ID_RE = /^P-?\d+$/;
+    if (plan.missing_features.some(f => SEQUENTIAL_ID_RE.test(f.id))) {
+      const allWorkItems = queries.getWorkItems(config);
+      const anyMaterialized = plan.missing_features.some(f =>
+        SEQUENTIAL_ID_RE.test(f.id) && allWorkItems.some(w => w.id === f.id && w.sourcePlan === file));
+      if (!anyMaterialized) {
+        const idMap = new Map();
+        for (const f of plan.missing_features) {
+          if (SEQUENTIAL_ID_RE.test(f.id)) {
+            const newId = 'P-' + shared.uid();
+            idMap.set(f.id, newId);
+            f.id = newId;
+          }
+        }
+        for (const f of plan.missing_features) {
+          if (f.depends_on) f.depends_on = f.depends_on.map(d => idMap.get(d) || d);
+        }
+        safeWrite(path.join(PRD_DIR, file), plan);
+        log('info', `Remapped ${idMap.size} sequential ID(s) in ${file} to prevent cross-PRD collisions`);
+      }
+    }
+
     // Plan staleness: if source_plan .md was modified since last sync, auto-clean and re-sync
     if (plan.source_plan) {
       const sourcePlanPath = path.join(PLANS_DIR, plan.source_plan);
