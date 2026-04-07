@@ -836,6 +836,7 @@ function jsonReply(res, code, data, req) {
 /**
  * Remove dispatch entries matching a predicate. Scans pending, active, completed queues.
  * Also kills agent processes for matched active entries.
+ * Process kills and file cleanup happen OUTSIDE the lock to avoid blocking other consumers.
  * @param {(entry) => boolean} matchFn - return true for entries to remove
  * @returns {number} count of removed entries
  */
@@ -844,6 +845,9 @@ function cleanDispatchEntries(matchFn) {
   const engineDir = path.join(MINIONS_DIR, 'engine');
   try {
     let removed = 0;
+    // Collect PIDs and cleanup paths inside the lock, execute kills outside
+    const pidsToKill = [];
+    const filesToClean = [];
     mutateJsonFileLocked(dispatchPath, (dispatch) => {
       dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
       dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
@@ -853,17 +857,16 @@ function cleanDispatchEntries(matchFn) {
         if (queue === 'active') {
           for (const d of dispatch[queue]) {
             if (!matchFn(d)) continue;
-            // Kill the running agent process via PID file
+            // Collect PID and cleanup paths — actual kill happens after lock release
             const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
             try {
               const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-              if (pid) process.kill(pid, 'SIGTERM');
+              if (pid) pidsToKill.push(pid);
             } catch { /* process may be dead */ }
-            try { fs.unlinkSync(pidFile); } catch { /* cleanup */ }
-            // Clean up temp prompt files
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `prompt-${d.id}.md`)); } catch { /* cleanup */ }
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`)); } catch { /* cleanup */ }
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`)); } catch { /* cleanup */ }
+            filesToClean.push(pidFile);
+            filesToClean.push(path.join(engineDir, 'tmp', `prompt-${d.id}.md`));
+            filesToClean.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`));
+            filesToClean.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`));
           }
         }
         dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
@@ -871,6 +874,22 @@ function cleanDispatchEntries(matchFn) {
       }
       return dispatch;
     }, { defaultValue: { pending: [], active: [], completed: [] } });
+
+    // Kill processes outside the lock — uses shared.killGracefully pattern for cross-platform support
+    for (const pid of pidsToKill) {
+      try {
+        if (process.platform === 'win32') {
+          require('child_process').execSync(`taskkill /PID ${pid} /T`, { stdio: 'pipe', timeout: 3000, windowsHide: true });
+        } else {
+          process.kill(pid, 'SIGTERM');
+        }
+      } catch { /* process may already be dead */ }
+    }
+    // Clean up files outside the lock
+    for (const fp of filesToClean) {
+      try { fs.unlinkSync(fp); } catch { /* file may not exist */ }
+    }
+
     return removed;
   } catch { return 0; }
 }
