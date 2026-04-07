@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.524 (2026-04-07)
+
+### Features
+-  9 test isolation verification tests — run last to detect pollution
+
 ## 0.1.523 (2026-04-07)
 
 ### Other
