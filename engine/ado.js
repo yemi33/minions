@@ -170,7 +170,7 @@ async function pollPrStatus(config) {
     const headCommit = prData.lastMergeSourceCommit?.commitId || prData.sourceRefName || '';
     if (headCommit && pr._adoHeadCommit !== headCommit) {
       if (pr._adoHeadCommit) { // skip first detection — only track changes
-        pr.lastPushedAt = new Date().toISOString();
+        pr.lastPushedAt = ts();
       }
       pr._adoHeadCommit = headCommit;
       updated = true;

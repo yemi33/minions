@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, uid, log, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
+const { safeJson, safeWrite, safeRead, uid, log, ts, ENGINE_DEFAULTS, WORK_TYPE, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getDispatch, getConfig } = queries;
 const { renderPlaybook } = require('./playbook');
@@ -51,8 +51,8 @@ function createMeeting({ title, agenda, participants }) {
     round: 1,
     participants: participants || [],
     createdBy: 'human',
-    createdAt: new Date().toISOString(),
-    roundStartedAt: new Date().toISOString(),
+    createdAt: ts(),
+    roundStartedAt: ts(),
     findings: {},
     debate: {},
     conclusion: null,
@@ -209,16 +209,16 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
   const content = rawContent;
 
   if (roundName === 'investigate') {
-    meeting.findings[agentId] = { content, submittedAt: new Date().toISOString() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'finding', content, at: new Date().toISOString() });
+    meeting.findings[agentId] = { content, submittedAt: ts() };
+    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'finding', content, at: ts() });
   } else if (roundName === 'debate') {
-    meeting.debate[agentId] = { content, submittedAt: new Date().toISOString() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'debate', content, at: new Date().toISOString() });
+    meeting.debate[agentId] = { content, submittedAt: ts() };
+    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'debate', content, at: ts() });
   } else if (roundName === 'conclude') {
-    meeting.conclusion = { content, agent: agentId, submittedAt: new Date().toISOString() };
-    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'conclusion', content, at: new Date().toISOString() });
+    meeting.conclusion = { content, agent: agentId, submittedAt: ts() };
+    meeting.transcript.push({ round: meeting.round, agent: agentId, type: 'conclusion', content, at: ts() });
     meeting.status = 'completed';
-    meeting.completedAt = new Date().toISOString();
+    meeting.completedAt = ts();
 
     // Write transcript to inbox so agents learn from it (slug-based dedup)
     try {
@@ -246,12 +246,12 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     if (meeting.status === 'investigating') {
       meeting.status = 'debating';
       meeting.round = 2;
-      meeting.roundStartedAt = new Date().toISOString();
+      meeting.roundStartedAt = ts();
       log('info', `Meeting ${meetingId}: all findings in — advancing to debate`);
     } else if (meeting.status === 'debating') {
       meeting.status = 'concluding';
       meeting.round = 3;
-      meeting.roundStartedAt = new Date().toISOString();
+      meeting.roundStartedAt = ts();
       log('info', `Meeting ${meetingId}: all debate responses in — advancing to conclusion`);
     }
   }
@@ -263,7 +263,7 @@ function addMeetingNote(meetingId, note) {
   const meeting = getMeeting(meetingId);
   if (!meeting) return null;
   meeting.humanNotes.push(note);
-  meeting.transcript.push({ round: meeting.round, agent: 'human', type: 'note', content: note, at: new Date().toISOString() });
+  meeting.transcript.push({ round: meeting.round, agent: 'human', type: 'note', content: note, at: ts() });
   saveMeeting(meeting);
   return meeting;
 }
@@ -279,7 +279,7 @@ function _killMeetingDispatches(meetingId) {
       dp.active = (dp.active || []).filter(d => d.meta?.meetingId !== meetingId);
       dp.completed = dp.completed || [];
       for (const d of toKill) {
-        dp.completed.push({ ...d, result: DISPATCH_RESULT.ERROR, reason: 'Meeting ended/advanced by human', completed_at: new Date().toISOString() });
+        dp.completed.push({ ...d, result: DISPATCH_RESULT.ERROR, reason: 'Meeting ended/advanced by human', completed_at: ts() });
       }
       if (dp.completed.length > 100) dp.completed = dp.completed.slice(-100);
       return dp;
@@ -295,9 +295,9 @@ function advanceMeetingRound(meetingId) {
   _killMeetingDispatches(meetingId);
   if (meeting.status === 'investigating') { meeting.status = 'debating'; meeting.round = 2; }
   else if (meeting.status === 'debating') { meeting.status = 'concluding'; meeting.round = 3; }
-  else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = new Date().toISOString(); }
+  else if (meeting.status === 'concluding') { meeting.status = 'completed'; meeting.completedAt = ts(); }
   else return meeting; // no change
-  meeting.roundStartedAt = new Date().toISOString();
+  meeting.roundStartedAt = ts();
   saveMeeting(meeting);
   return meeting;
 }
@@ -307,7 +307,7 @@ function endMeeting(meetingId) {
   if (!meeting) return null;
   _killMeetingDispatches(meetingId);
   meeting.status = 'completed';
-  meeting.completedAt = new Date().toISOString();
+  meeting.completedAt = ts();
   saveMeeting(meeting);
   return meeting;
 }
@@ -316,7 +316,7 @@ function archiveMeeting(id) {
   const meeting = getMeeting(id);
   if (!meeting) return null;
   meeting.status = 'archived';
-  meeting.archivedAt = new Date().toISOString();
+  meeting.archivedAt = ts();
   saveMeeting(meeting);
   return meeting;
 }
@@ -364,17 +364,17 @@ function checkMeetingTimeouts(config) {
 
     if (meeting.status === 'investigating') {
       log('warn', `Meeting ${meeting.id}: round 1 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to debate`);
-      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 1 timed out — ${respondedCount}/${totalCount} findings received`, at: new Date().toISOString() });
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 1 timed out — ${respondedCount}/${totalCount} findings received`, at: ts() });
       meeting.status = 'debating';
       meeting.round = 2;
-      meeting.roundStartedAt = new Date().toISOString();
+      meeting.roundStartedAt = ts();
       saveMeeting(meeting);
     } else if (meeting.status === 'debating') {
       log('warn', `Meeting ${meeting.id}: round 2 timed out after ${Math.round(elapsed / 60000)}min — ${respondedCount}/${totalCount} responded, advancing to conclusion`);
-      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 2 timed out — ${respondedCount}/${totalCount} debate responses received`, at: new Date().toISOString() });
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: `Round 2 timed out — ${respondedCount}/${totalCount} debate responses received`, at: ts() });
       meeting.status = 'concluding';
       meeting.round = 3;
-      meeting.roundStartedAt = new Date().toISOString();
+      meeting.roundStartedAt = ts();
       saveMeeting(meeting);
     } else if (meeting.status === 'concluding') {
       log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — auto-summarizing`);
@@ -386,10 +386,10 @@ function checkMeetingTimeouts(config) {
         `**${(config.agents || {})[agent]?.name || agent}**: ${(d.content || '').slice(0, 200)}`
       ).join('\n');
       const autoConclusion = `*Auto-generated — conclusion round timed out.*\n\n## Key Findings\n${findingsSummary || '(none)'}\n\n## Debate Summary\n${debateSummary || '(none)'}`;
-      meeting.conclusion = { content: autoConclusion, agent: 'system', submittedAt: new Date().toISOString() };
-      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'conclusion', content: autoConclusion, at: new Date().toISOString() });
+      meeting.conclusion = { content: autoConclusion, agent: 'system', submittedAt: ts() };
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'conclusion', content: autoConclusion, at: ts() });
       meeting.status = 'completed';
-      meeting.completedAt = new Date().toISOString();
+      meeting.completedAt = ts();
 
       // Write transcript to inbox (same as normal conclusion path)
       try {

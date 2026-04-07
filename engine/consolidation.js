@@ -9,7 +9,7 @@ const path = require('path');
 const crypto = require('crypto');
 const shared = require('./shared');
 const { safeRead, safeWrite, safeUnlink, runFile, cleanChildEnv,
-  parseStreamJsonOutput, classifyInboxItem, KB_CATEGORIES, log, dateStamp } = shared;
+  parseStreamJsonOutput, classifyInboxItem, KB_CATEGORIES, log, ts, dateStamp } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR, MINIONS_DIR,
@@ -440,7 +440,7 @@ function classifyToKnowledgeBase(items) {
       const dir = path.join(KNOWLEDGE_DIR, cat);
       if (fs.existsSync(dir)) count += fs.readdirSync(dir).length;
     }
-    safeWrite(path.join(ENGINE_DIR, 'kb-checkpoint.json'), JSON.stringify({ count, updatedAt: new Date().toISOString() }));
+    safeWrite(path.join(ENGINE_DIR, 'kb-checkpoint.json'), JSON.stringify({ count, updatedAt: ts() }));
   } catch (err) { log('warn', `KB checkpoint: ${err.message}`); }
 }
 
