@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, ts, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
+const { safeRead, safeJson, safeWrite, ts, mutateWorkItems, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./queries');
 const { getConfig, getControl, getDispatch, getAgentStatus,
   MINIONS_DIR, ENGINE_DIR, AGENTS_DIR, PLANS_DIR, PRD_DIR, CONTROL_PATH, DISPATCH_PATH } = queries;
@@ -165,18 +165,18 @@ const commands = {
             if (sj?.sessionId) sessionId = sj.sessionId;
           } catch {}
           e.activeProcesses.set(item.id, { proc: { pid: agentPid > 0 ? agentPid : null }, agentId, startedAt: item.created_at, reattached: true, sessionId });
-          // Sync work item status to dispatched — direct file write to avoid lifecycle lazy init issues
+          // Sync work item status to dispatched — atomic write to avoid lifecycle lazy init issues
           if (item.meta?.item?.id && item.meta?.project?.localPath) {
             try {
               const wiPath = path.join(MINIONS_DIR, "projects", item.meta.project.name, "work-items.json");
-              const wiItems = safeJson(wiPath) || [];
-              const wi = wiItems.find(w => w.id === item.meta.item.id);
-              if (wi && wi.status !== WI_STATUS.DISPATCHED) {
-                wi.status = WI_STATUS.DISPATCHED;
-                wi.dispatched_to = wi.dispatched_to || agentId;
-                wi.dispatched_at = wi.dispatched_at || ts();
-                safeWrite(wiPath, wiItems);
-              }
+              mutateWorkItems(wiPath, items => {
+                const wi = items.find(w => w.id === item.meta.item.id);
+                if (wi && wi.status !== WI_STATUS.DISPATCHED) {
+                  wi.status = WI_STATUS.DISPATCHED;
+                  wi.dispatched_to = wi.dispatched_to || agentId;
+                  wi.dispatched_at = wi.dispatched_at || ts();
+                }
+              });
             } catch (err) { console.log(`    Warning: failed to sync work item status: ${err.message}`); }
           }
           reattached++;
@@ -264,19 +264,19 @@ const commands = {
             try {
               lifecycle.updateWorkItemStatus(item.meta, status, isSuccess ? '' : 'Completed while engine was down');
             } catch {
-              // Direct file write fallback
+              // Atomic file write fallback
               try {
                 const projName = item.meta.project?.name;
                 if (projName) {
                   const wiPath = path.join(MINIONS_DIR, 'projects', projName, 'work-items.json');
-                  const items = safeJson(wiPath) || [];
-                  const wi = items.find(w => w.id === item.meta.item.id);
-                  if (wi) {
-                    wi.status = status;
-                    if (isSuccess) { wi.completedAt = ts(); delete wi.failReason; }
-                    else { wi.failedAt = ts(); wi.failReason = 'Completed while engine was down'; }
-                    safeWrite(wiPath, items);
-                  }
+                  mutateWorkItems(wiPath, items => {
+                    const wi = items.find(w => w.id === item.meta.item.id);
+                    if (wi) {
+                      wi.status = status;
+                      if (isSuccess) { wi.completedAt = ts(); delete wi.failReason; }
+                      else { wi.failedAt = ts(); wi.failReason = 'Completed while engine was down'; }
+                    }
+                  });
                 }
               } catch (err) { e.log('warn', `Orphan WI fallback: ${err.message}`); }
             }
@@ -321,19 +321,17 @@ const commands = {
       }
       for (const wiPath of allWiPaths) {
         try {
-          const items = safeJson(wiPath) || [];
-          let changed = false;
-          for (const item of items) {
-            if (item.status === WI_STATUS.DISPATCHED && !activeIds.has(item.id)) {
-              item.status = WI_STATUS.PENDING;
-              delete item.dispatched_at;
-              delete item.dispatched_to;
-              changed = true;
-              fixes++;
-              e.log('info', `Recovery: reset stuck item ${item.id} from dispatched → pending`);
+          mutateWorkItems(wiPath, items => {
+            for (const item of items) {
+              if (item.status === WI_STATUS.DISPATCHED && !activeIds.has(item.id)) {
+                item.status = WI_STATUS.PENDING;
+                delete item.dispatched_at;
+                delete item.dispatched_to;
+                fixes++;
+                e.log('info', `Recovery: reset stuck item ${item.id} from dispatched → pending`);
+              }
             }
-          }
-          if (changed) safeWrite(wiPath, items);
+          });
         } catch (err) { e.log('warn', `Recovery WI reset: ${err.message}`); }
       }
 
@@ -691,24 +689,23 @@ const commands = {
       ? projects.find(p => p.name?.toLowerCase() === opts.project?.toLowerCase()) || projects[0]
       : projects[0];
     const wiPath = projectWorkItemsPath(targetProject);
-    const items = safeJson(wiPath) || [];
-
-    const item = {
-      id: `W${String(items.length + 1).padStart(3, '0')}`,
-      title: title,
-      type: opts.type || 'implement',
-      status: WI_STATUS.QUEUED,
-      priority: opts.priority || 'medium',
-      complexity: opts.complexity || 'medium',
-      description: opts.description || title,
-      agent: opts.agent || null,
-      branch: opts.branch || null,
-      prompt: opts.prompt || null,
-      created_at: e.ts()
-    };
-
-    items.push(item);
-    safeWrite(wiPath, items);
+    let item;
+    mutateWorkItems(wiPath, items => {
+      item = {
+        id: `W${String(items.length + 1).padStart(3, '0')}`,
+        title: title,
+        type: opts.type || 'implement',
+        status: WI_STATUS.QUEUED,
+        priority: opts.priority || 'medium',
+        complexity: opts.complexity || 'medium',
+        description: opts.description || title,
+        agent: opts.agent || null,
+        branch: opts.branch || null,
+        prompt: opts.prompt || null,
+        created_at: e.ts()
+      };
+      items.push(item);
+    });
 
     console.log(`Queued work item: ${item.id} — ${item.title} (project: ${targetProject.name || 'default'})`);
     console.log(`  Type: ${item.type} | Priority: ${item.priority} | Agent: ${item.agent || 'auto'}`);
@@ -903,16 +900,16 @@ const commands = {
               ? shared.projectWorkItemsPath({ localPath: item.meta.project.localPath, name: item.meta.project.name, workSources: config.projects?.find(p => p.name === item.meta.project.name)?.workSources })
               : null;
           if (wiPath) {
-            const items = safeJson(wiPath) || [];
-            const target = items.find(i => i.id === itemId);
-            if (target) {
-              target.status = WI_STATUS.PENDING;
-              delete target.dispatched_at;
-              delete target.dispatched_to;
-              delete target.failReason;
-              delete target.failedAt;
-              safeWrite(wiPath, items);
-            }
+            mutateWorkItems(wiPath, items => {
+              const target = items.find(i => i.id === itemId);
+              if (target) {
+                target.status = WI_STATUS.PENDING;
+                delete target.dispatched_at;
+                delete target.dispatched_to;
+                delete target.failReason;
+                delete target.failedAt;
+              }
+            });
           }
         }
       }

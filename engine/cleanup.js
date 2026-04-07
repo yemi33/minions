@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { exec, execSilent, log, ts } = shared;
-const { safeJson, safeWrite, safeReadDir, getProjects, projectWorkItemsPath, projectPrPath,
+const { safeJson, safeWrite, safeReadDir, mutateWorkItems, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
 
@@ -437,17 +437,17 @@ function runCleanup(config, verbose = false) {
   for (const project of projects) {
     try {
       const wiPath = projectWorkItemsPath(project);
-      const items = safeJson(wiPath) || [];
       let migrated = 0;
-      for (const item of items) {
-        if (LEGACY_DONE_ALIASES.has(item.status)) {
-          item.status = shared.WI_STATUS.DONE;
-          delete item._pendingReason;
-          migrated++;
+      mutateWorkItems(wiPath, items => {
+        for (const item of items) {
+          if (LEGACY_DONE_ALIASES.has(item.status)) {
+            item.status = shared.WI_STATUS.DONE;
+            delete item._pendingReason;
+            migrated++;
+          }
         }
-      }
+      });
       if (migrated > 0) {
-        safeWrite(wiPath, items);
         log('info', `Migrated ${migrated} legacy status(es) → done in ${project.name} work items`);
       }
     } catch (e) { log('warn', 'migrate legacy statuses: ' + e.message); }
@@ -455,17 +455,17 @@ function runCleanup(config, verbose = false) {
   // Central work items
   try {
     const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-    const centralItems = safeJson(centralPath) || [];
     let migrated = 0;
-    for (const item of centralItems) {
-      if (LEGACY_DONE_ALIASES.has(item.status)) {
-        item.status = shared.WI_STATUS.DONE;
-        delete item._pendingReason;
-        migrated++;
+    mutateWorkItems(centralPath, items => {
+      for (const item of items) {
+        if (LEGACY_DONE_ALIASES.has(item.status)) {
+          item.status = shared.WI_STATUS.DONE;
+          delete item._pendingReason;
+          migrated++;
+        }
       }
-    }
+    });
     if (migrated > 0) {
-      safeWrite(centralPath, centralItems);
       log('info', `Migrated ${migrated} legacy status(es) → done in central work items`);
     }
   } catch (e) { log('warn', 'migrate central legacy statuses: ' + e.message); }
