@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.464 (2026-04-07)
+
+### Fixes
+-  extend heartbeat timeout for any Bash tool call (10min default)
+-  clear stale session.json on resume failure, hang kill, and orphan
+
 ## 0.1.462 (2026-04-07)
 
 ### Fixes
