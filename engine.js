@@ -1626,61 +1626,21 @@ function discoverFromWorkItems(config, project) {
       commit_message: item.commitMessage || `feat: ${item.title || item.id}`,
       notes_content: '',
     };
-    try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
-
-    // Inject references and acceptance criteria
-    const refs = (item.references || []).filter(r => r && r.url).map(r =>
-      '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
-    ).join('\n');
-    vars.references = refs ? '## References\n\n' + refs : '';
-    const ac = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
-    vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
-
-    // Inject checkpoint context if agent left a checkpoint.json from a prior run
-    vars.checkpoint_context = '';
-    try {
-      const wtPath = vars.worktree_path || root;
-      const cpPath = path.join(wtPath, 'checkpoint.json');
-      if (fs.existsSync(cpPath)) {
-        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
-        const cpCount = (item._checkpointCount || 0) + 1;
-        if (cpCount > 3) {
-          log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-          item.status = WI_STATUS.NEEDS_REVIEW;
-          item._checkpointCount = cpCount;
-          needsWrite = true;
-          continue;
-        }
-        item._checkpointCount = cpCount;
-        needsWrite = true;
-        const cpSummary = [
-          `## Checkpoint (Resume #${cpCount}/3)`,
-          '',
-          'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
-          '',
-          cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-          cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-          cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
-          cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
-        ].filter(Boolean).join('\n');
-        vars.checkpoint_context = cpSummary;
-        log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
-      }
-    } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
-
-    // Inject ask-specific variables for the ask playbook
-    if (workType === WORK_TYPE.ASK) {
-      vars.question = item.title + (item.description ? '\n\n' + item.description : '');
-      vars.task_id = item.id;
-      vars.notes_content = '';
-      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
+    // Build common vars: references, acceptance criteria, checkpoint, notes, task context
+    const cpResult = buildWorkItemDispatchVars(item, vars, config, {
+      worktreePath: vars.worktree_path || root,
+      workType,
+    });
+    if (cpResult.needsReview) {
+      log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
+      item.status = WI_STATUS.NEEDS_REVIEW;
+      item._checkpointCount = cpResult.checkpointCount;
+      needsWrite = true;
+      continue;
     }
-
-    // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
-    const resolvedCtx = resolveTaskContext(item, config);
-    if (resolvedCtx.additionalContext) {
-      vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
-      vars.task_description = vars.task_description + resolvedCtx.additionalContext;
+    if (cpResult.checkpointCount !== null) {
+      item._checkpointCount = cpResult.checkpointCount;
+      needsWrite = true;
     }
 
     const playbookName = selectPlaybook(workType, item);
@@ -1764,6 +1724,90 @@ function normalizeAc(ac) {
   if (Array.isArray(ac)) return ac;
   if (typeof ac === 'string') return ac.split('\n').map(s => s.replace(/^[-*]\s*/, '').trim()).filter(Boolean);
   return [];
+}
+
+/**
+ * Build common dispatch vars for a work item: references, acceptance criteria,
+ * checkpoint context, notes content, and resolved task context.
+ *
+ * Consolidates duplicated patterns across discoverFromWorkItems, discoverCentralWorkItems
+ * (normal + fan-out). Caller-specific vars (project_name, work_branch, plan vars) are NOT
+ * handled here — they remain in the caller.
+ *
+ * @param {Object} item - Work item
+ * @param {Object} vars - Mutable vars object to populate (must already have base vars)
+ * @param {Object} config - Engine config
+ * @param {Object} [options]
+ * @param {string} [options.worktreePath] - Path for checkpoint lookup (omit to skip checkpoint)
+ * @param {boolean} [options.includeNotes=true] - Whether to read notes.md into vars.notes_content
+ * @param {string} [options.workType] - Work type (used for ASK-specific vars)
+ * @returns {{ needsReview: boolean, checkpointCount: number|null }} checkpoint side-effect info
+ */
+function buildWorkItemDispatchVars(item, vars, config, options = {}) {
+  const { worktreePath, includeNotes = true, workType } = options;
+
+  // Notes content (uses queries.getNotes instead of inline fs.readFileSync)
+  if (includeNotes) {
+    vars.notes_content = getNotes() || '';
+  }
+
+  // References
+  const refs = (item.references || []).filter(r => r && r.url).map(r =>
+    '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
+  ).join('\n');
+  vars.references = refs ? '## References\n\n' + refs : '';
+
+  // Acceptance criteria
+  const ac = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
+  vars.acceptance_criteria = ac ? '## Acceptance Criteria\n\n' + ac : '';
+
+  // Checkpoint context
+  vars.checkpoint_context = '';
+  const result = { needsReview: false, checkpointCount: null };
+  if (worktreePath) {
+    try {
+      const cpPath = path.join(worktreePath, 'checkpoint.json');
+      if (fs.existsSync(cpPath)) {
+        const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
+        const cpCount = (item._checkpointCount || 0) + 1;
+        result.checkpointCount = cpCount;
+        if (cpCount > 3) {
+          result.needsReview = true;
+        } else {
+          const cpSummary = [
+            `## Checkpoint (Resume #${cpCount}/3)`,
+            '',
+            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
+            '',
+            cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
+            cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
+            cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
+            cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
+          ].filter(Boolean).join('\n');
+          vars.checkpoint_context = cpSummary;
+          log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
+        }
+      }
+    } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
+  }
+
+  // ASK-specific variables
+  if (workType === WORK_TYPE.ASK) {
+    vars.question = item.title + (item.description ? '\n\n' + item.description : '');
+    vars.task_id = item.id;
+    vars.notes_content = getNotes() || '';
+  }
+
+  // Resolve implicit context references (e.g., "ripley's plan", "the latest plan")
+  const resolvedCtx = resolveTaskContext(item, config);
+  if (resolvedCtx.additionalContext) {
+    vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
+    if (vars.task_description !== undefined) {
+      vars.task_description = vars.task_description + resolvedCtx.additionalContext;
+    }
+  }
+
+  return result;
 }
 
 function buildProjectContext(projects, assignedProject, isFanOut, agentName, agentRole) {
@@ -1999,25 +2043,11 @@ function discoverCentralWorkItems(config) {
           project_path: ap?.localPath || '',
         };
 
-        // Inject references and acceptance criteria
-        const fanRefs = (item.references || []).filter(r => r && r.url).map(r =>
-          '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
-        ).join('\n');
-        vars.references = fanRefs ? '## References\n\n' + fanRefs : '';
-        const fanAc = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
-        vars.acceptance_criteria = fanAc ? '## Acceptance Criteria\n\n' + fanAc : '';
-
-        if (workType === WORK_TYPE.ASK) {
-          vars.question = item.title + (item.description ? '\n\n' + item.description : '');
-          vars.task_id = item.id;
-          vars.notes_content = '';
-          try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
-        }
-
-        const resolvedCtx = resolveTaskContext(item, config);
-        if (resolvedCtx.additionalContext) {
-          vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
-        }
+        // Build common vars: references, acceptance criteria, notes (ASK only), task context
+        buildWorkItemDispatchVars(item, vars, config, {
+          includeNotes: false,
+          workType,
+        });
 
         const playbookName = selectPlaybook(workType, item);
         const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -2074,49 +2104,25 @@ function discoverCentralWorkItems(config) {
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
         scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
-        notes_content: '',
       };
-      try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
 
-      // Inject references and acceptance criteria
-      const normRefs = (item.references || []).filter(r => r && r.url).map(r =>
-        '- [' + (r.title || r.url) + '](' + r.url + ')' + (r.type ? ' (' + r.type + ')' : '')
-      ).join('\n');
-      vars.references = normRefs ? '## References\n\n' + normRefs : '';
-      const normAc = normalizeAc(item.acceptanceCriteria).map(c => '- [ ] ' + c).join('\n');
-      vars.acceptance_criteria = normAc ? '## Acceptance Criteria\n\n' + normAc : '';
-
-      // Inject checkpoint context if agent left a checkpoint.json from a prior run
-      vars.checkpoint_context = '';
-      try {
-        const centralBranch = item.branch || `work/${item.id}`;
-        const centralWtPath = firstProject?.localPath
-          ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
-          : '';
-        const cpPath = centralWtPath ? path.join(centralWtPath, 'checkpoint.json') : '';
-        if (cpPath && fs.existsSync(cpPath)) {
-          const cpData = JSON.parse(fs.readFileSync(cpPath, 'utf8'));
-          const cpCount = (item._checkpointCount || 0) + 1;
-          if (cpCount > 3) {
-            log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-            mutations.set(item.id, { status: WI_STATUS.NEEDS_REVIEW, _checkpointCount: cpCount });
-            continue;
-          }
-          mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _checkpointCount: cpCount }));
-          const cpSummary = [
-            `## Checkpoint (Resume #${cpCount}/3)`,
-            '',
-            'A previous agent run timed out but left a checkpoint. Continue from where it left off.',
-            '',
-            cpData.completed && cpData.completed.length > 0 ? `### Completed\n${cpData.completed.map(s => '- ' + s).join('\n')}` : '',
-            cpData.remaining && cpData.remaining.length > 0 ? `### Remaining\n${cpData.remaining.map(s => '- ' + s).join('\n')}` : '',
-            cpData.blockers && cpData.blockers.length > 0 ? `### Blockers\n${cpData.blockers.map(s => '- ' + s).join('\n')}` : '',
-            cpData.branch_state ? `### Branch State\n${cpData.branch_state}` : '',
-          ].filter(Boolean).join('\n');
-          vars.checkpoint_context = cpSummary;
-          log('info', `Injecting checkpoint context for ${item.id} (resume #${cpCount})`);
-        }
-      } catch (e) { log('warn', `checkpoint read for ${item.id}: ${e.message}`); }
+      // Build common vars: references, acceptance criteria, checkpoint, notes, task context
+      const centralBranch = item.branch || `work/${item.id}`;
+      const centralWtPath = firstProject?.localPath
+        ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
+        : '';
+      const cpResult = buildWorkItemDispatchVars(item, vars, config, {
+        worktreePath: centralWtPath || undefined,
+        workType,
+      });
+      if (cpResult.needsReview) {
+        log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
+        mutations.set(item.id, { status: WI_STATUS.NEEDS_REVIEW, _checkpointCount: cpResult.checkpointCount });
+        continue;
+      }
+      if (cpResult.checkpointCount !== null) {
+        mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _checkpointCount: cpResult.checkpointCount }));
+      }
 
       // Inject plan-specific variables for the plan playbook
       if (workType === WORK_TYPE.PLAN) {
@@ -2127,8 +2133,7 @@ function discoverCentralWorkItems(config) {
         vars.plan_title = item.title;
         vars.plan_file = planFileName;
         vars.task_description = item.title;
-        vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
+        // Notes already populated by buildWorkItemDispatchVars — no need to re-read
         // Track expected plan filename in meta for chainPlanToPrd
         mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _planFileName: planFileName }));
       }
@@ -2162,20 +2167,7 @@ function discoverCentralWorkItems(config) {
           : 'Choose the best strategy based on your analysis of item dependencies.';
       }
 
-      // Inject ask-specific variables for the ask playbook
-      if (workType === WORK_TYPE.ASK) {
-        vars.question = item.title + (item.description ? '\n\n' + item.description : '');
-        vars.task_id = item.id;
-        vars.notes_content = '';
-        try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
-      }
-
-      // Resolve implicit context references
-      const resolvedCtx = resolveTaskContext(item, config);
-      if (resolvedCtx.additionalContext) {
-        vars.additional_context = (vars.additional_context || '') + resolvedCtx.additionalContext;
-        vars.task_description = vars.task_description + resolvedCtx.additionalContext;
-      }
+      // ASK and resolveTaskContext already handled by buildWorkItemDispatchVars above
 
       const playbookName = selectPlaybook(workType, item);
       const prompt = renderPlaybook(playbookName, vars) || renderPlaybook('work-item', vars);
@@ -2704,7 +2696,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
 
   // Playbooks
-  renderPlaybook,
+  renderPlaybook, buildWorkItemDispatchVars,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,
