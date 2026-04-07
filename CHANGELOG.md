@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.519 (2026-04-07)
+
+### Other
+- perf: fix 5 performance bottlenecks in engine and dashboard
+
 ## 0.1.518 (2026-04-07)
 
 ### Fixes
