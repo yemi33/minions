@@ -1098,18 +1098,11 @@ function materializePlansAsWorkItems(config) {
           plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
           plan.lastSyncedFromPlan = ts();
 
-          // Handle PRD based on current status
+          // Handle PRD based on current status — auto-regenerate for any state
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          // Approved/executing PRDs: flag as stale but don't disrupt in-flight work
-          if (prdStatus === 'approved' || prdStatus === 'completed') {
-            plan.planStale = true;
-            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
-          }
-
-          // Awaiting-approval PRDs: invalidate, carry over completed items, delete old PRD, queue regeneration
-          if (prdStatus === 'awaiting-approval') {
-            log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
+          if (prdStatus) {
+            log('info', `PRD ${file} invalidated (was ${prdStatus}) — queuing regeneration from revised plan`);
 
             // Collect completed items to carry over to new PRD
             const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
@@ -1142,7 +1135,7 @@ function materializePlansAsWorkItems(config) {
                     title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
                     type: 'plan-to-prd',
                     priority: 'high',
-                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
+                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised (PRD was ${prdStatus}) — regenerating.${completedContext}`,
                     status: 'pending',
                     created: ts(),
                     createdBy: 'engine:plan-revision',
