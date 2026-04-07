@@ -8259,6 +8259,65 @@ async function testPrDuplicateRaceFix() {
     assert.ok(reconcileFn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
   });
 
+  // ── ADO Auth Failure → Stale Build Status ──
+
+  await test('ado.js exports needsAdoPollRetry and isAdoAuthError helpers', () => {
+    const ado = require(path.join(MINIONS_DIR, 'engine', 'ado'));
+    assert.ok(typeof ado.needsAdoPollRetry === 'function', 'needsAdoPollRetry must be exported');
+    assert.ok(typeof ado.isAdoAuthError === 'function', 'isAdoAuthError must be exported');
+  });
+
+  await test('ado.js isAdoAuthError detects auth-related errors', () => {
+    const ado = require(path.join(MINIONS_DIR, 'engine', 'ado'));
+    assert.ok(ado.isAdoAuthError(new Error('ADO returned HTML instead of JSON (likely auth redirect) for https://dev.azure.com/...')),
+      'should detect HTML/auth redirect errors');
+    assert.ok(ado.isAdoAuthError(new Error('ADO API 401: Unauthorized')),
+      'should detect 401 errors');
+    assert.ok(ado.isAdoAuthError(new Error('ADO API 403: Forbidden')),
+      'should detect 403 errors');
+    assert.ok(!ado.isAdoAuthError(new Error('ADO API 500: Internal Server Error')),
+      'should NOT flag 500 errors as auth');
+    assert.ok(!ado.isAdoAuthError(new Error('Network timeout')),
+      'should NOT flag timeout errors as auth');
+  });
+
+  await test('ado.js pollPrStatus sets _buildStatusStale on auth error', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    assert.ok(pollFn[0].includes('_buildStatusStale'), 'pollPrStatus must set _buildStatusStale flag on auth error');
+    assert.ok(pollFn[0].includes('isAdoAuthError'), 'pollPrStatus must use isAdoAuthError to detect auth errors');
+    assert.ok(pollFn[0].includes('_adoPollHadAuthFailure = true'), 'pollPrStatus must set _adoPollHadAuthFailure on auth error');
+    assert.ok(pollFn[0].includes('delete pr._buildStatusStale'), 'pollPrStatus must clear _buildStatusStale on successful poll');
+  });
+
+  await test('ado.js pollPrStatus resets _adoPollHadAuthFailure at start', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    // The flag should be reset at the top of pollPrStatus, before any polling
+    const resetIdx = pollFn[0].indexOf('_adoPollHadAuthFailure = false');
+    assert.ok(resetIdx >= 0, 'pollPrStatus must reset _adoPollHadAuthFailure to false at start');
+    const fetchIdx = pollFn[0].indexOf('adoFetch');
+    assert.ok(resetIdx < fetchIdx, 'reset must happen before any adoFetch calls');
+  });
+
+  await test('engine.js imports needsAdoPollRetry and uses it in tick cadence', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');
+    assert.ok(engineSrc.includes('needsAdoPollRetry()'), 'engine.js must call needsAdoPollRetry() in tick loop');
+    // Should be used alongside the 6-tick cadence check
+    assert.ok(engineSrc.includes('tickCount % 6 === 0 || needsAdoPollRetry()'),
+      'engine.js must bypass 6-tick cadence when needsAdoPollRetry() is true');
+  });
+
+  await test('dashboard render-prs.js shows stale build status indicator', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prs.js'), 'utf8');
+    assert.ok(src.includes('_buildStatusStale'), 'render-prs.js must check _buildStatusStale');
+    assert.ok(src.includes('build-stale'), 'render-prs.js must use build-stale CSS class');
+    assert.ok(src.includes('(stale)'), 'render-prs.js must show (stale) label');
+  });
+
   await test('lifecycle.js handlePostMerge branch regex matches all work item ID prefixes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);

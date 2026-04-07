@@ -21,6 +21,20 @@ function engine() {
 let _adoTokenCache = { token: null, expiresAt: 0 };
 let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
 
+// ─── Auth Failure Tracking ──────────────────────────────────────────────────
+// Set when pollPrStatus encounters auth errors mid-loop. The engine checks this
+// to bypass the normal 6-tick cadence and re-poll on the next tick.
+let _adoPollHadAuthFailure = false;
+
+/** Check if auth failure during PR poll means an early re-poll is needed. */
+function needsAdoPollRetry() { return _adoPollHadAuthFailure; }
+
+/** Detect auth-related errors from adoFetch (HTML redirect, 401, 403). */
+function isAdoAuthError(err) {
+  const msg = err?.message || '';
+  return msg.includes('auth redirect') || msg.includes('HTML instead of JSON') || /ADO API (401|403)/.test(msg);
+}
+
 async function getAdoToken() {
   if (_adoTokenCache.token && Date.now() < _adoTokenCache.expiresAt) {
     return _adoTokenCache.token;
@@ -133,15 +147,22 @@ async function forEachActivePr(config, token, callback) {
 // ─── PR Status Polling ───────────────────────────────────────────────────────
 
 async function pollPrStatus(config) {
+  _adoPollHadAuthFailure = false; // reset before polling — set again if errors recur
+
   const token = await getAdoToken();
   if (!token) {
     log('warn', 'Skipping PR status poll — no ADO token available');
+    _adoPollHadAuthFailure = true; // trigger retry on next tick
     return;
   }
 
   const totalUpdated = await forEachActivePr(config, token, async (project, pr, prNum, orgBase) => {
+    try {
     const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}`;
     let updated = false;
+
+    // Clear stale flag — we're attempting a fresh poll
+    if (pr._buildStatusStale) { delete pr._buildStatusStale; updated = true; }
 
     const prData = await adoFetch(`${repoBase}?api-version=7.1`, token);
 
@@ -278,6 +299,17 @@ async function pollPrStatus(config) {
     }
 
     return updated;
+    } catch (err) {
+      // Auth errors → mark build status stale so dashboard shows uncertainty
+      // and engine re-polls on next tick instead of waiting 6 ticks
+      if (isAdoAuthError(err)) {
+        pr._buildStatusStale = true;
+        _adoPollHadAuthFailure = true;
+        log('warn', `PR ${pr.id}: build status marked stale (auth error: ${err.message})`);
+        return true; // count as updated to persist the stale flag
+      }
+      throw err; // re-throw non-auth errors for forEachActivePr to handle
+    }
   });
 
   if (totalUpdated > 0) {
@@ -520,5 +552,7 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
   checkLiveReviewStatus,
+  needsAdoPollRetry,
+  isAdoAuthError, // exported for testing
 };
 

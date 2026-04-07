@@ -251,6 +251,7 @@
   .pr-badge.build-pass { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid var(--green); }
   .pr-badge.build-fail { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); }
   .pr-badge.no-build { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+  .pr-badge.build-stale { background: rgba(210,153,34,0.15); color: var(--orange); border: 1px dashed var(--orange); }
   .error-details-btn { font-size: var(--text-xs); padding: var(--space-1) var(--space-3); margin-left: var(--space-2); background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid var(--red); border-radius: var(--radius-lg); cursor: pointer; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
   .error-details-btn:hover { background: rgba(248,81,73,0.3); }
   .pr-empty { color: var(--muted); font-style: italic; font-size: var(--text-md); padding: var(--space-6) 0; }
