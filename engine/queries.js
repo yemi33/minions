@@ -796,7 +796,7 @@ function getPrdInfo(config) {
 
   const byStatus = {};
   items.forEach(item => { const s = item.status || 'missing'; byStatus[s] = byStatus[s] || []; byStatus[s].push(item); });
-  const complete = (byStatus['done'] || []).length;
+  const complete = (byStatus['done'] || []).length + (byStatus['decomposed'] || []).length;
   const inProgress = (byStatus['dispatched'] || []).length;
   const paused = (byStatus['paused'] || []).length;
   const missing = (byStatus['missing'] || []).length;

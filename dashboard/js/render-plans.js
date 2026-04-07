@@ -73,7 +73,7 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
   const implementWi = wi.filter(w => w.type !== 'plan-to-prd' && w.type !== 'verify');
   const hasPendingPrd = wi.some(w => w.type === 'plan-to-prd' && (w.status === 'pending' || w.status === 'dispatched'));
   const hasActiveWork = implementWi.some(w => w.status === 'pending' || w.status === 'dispatched');
-  const allDone = implementWi.length > 0 && implementWi.every(w => w.status === 'done');
+  const allDone = implementWi.length > 0 && implementWi.every(w => w.status === 'done' || w.status === 'decomposed');
   const hasFailed = implementWi.some(w => w.status === 'failed');
 
   // User-set statuses take priority when no work has started

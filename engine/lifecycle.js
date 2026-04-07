@@ -1114,6 +1114,8 @@ function handleDecompositionResult(stdout, meta, config) {
       p.status = WI_STATUS.DECOMPOSED;
       p._decomposed = true;
       delete p._decomposing;
+      // Sync to PRD so dashboard shows decomposed status
+      if (p.sourcePlan) syncPrdItemStatus(p.id, WI_STATUS.DECOMPOSED, p.sourcePlan);
       p._subItemIds = subItems.map(s => s.id);
 
       // Create child work items
@@ -1368,8 +1370,8 @@ function syncPrdFromPrs(config) {
     for (const project of allProjects) {
       const wiPath = shared.projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
-      const hasPending = items.some(wi => wi.status === WI_STATUS.PENDING && !wi._pr);
-      if (!hasPending) continue;
+      const hasReconcilable = items.some(wi => (wi.status === WI_STATUS.PENDING || wi.status === WI_STATUS.FAILED) && !wi._pr);
+      if (!hasReconcilable) continue;
       let reconciled = 0;
       const reconciledItems = mutateJsonFileLocked(wiPath, data => {
         if (!Array.isArray(data)) return data;
