@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.539 (2026-04-07)
+
+### Features
+-  pipeline modal auto-refreshes after Continue is clicked
+
 ## 0.1.538 (2026-04-07)
 
 ### Fixes
