@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.458 (2026-04-07)
+
+### Fixes
+-  steering resume failure no longer burns retry slots or flips status
+-  shared-branch worktree creates branch from main if not found
+-  pre-dispatch live vote check prevents reviewing approved PRs
+
 ## 0.1.455 (2026-04-07)
 
 ### Fixes
