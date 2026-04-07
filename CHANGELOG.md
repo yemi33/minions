@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.460 (2026-04-07)
+
+### Fixes
+-  remove non-functional Discuss & Revise button from plan cards
+-  steering no longer causes pending/active flip
+
 ## 0.1.458 (2026-04-07)
 
 ### Fixes
