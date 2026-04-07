@@ -2473,12 +2473,7 @@ async function tickInner() {
   const activeCount = (dispatch.active || []).length;
   const maxConcurrent = config.engine?.maxConcurrent || 5;
 
-  if (activeCount >= maxConcurrent) {
-    log('info', `At max concurrency (${activeCount}/${maxConcurrent}) — skipping dispatch`);
-    return;
-  }
-
-  const slotsAvailable = maxConcurrent - activeCount;
+  const slotsAvailable = Math.max(0, maxConcurrent - activeCount);
 
   // Priority dispatch: fixes > reviews > plan-to-prd > implement > verify > other
   const typePriority = { 'implement:large': 0, implement: 0, fix: 1, ask: 1, review: 2, test: 3, verify: 3, plan: 4, 'plan-to-prd': 4 };
@@ -2495,23 +2490,25 @@ async function tickInner() {
     return dp;
   });
 
-  // Only dispatch to agents that aren't already busy (one task per agent at a time).
-  // Build set of agents currently active.
+  // Build set of agents currently active (one task per agent at a time).
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
-  // Bug fix #14: deduplicate pending by dispatch ID to prevent double-dispatch.
-  // This guards against the same item appearing twice in the in-memory pending array.
   const seenPendingIds = new Set();
   const toDispatch = [];
+  let generalSlots = slotsAvailable;
+
   for (const item of dispatch.pending) {
-    if (toDispatch.length >= slotsAvailable) break;
     if (seenPendingIds.has(item.id)) {
       log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
       continue;
     }
+    if (busyAgents.has(item.agent)) continue;
+    // Items explicitly assigned to an agent bypass concurrency cap — dispatch if agent is free
+    const isExplicitAssignment = !!item.meta?.item?.agent;
+    if (!isExplicitAssignment && generalSlots <= 0) continue;
     seenPendingIds.add(item.id);
-    if (busyAgents.has(item.agent)) continue; // agent already has an active task
     toDispatch.push(item);
-    busyAgents.add(item.agent); // mark busy for this dispatch round too
+    busyAgents.add(item.agent);
+    if (!isExplicitAssignment) generalSlots--;
   }
 
   // Dispatch items — spawnAgent moves each from pending→active on disk.
