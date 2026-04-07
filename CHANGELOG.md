@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.522 (2026-04-07)
+
+### Features
+-  test isolation — tests no longer pollute production data
+
+### Fixes
+-  reconcile failed work items that have attached PRs (#407) (#430)
+
+### Other
+- perf: reduce curl timeout to 5s, cache getDispatch() reads
+
 ## 0.1.519 (2026-04-07)
 
 ### Other
