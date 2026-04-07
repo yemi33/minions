@@ -230,12 +230,13 @@ function getDiskVersion() {
     try { diskVersion = require('@yemi33/minions/package.json').version; } catch {}
   }
   let diskCommit = null;
+  let isGitRepo = false;
   // Prefer git (authoritative for repo-based dev), fall back to .minions-commit (installed copies)
-  try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+  try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); isGitRepo = true; } catch {}
   if (!diskCommit) {
     try { diskCommit = fs.readFileSync(path.join(MINIONS_DIR, '.minions-commit'), 'utf8').trim() || null; } catch {}
   }
-  _diskVersionCache = { diskVersion, diskCommit };
+  _diskVersionCache = { diskVersion, diskCommit, isGitRepo };
   _diskVersionCacheTs = now;
   return _diskVersionCache;
 }
@@ -372,7 +373,7 @@ function getStatus() {
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
     version: (() => {
       const engine = getEngineState();
-      const { diskVersion, diskCommit } = getDiskVersion();
+      const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
       const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
                           !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
       const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
@@ -390,7 +391,7 @@ function getStatus() {
         stale: engineStale || dashboardStale,
         latest: _npmVersionCache?.latest || null,
         // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
-        updateAvailable: !diskCommit && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+        updateAvailable: !isGitRepo && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
         _npmCheckError: _npmVersionCache?.error || null,
       };
     })(),
@@ -3658,7 +3659,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Routes endpoint (self-describing API)
     { method: 'GET', path: '/api/version', desc: 'Current + latest version info with update check', handler: async (req, res) => {
       const npm = await checkNpmVersion();
-      const { diskVersion, diskCommit } = getDiskVersion();
+      const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
       const engine = getEngineState();
       const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
                           !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
@@ -3672,7 +3673,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         dashboardRunning: _dashboardVersion.codeVersion,
         dashboardRunningCommit: _dashboardVersion.codeCommit,
         latest: npm.latest,
-        updateAvailable: !diskCommit && !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
+        updateAvailable: !isGitRepo && !!(diskVersion && npm.latest && _compareVersions(npm.latest, diskVersion) > 0),
         engineStale,
         dashboardStale,
         stale: engineStale || dashboardStale,
