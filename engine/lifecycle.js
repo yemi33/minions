@@ -698,13 +698,27 @@ function updatePrAfterReview(agentId, pr, project, config) {
   const dispatch = getDispatch();
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
+  // Check actual review status from the platform (agent may have approved or requested changes)
+  let postReviewStatus = 'waiting';
+  try {
+    const projectObj = project || shared.getProjects(config)[0];
+    if (projectObj) {
+      const host = projectObj.repoHost || 'ado';
+      const checkFn = host === 'github'
+        ? require('./github').checkLiveReviewStatus
+        : require('./ado').checkLiveReviewStatus;
+      const liveStatus = checkFn(pr, projectObj);
+      if (liveStatus) postReviewStatus = liveStatus;
+    }
+  } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
+
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   let updatedTarget = null;
   shared.mutateJsonFileLocked(prPath, (prs) => {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = 'waiting';
+    target.reviewStatus = postReviewStatus;
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,
