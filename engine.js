@@ -1696,6 +1696,22 @@ function discoverFromWorkItems(config, project) {
     } catch (err) { log('warn', `discoverFromWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
+  // Auto-promote decomposed parents to done when all sub-tasks complete
+  for (const item of items) {
+    if (item.status !== WI_STATUS.DECOMPOSED || !item._subItemIds?.length) continue;
+    const allSubsDone = item._subItemIds.every(sid => {
+      const sub = items.find(i => i.id === sid);
+      return sub && DONE_STATUSES.has(sub.status);
+    });
+    if (allSubsDone) {
+      item.status = WI_STATUS.DONE;
+      if (!item.completedAt) item.completedAt = ts();
+      needsWrite = true;
+      log('info', `Decomposed parent ${item.id} → done (all ${item._subItemIds.length} sub-tasks complete)`);
+      if (item.sourcePlan) syncPrdItemStatus(item.id, WI_STATUS.DONE, item.sourcePlan);
+    }
+  }
+
   // Write back updated statuses (always, since we mark items dispatched before newWork check)
   if (newWork.length > 0) {
     const workItemsPath = projectWorkItemsPath(project);

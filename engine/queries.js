@@ -777,6 +777,22 @@ function getPrdInfo(config) {
     const url = pr?.url || (project?.prUrlBase ? project.prUrlBase + wi._pr.replace('PR-', '') : '');
     prdToPr[wi.id] = [{ id: wi._pr, url, title: pr?.title || '', status: pr?.status || 'active', _project: project?.name || '' }];
   }
+  // Aggregate sub-task PRs to decomposed parent (sub-tasks aren't PRD items but their PRs should show)
+  for (const pr of allPrs) {
+    for (const itemId of (pr.prdItems || [])) {
+      // Find if this is a sub-task with a parent
+      const allItems = Object.values(wiById);
+      const wi = allItems.find(w => w.id === itemId && w.parent_id);
+      if (!wi) continue;
+      const parentId = wi.parent_id;
+      if (!prdToPr[parentId]) prdToPr[parentId] = [];
+      if (!prdToPr[parentId].some(p => p.id === pr.id)) {
+        const project = projects.find(p => p.name === pr._project) || projects[0] || null;
+        const url = pr.url || (project?.prUrlBase ? project.prUrlBase + pr.id.replace('PR-', '') : '');
+        prdToPr[parentId].push({ id: pr.id, url, title: pr.title || '', status: pr.status || 'active', _project: pr._project || '' });
+      }
+    }
+  }
 
   // PRD JSON status is the source of truth — kept in sync with work item by syncPrdItemStatus.
   // Map from PRD JSON values to display values (pending → missing for undispatched items)
