@@ -562,7 +562,7 @@ async function spawnAgent(dispatchItem, config) {
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
   });
 
-  function onAgentClose(code) {
+  async function onAgentClose(code) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
 
