@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.538 (2026-04-07)
+
+### Fixes
+-  declare onAgentClose as async (closes #454) (#456)
+-  handlePlansExecute dedup allows re-execute after completion
+-  plan regenerate/execute always queues fresh plan-to-prd (#449)
+
 ## 0.1.535 (2026-04-07)
 
 ### Features
