@@ -1939,7 +1939,8 @@ function discoverCentralWorkItems(config) {
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
-  let needsWrite = false;
+  // Collect mutations to apply atomically inside lock callback (avoids TOCTOU)
+  const mutations = new Map(); // item.id → { field: value, ... }
 
   for (const item of items) {
     try {
@@ -1948,11 +1949,13 @@ function discoverCentralWorkItems(config) {
     const key = `central-work-${item.id}`;
     // Self-heal: if already dispatched but work item is still pending, fix the status
     if (isAlreadyDispatched(key)) {
-      if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+      const m = {};
+      if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
       if (!item.dispatched_to) {
         const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-        if (existing?.agent) { item.dispatched_to = existing.agent; needsWrite = true; }
+        if (existing?.agent) { m.dispatched_to = existing.agent; }
       }
+      if (Object.keys(m).length > 0) mutations.set(item.id, m);
       continue;
     }
     if (isOnCooldown(key, 0)) continue;
@@ -2039,11 +2042,13 @@ function discoverCentralWorkItems(config) {
         });
       }
 
-      item.status = WI_STATUS.DISPATCHED;
-      item.dispatched_at = ts();
-      item.dispatched_to = idleAgents.map(a => a.id).join(', ');
-      item.scope = 'fan-out';
-      item.fanOutAgents = idleAgents.map(a => a.id);
+      mutations.set(item.id, {
+        status: WI_STATUS.DISPATCHED,
+        dispatched_at: ts(),
+        dispatched_to: idleAgents.map(a => a.id).join(', '),
+        scope: 'fan-out',
+        fanOutAgents: idleAgents.map(a => a.id),
+      });
       setCooldown(key);
       log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
 
@@ -2095,11 +2100,10 @@ function discoverCentralWorkItems(config) {
           const cpCount = (item._checkpointCount || 0) + 1;
           if (cpCount > 3) {
             log('warn', `Work item ${item.id} exceeded 3 checkpoint-resumes — marking as needs-human-review`);
-            item.status = WI_STATUS.NEEDS_REVIEW;
-            item._checkpointCount = cpCount;
+            mutations.set(item.id, { status: WI_STATUS.NEEDS_REVIEW, _checkpointCount: cpCount });
             continue;
           }
-          item._checkpointCount = cpCount;
+          mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _checkpointCount: cpCount }));
           const cpSummary = [
             `## Checkpoint (Resume #${cpCount}/3)`,
             '',
@@ -2127,7 +2131,7 @@ function discoverCentralWorkItems(config) {
         vars.notes_content = '';
         try { vars.notes_content = fs.readFileSync(path.join(MINIONS_DIR, 'notes.md'), 'utf8'); } catch { /* optional */ }
         // Track expected plan filename in meta for chainPlanToPrd
-        item._planFileName = planFileName;
+        mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _planFileName: planFileName }));
       }
 
       // Inject plan-to-prd variables — read the plan file content for the playbook
@@ -2182,6 +2186,13 @@ function discoverCentralWorkItems(config) {
         continue;
       }
 
+      const dispatchMutation = {
+        status: WI_STATUS.DISPATCHED,
+        dispatched_at: ts(),
+        dispatched_to: agentId,
+      };
+      mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, dispatchMutation));
+
       newWork.push({
         type: workType,
         agent: agentId,
@@ -2189,20 +2200,24 @@ function discoverCentralWorkItems(config) {
         agentRole,
         task: item.title || item.description?.slice(0, 80) || item.id,
         prompt,
-        meta: { dispatchKey: key, source: 'central-work-item', item, planFileName: item.planFile || item._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}` }
+        meta: { dispatchKey: key, source: 'central-work-item', item, planFileName: item.planFile || mutations.get(item.id)?._planFileName || null, branch: item.branch || item.featureBranch || `work/${item.id}` }
       });
 
-      item.status = WI_STATUS.DISPATCHED;
-      item.dispatched_at = ts();
-      item.dispatched_to = agentId;
       setCooldown(key);
     }
     } catch (err) { log('warn', `discoverCentralWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
-  if (newWork.length > 0 || needsWrite) {
-    // Atomic write — prevents race with async discoverPipelineWork and dashboard API
-    mutateJsonFileLocked(centralPath, () => items, { defaultValue: [] });
+  if (mutations.size > 0) {
+    // True atomic read-modify-write — applies mutations to fresh locked data
+    mutateJsonFileLocked(centralPath, (freshItems) => {
+      if (!Array.isArray(freshItems)) freshItems = [];
+      for (const fi of freshItems) {
+        const m = mutations.get(fi.id);
+        if (m) Object.assign(fi, m);
+      }
+      return freshItems;
+    }, { defaultValue: [] });
   }
   return newWork;
 }

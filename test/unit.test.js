@@ -2318,12 +2318,12 @@ async function testStateIntegrity() {
     const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
     assert.ok(centralFn.includes('if (isAlreadyDispatched(key))'),
       'Central discovery must check isAlreadyDispatched separately for self-heal');
-    assert.ok(centralFn.includes('item.status = WI_STATUS.DISPATCHED; needsWrite = true'),
-      'Central discovery must self-heal pending→dispatched with needsWrite');
-    assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('item.dispatched_to'),
+    assert.ok(centralFn.includes('m.status = WI_STATUS.DISPATCHED'),
+      'Central discovery must self-heal pending→dispatched via mutations map');
+    assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('m.dispatched_to'),
       'Central discovery must populate dispatched_to from active dispatch entry');
-    assert.ok(centralFn.includes('newWork.length > 0 || needsWrite') && centralFn.includes('mutateJsonFileLocked(centralPath'),
-      'Central discovery must persist changes via atomic mutateJsonFileLocked when newWork or needsWrite');
+    assert.ok(centralFn.includes('mutations.size > 0') && centralFn.includes('mutateJsonFileLocked(centralPath'),
+      'Central discovery must persist changes via atomic mutateJsonFileLocked when mutations exist');
   });
 
   await test('Close handler skips duplicate completion after timeout finalization', () => {
