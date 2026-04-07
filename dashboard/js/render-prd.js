@@ -132,8 +132,12 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
+    // Collect all unique projects across items in this group
+    for (const p of (i.projects || [])) { if (p && !grouped[key]._projects.includes(p)) grouped[key]._projects.push(p); }
+    if (i.project && !grouped[key]._projects.includes(i.project)) grouped[key]._projects.push(i.project);
+    if (i.planProject && !grouped[key]._projects.includes(i.planProject)) grouped[key]._projects.push(i.planProject);
   }
 
   const renderItem = (i) => {
@@ -247,7 +251,7 @@ function renderPrdProgress(prog) {
       : '';
 
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-      (g.project ? '<span class="prd-project-badge">' + escHtml(g.project) + '</span>' : '') +
+      (g._projects.length > 0 ? g._projects.map(function(p) { return '<span class="prd-project-badge">' + escHtml(p) + '</span>'; }).join(' ') : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
       pausedLabel +
       staleLabel +
