@@ -308,15 +308,9 @@ function runCleanup(config, verbose = false) {
     // Collect all work item IDs across all sources
     const allWiIds = new Set();
     try {
-      const central = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-      central.forEach(w => allWiIds.add(w.id));
-    } catch (e) { log('warn', 'read central work items for orphan check: ' + e.message); }
-    for (const project of projects) {
-      try {
-        const projItems = safeJson(projectWorkItemsPath(project)) || [];
-        projItems.forEach(w => allWiIds.add(w.id));
-      } catch (e) { log('warn', 'read project work items for orphan check: ' + e.message); }
-    }
+      const allItems = queries.getWorkItems();
+      allItems.forEach(w => allWiIds.add(w.id));
+    } catch (e) { log('warn', 'read work items for orphan check: ' + e.message); }
 
     let changed = false;
     for (const queue of ['pending', 'active']) {

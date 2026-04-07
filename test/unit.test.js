@@ -3218,8 +3218,8 @@ async function testAreDependenciesMet() {
   });
 
   await test('areDependenciesMet collects work items from ALL projects', () => {
-    assert.ok(src.includes('allWorkItems = allWorkItems.concat(wi)'),
-      'Should collect work items across all projects for cross-project deps');
+    assert.ok(src.includes('queries.getWorkItems(config)'),
+      'Should collect work items across all projects for cross-project deps via getWorkItems()');
   });
 }
 
