@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.541 (2026-04-07)
+
+### Fixes
+-  plan edits flag PRD stale instead of auto-regenerating
+
 ## 0.1.540 (2026-04-07)
 
 ### Features
