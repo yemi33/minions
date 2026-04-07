@@ -7429,9 +7429,9 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handlePlansDelete');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
-    // Should guard items from safeJson before calling .filter() — safeJsonArr also acceptable (returns [])
-    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)') || fnBody.includes('safeJsonArr'),
-      'handlePlansDelete must null-guard items from safeJson before filter or use safeJsonArr');
+    // Should guard items from safeJson before calling .filter() — safeJsonArr, mutateWorkItems also acceptable
+    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)') || fnBody.includes('safeJsonArr') || fnBody.includes('mutateWorkItems'),
+      'handlePlansDelete must null-guard items from safeJson before filter, use safeJsonArr, or use mutateWorkItems');
   });
 
   await test('dashboard.js: handleProjectsAdd null-guards config from safeJson', () => {
@@ -7450,10 +7450,11 @@ async function testDashboardAuditCritical() {
 
   await test('plan pause sets status to paused with _pausedBy tag, not pending', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Find the pause handler section (between "Propagate pause" and the safeWrite that commits the change)
-    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
-    assert.ok(pauseSection, 'pause handler section must exist');
-    const section = pauseSection[0];
+    // Find the pause handler section — covers the mutateWorkItems callback that sets pause state
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const section = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
+    assert.ok(section.includes('Propagate pause'), 'pause handler section must exist');
     assert.ok(section.includes("w.status = WI_STATUS.PAUSED") || section.includes("w.status = 'paused'"),
       'pause must set status to paused (via WI_STATUS.PAUSED or literal), not pending');
     assert.ok(section.includes("w._pausedBy = 'prd-pause'"), 'pause must set _pausedBy = prd-pause');
@@ -7468,10 +7469,12 @@ async function testDashboardAuditCritical() {
       src.includes("w.status === 'paused' && w._pausedBy === 'prd-pause'"),
       'resume must look for paused + prd-pause tag');
     // Pause must set those exact values
-    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const pauseSection = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
     assert.ok(
-      (pauseSection[0].includes("WI_STATUS.PAUSED") || pauseSection[0].includes("'paused'")) &&
-      pauseSection[0].includes("'prd-pause'"),
+      (pauseSection.includes("WI_STATUS.PAUSED") || pauseSection.includes("'paused'")) &&
+      pauseSection.includes("'prd-pause'"),
       'pause must set the values that resume looks for');
   });
 
@@ -8572,6 +8575,58 @@ async function testDashboardResilience() {
       'toggleCommandCenter must reference cc-overlay');
     assert.ok(ccSrc.includes("overlay.style.display"),
       'toggleCommandCenter must toggle overlay display');
+  });
+
+  // ── Safety net: no safeWrite targeting work-items.json or pull-requests.json ──
+
+  await test('dashboard.js: no safeWrite calls target work-items.json or pull-requests.json', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const violations = [];
+    const lines = src.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // Skip comments
+      if (line.trim().startsWith('//') || line.trim().startsWith('*')) continue;
+      // Detect safeWrite calls that write to work-items or pull-requests paths
+      if (line.includes('safeWrite(') && (
+        line.includes('work-items') || line.includes('wiPath') || line.includes('projWiPath') ||
+        line.includes('centralWiPath') || line.includes('centralPath, centralItems') ||
+        line.includes('pull-requests') || line.includes('prPath') || line.includes('prFilePath')
+      )) {
+        violations.push(`dashboard.js:${i + 1}: ${line.trim()}`);
+      }
+    }
+    assert.strictEqual(violations.length, 0,
+      'No safeWrite calls should target work-items.json or pull-requests.json in dashboard.js — use mutateWorkItems/mutatePullRequests instead.\nViolations:\n' +
+      violations.join('\n'));
+  });
+
+  await test('engine.js and engine/*.js: no safeWrite calls target work-items.json or pull-requests.json', () => {
+    const filesToCheck = [
+      { name: 'engine.js', src: fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8') },
+    ];
+    const engineDir = path.join(MINIONS_DIR, 'engine');
+    for (const f of fs.readdirSync(engineDir).filter(f => f.endsWith('.js'))) {
+      filesToCheck.push({ name: `engine/${f}`, src: fs.readFileSync(path.join(engineDir, f), 'utf8') });
+    }
+    const violations = [];
+    for (const { name, src } of filesToCheck) {
+      const lines = src.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().startsWith('//') || line.trim().startsWith('*')) continue;
+        if (line.includes('safeWrite(') && (
+          line.includes('work-items') || line.includes('wiPath') || line.includes('projWiPath') ||
+          line.includes('centralWiPath') || line.includes('centralPath, centralItems') ||
+          line.includes('pull-requests') || line.includes('prPath') || line.includes('prFilePath')
+        )) {
+          violations.push(`${name}:${i + 1}: ${line.trim()}`);
+        }
+      }
+    }
+    assert.strictEqual(violations.length, 0,
+      'No safeWrite calls should target work-items.json or pull-requests.json in engine files — use mutateWorkItems/mutatePullRequests instead.\nViolations:\n' +
+      violations.join('\n'));
   });
 }
 
