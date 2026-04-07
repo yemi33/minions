@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.507 (2026-04-07)
+
+### Features
+-  abort and retrigger buttons for active pipeline runs
+
+### Fixes
+-  PRD view shows all projects, not just the first one
+-  bug report shows feedback inside modal, not hidden toast
+
 ## 0.1.504 (2026-04-07)
 
 ### Features
