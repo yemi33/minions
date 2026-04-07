@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.504 (2026-04-07)
+
+### Features
+-  9 live output tests + render [steering-failed] in live stream
+
+### Fixes
+-  live output reads only tail bytes from disk, increase cap to 64KB
+
 ## 0.1.502 (2026-04-07)
 
 ### Features
