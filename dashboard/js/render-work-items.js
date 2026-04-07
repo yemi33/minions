@@ -37,7 +37,9 @@ function wiRow(item) {
   const priBadge = (p) => '<span class="prd-item-priority ' + (p || '') + '">' + escHtml(p || 'medium') + '</span>';
   const prLink = item._pr
     ? '<a class="pr-title" href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="font-size:10px">' + escHtml(item._pr) + '</a>'
-    : '<span style="color:var(--muted)">—</span>';
+    : (item.branchStrategy === 'shared-branch' && item.status === 'done')
+      ? '<span style="font-size:9px;color:var(--muted)" title="Part of shared branch — aggregate PR created at verify stage">shared branch</span>'
+      : '<span style="color:var(--muted)">—</span>';
   return '<tr style="cursor:pointer" onclick="openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml((item.title || '').slice(0, 200)) + '">' + escHtml(item.title || '') + '</td>' +

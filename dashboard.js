@@ -844,6 +844,9 @@ function cleanDispatchEntries(matchFn) {
   const engineDir = path.join(MINIONS_DIR, 'engine');
   try {
     let removed = 0;
+    // Collect PIDs and file paths inside the lock, execute kills outside
+    const pidsToKill = [];
+    const filesToDelete = [];
     mutateJsonFileLocked(dispatchPath, (dispatch) => {
       dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
       dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
@@ -853,17 +856,16 @@ function cleanDispatchEntries(matchFn) {
         if (queue === 'active') {
           for (const d of dispatch[queue]) {
             if (!matchFn(d)) continue;
-            // Kill the running agent process via PID file
+            // Collect PID and cleanup paths — actual I/O happens after lock release
             const pidFile = path.join(engineDir, `pid-${d.id}.pid`);
             try {
               const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-              if (pid) process.kill(pid, 'SIGTERM');
-            } catch { /* process may be dead */ }
-            try { fs.unlinkSync(pidFile); } catch { /* cleanup */ }
-            // Clean up temp prompt files
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `prompt-${d.id}.md`)); } catch { /* cleanup */ }
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`)); } catch { /* cleanup */ }
-            try { fs.unlinkSync(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`)); } catch { /* cleanup */ }
+              if (pid) pidsToKill.push(pid);
+            } catch { /* PID file may not exist */ }
+            filesToDelete.push(pidFile);
+            filesToDelete.push(path.join(engineDir, 'tmp', `prompt-${d.id}.md`));
+            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md`));
+            filesToDelete.push(path.join(engineDir, 'tmp', `sysprompt-${d.id}.md.tmp`));
           }
         }
         dispatch[queue] = dispatch[queue].filter(d => !matchFn(d));
@@ -871,6 +873,22 @@ function cleanDispatchEntries(matchFn) {
       }
       return dispatch;
     }, { defaultValue: { pending: [], active: [], completed: [] } });
+    // Kill processes outside the lock — these can take hundreds of ms on Windows
+    for (const pid of pidsToKill) {
+      try {
+        const safePid = shared.validatePid(pid);
+        if (process.platform === 'win32') {
+          const { execFileSync } = require('child_process');
+          execFileSync('taskkill', ['/PID', String(safePid), '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+        } else {
+          process.kill(safePid, 'SIGTERM');
+        }
+      } catch { /* process may already be dead */ }
+    }
+    // Clean up files outside the lock
+    for (const fp of filesToDelete) {
+      try { fs.unlinkSync(fp); } catch { /* file may not exist */ }
+    }
     return removed;
   } catch { return 0; }
 }
