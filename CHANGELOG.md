@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.472 (2026-04-07)
+
+### Fixes
+-  steering audit — prevent double-kill, clean up temp files, fix leaks
+-  steering resume improvements — better error logging, heartbeat restart
+-  prevent slow work item modal on large descriptions
+-  only cache sessionId for steering when actually resuming same branch
+
 ## 0.1.468 (2026-04-07)
 
 ### Fixes
