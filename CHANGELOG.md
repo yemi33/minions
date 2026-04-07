@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.535 (2026-04-07)
+
+### Features
+- Convert engine.js safeWrite calls to mutateWorkItems/mutatePullRequests (#416)
+
+### Fixes
+-  update pipeline work item status on dispatch (#443)
+- convert blocking spawnSync/execSync to async execAsync (#447)
+
 ## 0.1.532 (2026-04-07)
 
 ### Fixes
