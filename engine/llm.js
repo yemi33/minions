@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { safeRead, safeWrite, safeUnlink, uid, runFile, cleanChildEnv, parseStreamJsonOutput } = shared;
+const { safeWrite, safeUnlink, uid, runFile, cleanChildEnv, parseStreamJsonOutput, mutateJsonFileLocked } = shared;
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
 const ENGINE_DIR = __dirname;
@@ -14,31 +14,30 @@ function trackEngineUsage(category, usage) {
   if (!usage) return;
   try {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const raw = safeRead(metricsPath);
-    const metrics = raw ? JSON.parse(raw) : {};
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics._engine) metrics._engine = {};
+      if (!metrics._engine[category]) {
+        metrics._engine[category] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 };
+      }
+      const cat = metrics._engine[category];
+      cat.calls++;
+      cat.costUsd += usage.costUsd || 0;
+      cat.inputTokens += usage.inputTokens || 0;
+      cat.outputTokens += usage.outputTokens || 0;
+      cat.cacheRead += usage.cacheRead || 0;
+      cat.cacheCreation = (cat.cacheCreation || 0) + (usage.cacheCreation || 0);
 
-    if (!metrics._engine) metrics._engine = {};
-    if (!metrics._engine[category]) {
-      metrics._engine[category] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 };
-    }
-    const cat = metrics._engine[category];
-    cat.calls++;
-    cat.costUsd += usage.costUsd || 0;
-    cat.inputTokens += usage.inputTokens || 0;
-    cat.outputTokens += usage.outputTokens || 0;
-    cat.cacheRead += usage.cacheRead || 0;
-    cat.cacheCreation = (cat.cacheCreation || 0) + (usage.cacheCreation || 0);
+      const today = new Date().toISOString().slice(0, 10);
+      if (!metrics._daily) metrics._daily = {};
+      if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
+      const daily = metrics._daily[today];
+      daily.costUsd += usage.costUsd || 0;
+      daily.inputTokens += usage.inputTokens || 0;
+      daily.outputTokens += usage.outputTokens || 0;
+      daily.cacheRead += usage.cacheRead || 0;
 
-    const today = new Date().toISOString().slice(0, 10);
-    if (!metrics._daily) metrics._daily = {};
-    if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
-    const daily = metrics._daily[today];
-    daily.costUsd += usage.costUsd || 0;
-    daily.inputTokens += usage.inputTokens || 0;
-    daily.outputTokens += usage.outputTokens || 0;
-    daily.cacheRead += usage.cacheRead || 0;
-
-    safeWrite(metricsPath, metrics);
+      return metrics;
+    });
   } catch (e) { console.error('metrics update:', e.message); }
 }
 
