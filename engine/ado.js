@@ -495,7 +495,7 @@ function checkLiveReviewStatus(pr, project) {
     const orgBase = shared.getAdoOrgBase(project);
     const prNum = (pr.id || '').replace(/^PR-/, '');
     const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
-    const result = exec(`curl -s -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    const result = exec(`curl -s --max-time 4 -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 5000, windowsHide: true });
     const prData = JSON.parse(result);
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';

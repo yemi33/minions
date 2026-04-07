@@ -79,9 +79,17 @@ function getControl() {
   return safeJson(CONTROL_PATH) || { state: 'stopped', pid: null };
 }
 
+let _dispatchCache = null;
+let _dispatchCacheAt = 0;
 function getDispatch() {
-  return safeJson(DISPATCH_PATH) || { pending: [], active: [], completed: [] };
+  // Short-lived cache — dispatch.json is read 10+ times per tick but only changes on mutateDispatch
+  const now = Date.now();
+  if (_dispatchCache && (now - _dispatchCacheAt) < 2000) return _dispatchCache;
+  _dispatchCache = safeJson(DISPATCH_PATH) || { pending: [], active: [], completed: [] };
+  _dispatchCacheAt = now;
+  return _dispatchCache;
 }
+function invalidateDispatchCache() { _dispatchCache = null; _dispatchCacheAt = 0; }
 
 function getDispatchQueue() {
   const d = getDispatch();
@@ -874,7 +882,7 @@ module.exports = {
   resetPrdInfoCache,
 
   // Core state
-  getConfig, getControl, getDispatch, getDispatchQueue,
+  getConfig, getControl, getDispatch, getDispatchQueue, invalidateDispatchCache,
   getNotes, getNotesWithMeta, getEngineLog, getMetrics,
 
   // Inbox

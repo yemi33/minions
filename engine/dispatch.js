@@ -24,12 +24,15 @@ function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); ret
 
 function mutateDispatch(mutator) {
   const defaultDispatch = { pending: [], active: [], completed: [] };
-  return mutateJsonFileLocked(DISPATCH_PATH, (dispatch) => {
+  const result = mutateJsonFileLocked(DISPATCH_PATH, (dispatch) => {
     dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
     dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
     dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
     return mutator(dispatch) || dispatch;
   }, { defaultValue: defaultDispatch });
+  // Invalidate the read cache so next getDispatch() sees fresh data
+  try { require('./queries').invalidateDispatchCache(); } catch {}
+  return result;
 }
 
 // ─── Add to Dispatch ─────────────────────────────────────────────────────────
