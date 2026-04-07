@@ -853,10 +853,11 @@ async function handlePostMerge(pr, project, config, newStatus) {
   const agentId = (pr.agent || '').toLowerCase();
   if (agentId && config.agents?.[agentId]) {
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath) || {};
-    if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
-    metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
-    shared.safeWrite(metricsPath, metrics);
+    mutateJsonFileLocked(metricsPath, (metrics) => {
+      if (!metrics[agentId]) metrics[agentId] = { tasksCompleted:0, tasksErrored:0, prsCreated:0, prsApproved:0, prsRejected:0, prsMerged:0, reviewsDone:0, lastTask:null, lastCompleted:null };
+      metrics[agentId].prsMerged = (metrics[agentId].prsMerged || 0) + 1;
+      return metrics;
+    });
   }
 
   const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
