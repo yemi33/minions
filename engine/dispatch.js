@@ -149,20 +149,23 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         try {
           const wiPath = lifecycle().resolveWorkItemPath(item.meta);
           if (wiPath) {
-            const items = safeJson(wiPath);
-            if (!items || !Array.isArray(items)) throw new Error('work items unreadable');
-            const wi = items.find(i => i.id === item.meta.item.id);
-            if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
-              wi._retryCount = retries + 1;
-              wi.status = WI_STATUS.PENDING;
-              wi._lastRetryReason = reason || '';
-              wi._lastRetryAt = ts();
-              delete wi.failReason;
-              delete wi.failedAt;
-              delete wi.dispatched_at;
-              delete wi.dispatched_to;
-              safeWrite(wiPath, items);
-            }
+            const itemId = item.meta.item.id;
+            const retryCount = retries + 1;
+            const retryReason = reason || '';
+            mutateJsonFileLocked(wiPath, (items) => {
+              const wi = items.find(i => i.id === itemId);
+              if (wi && wi.status !== WI_STATUS.PAUSED && wi.status !== WI_STATUS.DONE && !wi.completedAt) {
+                wi._retryCount = retryCount;
+                wi.status = WI_STATUS.PENDING;
+                wi._lastRetryReason = retryReason;
+                wi._lastRetryAt = ts();
+                delete wi.failReason;
+                delete wi.failedAt;
+                delete wi.dispatched_at;
+                delete wi.dispatched_to;
+              }
+              return items;
+            }, { defaultValue: [] });
           }
         } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
       } else {

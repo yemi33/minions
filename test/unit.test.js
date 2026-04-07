@@ -3152,7 +3152,7 @@ async function testCompleteDispatch() {
   });
 
   await test('completeDispatch increments _retryCount on work item', () => {
-    assert.ok(src.includes('_retryCount = retries + 1'),
+    assert.ok(src.includes('retryCount = retries + 1') || src.includes('_retryCount = retries + 1'),
       'Should increment retry counter on source work item');
   });
 
