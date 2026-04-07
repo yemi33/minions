@@ -2269,7 +2269,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const id = 'W-' + shared.uid();
       mutateJsonFileLocked(centralPath, (items) => {
         if (!Array.isArray(items)) items = [];
-        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && w.status !== 'failed' && w.status !== 'cancelled');
+        // Only block if actively pending/dispatched — allow re-execute after completion
+        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
         if (existing) { existingId = existing.id; return items; }
         items.push({
           id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
