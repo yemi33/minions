@@ -5373,6 +5373,74 @@ async function testDispatchCycleIntegration() {
       'materializePlansAsWorkItems must handle useCentral fallback for no-project configs');
   });
 
+  // ── Sequential ID remapping (#466) ──
+
+  await test('materializePlansAsWorkItems remaps sequential PRD item IDs to prevent cross-PRD collisions', () => {
+    assert.ok(engineSrc.includes('SEQUENTIAL_ID_RE'),
+      'engine.js must define SEQUENTIAL_ID_RE regex for detecting sequential IDs');
+    assert.ok(engineSrc.includes("'P-' + shared.uid()"),
+      'engine.js must remap sequential IDs to P-<uid> format');
+    assert.ok(engineSrc.includes('idMap.get(d) || d'),
+      'engine.js must update depends_on references when remapping IDs');
+    assert.ok(engineSrc.includes('Remapped'),
+      'engine.js must log when sequential IDs are remapped');
+  });
+
+  await test('SEQUENTIAL_ID_RE matches sequential patterns and rejects uuid patterns', () => {
+    const SEQUENTIAL_ID_RE = /^P-?\d+$/;
+    // Should match sequential patterns
+    assert.ok(SEQUENTIAL_ID_RE.test('P-001'), 'P-001 is sequential');
+    assert.ok(SEQUENTIAL_ID_RE.test('P-1'), 'P-1 is sequential');
+    assert.ok(SEQUENTIAL_ID_RE.test('P001'), 'P001 is sequential');
+    assert.ok(SEQUENTIAL_ID_RE.test('P-42'), 'P-42 is sequential');
+    // Should NOT match uuid-style patterns
+    assert.ok(!SEQUENTIAL_ID_RE.test('P-a3f9b2c1'), 'P-a3f9b2c1 is uuid-style');
+    assert.ok(!SEQUENTIAL_ID_RE.test('P-mnp3yhctrq8d'), 'P-mnp3yhctrq8d is uid-style');
+    assert.ok(!SEQUENTIAL_ID_RE.test('W-abc123'), 'W-abc123 uses different prefix');
+    assert.ok(!SEQUENTIAL_ID_RE.test('EP-001'), 'EP-001 has different prefix');
+  });
+
+  await test('Sequential ID remapping updates depends_on references consistently', () => {
+    // Simulate the remapping logic from engine.js
+    const SEQUENTIAL_ID_RE = /^P-?\d+$/;
+    const features = [
+      { id: 'P-001', name: 'Auth', depends_on: [] },
+      { id: 'P-002', name: 'API', depends_on: ['P-001'] },
+      { id: 'P-003', name: 'UI', depends_on: ['P-001', 'P-002'] },
+    ];
+    const idMap = new Map();
+    for (const f of features) {
+      if (SEQUENTIAL_ID_RE.test(f.id)) {
+        const newId = 'P-' + shared.uid();
+        idMap.set(f.id, newId);
+        f.id = newId;
+      }
+    }
+    for (const f of features) {
+      if (f.depends_on) f.depends_on = f.depends_on.map(d => idMap.get(d) || d);
+    }
+    // All IDs should now be non-sequential
+    for (const f of features) {
+      assert.ok(!SEQUENTIAL_ID_RE.test(f.id), `${f.name} ID should be remapped: ${f.id}`);
+    }
+    // depends_on should reference the new IDs
+    assert.deepStrictEqual(features[1].depends_on, [features[0].id],
+      'P-002 depends_on should be remapped to new P-001 ID');
+    assert.deepStrictEqual(features[2].depends_on, [features[0].id, features[1].id],
+      'P-003 depends_on should reference both remapped IDs');
+    // All new IDs should be unique
+    const ids = features.map(f => f.id);
+    assert.strictEqual(new Set(ids).size, ids.length, 'All remapped IDs must be unique');
+  });
+
+  await test('Sequential ID remapping skips already-materialized PRDs', () => {
+    // engine.js checks anyMaterialized before remapping — source pattern test
+    assert.ok(engineSrc.includes('anyMaterialized'),
+      'engine.js must check if items are already materialized before remapping');
+    assert.ok(engineSrc.includes('w.sourcePlan === file'),
+      'engine.js must verify sourcePlan matches to avoid false positives on collision detection');
+  });
+
   await test('Engine handles zero projects without FATAL error', () => {
     // When no projects configured, engine falls back to central work-items.json
     assert.ok(engineSrc.includes('work-items.json'),
