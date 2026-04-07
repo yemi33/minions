@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.546 (2026-04-07)
+
+### Features
+- add DEFAULT_AGENT_METRICS constant to shared.js (#464)
+- remove inline require('fs') calls from engine/shared.js (#463)
+
+### Fixes
+-  make restart reliably kill orphan processes on all OS
+-  make discoverFromPrs/discoverWork async to match await usage
+-  await checkLiveReviewStatus in pre-dispatch vote check (closes #462) (#469)
+
 ## 0.1.542 (2026-04-07)
 
 ### Fixes
