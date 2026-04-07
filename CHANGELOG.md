@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.531 (2026-04-07)
+
+### Fixes
+- remove duplicate ts identifier crash on engine.js startup (#445)
+
 ## 0.1.530 (2026-04-07)
 
 ### Fixes
