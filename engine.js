@@ -838,7 +838,10 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
   const prLinks = shared.getPrLinks();
   let reconciled = 0;
   for (const wi of items) {
-    if (wi.status !== WI_STATUS.PENDING || wi._pr) continue;
+    // Reconcile pending items AND failed items that have a matching PR
+    // (failed items may have been incorrectly marked during engine downtime)
+    if (wi._pr && wi.status !== WI_STATUS.FAILED) continue;
+    if (wi.status !== WI_STATUS.PENDING && wi.status !== WI_STATUS.FAILED) continue;
     if (onlyIds && !onlyIds.has(wi.id)) continue;
 
     let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
@@ -849,6 +852,10 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
     if (exactPr) {
       wi.status = WI_STATUS.DONE;
       wi._pr = exactPr.id;
+      // Clear failure artifacts if reconciling a previously failed item
+      if (wi.failReason) delete wi.failReason;
+      if (wi.failedAt) delete wi.failedAt;
+      if (!wi.completedAt) wi.completedAt = new Date().toISOString();
       reconciled++;
     }
   }

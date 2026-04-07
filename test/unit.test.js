@@ -1195,6 +1195,40 @@ async function testReconciliation() {
       shared.getPrLinks = originalGetPrLinks;
     }
   });
+
+  await test('reconcileItemsWithPrs reconciles failed items with matching PR', () => {
+    const items = [
+      { id: 'P001', status: 'failed', failReason: 'Completed while engine was down', failedAt: '2026-04-07T00:00:00Z' },
+      { id: 'P002', status: 'failed', failReason: 'Some other reason', failedAt: '2026-04-07T00:00:00Z' },
+    ];
+    const prs = [
+      { id: 'PR-100', prdItems: ['P001'], status: 'active' },
+      { id: 'PR-101', prdItems: ['P002'], status: 'active' },
+    ];
+    const count = reconcileItemsWithPrs(items, prs);
+    assert.strictEqual(count, 2);
+    assert.strictEqual(items[0].status, 'done');
+    assert.strictEqual(items[0]._pr, 'PR-100');
+    assert.strictEqual(items[0].failReason, undefined, 'failReason should be cleared');
+    assert.strictEqual(items[0].failedAt, undefined, 'failedAt should be cleared');
+    assert.ok(items[0].completedAt, 'completedAt should be set');
+    assert.strictEqual(items[1].status, 'done');
+    assert.strictEqual(items[1]._pr, 'PR-101');
+  });
+
+  await test('reconcileItemsWithPrs re-reconciles failed items even with existing _pr', () => {
+    const items = [
+      { id: 'P001', status: 'failed', _pr: 'PR-100', failReason: 'Completed while engine was down' },
+    ];
+    const prs = [
+      { id: 'PR-100', prdItems: ['P001'], status: 'active' },
+    ];
+    const count = reconcileItemsWithPrs(items, prs);
+    assert.strictEqual(count, 1);
+    assert.strictEqual(items[0].status, 'done');
+    assert.strictEqual(items[0]._pr, 'PR-100');
+    assert.strictEqual(items[0].failReason, undefined);
+  });
 }
 
 // ─── GitHub Helpers Tests ───────────────────────────────────────────────────
