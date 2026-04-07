@@ -7147,7 +7147,8 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handlePrdItemsRemove');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 2000);
-    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj'), 'handlePrdItemsRemove must null-guard plan from safeJson or use safeJsonObj');
+    // mutateJsonFileLocked with defaultValue handles null internally, or explicit null-guard, or safeJsonObj
+    assert.ok(fnBody.includes("if (!plan)") || fnBody.includes('safeJsonObj') || fnBody.includes('mutateJsonFileLocked'), 'handlePrdItemsRemove must null-guard plan from safeJson, use safeJsonObj, or use mutateJsonFileLocked');
   });
 
   await test('dashboard.js: handlePlansDelete null-guards safeJson items result', () => {
@@ -7155,9 +7156,9 @@ async function testStatusMutationGuards() {
     const fnStart = src.indexOf('handlePlansDelete');
     const fnEnd = src.indexOf('async function', fnStart + 1);
     const fnBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 3000);
-    // Should guard items from safeJson before calling .filter() — safeJsonArr also acceptable (returns [])
-    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)') || fnBody.includes('safeJsonArr'),
-      'handlePlansDelete must null-guard items from safeJson before filter or use safeJsonArr');
+    // Should guard items from safeJson before calling .filter(), use safeJsonArr, or use mutateJsonFileLocked with defaultValue
+    assert.ok(fnBody.includes('!items') || fnBody.includes('!Array.isArray(items)') || fnBody.includes('safeJsonArr') || fnBody.includes('mutateJsonFileLocked'),
+      'handlePlansDelete must null-guard items from safeJson before filter, use safeJsonArr, or use mutateJsonFileLocked');
   });
 
   await test('dashboard.js: handleProjectsAdd null-guards config from safeJson', () => {
@@ -7176,8 +7177,8 @@ async function testDashboardAuditCritical() {
 
   await test('plan pause sets status to paused with _pausedBy tag, not pending', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // Find the pause handler section (between "Propagate pause" and the safeWrite that commits the change)
-    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
+    // Find the pause handler section (between "Propagate pause" and the end marker — supports both safeWrite and mutateJsonFileLocked patterns)
+    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?(?:if \(changed\) safeWrite\(wiPath|return items;\s*\}\s*,\s*\{\s*defaultValue)/);
     assert.ok(pauseSection, 'pause handler section must exist');
     const section = pauseSection[0];
     assert.ok(section.includes("w.status = WI_STATUS.PAUSED") || section.includes("w.status = 'paused'"),
@@ -7193,8 +7194,8 @@ async function testDashboardAuditCritical() {
       src.includes("w.status === WI_STATUS.PAUSED && w._pausedBy === 'prd-pause'") ||
       src.includes("w.status === 'paused' && w._pausedBy === 'prd-pause'"),
       'resume must look for paused + prd-pause tag');
-    // Pause must set those exact values
-    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?if \(changed\) safeWrite\(wiPath/);
+    // Pause must set those exact values — supports both safeWrite and mutateJsonFileLocked patterns
+    const pauseSection = src.match(/Propagate pause to materialized[\s\S]*?(?:if \(changed\) safeWrite\(wiPath|return items;\s*\}\s*,\s*\{\s*defaultValue)/);
     assert.ok(
       (pauseSection[0].includes("WI_STATUS.PAUSED") || pauseSection[0].includes("'paused'")) &&
       pauseSection[0].includes("'prd-pause'"),
