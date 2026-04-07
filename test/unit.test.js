@@ -2312,6 +2312,20 @@ async function testStateIntegrity() {
       'Pending discovery should clear in-memory cooldown for pending item key');
   });
 
+  await test('Central work items self-heal dispatched status when isAlreadyDispatched is true', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // discoverCentralWorkItems must self-heal items stuck at pending when already dispatched
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    assert.ok(centralFn.includes('if (isAlreadyDispatched(key))'),
+      'Central discovery must check isAlreadyDispatched separately for self-heal');
+    assert.ok(centralFn.includes('item.status = WI_STATUS.DISPATCHED; needsWrite = true'),
+      'Central discovery must self-heal pending→dispatched with needsWrite');
+    assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('item.dispatched_to'),
+      'Central discovery must populate dispatched_to from active dispatch entry');
+    assert.ok(centralFn.includes('else if (needsWrite) safeWrite(centralPath, items)'),
+      'Central discovery must persist self-heal changes via needsWrite even when newWork is empty');
+  });
+
   await test('Close handler skips duplicate completion after timeout finalization', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('close event ignored — dispatch already completed elsewhere'),

@@ -1939,13 +1939,23 @@ function discoverCentralWorkItems(config) {
   const items = safeJson(centralPath) || [];
   const projects = getProjects(config);
   const newWork = [];
+  let needsWrite = false;
 
   for (const item of items) {
     try {
     if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     const key = `central-work-${item.id}`;
-    if (isAlreadyDispatched(key) || isOnCooldown(key, 0)) continue;
+    // Self-heal: if already dispatched but work item is still pending, fix the status
+    if (isAlreadyDispatched(key)) {
+      if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+      if (!item.dispatched_to) {
+        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+        if (existing?.agent) { item.dispatched_to = existing.agent; needsWrite = true; }
+      }
+      continue;
+    }
+    if (isOnCooldown(key, 0)) continue;
 
     const workType = item.type || 'implement';
     const isFanOut = item.scope === 'fan-out';
@@ -2191,6 +2201,7 @@ function discoverCentralWorkItems(config) {
   }
 
   if (newWork.length > 0) safeWrite(centralPath, items);
+  else if (needsWrite) safeWrite(centralPath, items);
   return newWork;
 }
 
