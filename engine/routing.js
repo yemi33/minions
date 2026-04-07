@@ -121,16 +121,26 @@ function resolveAgent(workType, config, authorAgent = null) {
     return true;
   };
 
-  // Check preferred and fallback first (routing table order)
-  if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
-  if (fallback && isAvailable(fallback)) { _claimedAgents.add(fallback); return fallback; }
+  // Helper: pick any idle agent sorted by error rate
+  const pickAnyIdle = (exclude = []) => {
+    const excludeSet = new Set(exclude.filter(Boolean));
+    const idle = Object.keys(agents)
+      .filter(id => !excludeSet.has(id) && isAvailable(id))
+      .sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b));
+    if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
+    return null;
+  };
+
+  // Resolve _any_ token — pick any available agent (#480)
+  if (preferred === '_any_') { const pick = pickAnyIdle(); if (pick) return pick; }
+  else if (preferred && isAvailable(preferred)) { _claimedAgents.add(preferred); return preferred; }
+
+  if (fallback === '_any_') { const pick = pickAnyIdle([preferred]); if (pick) return pick; }
+  else if (fallback && isAvailable(fallback)) { _claimedAgents.add(fallback); return fallback; }
 
   // Fall back to any idle agent, preferring lower error rates
-  const idle = Object.keys(agents)
-    .filter(id => id !== preferred && id !== fallback && isAvailable(id))
-    .sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b));
-
-  if (idle[0]) { _claimedAgents.add(idle[0]); return idle[0]; }
+  const anyIdle = pickAnyIdle([preferred, fallback]);
+  if (anyIdle) return anyIdle;
 
   // No idle configured agent — try temp agent if enabled
   if (config.engine?.allowTempAgents) {

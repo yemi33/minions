@@ -10,7 +10,7 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 | implement | dallas | ralph |
 | implement:large | rebecca | dallas |
 | review | ripley | lambert |
-| fix | _author_ | dallas |
+| fix | _author_ | _any_ |
 | plan | ripley | rebecca |
 | plan-to-prd | lambert | rebecca |
 | explore | ripley | rebecca |
@@ -22,6 +22,7 @@ How the engine decides who handles what. Parsed by engine.js — keep the table 
 
 Notes:
 - `_author_` means route to the PR author
+- `_any_` means route to any available idle agent (lowest error rate first)
 - `implement:large` is for items with `estimated_complexity: "large"`
 - Engine falls back to any idle agent if both preferred and fallback are busy
 

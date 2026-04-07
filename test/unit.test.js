@@ -2330,15 +2330,18 @@ async function testStateIntegrity() {
       'Pending discovery should clear in-memory cooldown for pending item key');
   });
 
-  await test('Central work items self-heal dispatched status when isAlreadyDispatched is true', () => {
+  await test('Central work items self-heal dispatched status only when in dispatch.active (#480)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    // discoverCentralWorkItems must self-heal items stuck at pending when already dispatched
+    // discoverCentralWorkItems must self-heal items stuck at pending when actively dispatched
     const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
     assert.ok(centralFn.includes('if (isAlreadyDispatched(key))'),
       'Central discovery must check isAlreadyDispatched separately for self-heal');
+    // Self-heal should only set DISPATCHED when item is in dispatch.active (not pending)
+    assert.ok(centralFn.includes('const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key)'),
+      'Central self-heal must check dispatch.active before setting dispatched status');
     assert.ok(centralFn.includes('m.status = WI_STATUS.DISPATCHED'),
-      'Central discovery must self-heal pending→dispatched via mutations map');
-    assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('m.dispatched_to'),
+      'Central discovery must self-heal pending→dispatched via mutations map when in active');
+    assert.ok(centralFn.includes('existingActive.agent') && centralFn.includes('m.dispatched_to'),
       'Central discovery must populate dispatched_to from active dispatch entry');
     assert.ok(centralFn.includes('mutations.size > 0') && centralFn.includes('mutateJsonFileLocked(centralPath'),
       'Central discovery must persist changes via atomic mutateJsonFileLocked when mutations exist');
@@ -2370,15 +2373,29 @@ async function testStateIntegrity() {
       'pendingFix should be cleared after addToDispatch in discoverWork');
   });
 
-  await test('Work-item dispatched sync writes work items before PRD status sync', () => {
+  await test('Discovery does not prematurely mark items as dispatched (#480)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
-    const writeIdx = src.indexOf('mutateWorkItems(projectWorkItemsPath(project), () => items)');
-    const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
-    assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
-      'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
-    assert.ok(writeIdx < syncIdx,
-      'work item write must happen before PRD dispatched sync to reduce divergence windows');
+    // Discovery should NOT eagerly stamp dispatched_at/dispatched_to on new items
+    assert.ok(!src.includes('item.dispatched_at = ts()'),
+      'discoverFromWorkItems must NOT prematurely set dispatched_at during discovery');
+    assert.ok(!src.includes('item.dispatched_to = agentId'),
+      'discoverFromWorkItems must NOT prematurely set dispatched_to during discovery');
+    // Self-heal in discoverFromWorkItems only sets DISPATCHED when item is in dispatch.active
+    assert.ok(src.includes('const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key)'),
+      'Self-heal must check dispatch.active before setting dispatched status');
+    // spawnAgent stamps dispatched_to/dispatched_at atomically
+    assert.ok(src.includes('wi.status !== WI_STATUS.DISPATCHED') && src.includes('wi.dispatched_to = wi.dispatched_to || agentId'),
+      'spawnAgent should atomically stamp dispatched status on work items');
+  });
+
+  await test('PRD dispatched sync deferred to dispatch loop after spawnAgent success (#480)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Discovery should NOT do PRD sync — it's deferred to after spawn
+    assert.ok(!src.includes("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan)"),
+      'discoverFromWorkItems should NOT sync PRD dispatched status (deferred to dispatch loop)');
+    // Dispatch loop should sync PRD after successful spawn
+    assert.ok(src.includes("syncPrdItemStatus(item.meta.item.id, WI_STATUS.DISPATCHED, item.meta.item.sourcePlan)"),
+      'dispatch loop should sync PRD dispatched status after successful spawnAgent');
   });
 
   await test('Auto-retry reads live work-item retry count before decision', () => {
@@ -3327,12 +3344,25 @@ async function testResolveAgent() {
 
   await test('resolveAgent checks preferred then fallback then idle', () => {
     // Verify the 3-tier resolution order
-    assert.ok(src.includes('if (preferred && isAvailable(preferred))'),
-      'Should check preferred first');
-    assert.ok(src.includes('if (fallback && isAvailable(fallback))'),
-      'Should check fallback second');
+    assert.ok(src.includes('else if (preferred && isAvailable(preferred))'),
+      'Should check preferred first (after _any_ check)');
+    assert.ok(src.includes('else if (fallback && isAvailable(fallback))'),
+      'Should check fallback second (after _any_ check)');
     assert.ok(src.includes('.sort((a, b) => getAgentErrorRate(a) - getAgentErrorRate(b))'),
       'Should sort remaining idle agents by error rate');
+  });
+
+  await test('resolveAgent supports _any_ token for routing to any idle agent (#480)', () => {
+    assert.ok(src.includes("preferred === '_any_'"),
+      'Should handle _any_ token for preferred agent');
+    assert.ok(src.includes("fallback === '_any_'"),
+      'Should handle _any_ token for fallback agent');
+    assert.ok(src.includes('pickAnyIdle'),
+      'Should use pickAnyIdle helper for _any_ resolution');
+    // Verify routing.md uses _any_ for fix fallback
+    const routing = fs.readFileSync(path.join(MINIONS_DIR, 'routing.md'), 'utf8');
+    assert.ok(routing.includes('| fix | _author_ | _any_ |'),
+      'routing.md should use _any_ as fallback for fix tasks');
   });
 
   await test('resolveAgent returns null when no agents available', () => {
@@ -3345,9 +3375,9 @@ async function testResolveAgent() {
       'Should track and check claimed agents per discovery pass');
   });
 
-  await test('resolveAgent excludes preferred and fallback from idle pool', () => {
-    assert.ok(src.includes('id !== preferred && id !== fallback'),
-      'Idle pool should exclude preferred/fallback to avoid rechecking');
+  await test('resolveAgent uses pickAnyIdle to fall back to any idle agent', () => {
+    assert.ok(src.includes('const anyIdle = pickAnyIdle([preferred, fallback])'),
+      'Final fallback should use pickAnyIdle excluding preferred and fallback');
   });
 }
 

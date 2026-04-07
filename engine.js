@@ -1547,7 +1547,7 @@ function discoverFromWorkItems(config, project) {
   const items = safeJson(projectWorkItemsPath(project)) || [];
   const cooldownMs = (src.cooldownMinutes || 0) * 60 * 1000;
   const newWork = [];
-  const prdSyncQueue = [];
+  // PRD sync for dispatched status deferred to spawnAgent success (#480)
   const skipped = { gated: 0, noAgent: 0 };
   let needsWrite = false;
   const selfHealKeys = new Set(); // Collect keys for batched self-heal (1 lock instead of N)
@@ -1594,10 +1594,11 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     if (isAlreadyDispatched(key)) {
-      if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
-      if (!item.dispatched_to) {
-        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-        if (existing?.agent) { item.dispatched_to = existing.agent; needsWrite = true; }
+      // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
+      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+      if (existingActive) {
+        if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+        if (!item.dispatched_to && existingActive.agent) { item.dispatched_to = existingActive.agent; needsWrite = true; }
       }
       if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
       skipped.gated++; continue;
@@ -1682,12 +1683,11 @@ function discoverFromWorkItems(config, project) {
       continue;
     }
 
-    // Mark item as dispatched BEFORE adding to newWork (prevents race on next tick)
-    item.status = WI_STATUS.DISPATCHED;
-    item.dispatched_at = ts();
-    item.dispatched_to = agentId;
+    // Don't mark dispatched here — item stays pending until spawnAgent succeeds.
+    // spawnAgent() atomically stamps dispatched_to/dispatched_at/status via locked write (#480).
+    // isAlreadyDispatched(key) prevents re-discovery on subsequent ticks.
     delete item._pendingReason;
-    prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });
+    needsWrite = true;
 
     newWork.push({
       type: workType,
@@ -1729,12 +1729,9 @@ function discoverFromWorkItems(config, project) {
     }
   }
 
-  // Write back updated statuses (always, since we mark items dispatched before newWork check)
-  if (newWork.length > 0 || needsWrite) {
+  // Write back updated statuses (pendingReason clears, checkpoint counts, decompose flags, etc.)
+  if (needsWrite) {
     mutateWorkItems(projectWorkItemsPath(project), () => items);
-    if (newWork.length > 0) {
-      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
-    }
   }
 
   const skipTotal = skipped.gated + skipped.noAgent;
@@ -2021,13 +2018,14 @@ function discoverCentralWorkItems(config) {
     const key = `central-work-${item.id}`;
     // Self-heal: if already dispatched but work item is still pending, fix the status
     if (isAlreadyDispatched(key)) {
-      const m = {};
-      if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
-      if (!item.dispatched_to) {
-        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-        if (existing?.agent) { m.dispatched_to = existing.agent; }
+      // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
+      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+      if (existingActive) {
+        const m = {};
+        if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
+        if (!item.dispatched_to && existingActive.agent) { m.dispatched_to = existingActive.agent; }
+        if (Object.keys(m).length > 0) mutations.set(item.id, m);
       }
-      if (Object.keys(m).length > 0) mutations.set(item.id, m);
       continue;
     }
     if (isOnCooldown(key, 0)) continue;
@@ -2100,15 +2098,13 @@ function discoverCentralWorkItems(config) {
         });
       }
 
+      // Don't mark dispatched here — spawnAgent stamps status atomically (#480)
       mutations.set(item.id, {
-        status: WI_STATUS.DISPATCHED,
-        dispatched_at: ts(),
-        dispatched_to: idleAgents.map(a => a.id).join(', '),
         scope: 'fan-out',
         fanOutAgents: idleAgents.map(a => a.id),
       });
       setCooldown(key);
-      log('info', `Fan-out: ${item.id} dispatched to ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
+      log('info', `Fan-out: ${item.id} queued for ${idleAgents.length} agents: ${idleAgents.map(a => a.name).join(', ')}`);
 
     } else {
       // ─── Normal: single agent dispatch ──────────────────────────────
@@ -2206,12 +2202,7 @@ function discoverCentralWorkItems(config) {
         continue;
       }
 
-      const dispatchMutation = {
-        status: WI_STATUS.DISPATCHED,
-        dispatched_at: ts(),
-        dispatched_to: agentId,
-      };
-      mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, dispatchMutation));
+      // Don't mark dispatched here — spawnAgent stamps status atomically (#480)
 
       newWork.push({
         type: workType,
@@ -2665,6 +2656,11 @@ async function tickInner() {
         }
       } else {
         dispatched.add(item.id);
+        // Sync PRD item status after successful spawn (#480)
+        if (item.meta?.item?.sourcePlan) {
+          try { syncPrdItemStatus(item.meta.item.id, WI_STATUS.DISPATCHED, item.meta.item.sourcePlan); }
+          catch (e) { log('warn', `prd sync after spawn: ${e.message}`); }
+        }
       }
     }
   }
