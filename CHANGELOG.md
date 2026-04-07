@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.466 (2026-04-07)
+
+### Fixes
+-  prevent duplicate plan-to-prd execution for already-converted plans
+-  extend heartbeat timeout for Agent (subagent) tool calls — 30min
+-  extend heartbeat timeout for any Bash tool call (10min default)
+-  clear stale session.json on resume failure, hang kill, and orphan
+
 ## 0.1.462 (2026-04-07)
 
 ### Fixes
