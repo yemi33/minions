@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.488 (2026-04-07)
+
+### Fixes
+-  augment dispatched work items with agent from active dispatch
+
 ## 0.1.487 (2026-04-07)
 
 ### Features
