@@ -1,6 +1,9 @@
 // render-pipelines.js — Pipeline list, run detail, and create modal
 
 let _pipelinesData = [];
+let _pipelinePollId = null;
+let _pipelinePollInterval = null;
+function _stopPipelinePoll() { if (_pipelinePollInterval) { clearInterval(_pipelinePollInterval); _pipelinePollInterval = null; } _pipelinePollId = null; }
 
 /**
  * Render clickable artifact links for a pipeline stage.
@@ -167,6 +170,7 @@ function renderPipelines(pipelines) {
 }
 
 function openPipelineDetail(id) {
+  _stopPipelinePoll();
   var p = _pipelinesData.find(function(x) { return x.id === id; });
   if (!p) { alert('Pipeline not found'); return; }
 
@@ -238,7 +242,31 @@ function openPipelineDetail(id) {
   document.getElementById('modal-title').textContent = 'Pipeline: ' + p.title;
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal').classList.add('open');
+
+  // Live-poll while modal is open and pipeline has an active run
+  if (activeRun) {
+    _pipelinePollId = id;
+    _pipelinePollInterval = setInterval(function() {
+      if (!document.getElementById('modal')?.classList?.contains('open') || _pipelinePollId !== id) {
+        _stopPipelinePoll(); return;
+      }
+      fetch('/api/pipelines').then(function(r) { return r.json(); }).then(function(d) {
+        if (_pipelinePollId !== id) return;
+        var fresh = (d.pipelines || []).find(function(x) { return x.id === id; });
+        if (fresh) {
+          // Only re-render if data changed
+          var newHash = JSON.stringify(fresh.runs || []);
+          if (newHash !== _pipelinePollHash) {
+            _pipelinePollHash = newHash;
+            _pipelinesData = _pipelinesData.map(function(x) { return x.id === id ? fresh : x; });
+            openPipelineDetail(id);
+          }
+        }
+      }).catch(function() {});
+    }, 4000);
+  }
 }
+var _pipelinePollHash = '';
 
 async function _triggerPipeline(id, btn) {
   if (btn) { btn.textContent = 'Starting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
@@ -294,16 +322,7 @@ async function _continuePipeline(id, stageId, btn) {
     if (res.ok) {
       showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
       if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
-      // Auto-refresh the modal to show pipeline progressing
       setTimeout(function() { openPipelineDetail(id); }, 2000);
-      var pollCount = 0;
-      var pollTimer = setInterval(function() {
-        pollCount++;
-        if (pollCount > 15 || !document.getElementById('modal')?.classList?.contains('open')) {
-          clearInterval(pollTimer); return;
-        }
-        openPipelineDetail(id);
-      }, 4000);
     } else {
       var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown'));
       if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
