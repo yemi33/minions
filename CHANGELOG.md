@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.518 (2026-04-07)
+
+### Fixes
+-  decomposed parents auto-promote to done, sub-task PRs aggregate to parent
+
 ## 0.1.517 (2026-04-07)
 
 ### Features
