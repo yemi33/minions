@@ -1826,13 +1826,13 @@ async function testPrReviewFixCycle() {
       'Self-review prevention should be removed — agents can review their own PRs');
   });
 
-  await test('Review sets reviewStatus to waiting (single source of truth)', () => {
+  await test('Review checks live review status from platform after completion', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
-    assert.ok(reviewFn.includes("reviewStatus = 'waiting'"),
-      'updatePrAfterReview should set reviewStatus to waiting (single source of truth)');
-    assert.ok(!reviewFn.includes("status: 'approved'"),
-      'Should NOT hardcode approved — let pollPrStatus determine actual verdict');
+    assert.ok(reviewFn.includes('checkLiveReviewStatus'),
+      'updatePrAfterReview should check live review status from platform');
+    assert.ok(reviewFn.includes('postReviewStatus'),
+      'Should use live status instead of hardcoded waiting');
   });
 
   await test('Human feedback fix triggers re-review (reset reviewStatus to waiting)', () => {
