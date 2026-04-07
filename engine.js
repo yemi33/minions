@@ -2083,6 +2083,16 @@ function discoverCentralWorkItems(config) {
         vars.plan_summary = (item.title || item.planFile).substring(0, 80);
         vars.plan_file = item.planFile || '';
         vars.project_name_lower = (firstProject?.name || 'project').toLowerCase();
+        // Generate unique PRD filename — check prd/ and prd/archive/ for collisions
+        const prdBase = vars.project_name_lower + '-' + dateStamp();
+        let prdFilename = prdBase + '.json';
+        const prdExisting = new Set([
+          ...safeReadDir(PRD_DIR).filter(f => f.endsWith('.json')),
+          ...safeReadDir(path.join(PRD_DIR, 'archive')).filter(f => f.endsWith('.json')),
+        ]);
+        let prdCounter = 2;
+        while (prdExisting.has(prdFilename)) { prdFilename = prdBase + '-' + prdCounter + '.json'; prdCounter++; }
+        vars.prd_filename = prdFilename;
         vars.branch_strategy_hint = item.branchStrategy
           ? `The user requested **${item.branchStrategy}** strategy. Use this unless the analysis strongly suggests otherwise.`
           : 'Choose the best strategy based on your analysis of item dependencies.';
