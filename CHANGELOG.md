@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.454 (2026-04-07)
+
+### Fixes
+-  CC network error shows Reload Page button for guaranteed recovery
+
 ## 0.1.452 (2026-04-07)
 
 ### Features
