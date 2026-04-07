@@ -92,6 +92,8 @@ const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
+const mutateWorkItems = shared.mutateWorkItems;
+const mutatePullRequests = shared.mutatePullRequests;
 const withFileLock = shared.withFileLock;
 
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
@@ -962,15 +964,15 @@ function autoCleanPrdWorkItems(prdFile, config) {
   const deletedIds = [];
   for (const wiPath of wiPaths) {
     try {
-      const items = safeJson(wiPath);
-      if (!items) continue;
-      const filtered = items.filter(w => {
-        if (w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED)) {
-          deletedIds.push(w.id); return false;
-        }
-        return true;
+      mutateWorkItems(wiPath, items => {
+        const filtered = items.filter(w => {
+          if (w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED)) {
+            deletedIds.push(w.id); return false;
+          }
+          return true;
+        });
+        if (filtered.length < items.length) return filtered;
       });
-      if (filtered.length < items.length) safeWrite(wiPath, filtered);
     } catch (e) { log('warn', 'auto-clean PRD work items: ' + e.message); }
   }
   if (deletedIds.length > 0) {
@@ -1200,71 +1202,71 @@ function materializePlansAsWorkItems(config) {
     let totalCreated = 0;
     for (const [projName, { project, items: projItems }] of itemsByProject) {
       const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
-      const existingItems = safeJson(wiPath) || [];
       let created = 0;
       const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
 
-      for (const item of projItems) {
-        // Skip if already materialized — work item ID = PRD item ID, check all projects
-        let alreadyExists = existingItems.some(w => w.id === item.id);
-        if (!alreadyExists) {
-          for (const p of allProjects) {
-            if (p.name === projName) continue;
-            const otherItems = safeJson(projectWorkItemsPath(p)) || [];
-            if (otherItems.some(w => w.id === item.id)) { alreadyExists = true; break; }
+      mutateWorkItems(wiPath, existingItems => {
+        for (const item of projItems) {
+          // Skip if already materialized — work item ID = PRD item ID, check all projects
+          let alreadyExists = existingItems.some(w => w.id === item.id);
+          if (!alreadyExists) {
+            for (const p of allProjects) {
+              if (p.name === projName) continue;
+              const otherItems = safeJson(projectWorkItemsPath(p)) || [];
+              if (otherItems.some(w => w.id === item.id)) { alreadyExists = true; break; }
+            }
           }
+          if (alreadyExists) continue;
+          // Skip items involved in dependency cycles
+          if (cycleSet.has(item.id)) continue;
+
+          const id = item.id; // Work item ID = PRD item ID — no indirection
+          const complexity = item.estimated_complexity || 'medium';
+          const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+
+          const newItem = {
+            id,
+            title: `Implement: ${item.name}`,
+            type: complexity === 'large' ? 'implement:large' : 'implement',
+            priority: item.priority || 'medium',
+            description: `${item.description || ''}\n\n**Plan:** ${file}\n**Plan Item:** ${item.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
+            status: 'pending',
+            created: ts(),
+            createdBy: 'engine:plan-discovery',
+            sourcePlan: file,
+            depends_on: item.depends_on || [],
+            branchStrategy: plan.branch_strategy || 'parallel',
+            featureBranch: plan.feature_branch || null,
+            project: item.project || plan.project || null,
+          };
+          existingItems.push(newItem);
+          newlyCreatedIds.add(id);
+          created++;
         }
-        if (alreadyExists) continue;
-        // Skip items involved in dependency cycles
-        if (cycleSet.has(item.id)) continue;
 
-        const id = item.id; // Work item ID = PRD item ID — no indirection
-        const complexity = item.estimated_complexity || 'medium';
-        const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+        if (created > 0) {
+          // Reconciliation: exact prdItems match only, scoped to newly created items
+          const allPrsForReconcile = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
+          const reconciled = reconcileItemsWithPrs(existingItems, allPrsForReconcile, { onlyIds: newlyCreatedIds });
+          if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as done → ${projName}`);
 
-        const newItem = {
-          id,
-          title: `Implement: ${item.name}`,
-          type: complexity === 'large' ? 'implement:large' : 'implement',
-          priority: item.priority || 'medium',
-          description: `${item.description || ''}\n\n**Plan:** ${file}\n**Plan Item:** ${item.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
-          status: 'pending',
-          created: ts(),
-          createdBy: 'engine:plan-discovery',
-          sourcePlan: file,
-          depends_on: item.depends_on || [],
-          branchStrategy: plan.branch_strategy || 'parallel',
-          featureBranch: plan.feature_branch || null,
-          project: item.project || plan.project || null,
-        };
-        existingItems.push(newItem);
-        newlyCreatedIds.add(id);
-        created++;
-      }
-
-      if (created > 0) {
-        // Reconciliation: exact prdItems match only, scoped to newly created items
-        const allPrsForReconcile = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
-        const reconciled = reconcileItemsWithPrs(existingItems, allPrsForReconcile, { onlyIds: newlyCreatedIds });
-        if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as done → ${projName}`);
-
-        // PRD removal sync: cancel pending work items whose PRD item was removed from the plan
-        const currentPrdIds = new Set(plan.missing_features.map(f => f.id));
-        let cancelled = 0;
-        for (const wi of existingItems) {
-          if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
-          if (!currentPrdIds.has(wi.id)) {
-            wi.status = WI_STATUS.CANCELLED;
-            wi.cancelledAt = ts();
-            wi.cancelReason = `PRD item removed from ${file}`;
-            cancelled++;
+          // PRD removal sync: cancel pending work items whose PRD item was removed from the plan
+          const currentPrdIds = new Set(plan.missing_features.map(f => f.id));
+          let cancelled = 0;
+          for (const wi of existingItems) {
+            if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
+            if (!currentPrdIds.has(wi.id)) {
+              wi.status = WI_STATUS.CANCELLED;
+              wi.cancelledAt = ts();
+              wi.cancelReason = `PRD item removed from ${file}`;
+              cancelled++;
+            }
           }
-        }
-        if (cancelled > 0) log('info', `Plan sync: cancelled ${cancelled} item(s) removed from ${file} → ${projName}`);
+          if (cancelled > 0) log('info', `Plan sync: cancelled ${cancelled} item(s) removed from ${file} → ${projName}`);
 
-        safeWrite(wiPath, existingItems);
-        log('info', `Plan discovery: created ${created} work item(s) from ${file} → ${projName}`);
-      }
+          log('info', `Plan discovery: created ${created} work item(s) from ${file} → ${projName}`);
+        }
+      });
       totalCreated += created;
     }
 
@@ -1299,11 +1301,11 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   if (!prId) return;
   try {
     const prsPath = projectPrPath(projectMeta);
-    const prs = safeJson(prsPath) || [];
-    const target = prs.find(p => p.id === prId);
-    if (!target?.humanFeedback?.pendingFix) return;
-    target.humanFeedback.pendingFix = false;
-    safeWrite(prsPath, prs);
+    mutatePullRequests(prsPath, prs => {
+      const target = prs.find(p => p.id === prId);
+      if (!target?.humanFeedback?.pendingFix) return;
+      target.humanFeedback.pendingFix = false;
+    });
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
@@ -1451,12 +1453,12 @@ function discoverFromPrs(config, project) {
         // Mark notified to prevent duplicate alerts
         try {
           const prPath = projectPrPath(project);
-          const prs = safeJson(prPath) || [];
-          const target = prs.find(p => p.id === pr.id);
-          if (target) {
-            target._buildFailNotified = true;
-            safeWrite(prPath, prs);
-          }
+          mutatePullRequests(prPath, prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) {
+              target._buildFailNotified = true;
+            }
+          });
         } catch (e) { log('warn', 'mark build fail notified: ' + e.message); }
       }
     }
@@ -1533,7 +1535,10 @@ function discoverFromWorkItems(config, project) {
     if (item._resumedAt) {
       dispatchCooldowns.delete(key);
       delete item._resumedAt;
-      safeWrite(projectWorkItemsPath(project), items);
+      mutateWorkItems(projectWorkItemsPath(project), wi => {
+        const target = wi.find(w => w.id === item.id);
+        if (target) delete target._resumedAt;
+      });
     }
     if (isAlreadyDispatched(key)) {
       if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
@@ -1686,13 +1691,12 @@ function discoverFromWorkItems(config, project) {
   }
 
   // Write back updated statuses (always, since we mark items dispatched before newWork check)
-  if (newWork.length > 0) {
-    const workItemsPath = projectWorkItemsPath(project);
-    safeWrite(workItemsPath, items);
-    for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
+  if (newWork.length > 0 || needsWrite) {
+    mutateWorkItems(projectWorkItemsPath(project), () => items);
+    if (newWork.length > 0) {
+      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
+    }
   }
-
-  if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
 
   const skipTotal = skipped.gated + skipped.noAgent;
   if (skipTotal > 0) {
@@ -1787,53 +1791,50 @@ function materializeSpecsAsWorkItems(config, project) {
   if (recentSpecs.length === 0) return;
 
   const wiPath = projectWorkItemsPath(project);
-  const existingItems = safeJson(wiPath) || [];
   let created = 0;
 
-  for (const pr of mergedPrs) {
-    const prBranch = (pr.branch || '').toLowerCase();
-    const matchedSpecs = recentSpecs.filter(doc => {
-      const msg = doc.message.toLowerCase();
-      // Match any doc whose commit message references this PR's branch
-      return prBranch && msg.includes(prBranch.split('/').pop());
-    });
-
-    if (matchedSpecs.length === 0) {
-      tracker.processedPrs[pr.id] = { processedAt: ts(), matched: false };
-      continue;
-    }
-
-    for (const doc of matchedSpecs) {
-      if (existingItems.some(i => i.sourceSpec === doc.file)) continue;
-
-      const info = extractSpecInfo(doc.file, root);
-      if (!info) continue;
-
-      const newId = 'SP-' + shared.uid();
-
-      existingItems.push({
-        id: newId,
-        type: 'implement',
-        title: `Implement: ${info.title}`,
-        description: `Implementation work from merged spec.\n\n**Spec:** \`${doc.file}\`\n**Source PR:** ${pr.id} — ${pr.title || ''}\n**PR URL:** ${pr.url || 'N/A'}\n\n## Summary\n\n${info.summary}\n\nRead the full spec at \`${doc.file}\` before starting.`,
-        priority: info.priority,
-        status: 'queued',
-        created: ts(),
-        createdBy: 'engine:spec-discovery',
-        sourceSpec: doc.file,
-        sourcePr: pr.id
+  mutateWorkItems(wiPath, existingItems => {
+    for (const pr of mergedPrs) {
+      const prBranch = (pr.branch || '').toLowerCase();
+      const matchedSpecs = recentSpecs.filter(doc => {
+        const msg = doc.message.toLowerCase();
+        // Match any doc whose commit message references this PR's branch
+        return prBranch && msg.includes(prBranch.split('/').pop());
       });
-      created++;
-      log('info', `Spec discovery: created ${newId} "${info.title}" from PR ${pr.id} in ${project.name}`);
+
+      if (matchedSpecs.length === 0) {
+        tracker.processedPrs[pr.id] = { processedAt: ts(), matched: false };
+        continue;
+      }
+
+      for (const doc of matchedSpecs) {
+        if (existingItems.some(i => i.sourceSpec === doc.file)) continue;
+
+        const info = extractSpecInfo(doc.file, root);
+        if (!info) continue;
+
+        const newId = 'SP-' + shared.uid();
+
+        existingItems.push({
+          id: newId,
+          type: 'implement',
+          title: `Implement: ${info.title}`,
+          description: `Implementation work from merged spec.\n\n**Spec:** \`${doc.file}\`\n**Source PR:** ${pr.id} — ${pr.title || ''}\n**PR URL:** ${pr.url || 'N/A'}\n\n## Summary\n\n${info.summary}\n\nRead the full spec at \`${doc.file}\` before starting.`,
+          priority: info.priority,
+          status: 'queued',
+          created: ts(),
+          createdBy: 'engine:spec-discovery',
+          sourceSpec: doc.file,
+          sourcePr: pr.id
+        });
+        created++;
+        log('info', `Spec discovery: created ${newId} "${info.title}" from PR ${pr.id} in ${project.name}`);
+      }
+
+      tracker.processedPrs[pr.id] = { processedAt: ts(), matched: true, specs: matchedSpecs.map(d => d.file) };
     }
-
-    tracker.processedPrs[pr.id] = { processedAt: ts(), matched: true, specs: matchedSpecs.map(d => d.file) };
-  }
-
-  if (created > 0) {
-    safeWrite(wiPath, existingItems);
-  }
-  safeWrite(trackerPath, tracker);
+  });
+  mutateJsonFileLocked(trackerPath, () => tracker, { defaultValue: {} });
 }
 
 /**
@@ -2387,78 +2388,77 @@ async function tickInner() {
         for (const project of projects) {
           try {
             const wiPath = projectWorkItemsPath(project);
-            const items = safeJson(wiPath) || [];
-            let changed = false;
-            const failedIds = new Set(items.filter(w => w.status === WI_STATUS.FAILED).map(w => w.id));
-            const pendingWithBlockedDeps = items.filter(w =>
-              w.status === WI_STATUS.PENDING && (w.depends_on || []).some(d => failedIds.has(d))
-            );
+            mutateWorkItems(wiPath, items => {
+              let changed = false;
+              const failedIds = new Set(items.filter(w => w.status === WI_STATUS.FAILED).map(w => w.id));
+              const pendingWithBlockedDeps = items.filter(w =>
+                w.status === WI_STATUS.PENDING && (w.depends_on || []).some(d => failedIds.has(d))
+              );
 
-            if (pendingWithBlockedDeps.length > 0) {
-              // Auto-retry failed items that are blocking others (transient errors)
-              for (const item of items) {
-                if (item.status !== WI_STATUS.FAILED || isItemCompleted(item)) continue;
-                // Only retry if something depends on this item
-                const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
-                if (!isBlocking) continue;
+              if (pendingWithBlockedDeps.length > 0) {
+                // Auto-retry failed items that are blocking others (transient errors)
+                for (const item of items) {
+                  if (item.status !== WI_STATUS.FAILED || isItemCompleted(item)) continue;
+                  // Only retry if something depends on this item
+                  const isBlocking = items.some(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(item.id));
+                  if (!isBlocking) continue;
 
-                log('info', `Stall recovery: auto-retrying ${item.id} (blocking ${pendingWithBlockedDeps.filter(w => (w.depends_on || []).includes(item.id)).length} items)`);
-                item.status = WI_STATUS.PENDING;
-                item._retryCount = 0;
-                delete item.failReason;
-                delete item.failedAt;
-                delete item.dispatched_at;
-                delete item.dispatched_to;
-                changed = true;
+                  log('info', `Stall recovery: auto-retrying ${item.id} (blocking ${pendingWithBlockedDeps.filter(w => (w.depends_on || []).includes(item.id)).length} items)`);
+                  item.status = WI_STATUS.PENDING;
+                  item._retryCount = 0;
+                  delete item.failReason;
+                  delete item.failedAt;
+                  delete item.dispatched_at;
+                  delete item.dispatched_to;
+                  changed = true;
 
-                // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
-                try {
-                    const key = `work-${project.name}-${item.id}`;
-                    mutateDispatch((dp) => {
-                      dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                      return dp;
-                    });
-                  } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
-
-                // Clear cooldown so item isn't blocked by exponential backoff
-                try {
-                  const key = `work-${project.name}-${item.id}`;
-                  if (dispatchCooldowns.has(key)) {
-                    dispatchCooldowns.delete(key);
-                    saveCooldowns();
-                  }
-                } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
-              }
-            }
-
-            // Un-fail dependent items that were cascade-failed
-            if (changed) {
-              const retriedIds = new Set(items.filter(w => w.status === WI_STATUS.PENDING && w._retryCount === 0).map(w => w.id));
-              for (const dep of items) {
-                if (dep.status === WI_STATUS.FAILED && !isItemCompleted(dep) && dep.failReason === 'Dependency failed — cannot proceed') {
-                  const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
-                  if (blockers.length > 0) {
-                    log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
-                    dep.status = WI_STATUS.PENDING;
-                    dep._retryCount = 0;
-                    delete dep.failReason;
-                    delete dep.failedAt;
-                    delete dep.dispatched_at;
-                    delete dep.dispatched_to;
-                    // Clear dispatch entries for this dependent too
-                    try {
-                      const key = `work-${project.name}-${dep.id}`;
+                  // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
+                  try {
+                      const key = `work-${project.name}-${item.id}`;
                       mutateDispatch((dp) => {
                         dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
                         return dp;
                       });
-                    } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
+                    } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
+
+                  // Clear cooldown so item isn't blocked by exponential backoff
+                  try {
+                    const key = `work-${project.name}-${item.id}`;
+                    if (dispatchCooldowns.has(key)) {
+                      dispatchCooldowns.delete(key);
+                      saveCooldowns();
+                    }
+                  } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
+                }
+              }
+
+              // Un-fail dependent items that were cascade-failed
+              if (changed) {
+                const retriedIds = new Set(items.filter(w => w.status === WI_STATUS.PENDING && w._retryCount === 0).map(w => w.id));
+                for (const dep of items) {
+                  if (dep.status === WI_STATUS.FAILED && !isItemCompleted(dep) && dep.failReason === 'Dependency failed — cannot proceed') {
+                    const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
+                    if (blockers.length > 0) {
+                      log('info', `Stall recovery: un-failing ${dep.id} (blocker ${blockers.join(',')} retried)`);
+                      dep.status = WI_STATUS.PENDING;
+                      dep._retryCount = 0;
+                      delete dep.failReason;
+                      delete dep.failedAt;
+                      delete dep.dispatched_at;
+                      delete dep.dispatched_to;
+                      // Clear dispatch entries for this dependent too
+                      try {
+                        const key = `work-${project.name}-${dep.id}`;
+                        mutateDispatch((dp) => {
+                          dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                          return dp;
+                        });
+                      } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
+                    }
                   }
                 }
               }
-            }
-
-            if (changed) safeWrite(wiPath, items);
+            });
           } catch (e) { log('warn', 'stall recovery process project: ' + e.message); }
         }
       }
@@ -2543,19 +2543,19 @@ async function tickInner() {
               ? path.join(ENGINE_DIR, '..', 'work-items.json')
               : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
             if (wiPath) {
-              const items = safeJson(wiPath) || [];
-              const wi = items.find(i => i.id === item.meta.item.id);
-              if (wi && wi.status === WI_STATUS.DISPATCHED) {
-                // completeDispatch didn't update the work item — re-queue manually
-                wi.status = WI_STATUS.PENDING;
-                wi._retryCount = (wi._retryCount || 0) + 1;
-                wi._lastRetryReason = 'spawnAgent returned null';
-                wi._lastRetryAt = ts();
-                delete wi.dispatched_at;
-                delete wi.dispatched_to;
-                safeWrite(wiPath, items);
-                log('info', `Re-queued ${item.meta.item.id} as pending (retry ${wi._retryCount})`);
-              }
+              mutateWorkItems(wiPath, items => {
+                const wi = items.find(i => i.id === item.meta.item.id);
+                if (wi && wi.status === WI_STATUS.DISPATCHED) {
+                  // completeDispatch didn't update the work item — re-queue manually
+                  wi.status = WI_STATUS.PENDING;
+                  wi._retryCount = (wi._retryCount || 0) + 1;
+                  wi._lastRetryReason = 'spawnAgent returned null';
+                  wi._lastRetryAt = ts();
+                  delete wi.dispatched_at;
+                  delete wi.dispatched_to;
+                  log('info', `Re-queued ${item.meta.item.id} as pending (retry ${wi._retryCount})`);
+                }
+              });
             }
           } catch (e) { log('warn', `Failed to re-queue work item after spawn failure: ${e.message}`); }
         }
