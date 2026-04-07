@@ -221,16 +221,42 @@ const commands = {
           const hasError = output.includes('"is_error":true') || output.includes('"is_error": true');
           if (!hasResult && !hasError) continue;
 
-          const isSuccess = hasResult && !hasError;
-          const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
+          let isSuccess = hasResult && !hasError;
 
-          e.log('info', `Orphan recovery: ${agentId} (${item.id}) completed while engine was down — result: ${result}`);
-
-          // Extract PRs from output
+          // Extract PRs from output first — if PRs were created, the agent succeeded
+          // regardless of intermediate error lines in the log
           let prsCreated = 0;
           try {
             prsCreated = lifecycle.syncPrsFromOutput(output, agentId, item.meta, config);
           } catch (err) { e.log('warn', `Orphan PR sync: ${err.message}`); }
+
+          // If PRs were created or a matching PR exists, treat as success
+          if (!isSuccess && prsCreated > 0) {
+            e.log('info', `Orphan recovery: ${agentId} (${item.id}) has ${prsCreated} PR(s) — overriding to success`);
+            isSuccess = true;
+          }
+
+          // Fallback: check pull-requests.json for a matching PR by work item ID
+          if (!isSuccess && item.meta?.item?.id) {
+            try {
+              const projName = item.meta.project?.name;
+              if (projName) {
+                const prPath = path.join(MINIONS_DIR, 'projects', projName, 'pull-requests.json');
+                const prs = safeJson(prPath) || [];
+                const matchingPr = prs.find(pr =>
+                  (pr.prdItems || []).includes(item.meta.item.id) &&
+                  pr.status !== 'abandoned' && pr.status !== 'closed'
+                );
+                if (matchingPr) {
+                  e.log('info', `Orphan recovery: ${agentId} (${item.id}) has matching PR ${matchingPr.id} — overriding to success`);
+                  isSuccess = true;
+                }
+              }
+            } catch (err) { e.log('warn', `Orphan PR lookup: ${err.message}`); }
+          }
+
+          const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
+          e.log('info', `Orphan recovery: ${agentId} (${item.id}) completed while engine was down — result: ${result}`);
 
           // Update work item status
           if (item.meta?.item?.id) {
