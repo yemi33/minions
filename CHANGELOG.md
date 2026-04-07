@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.500 (2026-04-07)
+
+### Features
+- strengthen CC dispatch contract with domain terminology mapping
+
+### Fixes
+-  comprehensive steering failure handling with user-visible feedback
+
 ## 0.1.498 (2026-04-07)
 
 ### Features
