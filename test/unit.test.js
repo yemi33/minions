@@ -3518,6 +3518,84 @@ async function testDiscoverFromPrs() {
   });
 }
 
+// ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
+
+async function testBuildFixRetryCap() {
+  console.log('\n── Build Fix Retry Cap ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+  const githubSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+
+  await test('ENGINE_DEFAULTS includes maxBuildFixAttempts', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.maxBuildFixAttempts, 3,
+      'maxBuildFixAttempts should default to 3');
+  });
+
+  await test('engine.js checks buildFixAttempts before dispatching fix agent', () => {
+    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('maxBuildFixAttempts'),
+      'Build fix dispatch should check buildFixAttempts against maxBuildFixAttempts cap');
+  });
+
+  await test('engine.js increments buildFixAttempts on fix dispatch', () => {
+    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('+ 1'),
+      'buildFixAttempts should be incremented when a fix agent is dispatched');
+  });
+
+  await test('engine.js sets buildFixEscalated when cap reached', () => {
+    assert.ok(engineSrc.includes('buildFixEscalated'),
+      'Should set buildFixEscalated flag when fix attempt cap is reached');
+  });
+
+  await test('engine.js writes escalation alert when cap reached', () => {
+    assert.ok(engineSrc.includes('build-fix-escalated') && engineSrc.includes('writeInboxAlert'),
+      'Should write inbox alert with build-fix-escalated slug when cap is reached');
+  });
+
+  await test('engine.js skips dispatch when buildFixEscalated', () => {
+    assert.ok(engineSrc.includes('buildFixEscalated') && engineSrc.includes('continue'),
+      'Should skip fix dispatch (continue) when cap is reached and escalated');
+  });
+
+  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
+      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
+  });
+
+  await test('ado.js resets buildFixAttempts when build passes', () => {
+    assert.ok(adoSrc.includes('delete pr.buildFixAttempts'),
+      'ADO poll should clear buildFixAttempts when build status recovers');
+  });
+
+  await test('ado.js resets buildFixEscalated when build passes', () => {
+    assert.ok(adoSrc.includes('delete pr.buildFixEscalated'),
+      'ADO poll should clear buildFixEscalated when build status recovers');
+  });
+
+  await test('github.js resets buildFixAttempts when build passes', () => {
+    assert.ok(githubSrc.includes('delete pr.buildFixAttempts'),
+      'GitHub poll should clear buildFixAttempts when build status recovers');
+  });
+
+  await test('github.js resets buildFixEscalated when build passes', () => {
+    assert.ok(githubSrc.includes('delete pr.buildFixEscalated'),
+      'GitHub poll should clear buildFixEscalated when build status recovers');
+  });
+
+  await test('settings UI includes maxBuildFixAttempts field', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('maxBuildFixAttempts') && settingsSrc.includes('set-maxBuildFixAttempts'),
+      'Settings UI should have a maxBuildFixAttempts input field');
+  });
+
+  await test('escalation only fires once per PR (buildFixEscalated guard)', () => {
+    // The escalation alert + flag write should only happen when !pr.buildFixEscalated
+    assert.ok(engineSrc.includes('!pr.buildFixEscalated'),
+      'Escalation should check !pr.buildFixEscalated to prevent duplicate alerts');
+  });
+}
+
 // ─── engine.js — discoverFromWorkItems Tests ────────────────────────────────
 
 async function testDiscoverFromWorkItems() {
@@ -5912,6 +5990,7 @@ async function main() {
     await testRenderPlaybook();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
+    await testBuildFixRetryCap();
     await testDiscoverFromWorkItems();
     await testBuildWorkItemDispatchVars();
     await testCheckTimeouts();
