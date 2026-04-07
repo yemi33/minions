@@ -91,14 +91,9 @@ function openAllPrs() {
 function openModal(i) {
   const item = inboxData[i];
   if (!item) return;
-  var pk = inboxPinKey(item.name);
-  var pinned = isPinned(pk);
   document.getElementById('modal-title').textContent = item.name;
   document.getElementById('modal-body').innerHTML =
-    '<div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">' +
-      '<button class="pr-pager-btn pin-btn' + (pinned ? ' pinned' : '') + '" style="font-size:10px;padding:3px 10px" data-pin-key="' + escHtml(pk) + '" onclick="_togglePinAndRefresh(this.dataset.pinKey,\'inbox\');openModal(' + i + ')">' + (pinned ? 'Unpin' : 'Pin to top') + '</button>' +
-      '<button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escHtml(item.name) + '\')">Add to Knowledge Base</button>' +
-    '</div>' +
+    '<div style="margin-bottom:12px"><button class="pr-pager-btn" style="font-size:10px;padding:3px 10px" onclick="promoteToKB(\'' + escHtml(item.name) + '\')">Add to Knowledge Base</button></div>' +
     '<div style="font-size:12px;line-height:1.7;color:var(--muted)">' + renderMd(item.content) + '</div>';
   _modalDocContext = { title: item.name, content: item.content, selection: '' };
   _modalFilePath = 'notes/inbox/' + item.name; showModalQa();

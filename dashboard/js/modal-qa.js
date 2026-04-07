@@ -5,6 +5,7 @@ let _modalFilePath = null; // file path for steering (null = read-only Q&A only)
 
 function showModalQa() {
   document.getElementById('modal-qa').style.display = '';
+  updateModalPinBtn();
 }
 
 function _qaNotifySidebar(filePath) {

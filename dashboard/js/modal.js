@@ -41,6 +41,7 @@ function closeModal() {
   body.contentEditable = 'false';
   body.style.border = '';
   body.style.padding = '';
+  document.getElementById('modal-pin-btn').style.display = 'none';
   document.getElementById('modal-edit-btn').style.display = 'none';
   document.getElementById('modal-save-btn').style.display = 'none';
   document.getElementById('modal-cancel-edit-btn').style.display = 'none';

@@ -35,6 +35,27 @@ function _togglePinAndRefresh(key, source) {
   else if (source === 'kb') renderKnowledgeBase();
 }
 
+function updateModalPinBtn() {
+  var btn = document.getElementById('modal-pin-btn');
+  if (!btn) return;
+  // Only show for inbox and KB docs (pinnable paths)
+  if (!_modalFilePath || (!_modalFilePath.startsWith('notes/inbox/') && !_modalFilePath.startsWith('knowledge/'))) {
+    btn.style.display = 'none'; return;
+  }
+  btn.style.display = '';
+  var pinned = isPinned(_modalFilePath);
+  btn.textContent = pinned ? 'Unpin' : 'Pin';
+  btn.classList.toggle('pinned', pinned);
+}
+function toggleModalPin() {
+  if (!_modalFilePath) return;
+  var pinned = togglePin(_modalFilePath);
+  showToast('cmd-toast', pinned ? 'Pinned to top' : 'Unpinned', true);
+  updateModalPinBtn();
+  if (_modalFilePath.startsWith('notes/inbox/')) renderInbox(inboxData);
+  else if (_modalFilePath.startsWith('knowledge/')) renderKnowledgeBase();
+}
+
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
