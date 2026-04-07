@@ -177,7 +177,10 @@ function openPipelineDetail(id) {
   html += '<div style="display:flex;justify-content:space-between;align-items:center">' +
     '<span style="font-size:10px;color:var(--muted)">' + (p.trigger?.cron ? escHtml(_cronToHuman(p.trigger.cron)) + ' <span style="opacity:0.6">(' + escHtml(p.trigger.cron) + ', ' + escHtml(Intl.DateTimeFormat().resolvedOptions().timeZone) + ')</span>' : 'Manual trigger') + '</span>' +
     '<div style="display:flex;gap:6px">' +
-      (activeRun ? '' : '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="_triggerPipeline(\'' + escHtml(id) + '\',this)">Run Now</button>') +
+      (activeRun
+        ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_abortPipeline(\'' + escHtml(id) + '\',this)">Abort</button>' +
+          '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--yellow);border-color:var(--yellow)" onclick="_retriggerPipeline(\'' + escHtml(id) + '\',this)">Retrigger</button>'
+        : '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green)" onclick="_triggerPipeline(\'' + escHtml(id) + '\',this)">Run Now</button>') +
       '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--blue);border-color:var(--blue)" onclick="openEditPipelineModal(\'' + escHtml(id) + '\')">Edit</button>' +
       '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" onclick="_togglePipelineEnabled(\'' + escHtml(id) + '\',' + !p.enabled + ',this)">' + (p.enabled !== false ? 'Disable' : 'Enable') + '</button>' +
       '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red);border-color:var(--red)" onclick="_deletePipelineConfirm(\'' + escHtml(id) + '\')">Delete</button>' +
@@ -245,6 +248,33 @@ async function _triggerPipeline(id, btn) {
     if (res.ok) { showToast('cmd-toast', 'Pipeline triggered: ' + (d.runId || ''), true); try { closeModal(); } catch {} refresh(); }
     else { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Failed: ' + (d.error || 'unknown')); }
   } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
+}
+
+async function _abortPipeline(id, btn) {
+  if (!confirm('Abort the active run for "' + id + '"?')) return;
+  if (btn) { btn.textContent = 'Aborting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  try {
+    var res = await fetch('/api/pipelines/abort', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+    if (res.ok) {
+      showToast('cmd-toast', 'Pipeline run aborted', true);
+      if (btn) { btn.textContent = '\u2713 Aborted'; btn.style.color = 'var(--red)'; }
+      setTimeout(function() { openPipelineDetail(id); }, 1500);
+    } else { var d = await res.json().catch(function() { return {}; }); alert('Abort failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+}
+
+async function _retriggerPipeline(id, btn) {
+  if (!confirm('Abort current run and start a fresh one for "' + id + '"?')) return;
+  if (btn) { btn.textContent = 'Retriggering...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  try {
+    var res = await fetch('/api/pipelines/retrigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+    var d = await res.json();
+    if (res.ok) {
+      showToast('cmd-toast', 'Pipeline retriggered: ' + (d.runId || ''), true);
+      if (btn) { btn.textContent = '\u2713 Retriggered'; btn.style.color = 'var(--green)'; }
+      setTimeout(function() { openPipelineDetail(id); }, 1500);
+    } else { alert('Retrigger failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
 
 async function _togglePipelineEnabled(id, enabled, btn) {

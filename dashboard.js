@@ -4045,6 +4045,30 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true });
     }},
 
+    { method: 'POST', path: '/api/pipelines/abort', desc: 'Abort an active pipeline run', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const { getActiveRun, completeRun } = require('./engine/pipeline');
+      const run = getActiveRun(body.id);
+      if (!run) return jsonReply(res, 404, { error: 'No active run to abort' });
+      completeRun(body.id, run.runId, 'failed');
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, runId: run.runId });
+    }},
+    { method: 'POST', path: '/api/pipelines/retrigger', desc: 'Abort active run (if any) and start a new one', params: 'id', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.id) return jsonReply(res, 400, { error: 'id required' });
+      const pipeline = require('./engine/pipeline');
+      const run = pipeline.getActiveRun(body.id);
+      if (run) pipeline.completeRun(body.id, run.runId, 'failed');
+      const pipelines = pipeline.getPipelines();
+      const def = pipelines.find(p => p.id === body.id);
+      if (!def) return jsonReply(res, 404, { error: 'Pipeline not found' });
+      const newRun = pipeline.startRun(body.id, def);
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, runId: newRun?.runId });
+    }},
+
     // Meetings
     { method: 'POST', path: '/api/meetings', desc: 'Create a team meeting', params: 'title, agenda, participants[]', handler: async (req, res) => {
       const body = await readBody(req);
