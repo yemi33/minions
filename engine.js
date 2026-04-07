@@ -576,12 +576,27 @@ function spawnAgent(dispatchItem, config) {
       delete procInfo._steeringMessage;
       delete procInfo._steeringSessionId;
 
+      // Guard: can't resume without a session
+      if (!steerSessionId) {
+        log('warn', `Steering: no sessionId for ${agentId} — appending message to live output only`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] No session to resume. Message was: ${steerMsg}\n`); } catch {}
+        activeProcesses.delete(id);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering skipped (no session)', '', { processWorkItemFailure: false });
+        return;
+      }
+
       log('info', `Steering: re-spawning ${agentId} with --resume ${steerSessionId}`);
 
       // Write new prompt with steering message
       const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
       const steerPromptPath = path.join(ENGINE_DIR, 'tmp', `prompt-steer-${safeId}.md`);
-      safeWrite(steerPromptPath, steerPrompt);
+      try { safeWrite(steerPromptPath, steerPrompt); } catch (e) {
+        log('warn', `Steering: failed to write prompt for ${agentId}: ${e.message}`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Could not write prompt. Message was: ${steerMsg}\n`); } catch {}
+        activeProcesses.delete(id);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering prompt write failed', '', { processWorkItemFailure: false });
+        return;
+      }
 
       // Build resume args
       const resumeArgs = [
@@ -595,11 +610,21 @@ function spawnAgent(dispatchItem, config) {
 
       const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
       const childEnv = shared.cleanChildEnv();
-      const resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs], {
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: childEnv,
-      });
+      let resumeProc;
+      try {
+        resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs], {
+          cwd,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: childEnv,
+        });
+      } catch (e) {
+        log('warn', `Steering: spawn failed for ${agentId}: ${e.message}`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Spawn error: ${e.message}. Message was: ${steerMsg}\n`); } catch {}
+        try { fs.unlinkSync(steerPromptPath); } catch {}
+        activeProcesses.delete(id);
+        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering spawn failed', '', { processWorkItemFailure: false });
+        return;
+      }
 
       // Re-attach to existing tracking
       activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, _steeringAt: Date.now() });
@@ -635,6 +660,7 @@ function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch { /* cleanup */ }
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
+          try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Resume exited with code ${resumeCode}. Your message was received but the agent could not continue the session.\n`); } catch {}
           activeProcesses.delete(id);
           completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering resume failed but original work completed', '', { processWorkItemFailure: false });
           return;
@@ -644,6 +670,7 @@ function spawnAgent(dispatchItem, config) {
       });
       resumeProc.on('error', (err) => {
         log('warn', `Steering re-spawn error for ${agentId}: ${err.message}`);
+        try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Spawn error: ${err.message}. Your message was received but the agent could not resume.\n`); } catch {}
         activeProcesses.delete(id);
         completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering re-spawn error but original work completed', '', { processWorkItemFailure: false });
       });
