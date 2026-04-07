@@ -85,17 +85,20 @@ async function forEachActivePr(config, token, callback) {
     if (activePrs.length === 0) continue;
 
     let projectUpdated = 0;
+    const orgBase = getAdoOrgBase(project);
 
-    for (const pr of activePrs) {
-      const prNum = (pr.id || '').replace('PR-', '');
-      if (!prNum) continue;
-
-      try {
-        const orgBase = getAdoOrgBase(project);
-        const updated = await callback(project, pr, prNum, orgBase);
-        if (updated) projectUpdated++;
-      } catch (err) {
-        log('warn', `Failed to poll status for ${pr.id}: ${err.message}`);
+    // Parallelize PR polling within each project (max 5 concurrent to avoid rate limits)
+    const CONCURRENCY = 5;
+    for (let i = 0; i < activePrs.length; i += CONCURRENCY) {
+      const batch = activePrs.slice(i, i + CONCURRENCY);
+      const results = await Promise.allSettled(batch.map(async (pr) => {
+        const prNum = (pr.id || '').replace('PR-', '');
+        if (!prNum) return false;
+        return callback(project, pr, prNum, orgBase);
+      }));
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) projectUpdated++;
+        if (r.status === 'rejected') log('warn', `PR poll error: ${r.reason?.message || r.reason}`);
       }
     }
 
