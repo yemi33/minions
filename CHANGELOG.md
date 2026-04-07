@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.455 (2026-04-07)
+
+### Fixes
+-  agents write one inbox file per task, not two
+
 ## 0.1.454 (2026-04-07)
 
 ### Fixes
