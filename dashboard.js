@@ -230,10 +230,10 @@ function getDiskVersion() {
     try { diskVersion = require('@yemi33/minions/package.json').version; } catch {}
   }
   let diskCommit = null;
-  // First try .minions-commit (written by minions init from source repo), then fall back to git
-  try { diskCommit = fs.readFileSync(path.join(MINIONS_DIR, '.minions-commit'), 'utf8').trim() || null; } catch {}
+  // Prefer git (authoritative for repo-based dev), fall back to .minions-commit (installed copies)
+  try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
   if (!diskCommit) {
-    try { diskCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: MINIONS_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
+    try { diskCommit = fs.readFileSync(path.join(MINIONS_DIR, '.minions-commit'), 'utf8').trim() || null; } catch {}
   }
   _diskVersionCache = { diskVersion, diskCommit };
   _diskVersionCacheTs = now;
