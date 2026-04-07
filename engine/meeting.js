@@ -221,12 +221,14 @@ function collectMeetingFindings(meetingId, agentId, roundName, output) {
     meeting.completedAt = new Date().toISOString();
 
     // Write transcript to inbox so agents learn from it (slug-based dedup)
-    const config = queries.getConfig();
-    const agents = config.agents || {};
-    const transcript = meeting.transcript.map(t =>
-      `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
-    ).join('\n\n---\n\n');
-    shared.writeToInbox('meeting', meetingId, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+    try {
+      const config = queries.getConfig();
+      const agents = config.agents || {};
+      const transcript = meeting.transcript.map(t =>
+        `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
+      ).join('\n\n---\n\n');
+      shared.writeToInbox('meeting', meetingId, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+    } catch (e) { log('warn', `Meeting ${meetingId} inbox write: ${e.message}`); }
 
     log('info', `Meeting ${meetingId} completed — transcript written to inbox`);
     saveMeeting(meeting);
@@ -390,11 +392,13 @@ function checkMeetingTimeouts(config) {
       meeting.completedAt = new Date().toISOString();
 
       // Write transcript to inbox (same as normal conclusion path)
-      const agents = config.agents || {};
-      const transcript = meeting.transcript.map(t =>
-        `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
-      ).join('\n\n---\n\n');
-      shared.writeToInbox('meeting', meeting.id, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+      try {
+        const agents = config.agents || {};
+        const transcript = meeting.transcript.map(t =>
+          `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
+        ).join('\n\n---\n\n');
+        shared.writeToInbox('meeting', meeting.id, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+      } catch (e) { log('warn', `Meeting ${meeting.id} inbox write: ${e.message}`); }
 
       saveMeeting(meeting);
     }
