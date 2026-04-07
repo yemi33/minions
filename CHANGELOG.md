@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.514 (2026-04-07)
+
+### Features
+-  PRD view shows decomposed children inline under parent item
+
+### Fixes
+-  retroactively recover failed work items that have linked PRs
+-  decomposed items count as done in PRD progress and plan status
+
 ## 0.1.511 (2026-04-07)
 
 ### Features
