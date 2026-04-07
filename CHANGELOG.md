@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.485 (2026-04-07)
+
+### Fixes
+-  remove redundant project listing from page title
+
 ## 0.1.484 (2026-04-07)
 
 ### Fixes
