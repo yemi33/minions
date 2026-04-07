@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.499 (2026-04-07)
+
+### Features
+- strengthen CC dispatch contract with domain terminology mapping
+
 ## 0.1.498 (2026-04-07)
 
 ### Features
