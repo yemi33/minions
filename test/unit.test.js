@@ -5247,9 +5247,11 @@ async function testMeetings() {
       'Should reject (no output) and log a warning');
   });
 
-  await test('conclusion timeout ends meeting without conclusion', () => {
-    assert.ok(meetingSrc.includes('concluding') && meetingSrc.includes('ended without conclusion'),
-      'Should end meeting if conclusion round times out');
+  await test('conclusion timeout auto-summarizes from findings and debate', () => {
+    assert.ok(meetingSrc.includes('concluding') && meetingSrc.includes('auto-summarizing'),
+      'Should auto-summarize when conclusion round times out');
+    assert.ok(meetingSrc.includes("meeting.conclusion = {") || meetingSrc.includes('meeting.conclusion ='),
+      'Should write a synthesized conclusion on timeout');
   });
 
   // CC retry button

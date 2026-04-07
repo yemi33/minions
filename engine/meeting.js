@@ -375,10 +375,27 @@ function checkMeetingTimeouts(config) {
       meeting.roundStartedAt = new Date().toISOString();
       saveMeeting(meeting);
     } else if (meeting.status === 'concluding') {
-      log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — ending meeting without conclusion`);
-      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'timeout', content: 'Conclusion round timed out — meeting ended without conclusion', at: new Date().toISOString() });
+      log('warn', `Meeting ${meeting.id}: conclusion round timed out after ${Math.round(elapsed / 60000)}min — auto-summarizing`);
+      // Synthesize a conclusion from available findings and debate rather than leaving it empty
+      const findingsSummary = Object.entries(meeting.findings || {}).map(([agent, f]) =>
+        `**${(config.agents || {})[agent]?.name || agent}**: ${(f.content || '').slice(0, 200)}`
+      ).join('\n');
+      const debateSummary = Object.entries(meeting.debate || {}).map(([agent, d]) =>
+        `**${(config.agents || {})[agent]?.name || agent}**: ${(d.content || '').slice(0, 200)}`
+      ).join('\n');
+      const autoConclusion = `*Auto-generated — conclusion round timed out.*\n\n## Key Findings\n${findingsSummary || '(none)'}\n\n## Debate Summary\n${debateSummary || '(none)'}`;
+      meeting.conclusion = { content: autoConclusion, agent: 'system', submittedAt: new Date().toISOString() };
+      meeting.transcript.push({ round: meeting.round, agent: 'system', type: 'conclusion', content: autoConclusion, at: new Date().toISOString() });
       meeting.status = 'completed';
       meeting.completedAt = new Date().toISOString();
+
+      // Write transcript to inbox (same as normal conclusion path)
+      const agents = config.agents || {};
+      const transcript = meeting.transcript.map(t =>
+        `### ${agents[t.agent]?.name || t.agent} (${t.type}, Round ${t.round})\n\n${t.content}`
+      ).join('\n\n---\n\n');
+      shared.writeToInbox('meeting', meeting.id, `# Meeting Transcript: ${meeting.title}\n\n${transcript}`);
+
       saveMeeting(meeting);
     }
   }
