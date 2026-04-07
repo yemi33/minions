@@ -1371,7 +1371,8 @@ function syncPrdFromPrs(config) {
     for (const project of allProjects) {
       const wiPath = shared.projectWorkItemsPath(project);
       const items = safeJson(wiPath) || [];
-      const hasReconcilable = items.some(wi => (wi.status === WI_STATUS.PENDING || wi.status === WI_STATUS.FAILED) && !wi._pr);
+      const hasReconcilable = items.some(wi =>
+        (wi.status === WI_STATUS.PENDING && !wi._pr) || wi.status === WI_STATUS.FAILED);
       if (!hasReconcilable) continue;
       let reconciled = 0;
       const reconciledItems = mutateJsonFileLocked(wiPath, data => {
@@ -1388,7 +1389,7 @@ function syncPrdFromPrs(config) {
       }
     }
     if (totalReconciled > 0) {
-      log('info', `PR sync: reconciled ${totalReconciled} pending work item(s) to done`);
+      log('info', `PR sync: reconciled ${totalReconciled} work item(s) to done`);
     }
   } catch (err) {
     // Non-fatal — log and continue
