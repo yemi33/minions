@@ -117,8 +117,9 @@ function ccAddMessage(role, html, skipSave) {
   div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
     (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
   div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
+  const wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
   el.appendChild(div);
-  requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+  if (wasNearBottom || isUser) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
   if (!skipSave) {
     _ccMessages.push({ role, html });
     ccSaveState();
@@ -160,7 +161,7 @@ function _renderQueueIndicator() {
     el.innerHTML = escHtml(m) + '<div style="font-size:9px;opacity:0.7;font-style:italic;margin-top:2px">queued</div>';
     msgs.appendChild(el);
   });
-  msgs.scrollTop = msgs.scrollHeight;
+  if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
 }
 
 async function _ccDoSend(message, skipUserMsg) {
@@ -659,7 +660,7 @@ async function ccExecuteAction(action) {
   }
 
   msgs.appendChild(status);
-  msgs.scrollTop = msgs.scrollHeight;
+  if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
   refresh();
 }
 
