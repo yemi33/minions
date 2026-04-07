@@ -2121,6 +2121,34 @@ async function testStateIntegrity() {
       'log rotation should NOT use tight > 2000 threshold');
   });
 
+  await test('Log buffering batches writes and flushLogs drains buffer', () => {
+    const shared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    // Verify buffer and flushLogs are exported
+    assert.ok(Array.isArray(shared._logBuffer), '_logBuffer should be an exported array');
+    assert.ok(typeof shared.flushLogs === 'function', 'flushLogs should be exported');
+    // Verify ENGINE_DEFAULTS has buffer config
+    assert.strictEqual(shared.ENGINE_DEFAULTS.logFlushInterval, 5000,
+      'logFlushInterval should default to 5000ms');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.logBufferSize, 50,
+      'logBufferSize should default to 50 entries');
+    // Source-level: log() pushes to buffer, not directly to mutateJsonFileLocked
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('_logBuffer.push(entry)'),
+      'log() should push entries to in-memory buffer');
+    assert.ok(src.includes('_flushLogBuffer()'),
+      'log() should call _flushLogBuffer when threshold exceeded');
+    assert.ok(src.includes('logData.push(...entries)'),
+      'flush should batch-append all entries in a single lock acquisition');
+    assert.ok(src.includes("clearInterval(_logFlushTimer)"),
+      'flushLogs should clear the flush timer');
+  });
+
+  await test('Graceful shutdown calls flushLogs before exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('shared.flushLogs()'),
+      'graceful shutdown should call shared.flushLogs() to drain buffered log entries');
+  });
+
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('mutateJsonFileLocked'),

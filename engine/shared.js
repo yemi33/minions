@@ -18,18 +18,54 @@ function ts() { return new Date().toISOString(); }
 function logTs() { return new Date().toLocaleTimeString(); }
 function dateStamp() { return new Date().toISOString().slice(0, 10); }
 
+// ── Log Buffering ──────────────────────────────────────────────────────────
+// Buffer log entries in memory and flush to disk periodically to reduce lock
+// contention (~139 calls/tick → 1 lock acquisition per flush).
+const _logBuffer = [];
+let _logFlushTimer = null;
+
 function log(level, msg, meta = {}) {
   const entry = { timestamp: ts(), level, message: msg, ...meta };
+  // Console output remains immediate
   console.log(`[${logTs()}] [${level}] ${msg}`);
 
+  _logBuffer.push(entry);
+
+  // Start the flush timer lazily on first buffered entry
+  if (!_logFlushTimer) {
+    _logFlushTimer = setInterval(() => {
+      _flushLogBuffer();
+    }, ENGINE_DEFAULTS.logFlushInterval);
+    // Unref so the timer doesn't keep the process alive during shutdown
+    if (_logFlushTimer.unref) _logFlushTimer.unref();
+  }
+
+  // Flush immediately when buffer exceeds threshold
+  if (_logBuffer.length >= ENGINE_DEFAULTS.logBufferSize) {
+    _flushLogBuffer();
+  }
+}
+
+function _flushLogBuffer() {
+  if (_logBuffer.length === 0) return;
+  const entries = _logBuffer.splice(0);
   try {
     mutateJsonFileLocked(LOG_PATH, (logData) => {
       if (!Array.isArray(logData)) logData = logData?.entries || [];
-      logData.push(entry);
+      logData.push(...entries);
       if (logData.length >= 2500) logData.splice(0, logData.length - 2000);
       return logData;
     }, { defaultValue: [] });
   } catch { /* logging should never crash the caller */ }
+}
+
+/** Flush buffered log entries to disk. Call during graceful shutdown to drain the buffer. */
+function flushLogs() {
+  _flushLogBuffer();
+  if (_logFlushTimer) {
+    clearInterval(_logFlushTimer);
+    _logFlushTimer = null;
+  }
 }
 
 // ── File I/O ─────────────────────────────────────────────────────────────────
@@ -441,6 +477,8 @@ const ENGINE_DEFAULTS = {
   pipelineApiRetries: 2, // max attempts for pipeline API calls
   pipelineApiRetryDelay: 2000, // ms delay between pipeline API retries
   versionCheckInterval: 3600000, // 1 hour — how often to check npm for updates (ms)
+  logFlushInterval: 5000, // 5s — how often to flush buffered log entries to disk
+  logBufferSize: 50, // flush immediately when buffer exceeds this many entries
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
@@ -729,5 +767,7 @@ module.exports = {
   killGracefully,
   killImmediate,
   LOCK_STALE_MS,
+  flushLogs,
+  _logBuffer, // exported for testing
 };
 
