@@ -293,7 +293,7 @@ function spawnAgent(dispatchItem, config) {
       log('info', `Reusing existing worktree for ${branchName}: ${existingWt}`);
       try { exec(`git fetch origin "${branchName}"`, { ..._gitOpts, cwd: rootDir }); } catch (e) { log('warn', 'git: ' + e.message); }
       try { exec(`git pull origin "${branchName}"`, { ..._gitOpts, cwd: existingWt }); } catch (e) { log('warn', 'git: ' + e.message); }
-    } else if (['meeting', 'ask', 'explore'].includes(type)) {
+    } else if (['meeting', 'ask', 'explore', 'plan-to-prd', 'plan'].includes(type)) {
       // Read-only tasks — no worktree needed, run in rootDir
       log('info', `${type}: read-only task, no worktree needed — running in rootDir`);
       branchName = null;
