@@ -194,6 +194,11 @@ function checkTimeouts(config) {
                 blockingTimeout = Math.max(heartbeatTimeout, bashTimeout + 60000);
                 isBlocking = true;
               }
+              // Agent (subagent) tool call — parent waits silently for child to complete
+              if (name === 'Agent') {
+                blockingTimeout = Math.max(heartbeatTimeout, 1800000); // 30min for subagents
+                isBlocking = true;
+              }
               break; // only check the most recent tool_use
             } catch { /* JSON parse — line may not be valid JSON */ }
           }
