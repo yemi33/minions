@@ -326,7 +326,7 @@ function renderPrdProgress(prog) {
     });
 
     const statusColor = (s) => {
-      if (s === 'done') return 'var(--green)';
+      if (s === 'done' || s === 'decomposed') return 'var(--green)';
       if (s === 'dispatched') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'paused') return 'var(--muted)';
@@ -381,6 +381,20 @@ function renderPrdProgress(prog) {
           ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
             return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:underline;cursor:pointer" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>';
           }).join(' ') + '</div>' : '') +
+          (i.status === 'decomposed' ? (function() {
+            var children = (window._lastWorkItems || []).filter(function(w) { return w.parent_id === i.id; });
+            if (!children.length) return '';
+            return '<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">' +
+              children.map(function(c) {
+                var cAgent = c.dispatched_to ? (agentData.find(function(a) { return a.id === c.dispatched_to; }) || {}) : null;
+                return '<div style="font-size:9px;display:flex;align-items:center;gap:4px;padding:1px 0">' +
+                  statusBadge(c.status) +
+                  '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml((c.title || '').replace('Implement: ', '').slice(0, 40)) + '</span>' +
+                  (cAgent ? '<span style="font-size:8px;color:var(--muted)">' + (cAgent.emoji || '') + '</span>' : '') +
+                '</div>';
+              }).join('') +
+            '</div>';
+          })() : '') +
         '</div>';
       }
       html += '</div>';
