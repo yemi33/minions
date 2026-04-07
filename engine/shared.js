@@ -600,7 +600,7 @@ function projectRoot(project) {
 function projectStateDir(project) {
   const name = project.name || path.basename(project.localPath);
   const dir = path.join(MINIONS_DIR, 'projects', name);
-  if (!require('fs').existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -705,7 +705,6 @@ function getPrLinks() {
   // Primary source: derive from all projects/*/pull-requests.json prdItems
   const projectsDir = path.join(MINIONS_DIR, 'projects');
   try {
-    const fs = require('fs');
     for (const d of fs.readdirSync(projectsDir, { withFileTypes: true })) {
       if (!d.isDirectory()) continue;
       try {
@@ -721,7 +720,7 @@ function getPrLinks() {
   } catch { /* projects dir missing */ }
   // Fallback: static pr-links.json for entries not covered above
   try {
-    const static_ = JSON.parse(require('fs').readFileSync(PR_LINKS_PATH, 'utf8'));
+    const static_ = JSON.parse(fs.readFileSync(PR_LINKS_PATH, 'utf8'));
     for (const [k, v] of Object.entries(static_)) {
       if (!links[k]) links[k] = v;
     }
