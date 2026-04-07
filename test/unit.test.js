@@ -5685,6 +5685,9 @@ async function main() {
 
     // Dashboard resilience: safeFetch, auto-reload, CC reset
     await testDashboardResilience();
+
+    // Test isolation verification (must be LAST — checks no pollution from earlier tests)
+    await testIsolationVerification();
   } finally {
     cleanupTmpDirs();
   }
@@ -8544,6 +8547,76 @@ async function testDashboardResilience() {
       'toggleCommandCenter must reference cc-overlay');
     assert.ok(ccSrc.includes("overlay.style.display"),
       'toggleCommandCenter must toggle overlay display');
+  });
+}
+
+// ─── Test Isolation Verification ────────────────────────────────────────────
+
+async function testIsolationVerification() {
+  console.log('\n── Test Isolation Verification ──');
+
+  await test('MINIONS_DIR is overridable via MINIONS_TEST_DIR env var', () => {
+    process.env.MINIONS_TEST_DIR = '/tmp/test-isolation-check';
+    delete require.cache[require.resolve('../engine/shared')];
+    const testShared = require('../engine/shared');
+    assert.strictEqual(testShared.MINIONS_DIR, '/tmp/test-isolation-check');
+    delete process.env.MINIONS_TEST_DIR;
+    delete require.cache[require.resolve('../engine/shared')];
+    require('../engine/shared');
+  });
+
+  await test('createTestMinionsDir creates full isolated directory structure', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      assert.ok(testShared.MINIONS_DIR !== path.resolve(__dirname, '..'),
+        'MINIONS_DIR should point to temp dir');
+      for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'projects', 'notes/inbox', 'agents']) {
+        assert.ok(fs.existsSync(path.join(testShared.MINIONS_DIR, d)), 'Missing dir: ' + d);
+      }
+      assert.ok(fs.existsSync(path.join(testShared.MINIONS_DIR, 'config.json')));
+      assert.ok(fs.existsSync(path.join(testShared.MINIONS_DIR, 'engine', 'dispatch.json')));
+    } finally { restore(); }
+  });
+
+  await test('createTestMinionsDir restore returns to real MINIONS_DIR', () => {
+    const realDir = shared.MINIONS_DIR;
+    const restore = createTestMinionsDir();
+    restore();
+    assert.strictEqual(require('../engine/shared').MINIONS_DIR, realDir);
+  });
+
+  await test('no _test-* files in real prd/ after test run', () => {
+    const testFiles = fs.readdirSync(path.join(shared.MINIONS_DIR, 'prd')).filter(f => f.startsWith('_test-'));
+    assert.strictEqual(testFiles.length, 0, 'Found: ' + testFiles.join(', '));
+  });
+
+  await test('no _test-* files in real prd/archive/ after test run', () => {
+    const dir = path.join(shared.MINIONS_DIR, 'prd', 'archive');
+    if (!fs.existsSync(dir)) return;
+    const testFiles = fs.readdirSync(dir).filter(f => f.startsWith('_test-'));
+    assert.strictEqual(testFiles.length, 0, 'Found: ' + testFiles.join(', '));
+  });
+
+  await test('no test agent IDs in metrics.json', () => {
+    const metrics = shared.safeJson(path.join(shared.MINIONS_DIR, 'engine', 'metrics.json')) || {};
+    const bad = Object.keys(metrics).filter(k => k.startsWith('temp-') || k === 'agent1' || k.startsWith('_test'));
+    assert.strictEqual(bad.length, 0, 'Found: ' + bad.join(', '));
+  });
+
+  await test('updateMetrics guards against test agent IDs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes("temp-") && src.includes("agent1"), 'Should guard test IDs');
+  });
+
+  await test('shared.js uses MINIONS_TEST_DIR env override', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('MINIONS_TEST_DIR'), 'Should check env var');
+  });
+
+  await test('llm.js derives paths from shared.MINIONS_DIR', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('shared.MINIONS_DIR'), 'Should not hardcode path');
   });
 }
 
