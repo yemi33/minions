@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.491 (2026-04-07)
+
+### Fixes
+-  CC respects user scroll position — no auto-scroll when reading history
+-  steering feedback — toast notification, ensure polling resumes
+-  remove pipelines/ from git tracking — user-local config
+
 ## 0.1.488 (2026-04-07)
 
 ### Fixes
