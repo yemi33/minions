@@ -39,7 +39,7 @@ function killByPort(port) {
         const pid = line.trim().split(/\s+/).pop();
         if (pid && /^\d+$/.test(pid) && pid !== '0' && pid !== String(process.pid)) pids.add(pid);
       }
-      for (const pid of pids) try { process.kill(parseInt(pid)); } catch {}
+      for (const pid of pids) try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
     } else {
       execSync(`lsof -ti:${port} | xargs kill -9 2>/dev/null`, { timeout: 5000 });
     }
@@ -54,7 +54,7 @@ function killMinionsProcesses(patterns) {
       for (const line of out.split('\n')) {
         if (patterns.some(p => line.includes(p))) {
           const pid = line.split(',').pop()?.trim();
-          if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) try { process.kill(parseInt(pid)); } catch {}
+          if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
         }
       }
     } else {
@@ -529,10 +529,11 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 } else if (cmd === 'restart') {
   // Start both engine and dashboard — the go-to command after a reboot
   ensureInstalled();
-  // Stop engine if running
+  // Stop engine if running (graceful attempt)
   try { execSync(`node "${path.join(MINIONS_HOME, 'engine.js')}" stop`, { stdio: 'ignore', cwd: MINIONS_HOME }); } catch {}
-  // Kill existing dashboard — port-based is reliable across all setups
+  // Kill all existing engine/dashboard processes — handles crashed engines and orphan dashboards
   killByPort(7331);
+  killMinionsProcesses(['engine.js', 'dashboard.js']);
   const engineProc = spawn(process.execPath, [path.join(MINIONS_HOME, 'engine.js'), 'start'], {
     cwd: MINIONS_HOME, stdio: 'ignore', detached: true, windowsHide: true
   });
