@@ -211,15 +211,7 @@ function renderPlans(plans) {
       const actionTarget = prdFile || p.file;
       actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
         '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">Approve</button>' +
-        '<button class="plan-btn" style="color:var(--blue);border-color:var(--blue)" onclick="planDiscuss(\'' + escHtml(p.file) + '\')">Discuss &amp; Revise</button>' +
         '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
-      '</div>' +
-      '<div id="revise-input-' + escHtml(p.file).replace(/\./g, '-') + '" style="display:none">' +
-        '<textarea class="plan-feedback-input" placeholder="What should be changed? Be specific..." id="revise-feedback-' + escHtml(p.file).replace(/\./g, '-') + '"></textarea>' +
-        '<div class="plan-card-actions" style="margin-top:4px">' +
-          '<button class="plan-btn revise" onclick="planSubmitRevise(\'' + escHtml(p.file) + '\')">Submit Revision Request</button>' +
-          '<button class="plan-btn" onclick="planHideRevise(\'' + escHtml(p.file) + '\')">Cancel</button>' +
-        '</div>' +
       '</div>';
     } else if (isRevision) {
       actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
