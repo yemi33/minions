@@ -68,6 +68,73 @@ async function adoFetch(url, token, _retryCount = 0) {
   return JSON.parse(text);
 }
 
+/** Fetch raw text from ADO API (for build logs which aren't JSON). */
+async function adoFetchText(url, token) {
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
+  return res.text();
+}
+
+const BUILD_ERROR_LOG_MAX_LINES = 150;
+
+/**
+ * Fetch actual build/compiler error logs from ADO when a build fails.
+ * Extracts buildId from the failed status's targetUrl, queries the build timeline
+ * for failed tasks, and fetches their logs.
+ * Returns truncated log text or null if unavailable.
+ */
+async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token) {
+  try {
+    // Extract buildId from the targetUrl (e.g. .../_build/results?buildId=12345)
+    const targetUrl = failedStatus?.targetUrl || '';
+    const buildIdMatch = targetUrl.match(/buildId=(\d+)/);
+    if (!buildIdMatch) {
+      log('debug', `No buildId in targetUrl: ${targetUrl.slice(0, 120)}`);
+      return null;
+    }
+    const buildId = buildIdMatch[1];
+
+    // Fetch build timeline to find failed tasks
+    const timelineUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/timeline?api-version=7.1`;
+    const timeline = await adoFetch(timelineUrl, token);
+    if (!timeline?.records) return null;
+
+    // Find failed records that have logs
+    const failedRecords = timeline.records.filter(r =>
+      r.result === 'failed' && r.log?.id
+    );
+    if (failedRecords.length === 0) return null;
+
+    // Fetch logs for failed tasks (cap at 3 to limit API calls)
+    const logParts = [];
+    for (const record of failedRecords.slice(0, 3)) {
+      try {
+        const logUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/logs/${record.log.id}?api-version=7.1`;
+        const text = await adoFetchText(logUrl, token);
+        if (text) {
+          logParts.push(`--- ${record.name || 'Task'} ---\n${text}`);
+        }
+      } catch { /* skip individual log fetch failures */ }
+    }
+
+    if (logParts.length === 0) return null;
+
+    // Join and truncate to last N lines
+    const combined = logParts.join('\n\n');
+    const lines = combined.split('\n');
+    if (lines.length > BUILD_ERROR_LOG_MAX_LINES) {
+      return `... (truncated, showing last ${BUILD_ERROR_LOG_MAX_LINES} lines)\n` +
+        lines.slice(-BUILD_ERROR_LOG_MAX_LINES).join('\n');
+    }
+    return combined;
+  } catch (e) {
+    log('warn', `Failed to fetch ADO build error log: ${e.message}`);
+    return null;
+  }
+}
+
 // ─── Shared PR Polling Loop ──────────────────────────────────────────────────
 
 /**
@@ -164,6 +231,7 @@ async function pollPrStatus(config) {
         if (pr.buildStatus && pr.buildStatus !== 'none') {
           delete pr.buildStatus;
           delete pr.buildFailReason;
+          delete pr.buildErrorLog;
           delete pr._buildFailNotified;
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
@@ -273,8 +341,21 @@ async function pollPrStatus(config) {
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
-      if (buildStatus !== 'failing') delete pr._buildFailNotified;
+      if (buildStatus !== 'failing') {
+        delete pr._buildFailNotified;
+        delete pr.buildErrorLog;
+      }
       updated = true;
+
+      // Fetch actual compiler/build error logs when transitioning to failing
+      if (buildStatus === 'failing') {
+        const failedStatusObj = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
+        const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token);
+        if (errorLog) {
+          pr.buildErrorLog = errorLog;
+          log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
+        }
+      }
     }
 
     return updated;
