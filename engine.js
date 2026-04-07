@@ -830,8 +830,8 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 // ─── Inbox Consolidation (extracted to engine/consolidation.js) ──────────────
 
 const { consolidateInbox } = require('./engine/consolidation');
-const { pollPrStatus, pollPrHumanComments, reconcilePrs } = require('./engine/ado');
-const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs } = require('./engine/github');
+const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview } = require('./engine/ado');
+const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
 
@@ -1291,6 +1291,27 @@ function discoverFromPrs(config, project) {
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+
+      // Pre-dispatch live vote check — cached reviewStatus may be stale (poll lag ~6 min)
+      try {
+        const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
+        const liveStatus = checkFn(pr, project);
+        if (liveStatus && liveStatus !== 'pending') {
+          log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was pending) — skipping review`);
+          pr.reviewStatus = liveStatus;
+          // Persist so next tick doesn't re-check
+          try {
+            mutateJsonFileLocked(projectPrPath(project), data => {
+              if (!Array.isArray(data)) return data;
+              const target = data.find(p => p.id === pr.id);
+              if (target) target.reviewStatus = liveStatus;
+              return data;
+            });
+          } catch {}
+          continue;
+        }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
 

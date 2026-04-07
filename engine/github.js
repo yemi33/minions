@@ -466,9 +466,37 @@ async function reconcilePrs(config) {
   }
 }
 
+/**
+ * Fetch live review status for a single PR from GitHub. Returns 'approved', 'changes-requested',
+ * 'waiting', or 'pending'. Returns null if the check fails.
+ */
+function checkLiveReviewStatus(pr, project) {
+  try {
+    const slug = getRepoSlug(project);
+    if (!slug) return null;
+    const prNum = (pr.id || '').replace(/^PR-/, '');
+    const reviews = ghApi(`/pulls/${prNum}/reviews`, slug);
+    if (!reviews || !Array.isArray(reviews)) return null;
+    const latestByUser = new Map();
+    for (const r of reviews) {
+      if (r.state === 'COMMENTED') continue;
+      latestByUser.set(r.user?.login || '', r.state);
+    }
+    const states = [...latestByUser.values()];
+    if (states.some(s => s === 'CHANGES_REQUESTED')) return 'changes-requested';
+    if (states.some(s => s === 'APPROVED')) return 'approved';
+    if (states.length > 0) return 'pending';
+    return 'pending';
+  } catch (e) {
+    log('warn', `Live review check for ${pr.id}: ${e.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   pollPrStatus,
   pollPrHumanComments,
   reconcilePrs,
+  checkLiveReviewStatus,
 };
 

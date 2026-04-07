@@ -482,11 +482,39 @@ async function reconcilePrs(config) {
   }
 }
 
+/**
+ * Fetch live review status for a single PR from ADO (synchronous).
+ * Returns 'approved', 'changes-requested', 'waiting', or 'pending'.
+ * Returns null if the check fails (token unavailable, API error).
+ * Used as a pre-dispatch gate to avoid dispatching reviews for already-approved PRs.
+ */
+function checkLiveReviewStatus(pr, project) {
+  try {
+    const token = getAdoToken();
+    if (!token) return null;
+    const orgBase = shared.getAdoOrgBase(project);
+    const prNum = (pr.id || '').replace(/^PR-/, '');
+    const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
+    const result = exec(`curl -s -H "Authorization: Bearer ${token}" "${url}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true });
+    const prData = JSON.parse(result);
+    const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
+    if (votes.length === 0) return 'pending';
+    if (votes.some(v => v === -10)) return 'changes-requested';
+    if (votes.some(v => v >= 5)) return 'approved';
+    if (votes.some(v => v === -5)) return 'waiting';
+    return 'pending';
+  } catch (e) {
+    log('warn', `Live review check for ${pr.id}: ${e.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
   pollPrStatus,
   pollPrHumanComments,
   reconcilePrs,
+  checkLiveReviewStatus,
 };
 
