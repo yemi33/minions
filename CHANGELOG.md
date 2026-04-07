@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.502 (2026-04-07)
+
+### Features
+-  explicitly-assigned work items bypass concurrency cap
+- strengthen CC dispatch contract with domain terminology mapping
+
+### Fixes
+-  correct stale dispatch priority comment
+-  comprehensive steering failure handling with user-visible feedback
+
 ## 0.1.498 (2026-04-07)
 
 ### Features
