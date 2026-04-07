@@ -3589,6 +3589,12 @@ async function testBuildFixRetryCap() {
       'Settings UI should have a maxBuildFixAttempts input field');
   });
 
+  await test('dashboard.js handleSettingsUpdate processes maxBuildFixAttempts', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes("maxBuildFixAttempts: [1, 10]"),
+      'Server-side numericFields should include maxBuildFixAttempts with bounds [1, 10]');
+  });
+
   await test('escalation only fires once per PR (buildFixEscalated guard)', () => {
     // The escalation alert + flag write should only happen when !pr.buildFixEscalated
     assert.ok(engineSrc.includes('!pr.buildFixEscalated'),
