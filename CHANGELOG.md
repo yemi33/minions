@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.451 (2026-04-07)
+
+### Features
+-  notification dot on Notes & KB sidebar when sweep completes/fails
+
+### Fixes
+-  plan archive/unarchive now optimistic — immediate UI feedback
+-  meeting conclude timeout synthesizes conclusion instead of null
+-  track ADO head commit for push detection — unblocks re-review cycle
+-  block all fix dispatches while awaiting re-review after a fix
+-  prevent double-dispatch — dedup by work item ID and dispatchKey
+-  pipeline agent is optional — set only when user explicitly requests
+-  remove hardcoded agent assignments from all pipeline JSONs
+-  pipeline tasks don't hardcode agent — any available agent picks up work
+
 ## 0.1.441 (2026-04-06)
 
 ### Fixes
