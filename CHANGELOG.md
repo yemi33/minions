@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.459 (2026-04-07)
+
+### Fixes
+-  steering no longer causes pending/active flip
+
 ## 0.1.458 (2026-04-07)
 
 ### Fixes
