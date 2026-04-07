@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.544 (2026-04-07)
+
+### Features
+- remove inline require('fs') calls from engine/shared.js (#463)
+
+### Fixes
+-  await checkLiveReviewStatus in pre-dispatch vote check (closes #462) (#469)
+
 ## 0.1.542 (2026-04-07)
 
 ### Fixes
