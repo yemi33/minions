@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.479 (2026-04-07)
+
+### Features
+- Buffer log() writes to reduce lock contention
+- Cache getStatus() JSON serialization and add mtime-based invalidation
+- Add mtime-based caching to getPrdInfo()
+- Optimize getAgentStatus() to read only head+tail of live-output.log
+- Fix unlocked metrics.json in lifecycle.js post-merge hook
+- Fix unlocked metrics.json read-modify-write in trackEngineUsage
+- Limit SSE initial live-stream payload to last 64KB
+
+### Fixes
+-  add optional chaining for config.agents in updatePrAfterReview
+-  pass config to updatePrAfterReview to fix test failure
+
 ## 0.1.473 (2026-04-07)
 
 ### Fixes
