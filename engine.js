@@ -878,6 +878,16 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
     if (wi.status !== WI_STATUS.PENDING && wi.status !== WI_STATUS.FAILED) continue;
     if (onlyIds && !onlyIds.has(wi.id)) continue;
 
+    // Short-circuit: failed item already has a PR attached — mark done directly (#407)
+    if (wi.status === WI_STATUS.FAILED && wi._pr) {
+      wi.status = WI_STATUS.DONE;
+      if (wi.failReason) delete wi.failReason;
+      if (wi.failedAt) delete wi.failedAt;
+      if (!wi.completedAt) wi.completedAt = ts();
+      reconciled++;
+      continue;
+    }
+
     let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
     if (!exactPr) {
       const linkedPrId = Object.keys(prLinks).find(prId => prLinks[prId] === wi.id);
@@ -893,7 +903,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
       // Clear failure artifacts if reconciling a previously failed item
       if (wi.failReason) delete wi.failReason;
       if (wi.failedAt) delete wi.failedAt;
-      if (!wi.completedAt) wi.completedAt = new Date().toISOString();
+      if (!wi.completedAt) wi.completedAt = ts();
       reconciled++;
     }
   }

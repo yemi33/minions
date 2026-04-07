@@ -431,7 +431,30 @@ function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'KB watchdog check: ' + e.message); }
 
-  // 6. Migrate legacy work-item statuses to canonical 'done'
+  // 6a. Reconcile failed work items that have an attached PR (#407)
+  // If a work item is 'failed' but already has _pr, it should be 'done'.
+  for (const project of projects) {
+    try {
+      const wiPath = projectWorkItemsPath(project);
+      const items = safeJson(wiPath) || [];
+      let reconciled = 0;
+      for (const item of items) {
+        if (item.status === shared.WI_STATUS.FAILED && item._pr) {
+          item.status = shared.WI_STATUS.DONE;
+          if (item.failReason) delete item.failReason;
+          if (item.failedAt) delete item.failedAt;
+          if (!item.completedAt) item.completedAt = shared.ts();
+          reconciled++;
+        }
+      }
+      if (reconciled > 0) {
+        safeWrite(wiPath, items);
+        log('info', `Reconciled ${reconciled} failed-with-PR item(s) → done in ${project.name}`);
+      }
+    } catch (e) { log('warn', 'reconcile failed-with-PR: ' + e.message); }
+  }
+
+  // 6b. Migrate legacy work-item statuses to canonical 'done'
   // in-pr, implemented, complete → done (one-time correction per item)
   const LEGACY_DONE_ALIASES = new Set(['in-pr', 'implemented', 'complete']);
   for (const project of projects) {

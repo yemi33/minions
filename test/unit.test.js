@@ -2526,6 +2526,25 @@ async function testLegacyStatusMigration() {
     assert.ok(src.includes("item.status = shared.WI_STATUS.DONE") || src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = shared.WI_STATUS.DONE") || src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
   });
+
+  await test('cleanup.js reconciles failed items with attached PR to done (#407)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('WI_STATUS.FAILED && item._pr'),
+      'cleanup should check for failed items with _pr');
+    assert.ok(src.includes('Reconciled') && src.includes('failed-with-PR'),
+      'cleanup should log reconciliation of failed-with-PR items');
+  });
+
+  await test('syncPrdFromPrs filter includes failed items with _pr (#407)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fnBody = src.slice(
+      src.indexOf('function syncPrdFromPrs('),
+      src.indexOf('\nfunction', src.indexOf('function syncPrdFromPrs(') + 1)
+    );
+    // The hasReconcilable filter must include failed items regardless of _pr
+    assert.ok(fnBody.includes('wi.status === WI_STATUS.FAILED)'),
+      'syncPrdFromPrs filter must include all failed items (not just those without _pr)');
+  });
 }
 
 // ─── engine/preflight.js Tests ───────────────────────────────────────────────
