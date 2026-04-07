@@ -294,7 +294,16 @@ async function _continuePipeline(id, stageId, btn) {
     if (res.ok) {
       showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
       if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
+      // Auto-refresh the modal to show pipeline progressing
       setTimeout(function() { openPipelineDetail(id); }, 2000);
+      var pollCount = 0;
+      var pollTimer = setInterval(function() {
+        pollCount++;
+        if (pollCount > 15 || !document.getElementById('modal')?.classList?.contains('open')) {
+          clearInterval(pollTimer); return;
+        }
+        openPipelineDetail(id);
+      }, 4000);
     } else {
       var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown'));
       if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
