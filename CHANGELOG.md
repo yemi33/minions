@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.463 (2026-04-07)
+
+### Fixes
+-  clear stale session.json on resume failure, hang kill, and orphan
+
 ## 0.1.462 (2026-04-07)
 
 ### Fixes
