@@ -2852,6 +2852,101 @@ async function testMutateJsonFileLocked() {
   });
 }
 
+// ─── shared.js — mutateWorkItems / mutatePullRequests Tests ─────────────────
+
+async function testMutateWorkItemsAndPullRequests() {
+  console.log('\n── shared.js — mutateWorkItems / mutatePullRequests ──');
+
+  await test('mutateWorkItems basic read-modify-write', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'work-items.json');
+    shared.safeWrite(fp, [{ id: 'W-1', status: 'pending' }]);
+    shared.mutateWorkItems(fp, (items) => {
+      items[0].status = 'done';
+    });
+    const result = shared.safeJson(fp);
+    assert.ok(Array.isArray(result), 'result should be an array');
+    assert.strictEqual(result[0].status, 'done');
+  });
+
+  await test('mutateWorkItems uses default [] when file does not exist', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'nonexistent-wi.json');
+    shared.mutateWorkItems(fp, (items) => {
+      items.push({ id: 'W-new', status: 'pending' });
+    });
+    const result = shared.safeJson(fp);
+    assert.ok(Array.isArray(result), 'should create an array');
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].id, 'W-new');
+  });
+
+  await test('mutateWorkItems concurrent calls serialize correctly', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'concurrent-wi.json');
+    shared.safeWrite(fp, [{ id: 'counter', count: 0 }]);
+    // Two sequential mutations — both should apply (no lost updates)
+    shared.mutateWorkItems(fp, (items) => { items[0].count++; });
+    shared.mutateWorkItems(fp, (items) => { items[0].count++; });
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result[0].count, 2, 'both mutations should apply');
+  });
+
+  await test('mutatePullRequests basic read-modify-write', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'pull-requests.json');
+    shared.safeWrite(fp, [{ id: 'PR-1', status: 'active' }]);
+    shared.mutatePullRequests(fp, (prs) => {
+      prs[0].status = 'merged';
+    });
+    const result = shared.safeJson(fp);
+    assert.ok(Array.isArray(result), 'result should be an array');
+    assert.strictEqual(result[0].status, 'merged');
+  });
+
+  await test('mutatePullRequests uses default [] when file does not exist', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'nonexistent-pr.json');
+    shared.mutatePullRequests(fp, (prs) => {
+      prs.push({ id: 'PR-new', status: 'active' });
+    });
+    const result = shared.safeJson(fp);
+    assert.ok(Array.isArray(result), 'should create an array');
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].id, 'PR-new');
+  });
+
+  await test('mutatePullRequests concurrent calls serialize correctly', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'concurrent-pr.json');
+    shared.safeWrite(fp, []);
+    // Two sequential mutations — both should append
+    shared.mutatePullRequests(fp, (prs) => { prs.push({ id: 'PR-1' }); });
+    shared.mutatePullRequests(fp, (prs) => { prs.push({ id: 'PR-2' }); });
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result.length, 2, 'both mutations should apply');
+    assert.strictEqual(result[0].id, 'PR-1');
+    assert.strictEqual(result[1].id, 'PR-2');
+  });
+
+  await test('mutateWorkItems returns the final data', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'return-wi.json');
+    const result = shared.mutateWorkItems(fp, (items) => {
+      items.push({ id: 'W-ret' });
+    });
+    assert.ok(Array.isArray(result), 'return value should be an array');
+    assert.strictEqual(result[0].id, 'W-ret');
+  });
+
+  await test('shared exports mutateWorkItems and mutatePullRequests', () => {
+    assert.ok(typeof shared.mutateWorkItems === 'function',
+      'shared should export mutateWorkItems');
+    assert.ok(typeof shared.mutatePullRequests === 'function',
+      'shared should export mutatePullRequests');
+  });
+}
+
 // ─── shared.js — safeWrite / backup / restore Tests ─────────────────────────
 
 async function testSafeWriteBackupRestore() {
@@ -5589,6 +5684,7 @@ async function main() {
     await testGitEnv();
     await testProjectPathHelpers();
     await testMutateJsonFileLocked();
+    await testMutateWorkItemsAndPullRequests();
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
