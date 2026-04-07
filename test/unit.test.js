@@ -6367,6 +6367,81 @@ async function testDashboardBugFixes() {
       'Should clamp tail to [1, 65536] range');
   });
 
+  // ── Live output reliability tests ──
+
+  await test('handleAgentLive reads tail bytes efficiently (not entire file)', () => {
+    const liveFn = src.slice(src.indexOf('async function handleAgentLive'));
+    const liveFnEnd = liveFn.indexOf('\n  async function', 50);
+    const liveBody = liveFn.slice(0, liveFnEnd > -1 ? liveFnEnd : 800);
+    assert.ok(liveBody.includes('fs.openSync') || liveBody.includes('fs.readSync'),
+      'Should use fs.readSync for efficient tail reading (not safeRead of entire file)');
+    assert.ok(!liveBody.includes('safeRead(livePath)'),
+      'Should NOT read entire file with safeRead');
+  });
+
+  await test('handleAgentLive returns content and has fallback', () => {
+    const startIdx = src.indexOf('async function handleAgentLive(');
+    const liveBody = src.slice(startIdx, startIdx + 1200);
+    assert.ok(liveBody.includes('res.end(') && liveBody.includes('toString'),
+      'Should write buffer content to response');
+    assert.ok(liveBody.includes('No live output'),
+      'Should have fallback message when no log exists');
+  });
+
+  await test('handleAgentLive handles empty and missing files gracefully', () => {
+    const liveFn = src.slice(src.indexOf('async function handleAgentLive'));
+    const liveFnEnd = liveFn.indexOf('\n  async function', 50);
+    const liveBody = liveFn.slice(0, liveFnEnd > -1 ? liveFnEnd : 800);
+    assert.ok(liveBody.includes('.size === 0') || liveBody.includes('catch'),
+      'Should handle zero-byte or missing log file');
+  });
+
+  await test('live-stream.js renderLiveChatMessage parses all output formats', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('"type":"assistant"') || liveSrc.includes("type === 'assistant'"),
+      'Should parse assistant messages from stream-json');
+    assert.ok(liveSrc.includes('"tool_use"') || liveSrc.includes("type === 'tool_use'"),
+      'Should parse tool_use blocks');
+    assert.ok(liveSrc.includes('[human-steering]'),
+      'Should render human steering messages');
+    assert.ok(liveSrc.includes('[heartbeat]'),
+      'Should handle heartbeat lines');
+    assert.ok(liveSrc.includes('[steering-failed]') || liveSrc.includes('steering-failed'),
+      'Should handle steering failure notices');
+    assert.ok(liveSrc.includes('startsWith(\'{\')') || liveSrc.includes('startsWith("{")'),
+      'Should parse single JSON objects (stream-json format)');
+    assert.ok(liveSrc.includes('startsWith(\'[\')') || liveSrc.includes('startsWith("[")'),
+      'Should parse JSON arrays (json format)');
+  });
+
+  await test('live-stream.js polling resumes after steering', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('_steerInFlight = false'),
+      'Should reset _steerInFlight after steering completes');
+    assert.ok(liveSrc.includes('startLivePolling'),
+      'Should have startLivePolling to restart polling');
+  });
+
+  await test('engine.js writes heartbeat to live-output.log during agent run', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('[heartbeat]') && engineSrc.includes('appendFileSync') && engineSrc.includes('liveOutputPath'),
+      'Should periodically append heartbeat lines to live-output.log');
+    assert.ok(engineSrc.includes('setInterval') && engineSrc.includes('30000'),
+      'Heartbeat should fire every 30 seconds');
+  });
+
+  await test('engine.js writes header to live-output.log at spawn', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('# Live output for') || engineSrc.includes('Live output for'),
+      'Should write header with agent name and dispatch ID');
+  });
+
+  await test('engine.js steering failure writes to live-output.log', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('[steering-failed]'),
+      'Should write [steering-failed] to live-output.log on resume failure');
+  });
+
   // Bug #32: body.content validation
   await test('notes save validates content with null check instead of contradictory logic', () => {
     const notesFn = src.slice(src.indexOf('async function handleNotesSave'));

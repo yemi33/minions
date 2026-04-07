@@ -54,6 +54,13 @@ function renderLiveChatMessage(raw) {
       continue;
     }
 
+    // Steering failure notices
+    if (trimmed.startsWith('[steering-failed]')) {
+      const msg = trimmed.replace('[steering-failed] ', '');
+      el.innerHTML += '<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);color:var(--red);padding:6px 12px;border-radius:8px;margin:4px 0;font-size:11px">\u26A0 ' + escHtml(msg) + '</div>';
+      continue;
+    }
+
     // JSON array format (--output-format json)
     if (trimmed.startsWith('[')) {
       try {
