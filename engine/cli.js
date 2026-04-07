@@ -391,6 +391,7 @@ const commands = {
       if (e.activeProcesses.size === 0) {
         safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
         e.log('info', 'Graceful shutdown complete (no active agents)');
+        shared.flushLogs(); // drain buffered log entries before exit
         console.log('No active agents — stopped.');
         process.exit(0);
       }
@@ -404,6 +405,7 @@ const commands = {
           clearInterval(poll);
           safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
           e.log('info', 'Graceful shutdown complete (all agents finished)');
+          shared.flushLogs(); // drain buffered log entries before exit
           console.log('All agents finished — stopped.');
           process.exit(0);
         }
@@ -411,6 +413,7 @@ const commands = {
           clearInterval(poll);
           safeWrite(CONTROL_PATH, { state: 'stopped', stopped_at: e.ts() });
           e.log('warn', `Graceful shutdown timed out after ${timeout / 1000}s with ${e.activeProcesses.size} agent(s) still active`);
+          shared.flushLogs(); // drain buffered log entries before exit
           console.log(`Shutdown timeout (${timeout / 1000}s) — force exiting with ${e.activeProcesses.size} agent(s) still running.`);
           process.exit(1);
         }
