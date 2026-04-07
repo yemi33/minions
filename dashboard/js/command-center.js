@@ -327,8 +327,9 @@ async function _ccDoSend(message, skipUserMsg) {
       const retryId = 'cc-retry-' + Date.now();
       const isNetworkError = e.message === 'Failed to fetch' || e.message.includes('NetworkError');
       ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
-        (isNetworkError ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard may have restarted. Try again or click New Session.</div>' : '') +
+        (isNetworkError ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard connection lost. Reload the page to reconnect.</div>' : '') +
         '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
+        (isNetworkError ? ' <button onclick="location.reload()" style="margin-top:6px;padding:4px 12px;background:var(--orange);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">Reload Page</button>' : '') +
         ' <button onclick="ccNewSession()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
