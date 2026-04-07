@@ -123,14 +123,8 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
       let retries = (item.meta.item._retryCount || 0);
       try {
-        const wiPath = lifecycle().resolveWorkItemPath(item.meta);
-        if (wiPath) {
-          const items = safeJson(wiPath);
-          if (items && Array.isArray(items)) {
-            const wi = items.find(i => i.id === item.meta.item.id);
-            if (wi) retries = wi._retryCount || 0;
-          }
-        }
+        const wi = queries.getWorkItems().find(i => i.id === item.meta.item.id);
+        if (wi) retries = wi._retryCount || 0;
       } catch (e) { log('warn', 'read retry count: ' + e.message); }
       const maxRetries = ENGINE_DEFAULTS.maxRetries;
       if (retryableFailure && retries < maxRetries) {
@@ -174,13 +168,8 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           const config = getConfig();
           const failedId = item.meta.item.id;
           const blockedItems = [];
-          for (const p of getProjects(config)) {
-            const items = safeJson(projectWorkItemsPath(p)) || [];
-            items.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
-              .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
-          }
-          const centralItems = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
-          centralItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
+          const allItems = queries.getWorkItems(config);
+          allItems.filter(w => w.status === WI_STATUS.PENDING && (w.depends_on || []).includes(failedId))
             .forEach(w => blockedItems.push(`- \`${w.id}\` — ${w.title}`));
 
           writeInboxAlert(`failed-${failedId}`,
