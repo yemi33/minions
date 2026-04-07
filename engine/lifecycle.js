@@ -708,7 +708,8 @@ function updatePrAfterReview(agentId, pr, project, config) {
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
       const liveStatus = checkFn(pr, projectObj);
-      if (liveStatus) postReviewStatus = liveStatus;
+      // Use live status only if it's a decisive verdict (not 'pending' — review may not have propagated yet)
+      if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
 
