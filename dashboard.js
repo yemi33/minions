@@ -242,7 +242,7 @@ function getMcpServers() {
   try {
     const home = os.homedir();
     const claudeJsonPath = path.join(home, '.claude.json');
-    const data = JSON.parse(safeRead(claudeJsonPath) || '{}');
+    const data = safeJsonObj(claudeJsonPath);
     const servers = data.mcpServers || {};
     return Object.entries(servers).map(([name, cfg]) => ({
       name,
@@ -968,7 +968,7 @@ const server = http.createServer(async (req, res) => {
       }) || PROJECTS[0] || null;
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
-        const items = JSON.parse(safeRead(wiPath) || '[]');
+        const items = safeJsonArr(wiPath);
         const verify = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
         if (verify) {
           return jsonReply(res, 200, { ok: true, verifyId: verify.id });
@@ -1414,7 +1414,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-      const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+      const dispatch = safeJsonObj(dispatchPath);
       const active = dispatch.active || [];
       const cancelled = [];
 
@@ -1429,7 +1429,7 @@ const server = http.createServer(async (req, res) => {
           // Read PID first, then kill outside lock, then update status atomically
           let pidToKill = null;
           try {
-            const status = JSON.parse(safeRead(statusPath) || '{}');
+            const status = safeJsonObj(statusPath);
             pidToKill = status.pid || null;
           } catch { /* status unreadable */ }
           if (pidToKill) {
@@ -1787,7 +1787,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       { dir: path.join(PRD_DIR, 'archive'), archived: true },
     ];
     // Load work items to check for completed plan-to-prd conversions
-    const centralWi = JSON.parse(safeRead(path.join(MINIONS_DIR, 'work-items.json')) || '[]');
+    const centralWi = safeJsonArr(path.join(MINIONS_DIR, 'work-items.json'));
     const completedPrdFiles = new Set(
       centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
         .map(w => w.planFile)
@@ -2016,7 +2016,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
                 if (activeEntry) {
                   const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
                   try {
-                    const agentStatus = JSON.parse(safeRead(statusPath) || '{}');
+                    const agentStatus = safeJsonObj(statusPath);
                     if (agentStatus.pid) pidsToKill.push({ pid: agentStatus.pid, agent: activeEntry.agent, statusPath });
                   } catch { /* status unreadable */ }
                   killedAgents.add(activeEntry.agent);
@@ -2268,7 +2268,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Read PRD content before deleting to get source_plan for cleanup
       let prdSourcePlan = null;
       if (body.file.endsWith('.json')) {
-        try { prdSourcePlan = JSON.parse(safeRead(planPath) || '{}').source_plan || null; } catch {}
+        try { prdSourcePlan = safeJsonObj(planPath).source_plan || null; } catch {}
       }
       safeUnlink(planPath);
 
@@ -2447,7 +2447,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         sourcePlanFile = body.sourcePlan;
       } else {
         // Heuristic: find .md plan by matching prefix or by reading PRD's generated_from field
-        const prd = JSON.parse(safeRead(prdPath) || '{}');
+        const prd = safeJsonObj(prdPath);
         if (prd.source_plan) {
           sourcePlanFile = prd.source_plan;
         } else {
@@ -2733,7 +2733,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                 const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
                 for (const proj of PROJECTS) wiPaths.push(shared.projectWorkItemsPath(proj));
                 const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-                const dispatch = JSON.parse(safeRead(dispatchPath) || '{}');
+                const dispatch = safeJsonObj(dispatchPath);
                 const killedAgents = new Set();
                 const resetItemIds = new Set();
                 for (const wiPath of wiPaths) {
@@ -2751,7 +2751,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
                               // Read PID, kill outside lock, then update atomically
                               let pidToKill = null;
                               try {
-                                const st = JSON.parse(safeRead(statusPath) || '{}');
+                                const st = safeJsonObj(statusPath);
                                 pidToKill = st.pid || null;
                               } catch { /* status unreadable */ }
                               if (pidToKill) {
