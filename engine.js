@@ -602,12 +602,18 @@ function spawnAgent(dispatchItem, config) {
       });
 
       // Re-attach to existing tracking
-      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId });
+      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, _steeringAt: Date.now() });
 
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
       stderr = '';
       lastOutputAt = Date.now();
+
+      // Restart heartbeat for the resumed process
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = setInterval(() => {
+        try { fs.appendFileSync(liveOutputPath, `\n[heartbeat] running — no output for ${Math.round((Date.now() - lastOutputAt) / 1000)}s\n`); } catch {}
+      }, 30000);
 
       // Re-wire stdout/stderr handlers (same as original)
       resumeProc.stdout.on('data', (data) => {
@@ -626,11 +632,9 @@ function spawnAgent(dispatchItem, config) {
       // Re-wire close handler for the resumed process
       resumeProc.on('close', (resumeCode) => {
         if (resumeCode !== 0) {
-          // Resume failed — don't burn a retry slot. Complete the dispatch as success
-          // (the original work was already done up to the kill point) and let the
-          // work item be re-discovered on the next tick if still pending.
-          log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} — completing dispatch without error`);
+          log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
           activeProcesses.delete(id);
+          // Don't burn a retry slot — complete as success so work item stays done/dispatched
           completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering resume failed but original work completed', '', { processWorkItemFailure: false });
           return;
         }
