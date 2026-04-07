@@ -30,6 +30,44 @@ function getRepoSlug(project) {
   return `${org}/${repo}`;
 }
 
+// ─── Per-Repo Poll Backoff ──────────────────────────────────────────────────
+// Tracks consecutive poll failures per repo slug to avoid spamming logs when
+// a repo is inaccessible. Backoff doubles each failure: 2min, 4min, 8min, 16min, max 30min.
+const _ghPollBackoff = new Map(); // slug → { failures, backoffUntil }
+const GH_POLL_BACKOFF_BASE_MS = 2 * 60 * 1000; // 2 minutes (one poll cycle)
+const GH_POLL_BACKOFF_MAX_MS = 30 * 60 * 1000;  // 30 minutes cap
+
+/** Check if a repo slug is currently in backoff. Returns true if should skip. */
+function isSlugInBackoff(slug) {
+  const entry = _ghPollBackoff.get(slug);
+  if (!entry) return false;
+  return Date.now() < entry.backoffUntil;
+}
+
+/** Record a poll failure for a repo slug, applying exponential backoff. */
+function recordSlugFailure(slug) {
+  const existing = _ghPollBackoff.get(slug);
+  const failures = (existing?.failures || 0) + 1;
+  const backoffMs = Math.min(GH_POLL_BACKOFF_BASE_MS * Math.pow(2, failures - 1), GH_POLL_BACKOFF_MAX_MS);
+  _ghPollBackoff.set(slug, { failures, backoffUntil: Date.now() + backoffMs });
+  if (failures === 1) {
+    log('warn', `GitHub poll: repo ${slug} failed — will retry in ${Math.round(backoffMs / 1000)}s`);
+  } else {
+    log('warn', `GitHub poll: repo ${slug} failed ${failures} times — backoff ${Math.round(backoffMs / 1000)}s`);
+  }
+}
+
+/** Reset backoff for a repo slug after a successful poll. */
+function resetSlugBackoff(slug) {
+  if (_ghPollBackoff.has(slug)) {
+    const entry = _ghPollBackoff.get(slug);
+    if (entry.failures > 0) {
+      log('info', `GitHub poll: repo ${slug} recovered after ${entry.failures} failure(s)`);
+    }
+    _ghPollBackoff.delete(slug);
+  }
+}
+
 /** Run a `gh api` call and parse JSON result. Returns null on failure. */
 function ghApi(endpoint, slug) {
   try {
@@ -42,6 +80,20 @@ function ghApi(endpoint, slug) {
   }
 }
 
+/**
+ * Run a `gh api` call with per-slug backoff tracking. Returns null on failure.
+ * On success, resets the slug's backoff. On failure, increments it.
+ */
+function ghApiWithBackoff(endpoint, slug) {
+  const result = ghApi(endpoint, slug);
+  if (result === null) {
+    recordSlugFailure(slug);
+  } else {
+    resetSlugBackoff(slug);
+  }
+  return result;
+}
+
 // ─── Shared PR Polling Loop ─────────────────────────────────────────────────
 
 async function forEachActiveGhPr(config, callback) {
@@ -52,9 +104,20 @@ async function forEachActiveGhPr(config, callback) {
     const slug = getRepoSlug(project);
     if (!slug) continue;
 
+    // Skip projects in backoff (inaccessible repo)
+    if (isSlugInBackoff(slug)) continue;
+
     const prs = getPrs(project);
     const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
     if (activePrs.length === 0) continue;
+
+    // Probe repo accessibility before iterating PRs — avoids N warnings per inaccessible repo
+    const probe = ghApi('', slug);
+    if (probe === null) {
+      recordSlugFailure(slug);
+      continue;
+    }
+    resetSlugBackoff(slug);
 
     let projectUpdated = 0;
 
@@ -101,6 +164,7 @@ async function forEachActiveGhPr(config, callback) {
     const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
     if (!ghMatch) continue;
     const slug = ghMatch[1];
+    if (isSlugInBackoff(slug)) continue;
     const prNum = ghMatch[2];
     try {
       const updated = await callback(null, pr, prNum, slug);
@@ -370,9 +434,16 @@ async function reconcilePrs(config) {
     const slug = getRepoSlug(project);
     if (!slug) continue;
 
+    // Skip projects in backoff (inaccessible repo)
+    if (isSlugInBackoff(slug)) continue;
+
     // Fetch open PRs
     const prsData = ghApi('/pulls?state=open&per_page=100', slug);
-    if (!prsData || !Array.isArray(prsData)) continue;
+    if (!prsData || !Array.isArray(prsData)) {
+      recordSlugFailure(slug);
+      continue;
+    }
+    resetSlugBackoff(slug);
 
     const ghPrs = prsData.filter(pr => {
       const branch = pr.head?.ref || '';
@@ -498,5 +569,10 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
   checkLiveReviewStatus,
+  // Exported for testing
+  isSlugInBackoff,
+  recordSlugFailure,
+  resetSlugBackoff,
+  _ghPollBackoff,
 };
 

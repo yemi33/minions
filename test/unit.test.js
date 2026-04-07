@@ -7724,6 +7724,80 @@ async function testPrDuplicateRaceFix() {
     assert.ok(reconcileFn[0].includes('P-[a-z0-9]'), 'must match P- IDs');
   });
 
+  // ── GitHub poll backoff tests ──
+  await test('github.js exports backoff helpers for per-repo exponential backoff', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.ok(typeof gh.isSlugInBackoff === 'function', 'isSlugInBackoff must be exported');
+    assert.ok(typeof gh.recordSlugFailure === 'function', 'recordSlugFailure must be exported');
+    assert.ok(typeof gh.resetSlugBackoff === 'function', 'resetSlugBackoff must be exported');
+    assert.ok(gh._ghPollBackoff instanceof Map, '_ghPollBackoff must be a Map');
+  });
+
+  await test('github.js isSlugInBackoff returns false for unknown slugs', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    assert.strictEqual(gh.isSlugInBackoff('nonexistent/repo'), false);
+  });
+
+  await test('github.js recordSlugFailure puts slug into backoff', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-record';
+    gh._ghPollBackoff.delete(testSlug);
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh.isSlugInBackoff(testSlug), true, 'slug should be in backoff after failure');
+    const entry = gh._ghPollBackoff.get(testSlug);
+    assert.strictEqual(entry.failures, 1, 'first failure should set failures=1');
+    assert.ok(entry.backoffUntil > Date.now(), 'backoffUntil should be in the future');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js recordSlugFailure applies exponential backoff', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-exponential';
+    gh._ghPollBackoff.delete(testSlug);
+    gh.recordSlugFailure(testSlug);
+    const first = gh._ghPollBackoff.get(testSlug);
+    gh.recordSlugFailure(testSlug);
+    const second = gh._ghPollBackoff.get(testSlug);
+    assert.strictEqual(second.failures, 2, 'second failure should set failures=2');
+    // Second backoff should be longer than first (2^1 vs 2^0 multiplier)
+    const firstDuration = first.backoffUntil - Date.now();
+    const secondDuration = second.backoffUntil - Date.now();
+    assert.ok(secondDuration > firstDuration, 'backoff duration should increase with failures');
+    gh._ghPollBackoff.delete(testSlug); // cleanup
+  });
+
+  await test('github.js resetSlugBackoff clears backoff state', () => {
+    const gh = require(path.join(MINIONS_DIR, 'engine', 'github.js'));
+    const testSlug = '_test/backoff-reset';
+    gh.recordSlugFailure(testSlug);
+    assert.strictEqual(gh.isSlugInBackoff(testSlug), true);
+    gh.resetSlugBackoff(testSlug);
+    assert.strictEqual(gh.isSlugInBackoff(testSlug), false, 'slug should not be in backoff after reset');
+    assert.strictEqual(gh._ghPollBackoff.has(testSlug), false, 'entry should be deleted');
+  });
+
+  await test('github.js forEachActiveGhPr skips projects in backoff', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('isSlugInBackoff(slug)'), 'forEachActiveGhPr must check isSlugInBackoff');
+    assert.ok(src.includes('recordSlugFailure(slug)'), 'must call recordSlugFailure on probe failure');
+    assert.ok(src.includes('resetSlugBackoff(slug)'), 'must call resetSlugBackoff on probe success');
+  });
+
+  await test('github.js reconcilePrs skips projects in backoff', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    const reconcileFn = src.match(/async function reconcilePrs[\s\S]*?^}/m);
+    assert.ok(reconcileFn, 'reconcilePrs must exist');
+    assert.ok(reconcileFn[0].includes('isSlugInBackoff'), 'reconcilePrs must check backoff');
+    assert.ok(reconcileFn[0].includes('recordSlugFailure'), 'reconcilePrs must record failures');
+    assert.ok(reconcileFn[0].includes('resetSlugBackoff'), 'reconcilePrs must reset on success');
+  });
+
+  await test('github.js backoff has 30-minute cap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('30 * 60 * 1000'), 'backoff must have 30-minute cap');
+    assert.ok(src.includes('GH_POLL_BACKOFF_MAX_MS'), 'must use named constant for max backoff');
+  });
+
   await test('ado.js reconcilePrs branch regex matches all work item ID prefixes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
     const reconcileFn = src.match(/async function reconcilePrs[\s\S]*?^}/m);
