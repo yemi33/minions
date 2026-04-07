@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.486 (2026-04-07)
+
+### Features
+-  steering shows acknowledgment status — Sent → waiting → acknowledged
+
 ## 0.1.485 (2026-04-07)
 
 ### Fixes
