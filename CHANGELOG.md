@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.474 (2026-04-07)
+
+### Features
+- Limit SSE initial live-stream payload to last 64KB
+
+### Fixes
+-  pass config to updatePrAfterReview to fix test failure
+
 ## 0.1.473 (2026-04-07)
 
 ### Fixes
