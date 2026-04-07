@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.461 (2026-04-07)
+
+### Fixes
+-  plan card click opens modal immediately with loading state
+-  remove non-functional Discuss & Revise button from plan cards
+-  steering no longer causes pending/active flip
+
 ## 0.1.458 (2026-04-07)
 
 ### Fixes
