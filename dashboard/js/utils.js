@@ -60,6 +60,8 @@ function copyLlmText(btn) {
  */
 function renderMd(s) {
   if (!s) return '';
+  // Truncate excessively long inputs to prevent regex backtracking
+  if (s.length > 10000) s = s.slice(0, 10000) + '\n\n…(truncated)';
   let html = escHtml(s);
 
   // 1. Extract code blocks and inline code into placeholders (protect from other transforms)

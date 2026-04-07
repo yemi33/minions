@@ -431,7 +431,7 @@ function openWorkItemDetail(id) {
     '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
     '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
     '</div>';
-  html += field('Description', '<div style="font-size:12px">' + renderMd((item.description || item.title || '—').slice(0, 3000)) + '</div>');
+  html += field('Description', '<div style="font-size:12px">' + renderMd((item.description || item.title || '—').slice(0, 1000)) + '</div>');
   html += field('Agent', escHtml(item.dispatched_to || item.agent || 'Auto'));
   html += field('Source', escHtml(item._source || 'central'));
   if (item.created) html += field('Created', escHtml(new Date(item.created).toLocaleString()));
