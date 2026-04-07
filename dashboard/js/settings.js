@@ -1,6 +1,10 @@
 // settings.js — Settings panel functions extracted from dashboard.html
 
 async function openSettings() {
+  document.getElementById('modal-title').textContent = 'Settings';
+  document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+  document.getElementById('modal').classList.add('open');
+
   let data;
   try {
     const res = await fetch('/api/settings');
