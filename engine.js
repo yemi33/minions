@@ -917,15 +917,19 @@ function autoCleanPrdWorkItems(prdFile, config) {
   const deletedIds = [];
   for (const wiPath of wiPaths) {
     try {
-      const items = safeJson(wiPath);
-      if (!items) continue;
-      const filtered = items.filter(w => {
-        if (w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED)) {
-          deletedIds.push(w.id); return false;
-        }
-        return true;
-      });
-      if (filtered.length < items.length) safeWrite(wiPath, filtered);
+      const peek = safeJson(wiPath);
+      if (!peek) continue;
+      const hasMatch = peek.some(w => w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED));
+      if (hasMatch) {
+        mutateJsonFileLocked(wiPath, (items) => {
+          return items.filter(w => {
+            if (w.sourcePlan === prdFile && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED)) {
+              deletedIds.push(w.id); return false;
+            }
+            return true;
+          });
+        }, { defaultValue: [] });
+      }
     } catch (e) { log('warn', 'auto-clean PRD work items: ' + e.message); }
   }
   if (deletedIds.length > 0) {
@@ -999,8 +1003,11 @@ function materializePlansAsWorkItems(config) {
         const recorded = plan.sourcePlanModifiedAt ? new Date(plan.sourcePlanModifiedAt).getTime() : null;
         if (!recorded) {
           // First time seeing this plan — record baseline mtime (no clean needed)
-          plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
-          safeWrite(path.join(PRD_DIR, file), plan);
+          const baselineMtime = new Date(sourceMtime).toISOString();
+          mutateJsonFileLocked(path.join(PRD_DIR, file), (p) => {
+            p.sourcePlanModifiedAt = baselineMtime;
+            return p;
+          });
         } else if (sourceMtime > recorded) {
           // Source plan changed — auto-clean pending/failed items so they re-materialize with updated data
           log('info', `Source plan ${plan.source_plan} updated — re-syncing PRD ${file}`);
@@ -1042,33 +1049,41 @@ function materializePlansAsWorkItems(config) {
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
                 const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-                const centralItems = safeJson(centralWiPath) || [];
-                const alreadyQueued = centralItems.some(w =>
-                  w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
-                );
-                if (!alreadyQueued) {
-                  centralItems.push({
-                    id: 'W-' + shared.uid(),
-                    title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
-                    type: 'plan-to-prd',
-                    priority: 'high',
-                    description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${file}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
-                    status: 'pending',
-                    created: ts(),
-                    createdBy: 'engine:plan-revision',
-                    project: targetProject.name,
-                    planFile: plan.source_plan,
-                    _targetPrdFile: file,
-                  });
-                  safeWrite(centralWiPath, centralItems);
-                  log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
-                }
+                const newItem = {
+                  id: 'W-' + shared.uid(),
+                  title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
+                  type: 'plan-to-prd',
+                  priority: 'high',
+                  description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${file}\nSource plan was revised while PRD was awaiting approval — regenerating.${completedContext}`,
+                  status: 'pending',
+                  created: ts(),
+                  createdBy: 'engine:plan-revision',
+                  project: targetProject.name,
+                  planFile: plan.source_plan,
+                  _targetPrdFile: file,
+                };
+                mutateJsonFileLocked(centralWiPath, (items) => {
+                  const alreadyQueued = items.some(w =>
+                    w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
+                  );
+                  if (!alreadyQueued) items.push(newItem);
+                  return items;
+                }, { defaultValue: [] });
+                log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
               }
             }
             continue; // Old PRD deleted — skip safeWrite below
           }
 
-          safeWrite(path.join(PRD_DIR, file), plan);
+          const updatedMtime = plan.sourcePlanModifiedAt;
+          const syncTs = plan.lastSyncedFromPlan;
+          const isStale = plan.planStale;
+          mutateJsonFileLocked(path.join(PRD_DIR, file), (p) => {
+            p.sourcePlanModifiedAt = updatedMtime;
+            p.lastSyncedFromPlan = syncTs;
+            if (isStale) p.planStale = true;
+            return p;
+          });
         }
       } catch (e) { log('warn', 'plan staleness check: ' + e.message); }
     }
@@ -1078,10 +1093,14 @@ function materializePlansAsWorkItems(config) {
     const planStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
     if (planStatus === 'awaiting-approval') {
       if (config.engine?.autoApprovePlans) {
-        plan.status = 'approved';
-        plan.approvedAt = new Date().toISOString();
-        plan.approvedBy = 'auto-mode';
-        safeWrite(path.join(PRD_DIR, file), plan);
+        const approvedAt = new Date().toISOString();
+        mutateJsonFileLocked(path.join(PRD_DIR, file), (p) => {
+          p.status = 'approved';
+          p.approvedAt = approvedAt;
+          p.approvedBy = 'auto-mode';
+          return p;
+        });
+        plan.status = 'approved'; // keep in-memory copy in sync for rest of loop
         log('info', `Auto-approved plan: ${file}`);
       } else {
         continue; // Skip — waiting for human approval
@@ -1156,29 +1175,29 @@ function materializePlansAsWorkItems(config) {
     let totalCreated = 0;
     for (const [projName, { project, items: projItems }] of itemsByProject) {
       const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
-      const existingItems = safeJson(wiPath) || [];
-      let created = 0;
-      const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
-
-      for (const item of projItems) {
-        // Skip if already materialized — work item ID = PRD item ID, check all projects
-        let alreadyExists = existingItems.some(w => w.id === item.id);
-        if (!alreadyExists) {
-          for (const p of allProjects) {
-            if (p.name === projName) continue;
-            const otherItems = safeJson(projectWorkItemsPath(p)) || [];
-            if (otherItems.some(w => w.id === item.id)) { alreadyExists = true; break; }
-          }
+      // Pre-check: collect IDs already materialized across all projects
+      const allExistingIds = new Set();
+      for (const p of allProjects) {
+        for (const w of (safeJson(projectWorkItemsPath(p)) || [])) {
+          if (w.id) allExistingIds.add(w.id);
         }
-        if (alreadyExists) continue;
-        // Skip items involved in dependency cycles
+      }
+      for (const w of (safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [])) {
+        if (w.id) allExistingIds.add(w.id);
+      }
+
+      // Build new items to add
+      const newItems = [];
+      const newlyCreatedIds = new Set();
+      for (const item of projItems) {
+        if (allExistingIds.has(item.id)) continue;
         if (cycleSet.has(item.id)) continue;
 
-        const id = item.id; // Work item ID = PRD item ID — no indirection
+        const id = item.id;
         const complexity = item.estimated_complexity || 'medium';
         const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
 
-        const newItem = {
+        newItems.push({
           id,
           title: `Implement: ${item.name}`,
           type: complexity === 'large' ? 'implement:large' : 'implement',
@@ -1192,34 +1211,40 @@ function materializePlansAsWorkItems(config) {
           branchStrategy: plan.branch_strategy || 'parallel',
           featureBranch: plan.feature_branch || null,
           project: item.project || plan.project || null,
-        };
-        existingItems.push(newItem);
+        });
         newlyCreatedIds.add(id);
-        created++;
       }
 
-      if (created > 0) {
-        // Reconciliation: exact prdItems match only, scoped to newly created items
-        const allPrsForReconcile = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
-        const reconciled = reconcileItemsWithPrs(existingItems, allPrsForReconcile, { onlyIds: newlyCreatedIds });
-        if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as done → ${projName}`);
-
-        // PRD removal sync: cancel pending work items whose PRD item was removed from the plan
+      if (newItems.length > 0) {
         const currentPrdIds = new Set(plan.missing_features.map(f => f.id));
-        let cancelled = 0;
-        for (const wi of existingItems) {
-          if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
-          if (!currentPrdIds.has(wi.id)) {
-            wi.status = WI_STATUS.CANCELLED;
-            wi.cancelledAt = ts();
-            wi.cancelReason = `PRD item removed from ${file}`;
-            cancelled++;
-          }
-        }
-        if (cancelled > 0) log('info', `Plan sync: cancelled ${cancelled} item(s) removed from ${file} → ${projName}`);
+        const allPrsForReconcile = allProjects.flatMap(p => safeJson(projectPrPath(p)) || []);
 
-        safeWrite(wiPath, existingItems);
-        log('info', `Plan discovery: created ${created} work item(s) from ${file} → ${projName}`);
+        mutateJsonFileLocked(wiPath, (existingItems) => {
+          // Add new items (re-check dedup inside lock)
+          for (const ni of newItems) {
+            if (!existingItems.some(w => w.id === ni.id)) existingItems.push(ni);
+          }
+
+          // Reconciliation: exact prdItems match only, scoped to newly created items
+          const reconciled = reconcileItemsWithPrs(existingItems, allPrsForReconcile, { onlyIds: newlyCreatedIds });
+          if (reconciled > 0) log('info', `Plan reconciliation: marked ${reconciled} item(s) as done → ${projName}`);
+
+          // PRD removal sync: cancel pending work items whose PRD item was removed from the plan
+          let cancelled = 0;
+          for (const wi of existingItems) {
+            if (wi.status !== WI_STATUS.PENDING || wi.sourcePlan !== file) continue;
+            if (!currentPrdIds.has(wi.id)) {
+              wi.status = WI_STATUS.CANCELLED;
+              wi.cancelledAt = ts();
+              wi.cancelReason = `PRD item removed from ${file}`;
+              cancelled++;
+            }
+          }
+          if (cancelled > 0) log('info', `Plan sync: cancelled ${cancelled} item(s) removed from ${file} → ${projName}`);
+
+          return existingItems;
+        }, { defaultValue: [] });
+        log('info', `Plan discovery: created ${newItems.length} work item(s) from ${file} → ${projName}`);
       }
       totalCreated += created;
     }
@@ -1255,11 +1280,11 @@ function clearPendingHumanFeedbackFlag(projectMeta, prId) {
   if (!prId) return;
   try {
     const prsPath = projectPrPath(projectMeta);
-    const prs = safeJson(prsPath) || [];
-    const target = prs.find(p => p.id === prId);
-    if (!target?.humanFeedback?.pendingFix) return;
-    target.humanFeedback.pendingFix = false;
-    safeWrite(prsPath, prs);
+    mutateJsonFileLocked(prsPath, (prs) => {
+      const target = prs.find(p => p.id === prId);
+      if (target?.humanFeedback?.pendingFix) target.humanFeedback.pendingFix = false;
+      return prs;
+    }, { defaultValue: [] });
   } catch (e) { log('warn', 'clear pending human feedback flag: ' + e.message); }
 }
 
@@ -1407,12 +1432,11 @@ function discoverFromPrs(config, project) {
         // Mark notified to prevent duplicate alerts
         try {
           const prPath = projectPrPath(project);
-          const prs = safeJson(prPath) || [];
-          const target = prs.find(p => p.id === pr.id);
-          if (target) {
-            target._buildFailNotified = true;
-            safeWrite(prPath, prs);
-          }
+          mutateJsonFileLocked(prPath, (prs) => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target._buildFailNotified = true;
+            return prs;
+          }, { defaultValue: [] });
         } catch (e) { log('warn', 'mark build fail notified: ' + e.message); }
       }
     }
@@ -1489,7 +1513,11 @@ function discoverFromWorkItems(config, project) {
     if (item._resumedAt) {
       dispatchCooldowns.delete(key);
       delete item._resumedAt;
-      safeWrite(projectWorkItemsPath(project), items);
+      mutateJsonFileLocked(projectWorkItemsPath(project), (freshItems) => {
+        const wi = freshItems.find(i => i.id === item.id);
+        if (wi) delete wi._resumedAt;
+        return freshItems;
+      }, { defaultValue: [] });
     }
     if (isAlreadyDispatched(key)) {
       if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
@@ -1638,13 +1666,21 @@ function discoverFromWorkItems(config, project) {
   }
 
   // Write back updated statuses (always, since we mark items dispatched before newWork check)
-  if (newWork.length > 0) {
+  if (newWork.length > 0 || needsWrite) {
     const workItemsPath = projectWorkItemsPath(project);
-    safeWrite(workItemsPath, items);
-    for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
+    mutateJsonFileLocked(workItemsPath, (freshItems) => {
+      // Merge in-memory mutations by item ID
+      const byId = new Map(items.map(i => [i.id, i]));
+      for (let idx = 0; idx < freshItems.length; idx++) {
+        const updated = byId.get(freshItems[idx].id);
+        if (updated) freshItems[idx] = updated;
+      }
+      return freshItems;
+    }, { defaultValue: [] });
+    if (newWork.length > 0) {
+      for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);
+    }
   }
-
-  if (needsWrite) safeWrite(projectWorkItemsPath(project), items);
 
   const skipTotal = skipped.gated + skipped.noAgent;
   if (skipTotal > 0) {
@@ -1740,7 +1776,7 @@ function materializeSpecsAsWorkItems(config, project) {
 
   const wiPath = projectWorkItemsPath(project);
   const existingItems = safeJson(wiPath) || [];
-  let created = 0;
+  const newItems = [];
 
   for (const pr of mergedPrs) {
     const prBranch = (pr.branch || '').toLowerCase();
@@ -1763,7 +1799,7 @@ function materializeSpecsAsWorkItems(config, project) {
 
       const newId = 'SP-' + shared.uid();
 
-      existingItems.push({
+      newItems.push({
         id: newId,
         type: 'implement',
         title: `Implement: ${info.title}`,
@@ -1775,15 +1811,20 @@ function materializeSpecsAsWorkItems(config, project) {
         sourceSpec: doc.file,
         sourcePr: pr.id
       });
-      created++;
+      existingItems.push(newItems[newItems.length - 1]); // keep in-memory dedup working
       log('info', `Spec discovery: created ${newId} "${info.title}" from PR ${pr.id} in ${project.name}`);
     }
 
     tracker.processedPrs[pr.id] = { processedAt: ts(), matched: true, specs: matchedSpecs.map(d => d.file) };
   }
 
-  if (created > 0) {
-    safeWrite(wiPath, existingItems);
+  if (newItems.length > 0) {
+    mutateJsonFileLocked(wiPath, (items) => {
+      for (const ni of newItems) {
+        if (!items.some(i => i.sourceSpec === ni.sourceSpec)) items.push(ni);
+      }
+      return items;
+    }, { defaultValue: [] });
   }
   safeWrite(trackerPath, tracker);
 }
@@ -2080,7 +2121,16 @@ function discoverCentralWorkItems(config) {
     } catch (err) { log('warn', `discoverCentralWorkItems: skipping ${item.id}: ${err.message}`); }
   }
 
-  if (newWork.length > 0) safeWrite(centralPath, items);
+  if (newWork.length > 0) {
+    mutateJsonFileLocked(centralPath, (freshItems) => {
+      const byId = new Map(items.map(i => [i.id, i]));
+      for (let idx = 0; idx < freshItems.length; idx++) {
+        const updated = byId.get(freshItems[idx].id);
+        if (updated) freshItems[idx] = updated;
+      }
+      return freshItems;
+    }, { defaultValue: [] });
+  }
   return newWork;
 }
 
@@ -2128,8 +2178,7 @@ function discoverWork(config) {
     if (scheduledWork.length > 0) {
       const { createMeeting, getMeetings } = require('./engine/meeting');
       const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      const items = safeJson(centralPath) || [];
-      let added = 0;
+      const newScheduledItems = [];
       for (const item of scheduledWork) {
         if (item.type === WORK_TYPE.MEETING) {
           // Create a real multi-agent meeting instead of a single-agent work item
@@ -2138,14 +2187,20 @@ function discoverWork(config) {
           const meeting = createMeeting({ title: item.title, agenda: item.description, participants });
           log('info', `Scheduled meeting created: ${item._scheduleId} → ${meeting.id} (${participants.length} participants)`);
         } else {
-          if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED)) {
-            items.push(item);
-            added++;
-            log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
-          }
+          newScheduledItems.push(item);
         }
       }
-      if (added > 0) safeWrite(centralPath, items);
+      if (newScheduledItems.length > 0) {
+        mutateJsonFileLocked(centralPath, (items) => {
+          for (const item of newScheduledItems) {
+            if (!items.some(i => i._scheduleId === item._scheduleId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED)) {
+              items.push(item);
+              log('info', `Scheduled task fired: ${item._scheduleId} → ${item.title}`);
+            }
+          }
+          return items;
+        }, { defaultValue: [] });
+      }
     }
   } catch (e) { log('warn', 'discover scheduled work: ' + e.message); }
 
@@ -2250,7 +2305,7 @@ async function tickInner() {
   }
 
   // Write heartbeat so dashboard can detect stale engine
-  try { safeWrite(CONTROL_PATH, { ...control, heartbeat: Date.now() }); } catch (e) { log('warn', 'write heartbeat: ' + e.message); }
+  try { mutateJsonFileLocked(CONTROL_PATH, (c) => { c.heartbeat = Date.now(); return c; }); } catch (e) { log('warn', 'write heartbeat: ' + e.message); }
 
   const config = getConfig();
   tickCount++;
@@ -2400,7 +2455,16 @@ async function tickInner() {
               }
             }
 
-            if (changed) safeWrite(wiPath, items);
+            if (changed) {
+              mutateJsonFileLocked(wiPath, (freshItems) => {
+                const byId = new Map(items.map(i => [i.id, i]));
+                for (let idx = 0; idx < freshItems.length; idx++) {
+                  const updated = byId.get(freshItems[idx].id);
+                  if (updated) freshItems[idx] = updated;
+                }
+                return freshItems;
+              }, { defaultValue: [] });
+            }
           } catch (e) { log('warn', 'stall recovery process project: ' + e.message); }
         }
       }
@@ -2488,19 +2552,21 @@ async function tickInner() {
               ? path.join(ENGINE_DIR, '..', 'work-items.json')
               : item.meta.project?.name ? projectWorkItemsPath({ name: item.meta.project.name, localPath: item.meta.project.localPath }) : null;
             if (wiPath) {
-              const items = safeJson(wiPath) || [];
-              const wi = items.find(i => i.id === item.meta.item.id);
-              if (wi && wi.status === WI_STATUS.DISPATCHED) {
-                // completeDispatch didn't update the work item — re-queue manually
-                wi.status = WI_STATUS.PENDING;
-                wi._retryCount = (wi._retryCount || 0) + 1;
-                wi._lastRetryReason = 'spawnAgent returned null';
-                wi._lastRetryAt = ts();
-                delete wi.dispatched_at;
-                delete wi.dispatched_to;
-                safeWrite(wiPath, items);
-                log('info', `Re-queued ${item.meta.item.id} as pending (retry ${wi._retryCount})`);
-              }
+              const itemId = item.meta.item.id;
+              mutateJsonFileLocked(wiPath, (items) => {
+                const wi = items.find(i => i.id === itemId);
+                if (wi && wi.status === WI_STATUS.DISPATCHED) {
+                  // completeDispatch didn't update the work item — re-queue manually
+                  wi.status = WI_STATUS.PENDING;
+                  wi._retryCount = (wi._retryCount || 0) + 1;
+                  wi._lastRetryReason = 'spawnAgent returned null';
+                  wi._lastRetryAt = ts();
+                  delete wi.dispatched_at;
+                  delete wi.dispatched_to;
+                  log('info', `Re-queued ${itemId} as pending (retry ${wi._retryCount})`);
+                }
+                return items;
+              }, { defaultValue: [] });
             }
           } catch (e) { log('warn', `Failed to re-queue work item after spawn failure: ${e.message}`); }
         }
