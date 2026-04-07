@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.533 (2026-04-07)
+
+### Fixes
+- convert blocking spawnSync/execSync to async execAsync (#447)
+
 ## 0.1.532 (2026-04-07)
 
 ### Fixes
