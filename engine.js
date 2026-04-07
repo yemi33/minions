@@ -1104,8 +1104,8 @@ function materializePlansAsWorkItems(config) {
           // Approved/paused/completed PRDs: flag stale — user must click Re-execute to regenerate
           if (prdStatus && prdStatus !== 'awaiting-approval') {
             plan.planStale = true;
-            safeWrite(path.join(PRD_DIR, file), plan);
             log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can re-execute from dashboard`);
+            // Falls through to safeWrite below (writes planStale + sourcePlanModifiedAt together)
           }
 
           // Awaiting-approval PRDs: auto-regenerate (no work started yet, safe to replace)
