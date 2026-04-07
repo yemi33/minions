@@ -132,7 +132,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', project: i.planProject || '', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
     // Collect all unique projects across items in this group
     for (const p of (i.projects || [])) { if (p && !grouped[key]._projects.includes(p)) grouped[key]._projects.push(p); }
@@ -497,7 +497,7 @@ function openArchivedPrdModal() {
       return '<div class="plan-card" style="cursor:pointer;margin-bottom:8px" onclick="showArchivedPrdDetail(\'' + escHtml(g.file) + '\')">' +
         '<div class="plan-card-title" style="font-size:13px">' + escHtml(g.summary || g.file) + '</div>' +
         '<div class="plan-card-meta">' +
-          (g.project ? '<span>' + escHtml(g.project) + '</span>' : '') +
+          (g._projects.length > 0 ? g._projects.map(function(p) { return '<span>' + escHtml(p) + '</span>'; }).join(' ') : '') +
           '<span>' + g.items.length + ' items</span>' +
           '<span style="color:var(--green)">' + done + ' done</span>' +
           (failed ? '<span style="color:var(--red)">' + failed + ' failed</span>' : '') +
