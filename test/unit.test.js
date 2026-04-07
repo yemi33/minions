@@ -2186,6 +2186,20 @@ async function testStateIntegrity() {
       'dispatch loop must re-queue work item with retry metadata on spawn failure');
   });
 
+  await test('spawnAgent atomically stamps dispatched_to on work item (#402)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the section near "Move pending -> active" where the stamp should be
+    const anchorIdx = src.indexOf('Move pending -> active');
+    assert.ok(anchorIdx > 0, 'expected Move pending -> active comment in engine.js');
+    const section = src.slice(anchorIdx, anchorIdx + 2000);
+    assert.ok(section.includes('mutateJsonFileLocked(wiPath'),
+      'spawnAgent must use mutateJsonFileLocked to atomically write dispatched_to after pending→active');
+    assert.ok(section.includes('wi.dispatched_to = wi.dispatched_to || agentId'),
+      'spawnAgent must stamp dispatched_to with agent ID');
+    assert.ok(section.includes('wi.dispatched_at = wi.dispatched_at || startedAt'),
+      'spawnAgent must stamp dispatched_at with start time');
+  });
+
   await test('Log rotation uses batch threshold (>= 2500 → 2000)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     assert.ok(src.includes('logData.length >= 2500'),
