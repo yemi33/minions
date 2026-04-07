@@ -2303,7 +2303,7 @@ async function testStateIntegrity() {
   await test('Work-item dispatched sync writes work items before PRD status sync', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const markIdx = src.indexOf("prdSyncQueue.push({ id: item.id, sourcePlan: item.sourcePlan });");
-    const writeIdx = src.indexOf('safeWrite(workItemsPath, items);');
+    const writeIdx = src.indexOf('mutateWorkItems(projectWorkItemsPath(project), () => items)');
     const syncIdx = src.indexOf("for (const s of prdSyncQueue) syncPrdItemStatus(s.id, 'dispatched', s.sourcePlan);");
     assert.ok(markIdx > 0 && writeIdx > 0 && syncIdx > 0,
       'discoverFromWorkItems should queue PRD sync, then write work items, then sync PRD');
