@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.513 (2026-04-07)
+
+### Fixes
+-  retroactively recover failed work items that have linked PRs
+-  decomposed items count as done in PRD progress and plan status
+
 ## 0.1.511 (2026-04-07)
 
 ### Features
