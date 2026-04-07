@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.552 (2026-04-07)
+
+### Features
+-  temporary pin-to-top for inbox and KB items
+
 ## 0.1.551 (2026-04-07)
 
 ### Fixes
