@@ -595,11 +595,50 @@ function getWorkItems(config) {
 
 // ── PRD Progress ────────────────────────────────────────────────────────────
 
+// Module-level caches for getPrdInfo() — avoids re-reading unchanged PRD files
+const _prdFileCache = new Map();       // filePath → { mtimeMs, plan }
+let _prdDirMtimes = { prd: 0, archive: 0 }; // directory mtimes to detect new/deleted files
+let _prdResultCache = null;            // cached final result
+let _prdResultInputHash = '';          // hash of all input mtimes to detect any change
+
+/**
+ * Collect mtimes of all input files that affect getPrdInfo() output.
+ * Returns a string hash for quick equality check plus the dir mtimes.
+ */
+function _getPrdInputHash(projects) {
+  const mtimes = [];
+  // PRD directory mtimes (detect new/deleted files)
+  let prdDirMtime = 0, archiveDirMtime = 0;
+  try { prdDirMtime = fs.statSync(PRD_DIR).mtimeMs; } catch { /* optional */ }
+  const archiveDir = path.join(PRD_DIR, 'archive');
+  try { archiveDirMtime = fs.statSync(archiveDir).mtimeMs; } catch { /* optional */ }
+  mtimes.push(prdDirMtime, archiveDirMtime);
+  // Work-items file mtimes (affect status display)
+  for (const project of projects) {
+    try { mtimes.push(fs.statSync(projectWorkItemsPath(project)).mtimeMs); } catch { mtimes.push(0); }
+  }
+  try { mtimes.push(fs.statSync(path.join(MINIONS_DIR, 'work-items.json')).mtimeMs); } catch { mtimes.push(0); }
+  // PR file mtimes (affect PR links)
+  for (const project of projects) {
+    try { mtimes.push(fs.statSync(projectPrPath(project)).mtimeMs); } catch { mtimes.push(0); }
+  }
+  return { hash: mtimes.join(','), prdDirMtime, archiveDirMtime };
+}
+
 function getPrdInfo(config) {
   config = config || getConfig();
   const projects = getProjects(config);
+
+  // Quick mtime check — return cached result if nothing changed
+  const { hash, prdDirMtime, archiveDirMtime } = _getPrdInputHash(projects);
+  if (_prdResultCache && hash === _prdResultInputHash) return _prdResultCache;
+
   let allPrdItems = [];
   let latestStat = null;
+
+  // Check if directory listings need refresh
+  const dirsChanged = prdDirMtime !== _prdDirMtimes.prd || archiveDirMtime !== _prdDirMtimes.archive;
+  _prdDirMtimes = { prd: prdDirMtime, archive: archiveDirMtime };
 
   // Scan active PRDs and archived PRDs (completed PRDs still need to show progress)
   const planDirs = [
@@ -611,10 +650,21 @@ function getPrdInfo(config) {
       const planFiles = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
       for (const pf of planFiles) {
         try {
-          const plan = safeJson(path.join(dir, pf));
-          if (!plan || !plan.missing_features) continue;
-          const stat = fs.statSync(path.join(dir, pf));
+          const filePath = path.join(dir, pf);
+          const stat = fs.statSync(filePath);
           if (!latestStat || stat.mtimeMs > latestStat.mtimeMs) latestStat = stat;
+
+          // Per-file mtime cache: only re-read files that changed
+          const cached = _prdFileCache.get(filePath);
+          let plan;
+          if (cached && cached.mtimeMs === stat.mtimeMs) {
+            plan = cached.plan;
+          } else {
+            plan = safeJson(filePath);
+            _prdFileCache.set(filePath, { mtimeMs: stat.mtimeMs, plan });
+          }
+          if (!plan || !plan.missing_features) continue;
+
           // Staleness: compare source plan mtime to recorded sourcePlanModifiedAt
           let planStale = false;
           if (!archived && plan.source_plan) {
@@ -635,6 +685,12 @@ function getPrdInfo(config) {
             });
           }
         } catch { /* optional */ }
+      }
+      // Clean stale entries from file cache when dirs changed
+      if (dirsChanged) {
+        for (const cachedPath of _prdFileCache.keys()) {
+          if (cachedPath.startsWith(dir) && !fs.existsSync(cachedPath)) _prdFileCache.delete(cachedPath);
+        }
       }
     } catch { /* optional */ }
   }
@@ -734,7 +790,18 @@ function getPrdInfo(config) {
     missingList: items.filter(i => i.status === 'missing').map(f => ({ id: f.id, name: f.name || f.title, priority: f.priority, complexity: f.estimated_complexity || f.size })),
   };
 
-  return { progress, status };
+  const result = { progress, status };
+  _prdResultCache = result;
+  _prdResultInputHash = hash;
+  return result;
+}
+
+/** Reset PRD info cache — exported for testing */
+function resetPrdInfoCache() {
+  _prdFileCache.clear();
+  _prdDirMtimes = { prd: 0, archive: 0 };
+  _prdResultCache = null;
+  _prdResultInputHash = '';
 }
 
 // ── Exports ─────────────────────────────────────────────────────────────────
@@ -745,7 +812,7 @@ module.exports = {
   CONFIG_PATH, CONTROL_PATH, DISPATCH_PATH, LOG_PATH, NOTES_PATH,
 
   // Helpers
-  timeSince,
+  timeSince, resetPrdInfoCache,
 
   // Core state
   getConfig, getControl, getDispatch, getDispatchQueue,
