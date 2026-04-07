@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execSilent, runFile, ENGINE_DEFAULTS: DEFAULTS,
+const { exec, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
 const queries = require('./engine/queries');
 
@@ -542,7 +542,7 @@ function spawnAgent(dispatchItem, config) {
           if (obj.session_id) {
             procInfo.sessionId = obj.session_id;
             safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
-              sessionId: obj.session_id, dispatchId: id, savedAt: new Date().toISOString(), branch: branchName
+              sessionId: obj.session_id, dispatchId: id, savedAt: ts(), branch: branchName
             });
             break;
           }
@@ -893,7 +893,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
       // Clear failure artifacts if reconciling a previously failed item
       if (wi.failReason) delete wi.failReason;
       if (wi.failedAt) delete wi.failedAt;
-      if (!wi.completedAt) wi.completedAt = new Date().toISOString();
+      if (!wi.completedAt) wi.completedAt = ts();
       reconciled++;
     }
   }
@@ -1062,7 +1062,7 @@ function materializePlansAsWorkItems(config) {
           log('info', `Source plan ${plan.source_plan} updated — re-syncing PRD ${file}`);
           autoCleanPrdWorkItems(file, config);
           plan.sourcePlanModifiedAt = new Date(sourceMtime).toISOString();
-          plan.lastSyncedFromPlan = new Date().toISOString();
+          plan.lastSyncedFromPlan = ts();
 
           // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
@@ -1134,7 +1134,7 @@ function materializePlansAsWorkItems(config) {
     if (planStatus === 'awaiting-approval') {
       if (config.engine?.autoApprovePlans) {
         plan.status = 'approved';
-        plan.approvedAt = new Date().toISOString();
+        plan.approvedAt = ts();
         plan.approvedBy = 'auto-mode';
         safeWrite(path.join(PRD_DIR, file), plan);
         log('info', `Auto-approved plan: ${file}`);
@@ -1416,7 +1416,7 @@ function discoverFromPrs(config, project) {
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch
         if (pr.humanFeedback?.feedbackContent) {
-          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: new Date().toISOString() });
+          setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: ts() });
         }
         continue;
       }

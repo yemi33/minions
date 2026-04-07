@@ -121,7 +121,7 @@ function checkPlanCompletion(meta, config) {
     ``,
     `**Project:** ${plan.project || 'Unknown'}`,
     `**Strategy:** ${plan.branch_strategy || 'parallel'}`,
-    `**Completed:** ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+    `**Completed:** ${ts().slice(0, 16).replace('T', ' ')}`,
     `**Runtime:** ${runtimeMin >= 60 ? Math.floor(runtimeMin / 60) + 'h ' + (runtimeMin % 60) + 'm' : runtimeMin + 'm'}`,
     ``,
     `## Results`,
@@ -1134,7 +1134,7 @@ function handleDecompositionResult(stdout, meta, config) {
           sourcePlan: p.sourcePlan,
           branchStrategy: p.branchStrategy,
           featureBranch: p.featureBranch,
-          created: new Date().toISOString(),
+          created: ts(),
           createdBy: 'decomposition',
         });
       }
@@ -1160,7 +1160,7 @@ function runPostCompletionHooks(dispatchItem, agentId, code, stdout, config) {
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
       shared.safeWrite(path.join(AGENTS_DIR, agentId, 'session.json'), {
-        sessionId, dispatchId: dispatchItem.id, savedAt: new Date().toISOString(),
+        sessionId, dispatchId: dispatchItem.id, savedAt: ts(),
         branch: dispatchItem.meta?.branch || null,
       });
     } catch (err) { log('warn', `Session save: ${err.message}`); }

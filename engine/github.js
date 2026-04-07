@@ -217,7 +217,7 @@ async function pollPrStatus(config) {
     // Track head SHA changes to detect new pushes (used for review re-dispatch gating)
     if (prData.head?.sha && pr.headSha !== prData.head.sha) {
       pr.headSha = prData.head.sha;
-      pr.lastPushedAt = new Date().toISOString();
+      pr.lastPushedAt = ts();
       updated = true;
     }
 
