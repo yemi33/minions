@@ -184,6 +184,22 @@ function renderPrdProgress(prog) {
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
       '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="color:var(--red);cursor:pointer;font-size:10px;padding:0 4px" title="Remove item">x</span>' +
       (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 42px;line-height:1.4">' + renderMd(i.description) + '</div>' : '') +
+      // Show decomposed children inline
+      (i.status === 'decomposed' ? (function() {
+        const children = (window._lastWorkItems || []).filter(w => w.parent_id === i.id);
+        if (children.length === 0) return '';
+        return '<div style="width:100%;padding:4px 0 4px 42px;display:flex;flex-direction:column;gap:2px">' +
+          children.map(c => {
+            const childAgent = c.dispatched_to ? (agentData.find(a => a.id === c.dispatched_to) || {}) : null;
+            return '<div style="font-size:10px;display:flex;align-items:center;gap:6px;color:var(--text);padding:2px 6px;background:var(--surface);border-radius:4px;border:1px solid var(--border)">' +
+              statusBadge(c.status) +
+              '<span style="color:var(--muted);font-size:9px">' + escHtml(c.id) + '</span>' +
+              '<span style="flex:1">' + escHtml((c.title || '').replace('Implement: ', '').slice(0, 60)) + '</span>' +
+              (childAgent ? '<span style="font-size:9px;color:var(--muted)">' + (childAgent.emoji || '') + ' ' + escHtml(childAgent.name || c.dispatched_to) + '</span>' : '') +
+            '</div>';
+          }).join('') +
+        '</div>';
+      })() : '') +
     '</div>';
   };
 
