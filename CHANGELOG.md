@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.542 (2026-04-07)
+
+### Fixes
+-  remove double-write in stale PRD flag path
+
 ## 0.1.541 (2026-04-07)
 
 ### Fixes
