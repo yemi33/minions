@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.553 (2026-04-07)
+
+### Features
+-  add pin/unpin button to inbox and KB document modals
+
 ## 0.1.552 (2026-04-07)
 
 ### Features
