@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.532 (2026-04-07)
+
+### Fixes
+-  meeting cards show doc-chat processing dots and notification badges
+
 ## 0.1.531 (2026-04-07)
 
 ### Fixes
