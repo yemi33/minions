@@ -525,6 +525,7 @@ const ENGINE_DEFAULTS = {
   logBufferSize: 50, // flush immediately when buffer exceeds this many entries
   lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
+  maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────

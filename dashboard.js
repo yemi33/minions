@@ -3533,6 +3533,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
           meetingRoundTimeout: [60000],
           versionCheckInterval: [60000],
+          maxBuildFixAttempts: [1, 10],
         };
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {

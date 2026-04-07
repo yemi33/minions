@@ -1498,6 +1498,29 @@ async function discoverFromPrs(config, project) {
 
     // PRs with build failures — route to author (has session context from implementing)
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
+
+      // Check if max retry cap reached — escalate to human instead of dispatching another fix
+      if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
+        if (!pr.buildFixEscalated) {
+          writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+            `# Build Fix Escalation\n\n` +
+            `**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
+            `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
+            `Auto-fix dispatch has been suspended. Please investigate manually.\n`
+          );
+          try {
+            const prPath = projectPrPath(project);
+            mutatePullRequests(prPath, prs => {
+              const target = prs.find(p => p.id === pr.id);
+              if (target) target.buildFixEscalated = true;
+            });
+          } catch (e) { log('warn', 'mark build fix escalated: ' + e.message); }
+          log('warn', `PR ${pr.id}: build fix escalated after ${pr.buildFixAttempts} attempts — suspending auto-dispatch`);
+        }
+        continue;
+      }
+
       const key = `build-fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -1512,7 +1535,17 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: reviewNote,
       }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) {
+        newWork.push(item); setCooldown(key);
+        // Increment build fix attempts counter
+        try {
+          const prPath = projectPrPath(project);
+          mutatePullRequests(prPath, prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
+          });
+        } catch (e) { log('warn', 'increment build fix attempts: ' + e.message); }
+      }
 
       // Notify the author agent about the build failure
       if (pr.agent && !pr._buildFailNotified) {
