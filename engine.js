@@ -834,7 +834,14 @@ function areDependenciesMet(item, config) {
       return false;
     }
     if (depItem.status === WI_STATUS.FAILED) return 'failed';
-    if (!PRD_MET_STATUSES.has(depItem.status)) return false; // Pending, dispatched, or retrying — wait (legacy aliases accepted)
+    if (depItem.status === WI_STATUS.DECOMPOSED) {
+      // Decomposed: check if all children are done
+      const children = allWorkItems.filter(w => w.parent_id === depId);
+      if (children.length > 0 && children.every(c => PRD_MET_STATUSES.has(c.status))) continue; // all children done
+      if (children.length > 0) return false; // children still in progress
+      continue; // no children found — treat as met (decomposition may be in flight)
+    }
+    if (!PRD_MET_STATUSES.has(depItem.status)) return false; // Pending, dispatched, or retrying — wait
   }
   return true;
 }
