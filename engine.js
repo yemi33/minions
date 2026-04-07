@@ -1600,10 +1600,12 @@ function discoverFromWorkItems(config, project) {
       needsWrite = true;
     }
     if (isAlreadyDispatched(key)) {
-      if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
-      if (!item.dispatched_to) {
-        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-        if (existing?.agent) { item.dispatched_to = existing.agent; needsWrite = true; }
+      // Only mark DISPATCHED if item is in the active queue (agent is running).
+      // Items still in dispatch.pending have no agent — keep them as PENDING (#480).
+      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+      if (existingActive) {
+        if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+        if (!item.dispatched_to && existingActive.agent) { item.dispatched_to = existingActive.agent; needsWrite = true; }
       }
       if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
       skipped.gated++; continue;
@@ -2019,15 +2021,16 @@ function discoverCentralWorkItems(config) {
     if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     const key = `central-work-${item.id}`;
-    // Self-heal: if already dispatched but work item is still pending, fix the status
+    // Self-heal: only mark DISPATCHED if item is in the active queue (agent running).
+    // Items still in dispatch.pending have no agent — keep them as PENDING (#480).
     if (isAlreadyDispatched(key)) {
-      const m = {};
-      if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
-      if (!item.dispatched_to) {
-        const existing = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-        if (existing?.agent) { m.dispatched_to = existing.agent; }
+      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+      if (existingActive) {
+        const m = {};
+        if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
+        if (!item.dispatched_to && existingActive.agent) { m.dispatched_to = existingActive.agent; }
+        if (Object.keys(m).length > 0) mutations.set(item.id, m);
       }
-      if (Object.keys(m).length > 0) mutations.set(item.id, m);
       continue;
     }
     if (isOnCooldown(key, 0)) continue;

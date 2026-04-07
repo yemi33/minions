@@ -2338,7 +2338,7 @@ async function testStateIntegrity() {
       'Central discovery must check isAlreadyDispatched separately for self-heal');
     assert.ok(centralFn.includes('m.status = WI_STATUS.DISPATCHED'),
       'Central discovery must self-heal pending→dispatched via mutations map');
-    assert.ok(centralFn.includes('existing?.agent') && centralFn.includes('m.dispatched_to'),
+    assert.ok(centralFn.includes('existingActive.agent') && centralFn.includes('m.dispatched_to'),
       'Central discovery must populate dispatched_to from active dispatch entry');
     assert.ok(centralFn.includes('mutations.size > 0') && centralFn.includes('mutateJsonFileLocked(centralPath'),
       'Central discovery must persist changes via atomic mutateJsonFileLocked when mutations exist');
@@ -5402,7 +5402,7 @@ async function testDispatchCycleIntegration() {
       'tickInner must check slotsAvailable derived from maxConcurrent');
   });
 
-  // ── Deferred dispatch status (#480) (2 tests) ──
+  // ── Deferred dispatch status (#480) (3 tests) ──
 
   await test('Discovery does NOT set status to dispatched — deferred to spawnAgent', () => {
     // The discover phase should NOT mutate work item status to DISPATCHED.
@@ -5411,6 +5411,15 @@ async function testDispatchCycleIntegration() {
       'engine.js must have the deferred dispatch comment marker from #480');
     assert.ok(!engineSrc.includes("item.status = WI_STATUS.DISPATCHED;\n    item.dispatched_at = ts();\n    item.dispatched_to = agentId"),
       'Discovery must NOT set item.status = DISPATCHED with dispatched_at and dispatched_to inline');
+  });
+
+  await test('Self-heal only marks DISPATCHED for items in dispatch.active, not pending (#480)', () => {
+    // The self-heal path must guard with dispatch.active check so items in
+    // dispatch.pending (no agent running) stay as PENDING status.
+    assert.ok(engineSrc.includes("const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key)"),
+      'Self-heal must check dispatch.active before marking DISPATCHED');
+    assert.ok(engineSrc.includes("if (existingActive)"),
+      'Self-heal must guard status mutation with existingActive check');
   });
 
   await test('spawnAgent sets dispatched status and syncs PRD after spawn', () => {
