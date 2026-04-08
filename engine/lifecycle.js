@@ -1019,9 +1019,9 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     m.lastTask = dispatchItem.task;
     m.lastCompleted = ts();
     if (model) m.model = model;
-    // Track runtime (wall-clock duration from dispatch start to completion)
-    const runtimeMs = (dispatchItem.started_at && dispatchItem.completed_at)
-      ? new Date(dispatchItem.completed_at).getTime() - new Date(dispatchItem.started_at).getTime()
+    // Track runtime (wall-clock duration from dispatch start to now — completed_at not yet set)
+    const runtimeMs = dispatchItem.started_at
+      ? Date.now() - new Date(dispatchItem.started_at).getTime()
       : 0;
     if (runtimeMs > 0) m.totalRuntimeMs = (m.totalRuntimeMs || 0) + runtimeMs;
 
