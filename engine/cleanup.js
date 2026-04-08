@@ -72,7 +72,8 @@ function _killProcessInWorktree(dir, activeProcesses, activeIds) {
         try {
           if (process.platform === 'win32') {
             const taskInfo = exec(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
-            if (!taskInfo.toLowerCase().includes('node')) continue; // not a node process — skip
+            const taskLower = taskInfo.toLowerCase();
+            if (!taskLower.includes('node') && !taskLower.includes('claude')) continue;
             exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
           } else {
             // Verify it's a node process before killing (prevent recycled PID kill)
