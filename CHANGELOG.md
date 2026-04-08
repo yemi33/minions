@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.585 (2026-04-08)
+
+### Fixes
+-  minions dash opens browser when dashboard already running
+-  add conditional block support to playbook renderer
+
 ## 0.1.583 (2026-04-08)
 
 ### Fixes
