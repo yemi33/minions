@@ -9039,6 +9039,47 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
   });
 
+  await test('ccCall default maxTurns is 25 (not 50)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallSig = src.match(/async function ccCall\(message,\s*\{[^}]+\}/);
+    assert.ok(ccCallSig, 'ccCall signature should exist');
+    assert.ok(ccCallSig[0].includes('maxTurns = 25'), 'ccCall default maxTurns should be 25');
+  });
+
+  await test('CC streaming handler uses maxTurns 25', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const streamHandler = src.slice(src.indexOf('handleCommandCenterStream'));
+    const maxTurnsMatch = streamHandler.match(/maxTurns:\s*(\d+)/);
+    assert.ok(maxTurnsMatch && maxTurnsMatch[1] === '25', 'Streaming CC maxTurns should be 25');
+  });
+
+  await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    assert.ok(docCallFn.includes("'Read,Glob,Grep'"), 'Read-only doc-chat should only allow Read,Glob,Grep');
+    assert.ok(docCallFn.includes("'Read,Write,Edit,Glob,Grep'"), 'Editable doc-chat should allow Read,Write,Edit,Glob,Grep');
+    assert.ok(!docCallFn.slice(0, 500).includes('Bash'), 'Doc-chat should not allow Bash');
+    assert.ok(!docCallFn.slice(0, 500).includes('WebSearch'), 'Doc-chat should not allow WebSearch');
+  });
+
+  await test('doc-chat uses lower maxTurns than CC', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    assert.ok(docCallFn.includes('maxTurns: canEdit ? 15 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 15 (editable)');
+  });
+
+  await test('doc-chat skips state preamble', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    assert.ok(docCallFn.includes('skipStatePreamble: true'), 'Doc-chat should skip state preamble');
+  });
+
+  await test('CC system prompt discourages excessive tool use', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
+    assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
+  });
+
   // ── Agent Runtime Tracking ────────────────────────────────────────────────
 
   await test('DEFAULT_AGENT_METRICS includes totalRuntimeMs', () => {

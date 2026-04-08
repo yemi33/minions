@@ -538,10 +538,10 @@ Additional: pause-plan, approve-plan, reject-plan, archive-plan, edit-prd-item, 
 Terms like schedules, pipelines, agents, inbox, work items, plans, PRD, PRs, dispatch, routing, KB, notes, pinned, meetings have Minions-specific meanings. Always resolve against Minions state first (read files or call APIs). Fall back to generic only if no Minions context exists.
 
 ## Rules
-1. Use tools proactively — read files before answering.
+1. Answer from the state preamble and context first. Only use tools for specific file lookups the user asked about — not to explore or investigate.
 2. Be specific — cite IDs, names, filenames, line numbers.
 3. Never modify engine source. Never push to git without user confirmation.
-4. Delegate exploration to agents. You are the dispatcher, not the worker.`;
+4. Delegate exploration to agents. You are the dispatcher, not the worker. If answering requires reading more than 2-3 files, dispatch an agent instead.`;
 
 // Hash the system prompt so we can detect changes and invalidate stale sessions
 const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
@@ -694,7 +694,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 50, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
   const existing = resolveSession(store, sessionKey);
@@ -792,6 +792,9 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   const result = await ccCall(message, {
     store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
+    allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
+    maxTurns: canEdit ? 15 : 10,
+    skipStatePreamble: true,
     ...(model ? { model } : {}),
   });
   // Store doc hash for next call's unchanged check
@@ -3356,7 +3359,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
         const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 50,
+          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 25,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
