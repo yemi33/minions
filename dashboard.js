@@ -770,16 +770,17 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     return { answer: 'Failed to process request. Try again.', content: null, actions: [] };
   }
 
-  const { text: stripped, actions } = parseCCActions(result.text);
-
-  const delimIdx = stripped.indexOf('---DOCUMENT---');
+  // Parse ---DOCUMENT--- BEFORE actions — document content may contain ===ACTIONS=== literally
+  const delimIdx = result.text.indexOf('---DOCUMENT---');
   if (delimIdx >= 0) {
-    const answer = stripped.slice(0, delimIdx).trim();
-    let content = stripped.slice(delimIdx + '---DOCUMENT---'.length).trim();
+    const answerPart = result.text.slice(0, delimIdx).trim();
+    const { text: answer, actions } = parseCCActions(answerPart);
+    let content = result.text.slice(delimIdx + '---DOCUMENT---'.length).trim();
     content = content.replace(/^```\w*\n?/, '').replace(/\n?```$/, '').trim();
     return { answer, content, actions };
   }
 
+  const { text: stripped, actions } = parseCCActions(result.text);
   return { answer: stripped, content: null, actions };
 }
 
