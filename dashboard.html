@@ -4732,10 +4732,11 @@ async function _ccDoSend(message, skipUserMsg) {
       ccUpdateSessionIndicator();
     }
 
-    // Render markdown-ish response
+    // Render markdown-ish response (HTML-escape first to prevent XSS + broken rendering)
     const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
-    const rendered = (data.text || '').replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/`([^`]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
+    const safe = escHtml(data.text || '');
+    const rendered = safe.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code style="background:var(--surface);padding:1px 4px;border-radius:3px;font-size:11px">$1</code>')
       .replace(/\n/g, '<br>');
     ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + ccElapsed + 's</div>');
 
