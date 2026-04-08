@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.592 (2026-04-08)
+
+### Fixes
+-  move 'When to Stop' after Build/Test in implement playbook
+-  per-type maxTurns bypassed when config has default maxTurns=100
+
 ## 0.1.590 (2026-04-08)
 
 ### Other
