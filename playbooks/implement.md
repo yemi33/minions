@@ -47,8 +47,27 @@ Use subagents only for genuinely parallel, independent tasks (e.g., editing file
 ## Git Workflow
 
 You are already running in a git worktree on branch `{{branch_name}}`. Do NOT create additional worktrees — the engine pre-created one for you.
+Do NOT remove the worktree — the engine handles cleanup automatically.
 
-When done:
+## Build & Test (MANDATORY before pushing)
+
+After implementation, verify everything works before pushing:
+
+1. **Build** the project using its build system (check CLAUDE.md, package.json, README, Makefile). If the build fails:
+   - Read the error, fix the issue, re-build
+   - If it fails 3 times, report the errors in your findings and stop
+2. **Run the full test suite** using whatever command the project specifies (check CLAUDE.md, agent.md, README, or package.json scripts).
+3. If any tests fail:
+   - Determine if YOUR changes caused the failure
+   - Fix any regressions you introduced
+   - Re-run tests until all pass
+4. If tests were already failing before your changes (pre-existing), note them in the PR description but do NOT block on them
+5. **Run any other checks** the repo defines (linting, type checking, formatting) — read project docs for the full list
+6. Do NOT push code with failing tests or a broken build that you introduced
+
+## Push & Create PR
+
+Only after build and tests pass:
 
 ```bash
 git add <specific files>
@@ -56,36 +75,10 @@ git commit -m "{{commit_message}}"
 git push -u origin {{branch_name}}
 ```
 
-Do NOT remove the worktree — the engine handles cleanup automatically.
-
 {{pr_section}}
 
-## Build and Demo Rule
-
-After implementation:
-1. Build the project using the repo's build system (check CLAUDE.md, package.json, README)
-2. Start if applicable
-3. Include the browser URL and run instructions in the PR description
-
-After building, verify the build succeeded. If the build fails:
-1. Read the error output carefully
-2. Fix the issue
-3. Re-run the build
-4. If it fails 3 times, report the build errors in your findings file and stop
-
-## Test Validation (MANDATORY before PR)
-
-Before creating a PR, run the project's test suite and ensure all existing tests pass:
-
-1. Find the test command by reading the project's own documentation — check CLAUDE.md, agent.md, README, or package.json scripts in the project root. Every project defines its own conventions.
-2. Run the full test suite using whatever command the project specifies
-3. If any tests fail:
-   - Determine if YOUR changes caused the failure (compare with the failing test's assertions)
-   - Fix any regressions you introduced
-   - Re-run tests until all pass
-4. If tests were already failing before your changes (pre-existing failures), note them in the PR description but do NOT block on them
-5. Do NOT create a PR with failing tests that you introduced
+Include build/test status and run instructions in the PR description. If the project has a runnable app, include the localhost URL.
 
 ## When to Stop
 
-Your task is complete once you have: (1) pushed your branch, (2) created the PR, and (3) confirmed the build and tests pass. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately.
+Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately.
