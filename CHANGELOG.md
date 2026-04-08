@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.600 (2026-04-08)
+
+### Fixes
+- restore pendingFix on failed human-feedback dispatch (closes #540) (#550)
+
 ## 0.1.599 (2026-04-08)
 
 ### Fixes
