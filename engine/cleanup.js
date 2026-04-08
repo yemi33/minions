@@ -105,6 +105,7 @@ function runCleanup(config, verbose = false) {
   }
 
   // 3. Clean git worktrees for merged/abandoned PRs
+  const _attemptedWorktreePaths = new Set(); // dedup across projects sharing a worktreeRoot
   for (const project of projects) {
     const root = project.localPath ? path.resolve(project.localPath) : null;
     if (!root || !fs.existsSync(root)) continue;
@@ -261,6 +262,8 @@ function runCleanup(config, verbose = false) {
             }
           }
 
+          if (_attemptedWorktreePaths.has(entry.wtPath)) continue;
+          _attemptedWorktreePaths.add(entry.wtPath);
           if (shared.removeWorktree(entry.wtPath, root, worktreeRoot)) {
             cleaned.worktrees++;
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);

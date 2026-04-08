@@ -824,11 +824,18 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   } catch (gitErr) {
     try {
       fs.rmSync(resolved, { recursive: true, force: true });
-      // Also prune the stale worktree entry from git metadata
       try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
       return true;
     } catch (rmErr) {
-      log('warn', `removeWorktree: both git and rm failed for ${wtPath}: ${rmErr.message}`);
+      // Windows EPERM: a process may hold file handles — try rd /s /q as fallback
+      if (process.platform === 'win32' && rmErr.code === 'EPERM') {
+        try {
+          exec(`rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
+          try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
+          return true;
+        } catch {}
+      }
+      log('warn', `removeWorktree: failed for ${wtPath}: ${rmErr.message}`);
       return false;
     }
   }
