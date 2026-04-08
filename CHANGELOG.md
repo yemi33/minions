@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.637 (2026-04-08)
+
+### Other
+- perf: reduce CC/doc-chat tool eagerness and max-turns
+
 ## 0.1.636 (2026-04-08)
 
 ### Fixes
