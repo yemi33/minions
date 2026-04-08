@@ -2142,23 +2142,25 @@ function discoverCentralWorkItems(config) {
     if (item.status !== WI_STATUS.QUEUED && item.status !== WI_STATUS.PENDING) continue;
 
     const key = `central-work-${item.id}`;
-    // Self-heal: if already dispatched but work item is still pending, fix the status
     // Skip dedup for items explicitly marked for retry (_retryCount set by engine)
-    if (!item._retryCount && isAlreadyDispatched(key)) {
-      // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
-      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-      if (existingActive) {
-        const m = {};
-        if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
-        if (!item.dispatched_to && existingActive.agent) { m.dispatched_to = existingActive.agent; }
-        if (Object.keys(m).length > 0) mutations.set(item.id, m);
+    const isRetry = !!item._retryCount;
+    if (isAlreadyDispatched(key)) {
+      if (isRetry) {
+        // Retry items bypass completed-dedup but still block if in-flight
+        const inFlight = [...(getDispatch().pending || []), ...(getDispatch().active || [])];
+        if (inFlight.some(d => d.meta?.dispatchKey === key)) continue;
+        // Not in-flight — fall through to dispatch
+      } else {
+        // Self-heal: set DISPATCHED only when in dispatch.active (agent spawned) (#480)
+        const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+        if (existingActive) {
+          const m = {};
+          if (item.status === WI_STATUS.PENDING) { m.status = WI_STATUS.DISPATCHED; }
+          if (!item.dispatched_to && existingActive.agent) { m.dispatched_to = existingActive.agent; }
+          if (Object.keys(m).length > 0) mutations.set(item.id, m);
+        }
+        continue;
       }
-      continue;
-    }
-    // Still block if actively in flight (pending or active dispatch)
-    if (item._retryCount && isAlreadyDispatched(key)) {
-      const inFlight = [...(getDispatch().pending || []), ...(getDispatch().active || [])];
-      if (inFlight.some(d => d.meta?.dispatchKey === key)) continue;
     }
     if (isOnCooldown(key, 0)) continue;
 
