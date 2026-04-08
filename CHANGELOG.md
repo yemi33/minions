@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.611 (2026-04-08)
+
+### Fixes
+-  accurate LLM call timing and agent metrics on engine page
+-  worktree count now checks for .git file instead of any directory
+
 ## 0.1.609 (2026-04-08)
 
 ### Fixes
