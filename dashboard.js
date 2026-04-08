@@ -3470,6 +3470,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const valid = [null, 'low', 'medium', 'high'];
           config.engine.ccEffort = valid.includes(e.ccEffort) ? e.ccEffort : null;
         }
+        // Per-type max turns
+        if (e.maxTurnsByType !== undefined && typeof e.maxTurnsByType === 'object') {
+          const mbt = {};
+          for (const [type, val] of Object.entries(e.maxTurnsByType)) {
+            const n = Number(val);
+            if (n && n >= 5 && n <= 500) mbt[type] = n;
+          }
+          config.engine.maxTurnsByType = mbt;
+        }
         // Boolean fields
         for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];

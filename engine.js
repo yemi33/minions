@@ -155,9 +155,11 @@ const _MAX_TURNS_BY_TYPE = {
   [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
 };
 function _maxTurnsForType(type, engineConfig) {
-  // Per-type defaults apply unless user explicitly set a custom maxTurns (different from engine default)
-  const userOverride = engineConfig.maxTurns && engineConfig.maxTurns !== DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
-  return userOverride || _MAX_TURNS_BY_TYPE[type] || DEFAULTS.maxTurns;
+  // Priority: per-type config override → global config override → built-in per-type default → global default
+  const perType = engineConfig.maxTurnsByType || {};
+  if (perType[type]) return perType[type];
+  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
+  return globalOverride || _MAX_TURNS_BY_TYPE[type] || DEFAULTS.maxTurns;
 }
 
 // Resolve dependency plan item IDs to their PR branches

@@ -55,6 +55,20 @@ async function openSettings() {
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
     '</div>' +
 
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Max Turns by Task Type</h3>' +
+    '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">How many tool-use turns each task type gets before forced stop. Blank = built-in default.</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">' +
+      settingsField('Explore', 'set-mt-explore', (e.maxTurnsByType || {}).explore || '', '', 'Default: 30') +
+      settingsField('Ask', 'set-mt-ask', (e.maxTurnsByType || {}).ask || '', '', 'Default: 20') +
+      settingsField('Review', 'set-mt-review', (e.maxTurnsByType || {}).review || '', '', 'Default: 30') +
+      settingsField('Implement', 'set-mt-implement', (e.maxTurnsByType || {}).implement || '', '', 'Default: 75') +
+      settingsField('Fix', 'set-mt-fix', (e.maxTurnsByType || {}).fix || '', '', 'Default: 75') +
+      settingsField('Test', 'set-mt-test', (e.maxTurnsByType || {}).test || '', '', 'Default: 50') +
+      settingsField('Verify', 'set-mt-verify', (e.maxTurnsByType || {}).verify || '', '', 'Default: 100') +
+      settingsField('Plan', 'set-mt-plan', (e.maxTurnsByType || {}).plan || '', '', 'Default: 30') +
+      settingsField('Decompose', 'set-mt-decompose', (e.maxTurnsByType || {}).decompose || '', '', 'Default: 15') +
+    '</div>' +
+
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Command Center / Doc Chat</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       '<div>' +
@@ -197,6 +211,15 @@ async function saveSettings() {
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
       ccModel: document.getElementById('set-ccModel').value,
       ccEffort: document.getElementById('set-ccEffort').value || null,
+      maxTurnsByType: (function() {
+        var mbt = {};
+        var types = ['explore', 'ask', 'review', 'implement', 'fix', 'test', 'verify', 'plan', 'decompose'];
+        for (var i = 0; i < types.length; i++) {
+          var v = document.getElementById('set-mt-' + types[i])?.value?.trim();
+          if (v) mbt[types[i]] = Number(v);
+        }
+        return mbt;
+      })(),
     };
 
     const claudePayload = {
