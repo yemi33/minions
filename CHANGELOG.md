@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.614 (2026-04-08)
+
+### Features
+-  clickable pinned notes and skills with full content + doc-chat
+
+### Fixes
+-  kill process holding worktree lock before removal attempt
+-  dedup worktree removal attempts, add Windows rd fallback
+-  accurate LLM call timing and agent metrics on engine page
+-  worktree count now checks for .git file instead of any directory
+
 ## 0.1.609 (2026-04-08)
 
 ### Fixes
