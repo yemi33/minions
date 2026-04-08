@@ -67,6 +67,8 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 ## Do not run git checkout on the main working tree. Use `git diff` and `git show` only.
 
-## Signal Completion
+## When to Stop
+
+Your task is complete once you have: (1) posted your review comment on the PR, and (2) cast your vote. Do NOT continue reading unrelated files or performing additional analysis. Stop after voting.
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

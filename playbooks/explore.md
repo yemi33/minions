@@ -63,5 +63,9 @@ Use subagents only for genuinely parallel, independent tasks. For reading files,
 - Read `notes.md` for all team rules before starting.
 - If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it to ~/.claude/skills/)
 
+## When to Stop
+
+Your task is complete once you have written your findings to the inbox file. Do NOT continue reading additional files, exploring tangential areas, or producing extra analysis beyond what was asked. Write your findings and stop.
+
 ## Team Decisions
 {{notes_content}}

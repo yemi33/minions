@@ -147,6 +147,17 @@ let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection unti
 // Cleared at the start of each tick cycle (see tickInner)
 const _failedRefCache = new Set();
 const _FAST_WORK_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
+const _MAX_TURNS_BY_TYPE = {
+  [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
+  [WORK_TYPE.DECOMPOSE]: 15, [WORK_TYPE.PLAN]: 30, [WORK_TYPE.PLAN_TO_PRD]: 20,
+  [WORK_TYPE.MEETING]: 30,
+  [WORK_TYPE.IMPLEMENT]: 75, [WORK_TYPE.IMPLEMENT_LARGE]: 75, [WORK_TYPE.FIX]: 50,
+  [WORK_TYPE.TEST]: 50, [WORK_TYPE.VERIFY]: 100, [WORK_TYPE.DOCS]: 30,
+};
+function _maxTurnsForType(type, engineConfig) {
+  // User override takes precedence, then per-type default, then global default
+  return engineConfig.maxTurns || _MAX_TURNS_BY_TYPE[type] || DEFAULTS.maxTurns;
+}
 
 // Resolve dependency plan item IDs to their PR branches
 function resolveDependencyBranches(depIds, sourcePlan, project, config) {
@@ -484,7 +495,7 @@ async function spawnAgent(dispatchItem, config) {
   // Build claude CLI args
   const args = [
     '--output-format', claudeConfig.outputFormat || 'stream-json',
-    '--max-turns', String(engineConfig.maxTurns || DEFAULTS.maxTurns),
+    '--max-turns', String(_maxTurnsForType(type, engineConfig)),
     '--verbose',
     '--permission-mode', claudeConfig.permissionMode || 'bypassPermissions'
   ];

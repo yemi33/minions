@@ -60,6 +60,8 @@ Before pushing your fix, run the project's test suite:
 3. If any tests fail due to your changes, fix them before pushing
 4. Do NOT push code that breaks existing tests
 
-## Signal Completion
+## When to Stop
+
+Your task is complete once you have: (1) pushed the fix, (2) created or updated the PR, and (3) confirmed tests pass. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately after the fix is verified.
 
 **Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
