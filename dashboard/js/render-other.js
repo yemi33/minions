@@ -42,7 +42,6 @@ function renderMetrics(metrics) {
   if (agents.length === 0) {
     el.innerHTML = '<p class="empty">No metrics yet. Metrics appear after agents complete tasks.</p>';
     renderTokenUsage(metrics);
-    renderContextPressure(metrics);
     return;
   }
   // Consolidate temp-* agents into one row
@@ -92,7 +91,6 @@ function renderMetrics(metrics) {
   el.innerHTML = html;
   renderLlmPerf(metrics);
   renderTokenUsage(metrics);
-  renderContextPressure(metrics);
 }
 
 function renderLlmPerf(metrics) {
@@ -257,26 +255,6 @@ function renderTokenUsage(metrics) {
   el.innerHTML = html;
 }
 
-function renderContextPressure(metrics) {
-  const el = document.getElementById('context-pressure-content');
-  if (!el) return;
-  const cp = metrics._contextPressure;
-  if (!cp || !cp.dispatches) {
-    el.innerHTML = '<p class="empty">No context pressure data yet. Data appears after agents complete tasks.</p>';
-    return;
-  }
-  const avgTurns = (cp.totalTurns / cp.dispatches).toFixed(1);
-  const turnLimitPct = ((cp.turnLimitHits / cp.dispatches) * 100).toFixed(1);
-  const pctColor = parseFloat(turnLimitPct) > 20 ? 'var(--red)' : parseFloat(turnLimitPct) > 5 ? 'var(--yellow, orange)' : 'var(--green)';
-
-  let html = '<div class="token-tiles">';
-  html += '<div class="token-tile"><div class="token-tile-label">Avg Turns</div><div class="token-tile-value">' + avgTurns + '</div><div class="token-tile-sub">per dispatch</div></div>';
-  html += '<div class="token-tile"><div class="token-tile-label">Max Turns</div><div class="token-tile-value">' + cp.maxTurns + '</div></div>';
-  html += '<div class="token-tile"><div class="token-tile-label">Hit Turn Limit</div><div class="token-tile-value" style="color:' + pctColor + '">' + turnLimitPct + '%</div><div class="token-tile-sub">' + cp.turnLimitHits + ' of ' + cp.dispatches + ' dispatches</div></div>';
-  html += '<div class="token-tile"><div class="token-tile-label">Total Dispatches</div><div class="token-tile-value">' + cp.dispatches + '</div></div>';
-  html += '</div>';
-  el.innerHTML = html;
-}
 
 async function openScanProjectsModal() {
   document.getElementById('modal-title').textContent = 'Scan for Projects';
@@ -373,4 +351,4 @@ async function _addSelectedProjects() {
   }
 }
 
-window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, renderContextPressure, openScanProjectsModal };
+window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, openScanProjectsModal };
