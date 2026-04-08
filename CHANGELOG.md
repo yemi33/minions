@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.579 (2026-04-08)
+
+### Fixes
+-  CC response renderer HTML-escape before innerHTML injection (closes #506) (#525)
+
 ## 0.1.578 (2026-04-08)
 
 ### Other
