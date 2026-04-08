@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.620 (2026-04-08)
+
+### Fixes
+-  import safeUnlink in engine.js spawn cleanup path (closes #575) (#576)
+-  engine stuck in stopped state after dashboard restart (closes #564) (#573)
+
 ## 0.1.618 (2026-04-08)
 
 ### Fixes
