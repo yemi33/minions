@@ -211,6 +211,7 @@ async function _processQaMessage(message, selection) {
         title: capturedDocContext.title,
         selection: selection,
         filePath: capturedFilePath || null,
+        model: window._lastStatus?.autoMode?.ccModel || undefined,
       }),
     });
     const data = await res.json();

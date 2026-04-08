@@ -754,13 +754,15 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model }) {
   const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
 
-  // All doc-chats use Sonnet with full tools and minions state — same brain as Command Center
+  // Session key: use filePath if available, otherwise title+filePath hash to avoid collisions
+  const sessionKey = filePath || `${title || 'doc'}:${(document || '').slice(0, 100)}`;
   const result = await ccCall(message, {
-    store: 'doc', sessionKey: filePath || title,
+    store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
+    ...(model ? { model } : {}),
   });
 
   if (result.code !== 0 || !result.text) {
@@ -2751,6 +2753,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const { answer, content, actions } = await ccDocCall({
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
+        model: body.model || undefined,
       });
 
       if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
