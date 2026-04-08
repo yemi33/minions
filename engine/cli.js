@@ -556,7 +556,9 @@ const commands = {
     }
 
     console.log('');
-    console.log(`Dispatch: ${dispatch.pending.length} pending | ${(dispatch.active || []).length} active | ${(dispatch.completed || []).length} completed`);
+    const metrics = shared.safeJson(path.join(__dirname, 'metrics.json')) || {};
+    const lifetimeCompleted = Object.entries(metrics).filter(([k]) => !k.startsWith('_')).reduce((sum, [, m]) => sum + (m.tasksCompleted || 0) + (m.tasksErrored || 0), 0);
+    console.log(`Dispatch: ${dispatch.pending.length} pending | ${(dispatch.active || []).length} active | ${lifetimeCompleted} completed`);
     console.log(`Active processes: ${e.activeProcesses.size}`);
 
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');

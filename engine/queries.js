@@ -94,7 +94,9 @@ function invalidateDispatchCache() { _dispatchCache = null; _dispatchCacheAt = 0
 function getDispatchQueue() {
   const d = getDispatch();
   const allCompleted = d.completed || [];
-  d.completedTotal = allCompleted.length;
+  // Lifetime total from metrics (dispatch.completed is capped at 100)
+  const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+  d.completedTotal = Object.entries(metrics).filter(([k]) => !k.startsWith('_')).reduce((sum, [, m]) => sum + (m.tasksCompleted || 0) + (m.tasksErrored || 0), 0);
   d.completed = allCompleted.slice(-20);
   return d;
 }
@@ -122,7 +124,54 @@ function getEngineLog() {
 }
 
 function getMetrics() {
-  return safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+  const metrics = safeJson(path.join(ENGINE_DIR, 'metrics.json')) || {};
+
+  // Enrich agent PR counts from pull-requests.json (source of truth)
+  const allPrs = getPullRequests();
+  const prCountByAgent = {};
+  const prApprovedByAgent = {};
+  const prRejectedByAgent = {};
+  for (const pr of allPrs) {
+    const agent = (pr.agent || '').toLowerCase();
+    if (!agent || agent.startsWith('temp-')) continue;
+    prCountByAgent[agent] = (prCountByAgent[agent] || 0) + 1;
+    if (pr.reviewStatus === 'approved' || pr.status === 'merged') prApprovedByAgent[agent] = (prApprovedByAgent[agent] || 0) + 1;
+    if (pr.reviewStatus === 'rejected') prRejectedByAgent[agent] = (prRejectedByAgent[agent] || 0) + 1;
+  }
+
+  // Enrich agent runtime from completed dispatch entries
+  const dispatch = getDispatch();
+  const runtimeByAgent = {};
+  const runtimeCountByAgent = {};
+  for (const d of (dispatch.completed || [])) {
+    const agent = d.agent;
+    if (!agent || agent.startsWith('temp-')) continue;
+    if (d.started_at && d.completed_at) {
+      const ms = new Date(d.completed_at).getTime() - new Date(d.started_at).getTime();
+      if (ms > 0) {
+        runtimeByAgent[agent] = (runtimeByAgent[agent] || 0) + ms;
+        runtimeCountByAgent[agent] = (runtimeCountByAgent[agent] || 0) + 1;
+      }
+    }
+  }
+
+  // Apply enrichments to agent metrics
+  for (const [agentId, m] of Object.entries(metrics)) {
+    if (agentId.startsWith('_')) continue;
+    const lower = agentId.toLowerCase();
+    if (prCountByAgent[lower] !== undefined) {
+      m.prsCreated = prCountByAgent[lower];
+      m.prsApproved = prApprovedByAgent[lower] || 0;
+      m.prsRejected = prRejectedByAgent[lower] || 0;
+    }
+    if (runtimeByAgent[agentId]) {
+      // Use dispatch history as source of truth — it has full history
+      m.totalRuntimeMs = runtimeByAgent[agentId];
+      m.timedTasks = runtimeCountByAgent[agentId];
+    }
+  }
+
+  return metrics;
 }
 
 // ── Inbox ───────────────────────────────────────────────────────────────────
