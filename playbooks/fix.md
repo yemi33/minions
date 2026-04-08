@@ -31,36 +31,38 @@ Use subagents only for genuinely parallel, independent tasks. For sequential wor
 
 2. Fix each issue listed above
 
-3. Commit and push:
-   ```bash
-   git add <specific files>
-   git commit -m "fix: address review feedback on {{pr_id}}"
-   git push
-   ```
+3. Handle merge conflicts if any:
+   - If `git pull` or the PR shows conflicts, resolve them in the worktree
+   - Prefer the PR branch changes, commit the resolution
+
+## Build & Test (MANDATORY before pushing)
+
+Before pushing, verify the fix doesn't break anything:
+
+1. **Build** the project using its build system (check CLAUDE.md, README, package.json, Makefile). If the build fails, fix it before proceeding.
+2. **Run the full test suite** using whatever command the project specifies (check CLAUDE.md, agent.md, README, or package.json scripts).
+3. If any tests fail due to your changes, fix them before pushing.
+4. If the build fails 3 times, report the errors in your PR comment and stop.
+5. Do NOT push code that breaks existing tests or the build.
+
+## Push & Comment on PR
+
+Only after build and tests pass:
+
+```bash
+git add <specific files>
+git commit -m "fix: address review feedback on {{pr_id}}"
+git push
+```
 
 Do NOT remove the worktree — the engine handles cleanup automatically.
 
-## Handling Merge Conflicts
-If you encounter merge conflicts (e.g., during `git pull` or when the PR shows conflicts):
-1. Resolve conflicts in the worktree, preferring the PR branch changes. Commit the resolution.
-
-## Post Response on PR
-
 {{pr_comment_instructions}}
 - pullRequestId: `{{pr_number}}`
-- content: Explain what was fixed, reference each review finding
+- content: Explain what was fixed, reference each review finding, include build/test status
 - Sign: `Fixed by Minions ({{agent_name}} — {{agent_role}})`
-
-## Test Validation (MANDATORY before pushing)
-
-Before pushing your fix, run the project's test suite:
-
-1. Find the test command by reading the project's own documentation — check CLAUDE.md, agent.md, README, or package.json scripts in the project root. Every project defines its own conventions.
-2. Run the full test suite using whatever command the project specifies
-3. If any tests fail due to your changes, fix them before pushing
-4. Do NOT push code that breaks existing tests
 
 ## When to Stop
 
-Your task is complete once you have: (1) pushed the fix, (2) created or updated the PR, and (3) confirmed tests pass. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately after the fix is verified.
+Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, and (3) commented on the PR. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
 
