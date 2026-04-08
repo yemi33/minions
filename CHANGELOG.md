@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.623 (2026-04-08)
+
+### Fixes
+-  reorder fix playbook — build & test before push, add build step
+
 ## 0.1.622 (2026-04-08)
 
 ### Fixes
