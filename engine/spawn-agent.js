@@ -26,14 +26,14 @@ const env = cleanChildEnv();
 let claudeBin;
 let claudeIsNative = false; // true = native binary, false = node cli.js
 const capsCachePath = path.join(__dirname, 'claude-caps.json');
-let _sysPromptFileSupported = null;
+let _cacheHit = false;
 
 // Fast path: use cached binary path if it still exists on disk
 const caps = safeJson(capsCachePath);
 if (caps?.claudeBin && fs.existsSync(caps.claudeBin)) {
   claudeBin = caps.claudeBin;
   claudeIsNative = !!caps.claudeIsNative;
-  _sysPromptFileSupported = caps.sysPromptFile ?? null;
+  _cacheHit = true;
 }
 
 // Strategy 1: Check if `claude` is on PATH (native installer or npm global bin)
@@ -114,12 +114,10 @@ if (!claudeBin) {
   process.exit(78); // 78 = configuration error (distinct from runtime failures)
 }
 
-// --system-prompt-file is supported in all Claude CLI versions (not listed in --help but works)
+// Save binary path cache on first resolution (subsequent spawns use fast path)
 let actualArgs = cliArgs;
-// Save binary path cache (no capability check needed — spawnSync for --help was a bottleneck)
-if (_sysPromptFileSupported === null) {
-  _sysPromptFileSupported = true;
-  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative, sysPromptFile: true }); } catch {}
+if (!_cacheHit) {
+  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative }); } catch {}
 }
 
 const proc = claudeIsNative
@@ -132,14 +130,9 @@ fs.appendFile(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ')
 const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
 fs.writeFileSync(pidFile, String(proc.pid || ''));
 
-// Send prompt via stdin — if system prompt was truncated, prepend the full context
+// Send prompt via stdin
 try {
-  if (!isResume && Buffer.byteLength(sysPrompt) >= 30000) {
-    // System prompt was too large for CLI — prepend full context to user prompt
-    proc.stdin.write(`## Full Agent Context\n\n${sysPrompt}\n\n---\n\n## Your Task\n\n${prompt}`);
-  } else {
-    proc.stdin.write(prompt);
-  }
+  proc.stdin.write(prompt);
   proc.stdin.end();
 } catch (err) {
   console.error(`FATAL: stdin write failed (broken pipe): ${err.message}`);

@@ -4579,14 +4579,11 @@ async function testSpawnAgentScript() {
       'Should detect --resume flag and skip system prompt (baked into session)');
   });
 
-  await test('spawn-agent.js handles large system prompts (>30KB)', () => {
-    assert.ok(src.includes('30000') || src.includes('30KB'),
-      'Should handle system prompts over 30KB by splitting or prepending to user prompt');
-  });
-
-  await test('spawn-agent.js checks --system-prompt-file support', () => {
-    assert.ok(src.includes('_sysPromptFileSupported') && src.includes('--system-prompt-file'),
-      'Should probe claude CLI for --system-prompt-file flag support');
+  await test('spawn-agent.js always uses --system-prompt-file', () => {
+    assert.ok(src.includes('--system-prompt-file'),
+      'Should pass system prompt via file to avoid Windows arg length limits');
+    assert.ok(!src.includes('spawnSync') || !src.includes("'--help'"),
+      'Should not use spawnSync --help for capability detection (removed as bottleneck)');
   });
 }
 
