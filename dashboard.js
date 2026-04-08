@@ -548,7 +548,7 @@ const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTE
 
 let _preambleCache = null;
 let _preambleCacheTs = 0;
-const PREAMBLE_TTL = 10000; // 10s — same as status cache
+const PREAMBLE_TTL = 30000; // 30s — longer TTL since preamble is lightweight orientation, not real-time data
 
 function buildCCStatePreamble() {
   const now = Date.now();
@@ -676,6 +676,7 @@ function updateSession(store, key, sessionId, existing) {
       sessionId,
       lastActiveAt: now,
       turnCount: (existing && prev ? prev.turnCount : 0) + 1,
+      _docHash: prev?._docHash || null,
     });
     persistDocSessions();
   }
@@ -772,15 +773,32 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model }) {
-  const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
-
-  // Session key: filePath is stable and unique; title is the fallback for read-only Q&A
   const sessionKey = filePath || title;
+  const docSlice = document.slice(0, 20000);
+
+  // Skip re-sending full document on session resume if content unchanged
+  const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
+  const existing = resolveSession('doc', sessionKey);
+  const docUnchanged = existing?.sessionId && existing._docHash === docHash;
+
+  let docContext;
+  if (docUnchanged) {
+    // Session has the document — only send selection and edit instructions
+    docContext = `## Document: ${title || 'Document'}${filePath ? ' (`' + filePath + '`)' : ''}${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) : ''}${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : ''}`;
+  } else {
+    docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${docSlice}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
+  }
+
   const result = await ccCall(message, {
     store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
     ...(model ? { model } : {}),
   });
+  // Store doc hash for next call's unchanged check
+  if (result.code === 0 && result.sessionId) {
+    const session = resolveSession('doc', sessionKey);
+    if (session) session._docHash = docHash;
+  }
 
   if (result.code !== 0 || !result.text) {
     console.error(`[doc-chat] Failed: code=${result.code}, empty=${!result.text}, filePath=${filePath}, stderr=${(result.stderr || '').slice(0, 200)}`);

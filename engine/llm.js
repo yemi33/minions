@@ -50,7 +50,7 @@ function trackEngineUsage(category, usage) {
 
 let _claudeBinCache = null;
 let _claudeBinCacheTs = 0;
-const _CLAUDE_BIN_TTL = 300000; // 5 min — re-validate binary exists periodically
+const _CLAUDE_BIN_TTL = 1800000; // 30 min — binary path rarely changes during a session
 function _resolveClaudeBin() {
   if (_claudeBinCache && Date.now() - _claudeBinCacheTs < _CLAUDE_BIN_TTL) return _claudeBinCache;
   _claudeBinCache = null;
