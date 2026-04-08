@@ -55,6 +55,29 @@ async function openSettings() {
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
     '</div>' +
 
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Command Center / Doc Chat</h3>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+      '<div>' +
+        '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Model</label>' +
+        '<select id="set-ccModel" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+          '<option value="sonnet"' + ((e.ccModel || 'sonnet') === 'sonnet' ? ' selected' : '') + '>Sonnet (default)</option>' +
+          '<option value="haiku"' + (e.ccModel === 'haiku' ? ' selected' : '') + '>Haiku (faster, cheaper)</option>' +
+          '<option value="opus"' + (e.ccModel === 'opus' ? ' selected' : '') + '>Opus (most capable)</option>' +
+        '</select>' +
+        '<div style="font-size:9px;color:var(--muted);margin-top:1px">Model used for CC and doc-chat conversations</div>' +
+      '</div>' +
+      '<div>' +
+        '<label style="font-size:10px;color:var(--muted);display:block;margin-bottom:2px">Effort Level</label>' +
+        '<select id="set-ccEffort" style="width:100%;padding:4px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">' +
+          '<option value=""' + (!e.ccEffort ? ' selected' : '') + '>Default</option>' +
+          '<option value="low"' + (e.ccEffort === 'low' ? ' selected' : '') + '>Low (quick responses)</option>' +
+          '<option value="medium"' + (e.ccEffort === 'medium' ? ' selected' : '') + '>Medium</option>' +
+          '<option value="high"' + (e.ccEffort === 'high' ? ' selected' : '') + '>High (thorough)</option>' +
+        '</select>' +
+        '<div style="font-size:9px;color:var(--muted);margin-top:1px">Controls response depth and reasoning effort</div>' +
+      '</div>' +
+    '</div>' +
+
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Output Format', 'set-outputFormat', c.outputFormat || 'stream-json', '', '') +
@@ -172,6 +195,8 @@ async function saveSettings() {
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
+      ccModel: document.getElementById('set-ccModel').value,
+      ccEffort: document.getElementById('set-ccEffort').value || null,
     };
 
     const claudePayload = {
