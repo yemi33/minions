@@ -705,11 +705,15 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
 } else if (cmd === 'dash' || cmd === 'dashboard') {
   ensureInstalled();
   // If dashboard is already running, just open the browser
-  const http = require('http');
+  const net = require('net');
   const dashPort = 7331;
-  const probe = http.get(`http://localhost:${dashPort}/api/status`, (res) => {
-    res.resume();
-    // Dashboard is running — open browser
+  const sock = new net.Socket();
+  let handled = false;
+  sock.setTimeout(1000);
+  sock.on('connect', () => {
+    sock.destroy();
+    if (handled) return;
+    handled = true;
     const url = `http://localhost:${dashPort}`;
     console.log(`\n  Dashboard already running: ${url}\n`);
     try {
@@ -717,11 +721,18 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
       execSync(openCmd, { stdio: 'ignore', windowsHide: true });
     } catch {}
   });
-  probe.on('error', () => {
-    // Dashboard not running — start it
+  sock.on('error', () => {
+    if (handled) return;
+    handled = true;
     delegate('dashboard.js', rest);
   });
-  probe.setTimeout(2000, () => { probe.destroy(); delegate('dashboard.js', rest); });
+  sock.on('timeout', () => {
+    sock.destroy();
+    if (handled) return;
+    handled = true;
+    delegate('dashboard.js', rest);
+  });
+  sock.connect(dashPort, '127.0.0.1');
 } else if (engineCmds.has(cmd)) {
   delegate('engine.js', [cmd, ...rest]);
 } else {
