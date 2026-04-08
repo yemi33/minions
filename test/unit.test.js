@@ -9308,6 +9308,18 @@ async function testDashboardResilience() {
       'ccSend must pause after abort to let server release ccInFlight before sending queued message');
   });
 
+  await test('ccSend sets _ccSending during abort delay to prevent queue bypass', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
+    assert.ok(fn.includes('_ccSending = true') && fn.includes('setTimeout') && fn.includes('_ccSending = false'),
+      'ccSend must hold _ccSending true during abort delay so new messages queue instead of bypassing');
+  });
+
+  await test('ccSend drain loop checks wasAborted on each iteration', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
+    assert.ok(fn.includes('wasAborted = await _ccDoSend(next)'),
+      'Queue drain must capture wasAborted from each send for abort delay on subsequent items');
+  });
+
   await test('ccSend drain loop preserves queue on abort (does not clear)', () => {
     const abortFn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
     assert.ok(!abortFn.includes('_ccQueue = []'),

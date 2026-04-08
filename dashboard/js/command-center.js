@@ -155,16 +155,19 @@ async function ccSend() {
     _renderQueueIndicator();
     return;
   }
-  const wasAborted = await _ccDoSend(message);
-
-  // Brief pause after abort — gives server time to release ccInFlight guard
-  if (wasAborted && _ccQueue.length > 0) await new Promise(r => setTimeout(r, 500));
+  let wasAborted = await _ccDoSend(message);
 
   // Drain queue — send each queued message in order
   while (_ccQueue.length > 0) {
+    // After abort, pause to let server release ccInFlight guard before next send
+    if (wasAborted) {
+      _ccSending = true; // keep sending flag true so new messages queue instead of bypassing
+      await new Promise(r => setTimeout(r, 500));
+      _ccSending = false;
+    }
     const next = _ccQueue.shift();
     _renderQueueIndicator();
-    await _ccDoSend(next);
+    wasAborted = await _ccDoSend(next);
   }
 }
 
