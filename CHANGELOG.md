@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.576 (2026-04-08)
+
+### Other
+- chore: remove orphaned comment, fix PID write test assertion
+
 ## 0.1.575 (2026-04-08)
 
 ### Fixes
