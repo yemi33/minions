@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.634 (2026-04-08)
+
+### Fixes
+-  spread pending mutations into dispatch meta.item snapshot
+
+### Other
+- simplify: remove unused hasOutput variable in plan-to-prd check
+
 ## 0.1.632 (2026-04-08)
 
 ### Features
