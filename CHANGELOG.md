@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.563 (2026-04-08)
+
+### Fixes
+-  worktree lifecycle — fail on dep merge, fallback rm, cleanup on plan delete
+-  auto-reset CC session on resume failure, add error logging
+
 ## 0.1.561 (2026-04-08)
 
 ### Fixes
