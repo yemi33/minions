@@ -254,6 +254,8 @@ async function pollPrStatus(config) {
           delete pr.buildFailReason;
           delete pr.buildErrorLog;
           delete pr._buildFailNotified;
+          delete pr.buildFixAttempts;
+          delete pr.buildFixEscalated;
         }
         await engine().handlePostMerge(pr, project, config, newStatus);
       }
@@ -365,6 +367,8 @@ async function pollPrStatus(config) {
       if (buildStatus !== 'failing') {
         delete pr._buildFailNotified;
         delete pr.buildErrorLog;
+        // Reset build fix retry counter on recovery — allows fresh auto-fix cycles if build breaks again
+        if (pr.buildFixAttempts) { delete pr.buildFixAttempts; delete pr.buildFixEscalated; }
       }
       updated = true;
 

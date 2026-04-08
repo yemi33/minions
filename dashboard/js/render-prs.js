@@ -12,8 +12,8 @@ function prRow(pr) {
   const reviewSource = sq.status || effectiveReviewStatus || 'pending';
   const reviewClass = reviewSource === 'approved' ? 'approved' : (reviewSource === 'changes-requested' || reviewSource === 'rejected') ? 'rejected' : reviewSource === 'waiting' ? 'building' : 'draft';
   const reviewLabel = sq.status === 'waiting' ? 'reviewing (minions)' : sq.status ? sq.status + ' (minions)' : (effectiveReviewStatus || 'pending');
-  const buildClass = pr._buildStatusStale ? 'build-stale' : pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
-  const buildLabel = (pr.buildStatus || 'none') + (pr._buildStatusStale ? ' (stale)' : '');
+  const buildClass = pr.buildFixEscalated ? 'build-escalated' : pr._buildStatusStale ? 'build-stale' : pr.buildStatus === 'passing' ? 'build-pass' : pr.buildStatus === 'failing' ? 'build-fail' : pr.buildStatus === 'running' ? 'building' : 'no-build';
+  const buildLabel = pr.buildFixEscalated ? 'escalated (' + (pr.buildFixAttempts || '?') + ' fixes)' : (pr.buildStatus || 'none') + (pr._buildStatusStale ? ' (stale)' : '');
   const statusClass = pr.status === 'merged' ? 'merged' : pr.status === 'abandoned' ? 'rejected' : pr.status === 'active' ? 'active' : 'draft';
   const statusLabel = pr.status || 'active';
   const url = pr.url || '#';
