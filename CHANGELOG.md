@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.625 (2026-04-08)
+
+### Fixes
+-  reorder implement-shared playbook — build & test before push
+-  reorder implement playbook — build & test before push
+
 ## 0.1.623 (2026-04-08)
 
 ### Fixes
