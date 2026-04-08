@@ -1766,12 +1766,15 @@ const server = http.createServer(async (req, res) => {
     global._kbSweepInFlight = true;
     global._kbSweepStartedAt = Date.now();
     try {
+      const body = await readBody(req).catch(() => ({}));
       const entries = getKnowledgeBaseEntries();
       if (entries.length < 2) return jsonReply(res, 200, { ok: true, summary: 'nothing to sweep (< 2 entries)' });
 
-      // Build a manifest of all KB entries with their content
+      // Build a manifest of all KB entries with their content (skip pinned — user wants to keep them)
+      const pinnedKeys = new Set(body.pinnedKeys || []);
       const manifest = [];
       for (const e of entries) {
+        if (pinnedKeys.has('knowledge/' + e.cat + '/' + e.file)) continue;
         const content = safeRead(path.join(MINIONS_DIR, 'knowledge', e.cat, e.file));
         if (!content) continue;
         manifest.push({ category: e.cat, file: e.file, title: e.title, agent: e.agent, date: e.date, content: content.slice(0, 3000) });

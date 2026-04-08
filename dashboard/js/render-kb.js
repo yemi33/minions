@@ -144,7 +144,7 @@ async function kbSweep() {
   btn.textContent = 'sweeping...';
   btn.style.color = 'var(--blue)';
   try {
-    const res = await fetch('/api/knowledge/sweep', { method: 'POST', signal: AbortSignal.timeout(300000) });
+    const res = await fetch('/api/knowledge/sweep', { method: 'POST', signal: AbortSignal.timeout(300000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinnedKeys: getPinnedItems().filter(function(k) { return k.startsWith('knowledge/'); }) }) });
     const data = await res.json();
     if (data.ok) {
       btn.textContent = 'done';
