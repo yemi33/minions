@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.596 (2026-04-08)
+
+### Features
+-  per-type max-turns configurable from settings page
+
 ## 0.1.595 (2026-04-08)
 
 ### Features
