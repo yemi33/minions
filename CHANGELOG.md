@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.616 (2026-04-08)
+
+### Fixes
+-  audit fixes for _killProcessInWorktree
+
 ## 0.1.615 (2026-04-08)
 
 ### Features
