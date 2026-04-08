@@ -68,54 +68,62 @@ function _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPr
   return args;
 }
 
+/**
+ * Spawn a claude CLI process. Returns { proc, cleanupFiles } or null if binary not cached.
+ * When direct=true, spawns claude CLI directly (fewer syscalls). Otherwise uses spawn-agent.js.
+ */
+function _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId }) {
+  const fs = require('fs');
+  const id = uid();
+  const tmpDir = path.join(ENGINE_DIR, 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+  const cleanupFiles = [];
+  const resolved = direct ? _resolveClaudeBin() : null;
+
+  if (resolved) {
+    let sysTmpPath = null;
+    if (!sessionId && sysPromptText) {
+      sysTmpPath = path.join(tmpDir, `direct-sys-${id}.md`);
+      fs.writeFileSync(sysTmpPath, sysPromptText);
+      cleanupFiles.push(sysTmpPath);
+    }
+    const cliArgs = _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile: sysTmpPath });
+    const proc = resolved.native
+      ? runFile(resolved.bin, cliArgs, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() })
+      : runFile(process.execPath, [resolved.bin, ...cliArgs], { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+    try { proc.stdin.write(promptText); proc.stdin.end(); } catch { /* broken pipe */ }
+    return { proc, cleanupFiles };
+  }
+
+  // Indirect: use spawn-agent.js
+  const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
+  const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
+  safeWrite(promptPath, promptText);
+  safeWrite(sysPath, sysPromptText || '');
+  cleanupFiles.push(promptPath, sysPath);
+
+  const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+  const args = [
+    spawnScript, promptPath, sysPath,
+    '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
+    '--verbose',
+  ];
+  if (allowedTools) args.push('--allowedTools', allowedTools);
+  if (effort) args.push('--effort', effort);
+  args.push('--permission-mode', 'bypassPermissions');
+  if (sessionId) args.push('--resume', sessionId);
+
+  const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+  return { proc, cleanupFiles };
+}
+
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
 function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null, direct = false } = {}) {
   return new Promise((resolve) => {
     const _startMs = Date.now();
-    const fs = require('fs');
-    const id = uid();
-    const tmpDir = path.join(ENGINE_DIR, 'tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-
-    let proc;
-    const cleanupFiles = [];
-    const resolved = direct ? _resolveClaudeBin() : null;
-
-    if (resolved) {
-      // Direct spawn: skip spawn-agent.js — fewer file syscalls, no extra process
-      let sysTmpPath = null;
-      if (!sessionId && sysPromptText) {
-        sysTmpPath = path.join(tmpDir, `direct-sys-${id}.md`);
-        fs.writeFileSync(sysTmpPath, sysPromptText);
-        cleanupFiles.push(sysTmpPath);
-      }
-      const cliArgs = _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile: sysTmpPath });
-      proc = resolved.native
-        ? runFile(resolved.bin, cliArgs, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() })
-        : runFile(process.execPath, [resolved.bin, ...cliArgs], { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
-      try { proc.stdin.write(promptText); proc.stdin.end(); } catch { /* broken pipe */ }
-    } else {
-      // Indirect: use spawn-agent.js (for agent dispatches or if binary not cached)
-      const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
-      const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
-      safeWrite(promptPath, promptText);
-      safeWrite(sysPath, sysPromptText || '');
-      cleanupFiles.push(promptPath, sysPath);
-
-      const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-      const args = [
-        spawnScript, promptPath, sysPath,
-        '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
-        '--verbose',
-      ];
-      if (allowedTools) args.push('--allowedTools', allowedTools);
-      if (effort) args.push('--effort', effort);
-      args.push('--permission-mode', 'bypassPermissions');
-      if (sessionId) args.push('--resume', sessionId);
-
-      proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
-    }
+    const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId });
 
     let stdout = '';
     let stderr = '';
@@ -167,47 +175,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
   let _abort = null;
   const promise = new Promise((resolve) => {
     const _startMs = Date.now();
-    const fs = require('fs');
-    const id = uid();
-    const tmpDir = path.join(ENGINE_DIR, 'tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-
-    let proc;
-    const cleanupFiles = [];
-    const resolved = direct ? _resolveClaudeBin() : null;
-
-    if (resolved) {
-      let sysTmpPath = null;
-      if (!sessionId && sysPromptText) {
-        sysTmpPath = path.join(tmpDir, `direct-sys-${id}.md`);
-        fs.writeFileSync(sysTmpPath, sysPromptText);
-        cleanupFiles.push(sysTmpPath);
-      }
-      const cliArgs = _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile: sysTmpPath });
-      proc = resolved.native
-        ? runFile(resolved.bin, cliArgs, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() })
-        : runFile(process.execPath, [resolved.bin, ...cliArgs], { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
-      try { proc.stdin.write(promptText); proc.stdin.end(); } catch { /* broken pipe */ }
-    } else {
-      const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
-      const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
-      safeWrite(promptPath, promptText);
-      safeWrite(sysPath, sysPromptText || '');
-      cleanupFiles.push(promptPath, sysPath);
-
-      const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-      const args = [
-        spawnScript, promptPath, sysPath,
-        '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
-        '--verbose',
-      ];
-      if (allowedTools) args.push('--allowedTools', allowedTools);
-      if (effort) args.push('--effort', effort);
-      args.push('--permission-mode', 'bypassPermissions');
-      if (sessionId) args.push('--resume', sessionId);
-
-      proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
-    }
+    const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId });
 
     _abort = () => { shared.killImmediate(proc); };
 

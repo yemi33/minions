@@ -292,6 +292,7 @@ async function spawnAgent(dispatchItem, config) {
   safeWrite(promptPath, fullTaskPrompt);
   const sysPromptPath = path.join(tmpDir, `sysprompt-${safeId}.md`);
   safeWrite(sysPromptPath, systemPrompt);
+  const _cleanupPromptFiles = () => { safeUnlink(promptPath); safeUnlink(sysPromptPath); };
 
   if (branchName) {
     const wtSuffix = id ? id.split('-').pop() : shared.uid();
@@ -440,11 +441,11 @@ async function spawnAgent(dispatchItem, config) {
               execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir }).then(() => depBranch)
             )
           );
-          for (const r of fetchResults) {
-            if (r.status === 'rejected') {
-              const failedBranch = fetchable.find(d => r.reason?.message?.includes(d.branch))?.branch || 'unknown';
+          for (let i = 0; i < fetchResults.length; i++) {
+            if (fetchResults[i].status === 'rejected') {
+              const failedBranch = fetchable[i].branch;
               _failedRefCache.add(failedBranch);
-              log('warn', `Failed to fetch dependency ${failedBranch}: ${r.reason?.message}`);
+              log('warn', `Failed to fetch dependency ${failedBranch}: ${fetchResults[i].reason?.message}`);
               depMergeFailed = true;
             }
           }
@@ -462,6 +463,7 @@ async function spawnAgent(dispatchItem, config) {
             }
           }
           if (depMergeFailed) {
+            _cleanupPromptFiles();
             completeDispatch(id, DISPATCH_RESULT.ERROR, `Dependency merge failed — will retry next tick`);
             return;
           }

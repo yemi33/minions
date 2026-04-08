@@ -8824,7 +8824,7 @@ async function testAutoRecoveryAndAtomicity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     const streamFn = src.slice(src.indexOf('function callLLMStreaming('));
     assert.ok(streamFn.includes('direct = false'), 'callLLMStreaming should accept direct param');
-    assert.ok(streamFn.includes('_resolveClaudeBin'), 'Should use _resolveClaudeBin for direct spawn');
+    assert.ok(streamFn.includes('_spawnProcess'), 'Should use shared _spawnProcess helper');
   });
 
   await test('ccCall passes direct:true to callLLM', () => {
