@@ -31,13 +31,7 @@ Check what's already on this branch:
 git log --oneline {{main_branch}}..HEAD
 ```
 
-Do ALL work in the worktree. When done:
-
-```bash
-git add <specific files>
-git commit -m "{{commit_message}}"
-git push origin {{branch_name}}
-```
+Do ALL work in the worktree.
 
 **Do NOT:**
 - Create a new branch — use `{{branch_name}}`
@@ -60,17 +54,27 @@ Use subagents only for genuinely parallel, independent tasks. For sequential wor
 3. Follow existing patterns exactly — check `CLAUDE.md` for conventions
 4. Build on existing work — don't duplicate or conflict with prior commits
 
-## Build and Verify
+## Build & Test (MANDATORY before pushing)
 
-After implementation:
-1. Build the project using the repo's build system (check CLAUDE.md, package.json, README)
+After implementation, verify everything works:
+
+1. **Build** the project using its build system (check CLAUDE.md, package.json, README, Makefile)
 2. Verify the build succeeds with your changes AND all prior commits on this branch
-3. If the build fails:
-   - Read the error output carefully
-   - Fix the issue (including issues from prior commits if needed)
-   - Re-run the build
-   - If it fails 3 times, report the build errors in your findings and stop
+3. **Run the full test suite** — fix any regressions you introduced
+4. **Run any other checks** the repo defines (linting, type checking, formatting)
+5. If the build fails 3 times, report the errors in your findings and stop
+6. Do NOT push code with a broken build or failing tests that you introduced
+
+## Push
+
+Only after build and tests pass:
+
+```bash
+git add <specific files>
+git commit -m "{{commit_message}}"
+git push origin {{branch_name}}
+```
 
 ## When to Stop
 
-Your task is complete once you have committed and pushed your changes to the shared branch. Do NOT create a PR — the engine creates one when all plan items are done. Stop after pushing.
+Your task is complete once you have: (1) confirmed build and tests pass, and (2) pushed to the shared branch. Do NOT create a PR — the engine creates one when all plan items are done. Stop after pushing.
