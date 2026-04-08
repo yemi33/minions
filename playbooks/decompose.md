@@ -62,3 +62,7 @@ Keep the total number of sub-items between 2 and 5. If the task genuinely cannot
 {{pr_create_instructions}}
 
 {{pr_comment_instructions}}
+
+## When to Stop
+
+Your task is complete once you have output the JSON decomposition block. The engine parses it from your output. Do NOT begin implementing the sub-items. Stop after outputting the JSON.

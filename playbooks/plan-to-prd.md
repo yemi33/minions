@@ -100,5 +100,6 @@ Rules for items:
 - For `shared-branch`: agents commit to a single branch — one PR is created automatically when all items are done
 - For `parallel`: each agent creates its own branch and PR
 
-## Signal Completion
+## When to Stop
 
+Your task is complete once you have written the PRD JSON file to `{{team_root}}/prd/{{prd_filename}}`. The engine will detect the file and begin dispatching work. Do NOT create branches, PRs, or modify project code. Stop after writing the JSON file.

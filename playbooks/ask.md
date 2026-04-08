@@ -38,11 +38,13 @@ Keep it concise but complete. Write for a senior engineer who wants the real ans
 
 ### 4. Status
 
+## When to Stop
+
+Your task is complete once you have written your answer to the inbox file. Do NOT modify code, create PRs, or continue exploring beyond the question. Stop after writing.
+
 ## Rules
 - Do NOT modify any code unless the question explicitly asks you to.
 - Do NOT create PRs or branches — this is a read-only task.
-- Do NOT checkout branches in the main working tree.
-- Read `notes.md` for all team rules before starting.
 
 ## Team Decisions
 {{notes_content}}

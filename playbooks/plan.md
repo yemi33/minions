@@ -91,8 +91,9 @@ High-level design decisions and rationale.
 - The engine will automatically chain this plan into a PRD conversion step
 - Focus on being thorough but actionable — the PRD agent needs clear items to convert
 
-## Signal Completion
+## When to Stop
 
+Your task is complete once you have written the plan file to `{{team_root}}/plans/{{plan_file}}`. Do NOT begin implementation. Stop after writing the plan.
 
 ## Team Notes
 {{notes_content}}

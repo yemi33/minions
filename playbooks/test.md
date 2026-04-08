@@ -64,4 +64,8 @@ Include:
 - Localhost URL if applicable
 
 
+## When to Stop
+
+Your task is complete once you have run the tests, written findings to the inbox file, and (if applicable) created a PR with new tests. Stop after writing findings.
+
 Do NOT remove worktrees — the engine handles cleanup automatically.

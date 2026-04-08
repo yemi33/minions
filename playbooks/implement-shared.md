@@ -71,5 +71,6 @@ After implementation:
    - Re-run the build
    - If it fails 3 times, report the build errors in your findings and stop
 
-## Signal Completion
+## When to Stop
 
+Your task is complete once you have committed and pushed your changes to the shared branch. Do NOT create a PR — the engine creates one when all plan items are done. Stop after pushing.
