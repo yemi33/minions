@@ -9082,6 +9082,75 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
   });
 
+  // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
+
+  await test('discoverFromWorkItems bypasses completed-dedup for retry items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function discoverFromWorkItems('), src.indexOf('\nfunction', src.indexOf('function discoverFromWorkItems(') + 1));
+    assert.ok(fn.includes('const isRetry = !!item._retryCount'), 'Should detect retry items via _retryCount');
+    assert.ok(fn.includes('isAlreadyDispatched(key)'), 'Should still call isAlreadyDispatched');
+    assert.ok(fn.includes('if (isRetry)'), 'Should branch on isRetry inside isAlreadyDispatched block');
+  });
+
+  await test('discoverCentralWorkItems bypasses completed-dedup for retry items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function discoverCentralWorkItems('), src.indexOf('\nfunction', src.indexOf('function discoverCentralWorkItems(') + 1));
+    assert.ok(fn.includes('const isRetry = !!item._retryCount'), 'Should detect retry items via _retryCount');
+    assert.ok(fn.includes('if (isRetry)'), 'Should branch on isRetry inside isAlreadyDispatched block');
+  });
+
+  await test('retry items still block when in-flight (pending or active)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function discoverFromWorkItems('), src.indexOf('\nfunction', src.indexOf('function discoverFromWorkItems(') + 1));
+    assert.ok(fn.includes('getDispatch().pending') && fn.includes('getDispatch().active'),
+      'Retry bypass must check both pending and active dispatch for in-flight blocking');
+    assert.ok(fn.includes("inFlight.some(d => d.meta?.dispatchKey === key)"),
+      'Retry bypass must match on dispatchKey to detect in-flight');
+  });
+
+  await test('_retryCount is cleared on successful completion (DONE status)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const updateFn = src.slice(src.indexOf('function updateWorkItemStatus('));
+    // Both DONE paths should clear _retryCount
+    const doneBlocks = updateFn.split('WI_STATUS.DONE');
+    let clearCount = 0;
+    for (const block of doneBlocks) {
+      if (block.slice(0, 300).includes('delete target._retryCount')) clearCount++;
+    }
+    assert.ok(clearCount >= 2, '_retryCount must be cleared on DONE in both normal and fan-out paths (found ' + clearCount + ')');
+  });
+
+  await test('_retryCount is NOT cleared on FAILED status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const updateFn = src.slice(src.indexOf('function updateWorkItemStatus('));
+    // Find the FAILED block specifically (between "WI_STATUS.FAILED" and the closing brace)
+    const failedIdx = updateFn.indexOf("status === WI_STATUS.FAILED");
+    const failedBlock = updateFn.slice(failedIdx, failedIdx + 200);
+    assert.ok(!failedBlock.includes('delete target._retryCount'),
+      '_retryCount must NOT be cleared on FAILED — retry should persist');
+  });
+
+  await test('isAlreadyDispatched checks both in-flight and recently completed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cooldown.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function isAlreadyDispatched('));
+    assert.ok(fn.includes('dispatch.pending') && fn.includes('dispatch.active'),
+      'Should check pending and active for in-flight');
+    assert.ok(fn.includes('dispatch.completed') && fn.includes('3600000'),
+      'Should check completed within 1-hour window');
+  });
+
+  await test('both discovery functions use equivalent retry bypass pattern', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const wiFn = src.slice(src.indexOf('function discoverFromWorkItems('), src.indexOf('\nfunction', src.indexOf('function discoverFromWorkItems(') + 1));
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('), src.indexOf('\nfunction', src.indexOf('function discoverCentralWorkItems(') + 1));
+    // Both should have isRetry variable and branch on it
+    assert.ok(wiFn.includes('const isRetry = !!item._retryCount'), 'discoverFromWorkItems needs isRetry');
+    assert.ok(centralFn.includes('const isRetry = !!item._retryCount'), 'discoverCentralWorkItems needs isRetry');
+    // Both should check inFlight for retry items
+    assert.ok(wiFn.includes("inFlight.some(d => d.meta?.dispatchKey === key)"), 'discoverFromWorkItems needs inFlight check');
+    assert.ok(centralFn.includes("inFlight.some(d => d.meta?.dispatchKey === key)"), 'discoverCentralWorkItems needs inFlight check');
+  });
+
   // ── Agent Runtime Tracking ────────────────────────────────────────────────
 
   await test('DEFAULT_AGENT_METRICS includes totalRuntimeMs', () => {
