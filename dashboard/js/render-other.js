@@ -102,7 +102,7 @@ function renderLlmPerf(metrics) {
     return;
   }
   let html = '<table class="pr-table"><thead><tr><th>Call Type</th><th>Calls</th><th>Total Time</th><th>Avg Time</th><th>Cost</th></tr></thead><tbody>';
-  const entries = Object.entries(engine).sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0));
+  const entries = Object.entries(engine).filter(([k]) => !k.startsWith('test')).sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0));
   for (const [type, m] of entries) {
     const calls = m.calls || 0;
     const totalMs = m.totalDurationMs || 0;
