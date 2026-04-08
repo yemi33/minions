@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.598 (2026-04-08)
+
+### Fixes
+-  worktree count always 0 — used nonexistent queries.getProjects
+
 ## 0.1.597 (2026-04-08)
 
 ### Features
