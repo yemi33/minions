@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.599 (2026-04-08)
+
+### Fixes
+- true to kb-sweep and schedule-parse, fix socket cleanup
+-  worktree count always 0 — used nonexistent queries.getProjects
+
 ## 0.1.597 (2026-04-08)
 
 ### Features
