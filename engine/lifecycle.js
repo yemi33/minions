@@ -1367,7 +1367,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
       } catch {}
     }
     if (!prdFound) {
-      const hasOutput = stdout && stdout.length > 500;
       const wiPath = resolveWorkItemPath(meta);
       if (wiPath) {
         mutateJsonFileLocked(wiPath, data => {
