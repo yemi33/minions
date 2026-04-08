@@ -703,7 +703,25 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   const { doctor } = require(path.join(MINIONS_HOME, 'engine', 'preflight'));
   doctor(MINIONS_HOME).then(ok => process.exit(ok ? 0 : 1));
 } else if (cmd === 'dash' || cmd === 'dashboard') {
-  delegate('dashboard.js', rest);
+  ensureInstalled();
+  // If dashboard is already running, just open the browser
+  const http = require('http');
+  const dashPort = 7331;
+  const probe = http.get(`http://localhost:${dashPort}/api/status`, (res) => {
+    res.resume();
+    // Dashboard is running — open browser
+    const url = `http://localhost:${dashPort}`;
+    console.log(`\n  Dashboard already running: ${url}\n`);
+    try {
+      const openCmd = process.platform === 'win32' ? `start ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
+      execSync(openCmd, { stdio: 'ignore', windowsHide: true });
+    } catch {}
+  });
+  probe.on('error', () => {
+    // Dashboard not running — start it
+    delegate('dashboard.js', rest);
+  });
+  probe.setTimeout(2000, () => { probe.destroy(); delegate('dashboard.js', rest); });
 } else if (engineCmds.has(cmd)) {
   delegate('engine.js', [cmd, ...rest]);
 } else {
