@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.626 (2026-04-08)
+
+### Fixes
+-  add test/check steps and stop condition to work-item playbook
+
 ## 0.1.625 (2026-04-08)
 
 ### Fixes
