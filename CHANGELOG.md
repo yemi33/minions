@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.577 (2026-04-08)
+
+### Other
+- perf: parallelize worktree/prompt, direct CLI spawn, parallel dep fetch
+- chore: remove orphaned comment, fix PID write test assertion
+
 ## 0.1.575 (2026-04-08)
 
 ### Fixes
