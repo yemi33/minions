@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.628 (2026-04-08)
+
+### Fixes
+-  abort+queue sends queued message after brief delay, not discard
+
 ## 0.1.627 (2026-04-08)
 
 ### Fixes
