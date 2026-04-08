@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.607 (2026-04-08)
+
+### Fixes
+-  remove recursive showModalQa call from _initQaSession
+
 ## 0.1.606 (2026-04-08)
 
 ### Fixes
