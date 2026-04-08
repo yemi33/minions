@@ -114,38 +114,12 @@ if (!claudeBin) {
   process.exit(78); // 78 = configuration error (distinct from runtime failures)
 }
 
-// Check if --system-prompt-file is supported (cached alongside binary path above)
+// --system-prompt-file is supported in all Claude CLI versions (not listed in --help but works)
 let actualArgs = cliArgs;
+// Save binary path cache (no capability check needed — spawnSync for --help was a bottleneck)
 if (_sysPromptFileSupported === null) {
-  try {
-    const { spawnSync } = require('child_process');
-    const testResult = claudeIsNative
-      ? spawnSync(claudeBin, ['--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true })
-      : spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
-    _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
-  } catch { _sysPromptFileSupported = true; /* assume supported */ }
-  // Save binary path + capability flag together
-  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative, sysPromptFile: _sysPromptFileSupported }); } catch {}
-}
-if (!isResume) try {
-  if (!_sysPromptFileSupported) {
-    // Not supported — fall back to inline but safe: use --append-system-prompt with chunking
-    // or just inline if under 30KB
-    fs.unlinkSync(sysTmpPath);
-    if (Buffer.byteLength(sysPrompt) < 30000) {
-      actualArgs = ['-p', '--system-prompt', sysPrompt, ...extraArgs];
-    } else {
-      // Too large for inline — split: short identity as --system-prompt, rest prepended to user prompt
-      // Extract first section (agent identity) as the system prompt, rest goes into user context
-      const splitIdx = sysPrompt.indexOf('\n---\n');
-      const shortSys = splitIdx > 0 && splitIdx < 2000
-        ? sysPrompt.slice(0, splitIdx)
-        : sysPrompt.slice(0, 1500) + '\n\n[System prompt truncated for CLI arg limit — full context provided below in user message]';
-      actualArgs = ['-p', '--system-prompt', shortSys, ...extraArgs];
-    }
-  }
-} catch {
-  // If help check fails, try file approach anyway
+  _sysPromptFileSupported = true;
+  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative, sysPromptFile: true }); } catch {}
 }
 
 const proc = claudeIsNative
