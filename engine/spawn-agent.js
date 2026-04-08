@@ -126,9 +126,9 @@ const proc = claudeIsNative
 
 fs.appendFile(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`, () => {});
 
-// Write PID file for parent engine to verify spawn
+// Write PID file for parent engine to verify spawn (async — engine checks after 5s)
 const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
-fs.writeFileSync(pidFile, String(proc.pid || ''));
+fs.writeFile(pidFile, String(proc.pid || ''), () => {});
 
 // Send prompt via stdin
 try {

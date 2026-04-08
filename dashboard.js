@@ -644,25 +644,10 @@ function buildCCStatePreamble() {
   const planFiles = [...safeReadDir(PLANS_DIR), ...safeReadDir(PRD_DIR)].filter(f => f.endsWith('.md') || f.endsWith('.json'));
 
   const schedules = CONFIG.schedules || [];
-  const schedSummary = schedules.length > 0
-    ? schedules.map(s => `- ${s.id}: "${s.title}" (cron: ${s.cron}, type: ${s.type || 'implement'}, ${s.enabled === false ? 'disabled' : 'enabled'})`).join('\n')
-    : '(none configured)';
+  const enabledSchedules = schedules.filter(s => s.enabled !== false).length;
 
-  let pipelineSummary = '(none configured)';
-  try {
-    const { getPipelines, getPipelineRuns } = require('./engine/pipeline');
-    const pipelines = getPipelines();
-    if (pipelines.length > 0) {
-      const runs = getPipelineRuns();
-      pipelineSummary = pipelines.map(p => {
-        const pRuns = runs[p.id] || [];
-        const lastRun = pRuns.length > 0 ? pRuns[pRuns.length - 1] : null;
-        const lastStatus = lastRun ? ` (last run: ${lastRun.status})` : '';
-        const triggerInfo = p.trigger && p.trigger.cron ? `, cron: ${p.trigger.cron}` : ', manual';
-        return `- ${p.id}: "${p.title}" (${p.stages ? p.stages.length : 0} stages${triggerInfo}, ${p.enabled === false ? 'disabled' : 'enabled'})${lastStatus}`;
-      }).join('\n');
-    }
-  } catch {}
+  let pipelineCount = 0;
+  try { pipelineCount = require('./engine/pipeline').getPipelines().length; } catch {}
 
   const result = `### Agents
 ${agents}
@@ -672,21 +657,13 @@ ${active}
 Pending: ${pending}
 
 ### Quick Counts
-PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs on disk: ${planFiles.length} | Schedules: ${schedules.length}
+PRs: ${prCount} | Work items: ${wiCount} | Plans/PRDs: ${planFiles.length} | Schedules: ${enabledSchedules}/${schedules.length} enabled | Pipelines: ${pipelineCount}
 
 ### Projects
 ${projects}
 
-### Scheduled Tasks
-${schedSummary}
-
-### Pipelines
-${pipelineSummary}
-
-### Dashboard API
-Run \`curl http://localhost:7331/api/routes\` for full endpoint listing.
-
-For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
+Use tools to read \`config.json\` (schedules), \`pipelines/\` dir, or \`curl http://localhost:7331/api/routes\` for details.
+For all state files, look under \`${MINIONS_DIR}\`.`;
   _preambleCache = result;
   _preambleCacheTs = now;
   return result;
@@ -712,16 +689,6 @@ function parseCCActions(text) {
     if (actions.length > 0) displayText = displayText.replace(/`{3,}\s*action\s*\r?\n[\s\S]*?`{3,}\n?/g, '').trim();
   }
   return { text: displayText, actions };
-}
-
-// ── API routes reference for CC — populated by server setup ──────────────────
-let _apiRoutesRef = null; // set to ROUTES array once server initializes
-function _getApiRoutesSummary() {
-  if (!_apiRoutesRef) return '(API routes not yet loaded — fetch GET /api/routes to discover endpoints)';
-  return _apiRoutesRef
-    .filter(r => r.path !== '/api/routes' && typeof r.path === 'string')
-    .map(r => `- \`${r.method} ${r.path}\` — ${r.desc}${r.params ? ' | Params: ' + r.params : ''}`)
-    .join('\n');
 }
 
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
@@ -4255,8 +4222,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   ];
 
   // Expose routes to CC preamble builder (once, on first request)
-  if (!_apiRoutesRef) _apiRoutesRef = ROUTES;
-
   // ── Route Dispatcher ────────────────────────────────────────────────────────
 
   const pathname = req.url.split('?')[0];

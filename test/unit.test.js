@@ -6496,11 +6496,9 @@ async function testAutoModeStatus() {
 }
 
 async function testApiRoutesInCcPreamble() {
-  await test('CC preamble auto-injects API routes', () => {
+  await test('CC preamble references API routes endpoint', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('_getApiRoutesSummary'), 'should have _getApiRoutesSummary function');
-    assert.ok(src.includes('_apiRoutesRef'), 'should have _apiRoutesRef variable');
-    assert.ok(src.includes('Dashboard API'), 'preamble should include Dashboard API section');
+    assert.ok(src.includes('/api/routes'), 'preamble should reference /api/routes for endpoint discovery');
   });
 }
 
