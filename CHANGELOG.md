@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.635 (2026-04-08)
+
+### Other
+- perf: extend caches, skip doc re-send on session resume
+
 ## 0.1.634 (2026-04-08)
 
 ### Fixes
