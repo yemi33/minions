@@ -40,3 +40,7 @@ Write a clear, **self-contained** meeting conclusion. Someone reading ONLY this 
 **Be concrete, not vague.** Do NOT write "fix 3 bugs" — write which 3 bugs, in which files, with what fix. The conclusion is used as input to create an implementation plan, so it must contain enough detail to act on without re-reading the entire meeting.
 
 Do NOT create plan files — plan creation is handled separately (by the pipeline plan stage or the dashboard "Create Plan" button).
+
+## When to Stop
+
+Your task is complete once you have written the conclusion with action items. Do NOT create plan files or begin implementation. Stop after writing the conclusion.

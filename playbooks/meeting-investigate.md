@@ -28,3 +28,7 @@ Focus on what YOU uniquely bring to this discussion. Be thorough but concise.
 ## Output Format
 
 Write your findings as a clear markdown document. Start with your key conclusion, then supporting evidence.
+
+## When to Stop
+
+Your task is complete once you have written your findings as markdown in your response. Do NOT attempt fixes or implementations. Stop after presenting your analysis.

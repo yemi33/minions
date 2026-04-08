@@ -33,3 +33,7 @@ Be direct. Constructive disagreement is encouraged — don't just agree with eve
 ## Output Format
 
 Write your debate response as markdown. Reference other agents' findings by name.
+
+## When to Stop
+
+Your task is complete once you have written your debate response. Do NOT attempt fixes or implementations. Stop after presenting your position.

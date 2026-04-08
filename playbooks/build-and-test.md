@@ -147,3 +147,7 @@ Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT
 
 Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up after the PR is merged or closed.
 
+
+## When to Stop
+
+Your task is complete once you have: (1) built the project, (2) run tests, (3) started the app if applicable, and (4) written your findings to the inbox file. Stop after writing findings.

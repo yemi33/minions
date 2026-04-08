@@ -150,3 +150,7 @@ Use subagents only for genuinely parallel, independent tasks (e.g., building sep
 - Use absolute paths everywhere so the user can copy-paste commands
 - E2E PRs are for review only — do NOT auto-complete or merge them
 
+
+## When to Stop
+
+Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s). Stop after creating PRs.
