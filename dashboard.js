@@ -3368,9 +3368,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (result.code !== 0 || !result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
-          const retryHint = ccSession.sessionId
-            ? 'Your session is still active — just send your message again to retry.'
-            : 'Try clicking **New Session** and sending your message again.';
+          console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
+          // If resuming a session failed, auto-reset so next attempt starts fresh
+          let retryHint;
+          if (wasResume && result.code !== 0) {
+            ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+            safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+            retryHint = 'Session was reset — send your message again to start fresh.';
+          } else {
+            retryHint = ccSession.sessionId
+              ? 'Your session is still active — just send your message again to retry.'
+              : 'Try clicking **New Session** and sending your message again.';
+          }
           res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: ccSession.sessionId }) + '\n\n');
           res.end();
           return;
