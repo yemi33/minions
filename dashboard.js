@@ -3374,8 +3374,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const wasResume = !!(ccSessionValid() && ccSession.sessionId);
         const sessionId = wasResume ? ccSession.sessionId : null;
-        const preamble = buildCCStatePreamble();
-        const prompt = preamble + '\n\n---\n\n' + body.message;
+        const preamble = wasResume ? '' : buildCCStatePreamble();
+        const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
 
         const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
