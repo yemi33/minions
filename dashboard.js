@@ -176,7 +176,24 @@ function _countWorktrees() {
       const root = p.localPath ? path.resolve(p.localPath) : null;
       if (!root) continue;
       const wtRoot = path.resolve(root, config.engine?.worktreeRoot || shared.ENGINE_DEFAULTS.worktreeRoot);
-      try { count += fs.readdirSync(wtRoot).filter(f => fs.statSync(path.join(wtRoot, f)).isDirectory()).length; } catch {}
+      try {
+        for (const dir of fs.readdirSync(wtRoot)) {
+          const dirPath = path.join(wtRoot, dir);
+          try { if (!fs.statSync(dirPath).isDirectory()) continue; } catch { continue; }
+          // A git worktree has a .git file (not directory) in its root
+          if (fs.existsSync(path.join(dirPath, '.git'))) {
+            count++;
+          } else {
+            // Parent directory — scan subdirs for nested worktrees
+            try {
+              for (const sub of fs.readdirSync(dirPath)) {
+                const subPath = path.join(dirPath, sub);
+                try { if (fs.statSync(subPath).isDirectory() && fs.existsSync(path.join(subPath, '.git'))) count++; } catch {}
+              }
+            } catch {}
+          }
+        }
+      } catch {}
     }
     return count;
   } catch { return 0; }
