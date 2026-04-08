@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.588 (2026-04-08)
+
+### Other
+- refactor: extract shared playbook rules to shared-rules.md
+
 ## 0.1.586 (2026-04-08)
 
 ### Fixes
