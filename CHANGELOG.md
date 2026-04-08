@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.605 (2026-04-08)
+
+### Fixes
+-  parse ---DOCUMENT--- before ===ACTIONS=== in doc-chat responses
+
 ## 0.1.604 (2026-04-08)
 
 ### Fixes
