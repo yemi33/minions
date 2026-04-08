@@ -146,6 +146,7 @@ let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection unti
 // Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
 // Cleared at the start of each tick cycle (see tickInner)
 const _failedRefCache = new Set();
+const _FAST_WORK_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
 
 // Resolve dependency plan item IDs to their PR branches
 function resolveDependencyBranches(depIds, sourcePlan, project, config) {
@@ -492,9 +493,8 @@ async function spawnAgent(dispatchItem, config) {
     args.push('--allowedTools', claudeConfig.allowedTools);
   }
 
-  // Effort level: use 'low' for fast work types (explore, ask, review) unless configured otherwise
-  const FAST_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
-  const effort = engineConfig.agentEffort || (FAST_TYPES.has(type) ? 'low' : null);
+  // Effort level: use 'low' for fast work types unless configured otherwise
+  const effort = engineConfig.agentEffort || (_FAST_WORK_TYPES.has(type) ? 'low' : null);
   if (effort) args.push('--effort', effort);
 
   // Session resume: reuse last session if same branch and recent enough (< 2 hours)

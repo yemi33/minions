@@ -477,7 +477,13 @@ SELF: quick file reads, status lookups, notes/plan edits, routing updates, git o
 For exploration/investigation/research/audits — ALWAYS dispatch an \`explore\` work item.
 
 ## Actions
-Append actions at the END of your response. Format: conversational response, then \`===ACTIONS===\` on a new line, then a JSON array. No text after the JSON. Omit if no actions needed.
+Append actions at the END of your response. Write your response first, then \`===ACTIONS===\` on its own line, then a JSON array. No text after the JSON. Omit entirely if no actions needed.
+
+Example:
+I'll dispatch dallas to fix that bug.
+
+===ACTIONS===
+[{"type": "dispatch", "title": "Fix login bug", "workType": "fix", "agents": ["dallas"], "project": "MyApp", "description": "..."}]
 
 Core action types:
 - **dispatch**: title, workType, priority (low/medium/high), agents[] (optional), project, description
