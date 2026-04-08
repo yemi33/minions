@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.573 (2026-04-08)
+
+### Fixes
+-  remove dead stdin prepend path, clean up spawn-agent cache logic
+
 ## 0.1.572 (2026-04-08)
 
 ### Features
