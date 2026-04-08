@@ -70,6 +70,7 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/pipeline.js` | Multi-stage pipeline execution (e.g. daily-arch-improvement) |
 | `engine/meeting.js` | Team meetings: investigate → debate → conclude rounds |
 | `engine/cooldown.js` | Exponential backoff for failed dispatches |
+| `engine/timeout.js` | Timeout detection, steering, and idle threshold checks |
 | `engine/llm.js` | Claude CLI invocation wrapper for consolidation/CC (direct spawn for CC/doc-chat, indirect via spawn-agent for engine agents) |
 
 ### State Files (all runtime, gitignored)
@@ -79,6 +80,7 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 - `engine/log.json` — audit trail (2500 entries max, rotated to 2000)
 - `engine/metrics.json` — per-agent token usage, quality metrics, runtime tracking, and LLM call performance (`_engine` for CC/doc-chat/consolidation/agent-dispatch, `_daily` for per-day aggregates)
 - `engine/pipeline-runs.json` — pipeline execution state
+- `engine/claude-caps.json` — cached claude CLI binary path and native flag (written by spawn-agent, read by llm.js for direct spawn)
 - `engine/schedule-runs.json` — last-run times for cron schedules
 - `projects/<name>/work-items.json` — per-project work items
 - `projects/<name>/pull-requests.json` — per-project PR tracker
@@ -283,6 +285,58 @@ Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min 
 
 The dashboard is assembled from fragments in `dashboard/` at startup: `styles.css`, `layout.html`, page HTML fragments in `pages/`, and JS modules in `js/`. Assembled into one HTML string and served as a single-page app. Sidebar navigation with URL routing (`/work`, `/prd`, `/prs`, `/plans`, `/inbox`, `/schedule`, `/engine`).
 
+## Command Center & Doc-Chat
+
+CC and doc-chat share the same LLM pipeline (`ccCall` in dashboard.js) but serve different purposes.
+
+### Command Center (CC)
+
+The CC panel is the user's primary interface for orchestrating agents. It sends messages via `POST /api/command-center` (non-streaming) or `GET /api/command-center/stream` (SSE streaming).
+
+**Flow:**
+```
+User types message → ccCall() → buildPrompt() → llm.callLLM({ direct: true })
+  → spawns claude CLI directly (no spawn-agent.js) → response parsed
+  → parseCCActions() extracts ===ACTIONS=== → actions executed (dispatch, note, pin, etc.)
+```
+
+**System prompt:** `CC_STATIC_SYSTEM_PROMPT` (~14KB) — defines guardrails, filesystem map, delegation rules, action types, domain terminology. Hashed via `_ccPromptHash` for session invalidation on code changes.
+
+**State preamble:** `buildCCStatePreamble()` — lightweight snapshot of agents, dispatch, PR/WI counts, project list, schedule/pipeline counts. Cached with 10s TTL. Skipped on session resume (session already has context).
+
+**Sessions:** Single global CC session (`ccSession`), persisted to `engine/cc-session.json`. Expires after 2 hours (`CC_SESSION_EXPIRY_MS`). No turn limit (`CC_SESSION_MAX_TURNS = Infinity`). Resume via `--resume` flag. System prompt change (detected via `_ccPromptHash`) forces new session.
+
+**Model/effort:** Configurable via `config.engine.ccModel` (sonnet/haiku/opus) and `config.engine.ccEffort` (null/low/medium/high). Applied to all CC and doc-chat calls.
+
+### Doc-Chat
+
+Doc-chat provides inline Q&A and editing for documents opened in modal dialogs (plans, PRDs, KB entries, notes, meetings).
+
+**Flow:**
+```
+User opens doc modal → showModalQa() → _initQaSession() loads thread from localStorage
+User sends message → POST /api/doc-chat { message, document, title, filePath, model }
+  → handleDocChat() re-reads file from disk (freshest content)
+  → ccDocCall() adds document context, calls ccCall()
+  → response: ---DOCUMENT--- delimiter splits answer from edited content
+  → parseCCActions() runs on answer portion only (not document content)
+  → if edited: safeWrite() saves to disk, frontend updates modal
+```
+
+**Sessions:** Per-document sessions keyed by `filePath || title`, stored in `docSessions` Map (backend, persisted to `engine/doc-sessions.json`) and `_qaSessions` Map (frontend, persisted to localStorage). Session loads when modal opens, saves after each response.
+
+**Document editing:** When the LLM edits a document, it returns `---DOCUMENT---` followed by the complete updated file. The backend writes it to disk. The frontend updates the modal body.
+
+**Important:** `parseCCActions` runs on the answer portion BEFORE `---DOCUMENT---`, not on the document content. This prevents documents containing literal `===ACTIONS===` from being mangled.
+
+### Shared Infrastructure
+
+Both CC and doc-chat use:
+- `ccCall()` — retry logic (resume → fresh → retry after 2s), session management, preamble injection
+- `llm.callLLM({ direct: true })` — bypasses spawn-agent.js, spawns claude CLI directly via cached binary path
+- `trackEngineUsage()` — records calls, tokens, cost, duration per category (`command-center`, `doc-chat`)
+- Configurable model/effort via `ENGINE_DEFAULTS.ccModel` / `ccEffort`
+
 ## Dashboard API
 
 All endpoints self-documented via `GET /api/routes`. Key endpoints: `GET /api/status`, `POST /api/work-items`, `POST /api/work-items/update`, `POST /api/work-items/feedback`, `POST /api/knowledge`, `GET/POST /api/pinned`, `POST /api/engine/wakeup`, `GET /api/agent/:id/live-stream` (SSE), `POST /api/settings/reset`, `POST /api/issues/create` (file GitHub issues via `gh` CLI).
@@ -335,7 +389,7 @@ When a PR's build fails, the engine writes an inbox alert to the author agent wi
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 860+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 980+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 
