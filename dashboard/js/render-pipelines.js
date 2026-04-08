@@ -191,13 +191,13 @@ function renderPipelines(pipelines) {
   el.innerHTML = pipelines.map(function(p) {
     const activeRun = (p.runs || []).find(function(r) { return r.status === 'running'; });
     const lastRun = (p.runs || []).slice(-1)[0];
-    const statusColor = activeRun ? 'var(--blue)' : lastRun?.status === 'completed' ? 'var(--green)' : lastRun?.status === 'failed' ? 'var(--red)' : 'var(--muted)';
-    const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status) : 'Never run';
+    const statusColor = activeRun ? 'var(--blue)' : lastRun?.status === 'completed' ? 'var(--green)' : lastRun?.status === 'failed' ? 'var(--red)' : lastRun?.status === 'stopped' ? 'var(--yellow)' : 'var(--muted)';
+    const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status === 'stopped' ? 'Stopped' : lastRun.status) : 'Never run';
     const trigger = p.trigger?.cron ? _cronToHuman(p.trigger.cron) : 'Manual';
 
     // Stage flow visualization
     var stageFlow = (p.stages || []).map(function(s) {
-      var icon = { task: '\u2699', meeting: '\uD83D\uDCAC', plan: '\uD83D\uDCCB', 'merge-prs': '\uD83D\uDD00', api: '\uD83C\uDF10', wait: '\u23F8', parallel: '\u2693', schedule: '\u23F0' }[s.type] || '\u2022';
+      var icon = { task: '\u2699', meeting: '\uD83D\uDCAC', plan: '\uD83D\uDCCB', 'merge-prs': '\uD83D\uDD00', api: '\uD83C\uDF10', wait: '\u23F8', parallel: '\u2693', schedule: '\u23F0', condition: '\u2753' }[s.type] || '\u2022';
       var stageStatus = activeRun?.stages?.[s.id]?.status || 'pending';
       var color = stageStatus === 'completed' ? 'var(--green)' : stageStatus === 'running' ? 'var(--blue)' : stageStatus === 'failed' ? 'var(--red)' : stageStatus === 'waiting-human' ? 'var(--yellow)' : 'var(--muted)';
       return '<span style="color:' + color + ';font-size:11px" title="' + escHtml(s.id) + ': ' + escHtml(s.title || s.type) + ' (' + stageStatus + ')">' + icon + ' ' + escHtml(s.id) + '</span>';
@@ -220,7 +220,8 @@ function renderPipelines(pipelines) {
         '<div style="display:flex;align-items:center;gap:8px">' +
           '<span style="color:' + statusColor + ';font-size:11px;font-weight:600">' + statusLabel + '</span>' +
           '<span style="font-size:10px;color:var(--muted)">' + escHtml(trigger) + '</span>' +
-          (p.enabled === false ? '<span style="font-size:9px;color:var(--red)">DISABLED</span>' : '') +
+          (p.stopWhen ? '<span style="font-size:9px;color:var(--yellow)" title="Auto-stops when condition met: ' + escHtml(typeof p.stopWhen === 'string' ? p.stopWhen : (p.stopWhen.check || 'condition')) + '">STOP-WHEN</span>' : '') +
+          (p.enabled === false ? '<span style="font-size:9px;color:var(--red)"' + (p._stopReason ? ' title="' + escHtml(p._stopReason) + '"' : '') + '>' + (p._stoppedBy ? 'AUTO-STOPPED' : 'DISABLED') + '</span>' : '') +
         '</div>' +
       '</div>' +
       '<div style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + stageFlow + '</div>' +
@@ -266,6 +267,20 @@ function openPipelineDetail(id) {
     '</div>';
   }
 
+  // stopWhen info
+  if (p.stopWhen) {
+    var swLabel = typeof p.stopWhen === 'string' ? p.stopWhen : (p.stopWhen.check || JSON.stringify(p.stopWhen));
+    html += '<div style="border:1px solid color-mix(in srgb, var(--yellow) 30%, transparent);border-radius:6px;padding:4px 10px;background:color-mix(in srgb, var(--yellow) 6%, transparent);font-size:11px">' +
+      '<span style="color:var(--yellow);font-weight:600">Stop When:</span> <span style="color:var(--text)">' + escHtml(swLabel) + '</span>' +
+      (p._stoppedBy ? ' <span style="color:var(--green);font-size:10px">\u2714 triggered' + (p._stoppedAt ? ' at ' + escHtml(p._stoppedAt.slice(0, 16).replace('T', ' ')) : '') + '</span>' : '') +
+    '</div>';
+  }
+  if (p._stopReason && p.enabled === false) {
+    html += '<div style="border:1px solid color-mix(in srgb, var(--red) 30%, transparent);border-radius:6px;padding:4px 10px;background:color-mix(in srgb, var(--red) 6%, transparent);font-size:11px">' +
+      '<span style="color:var(--red);font-weight:600">Auto-stopped:</span> <span style="color:var(--text)">' + escHtml(p._stopReason) + '</span>' +
+    '</div>';
+  }
+
   html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Stages</h4>';
   (p.stages || []).forEach(function(s, i) {
     var stageRun = activeRun?.stages?.[s.id] || {};
@@ -278,7 +293,9 @@ function openPipelineDetail(id) {
         '<span style="font-weight:600;font-size:12px">' + (i + 1) + '. ' + escHtml(s.title || s.id) + '</span>' +
         '<span style="color:' + statusColor + ';font-size:10px;font-weight:600">' + stageStatus.toUpperCase() + '</span>' +
       '</div>' +
-      '<div style="font-size:10px;color:var(--muted);margin-top:4px">Type: ' + escHtml(s.type) + ' | Depends on: ' + escHtml(deps) + (s.agent ? ' | Agent: ' + escHtml(s.agent) : '') + '</div>' +
+      '<div style="font-size:10px;color:var(--muted);margin-top:4px">Type: ' + escHtml(s.type) + ' | Depends on: ' + escHtml(deps) + (s.agent ? ' | Agent: ' + escHtml(s.agent) : '') +
+        (s.type === 'condition' ? ' | Check: ' + escHtml(typeof (s.check || s.condition) === 'string' ? (s.check || s.condition) : ((s.check || s.condition || {}).check || '?')) + (s.onMet ? ' | onMet: ' + escHtml(s.onMet) : '') + (s.onUnmet ? ' | onUnmet: ' + escHtml(s.onUnmet) : '') : '') +
+      '</div>' +
       _renderMonitoredResources(s.monitoredResources || []) +
       _renderArtifactLinks(stageRun.artifacts) +
       (stageRun.output ? '<div style="margin-top:6px;font-size:11px;max-height:150px;overflow-y:auto">' + renderMd(stageRun.output.slice(0, 500)) + '</div>' : '') +
@@ -291,7 +308,7 @@ function openPipelineDetail(id) {
   if (runs.length > 0) {
     html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Recent Runs</h4>';
     runs.forEach(function(r, ri) {
-      var color = r.status === 'completed' ? 'var(--green)' : r.status === 'failed' ? 'var(--red)' : r.status === 'running' ? 'var(--blue)' : 'var(--muted)';
+      var color = r.status === 'completed' ? 'var(--green)' : r.status === 'failed' ? 'var(--red)' : r.status === 'running' ? 'var(--blue)' : r.status === 'stopped' ? 'var(--yellow)' : 'var(--muted)';
       // Collect all artifacts across stages for this run
       var runArtifacts = _collectRunArtifacts(r);
       var artifactCount = runArtifacts.total;

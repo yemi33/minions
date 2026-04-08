@@ -558,10 +558,12 @@ const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout'
 const PIPELINE_STATUS = {
   PENDING: 'pending', RUNNING: 'running', COMPLETED: 'completed',
   FAILED: 'failed', PAUSED: 'paused', WAITING_HUMAN: 'waiting-human',
+  STOPPED: 'stopped', // pipeline auto-disabled by stopWhen or condition stage
 };
 const STAGE_TYPE = {
   TASK: 'task', MEETING: 'meeting', PLAN: 'plan', API: 'api',
   MERGE_PRS: 'merge-prs', SCHEDULE: 'schedule', WAIT: 'wait', PARALLEL: 'parallel',
+  CONDITION: 'condition',
 };
 const MEETING_STATUS = {
   INVESTIGATING: 'investigating', DEBATING: 'debating', CONCLUDING: 'concluding',
