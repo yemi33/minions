@@ -560,6 +560,20 @@ async function spawnAgent(dispatchItem, config) {
 
   // Live output file — written as data arrives so dashboard can tail it
   const liveOutputPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
+
+  // Rotate previous live output to preserve session history (fixes #543: orphan recovery overwrites)
+  // Only rotate if the existing file has meaningful content (beyond just the header)
+  const LIVE_OUTPUT_SPARSE_THRESHOLD = 500; // bytes — header + init JSON is typically < 500
+  try {
+    if (fs.existsSync(liveOutputPath)) {
+      const prevStat = fs.statSync(liveOutputPath);
+      if (prevStat.size > LIVE_OUTPUT_SPARSE_THRESHOLD) {
+        const prevPath = path.join(AGENTS_DIR, agentId, 'live-output-prev.log');
+        fs.renameSync(liveOutputPath, prevPath);
+      }
+    }
+  } catch { /* rotation is best-effort — overwrite still happens below */ }
+
   safeWrite(liveOutputPath, `# Live output for ${agentId} — ${id}\n# Started: ${startedAt}\n# Task: ${dispatchItem.task}\n\n`);
 
   // Keep live log active even when the agent produces no stdout/stderr for long stretches.
