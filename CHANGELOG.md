@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.603 (2026-04-08)
+
+### Fixes
+-  doc-chat session key collision and model passthrough
+
 ## 0.1.602 (2026-04-08)
 
 ### Features
