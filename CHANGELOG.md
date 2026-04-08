@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.584 (2026-04-08)
+
+### Fixes
+-  add conditional block support to playbook renderer
+
 ## 0.1.583 (2026-04-08)
 
 ### Fixes
