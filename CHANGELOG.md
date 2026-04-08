@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.602 (2026-04-08)
+
+### Features
+- add conditional stage and stop-when support to pipelines (#553)
+
+### Fixes
+-  rotate live-output.log on spawn to preserve previous session (closes #543) (#551)
+- restore pendingFix on failed human-feedback dispatch (closes #540) (#550)
+
 ## 0.1.599 (2026-04-08)
 
 ### Fixes
