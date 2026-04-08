@@ -27,7 +27,10 @@ function trackEngineUsage(category, usage) {
       cat.outputTokens += usage.outputTokens || 0;
       cat.cacheRead += usage.cacheRead || 0;
       cat.cacheCreation = (cat.cacheCreation || 0) + (usage.cacheCreation || 0);
-      if (usage.durationMs) cat.totalDurationMs = (cat.totalDurationMs || 0) + usage.durationMs;
+      if (usage.durationMs) {
+        cat.totalDurationMs = (cat.totalDurationMs || 0) + usage.durationMs;
+        cat.timedCalls = (cat.timedCalls || 0) + 1;
+      }
 
       const today = ts().slice(0, 10);
       if (!metrics._daily) metrics._daily = {};

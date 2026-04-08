@@ -562,12 +562,12 @@ const commands = {
     console.log(`Active processes: ${e.activeProcesses.size}`);
 
     const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
-    const metrics = safeJson(metricsPath);
-    if (metrics && Object.keys(metrics).length > 0) {
+    const metricsData = safeJson(metricsPath);
+    if (metricsData && Object.keys(metricsData).length > 0) {
       console.log('\nMetrics:');
       console.log(`  ${'Agent'.padEnd(12)} ${'Done'.padEnd(6)} ${'Err'.padEnd(6)} ${'PRs'.padEnd(6)} ${'Appr'.padEnd(6)} ${'Rej'.padEnd(6)} ${'Reviews'.padEnd(8)} ${'Cost'.padEnd(8)}`);
       console.log('  ' + '-'.repeat(64));
-      for (const [id, m] of Object.entries(metrics)) {
+      for (const [id, m] of Object.entries(metricsData)) {
         if (id.startsWith('_')) continue;
         const cost = m.totalCostUsd ? '$' + m.totalCostUsd.toFixed(1) : '-';
         console.log(`  ${id.padEnd(12)} ${String(m.tasksCompleted || 0).padEnd(6)} ${String(m.tasksErrored || 0).padEnd(6)} ${String(m.prsCreated || 0).padEnd(6)} ${String(m.prsApproved || 0).padEnd(6)} ${String(m.prsRejected || 0).padEnd(6)} ${String(m.reviewsDone || 0).padEnd(8)} ${cost.padEnd(8)}`);

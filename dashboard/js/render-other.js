@@ -65,7 +65,7 @@ function renderMetrics(metrics) {
 
   function fmtAvgRuntime(m) {
     const total = m.totalRuntimeMs || 0;
-    const count = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
+    const count = m.timedTasks || 0;
     if (!count || !total) return '-';
     const avgMin = total / count / 60000;
     return avgMin < 1 ? '<1m' : Math.round(avgMin) + 'm';
@@ -106,7 +106,8 @@ function renderLlmPerf(metrics) {
   for (const [type, m] of entries) {
     const calls = m.calls || 0;
     const totalMs = m.totalDurationMs || 0;
-    const avgMs = calls > 0 ? totalMs / calls : 0;
+    const timedCalls = m.timedCalls || 0;
+    const avgMs = timedCalls > 0 ? totalMs / timedCalls : 0;
     const fmtTotal = totalMs < 60000 ? Math.round(totalMs / 1000) + 's' : Math.round(totalMs / 60000) + 'm';
     const fmtAvg = avgMs < 1000 ? Math.round(avgMs) + 'ms' : avgMs < 60000 ? Math.round(avgMs / 1000) + 's' : Math.round(avgMs / 60000) + 'm';
     const cost = m.costUsd ? '$' + m.costUsd.toFixed(2) : '-';

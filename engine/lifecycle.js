@@ -1023,7 +1023,10 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     const runtimeMs = dispatchItem.started_at
       ? Date.now() - new Date(dispatchItem.started_at).getTime()
       : 0;
-    if (runtimeMs > 0) m.totalRuntimeMs = (m.totalRuntimeMs || 0) + runtimeMs;
+    if (runtimeMs > 0) {
+      m.totalRuntimeMs = (m.totalRuntimeMs || 0) + runtimeMs;
+      m.timedTasks = (m.timedTasks || 0) + 1;
+    }
 
     if (result === DISPATCH_RESULT.SUCCESS) {
       m.tasksCompleted++;
@@ -1047,7 +1050,10 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     }
     const eng = metrics._engine['agent-dispatch'];
     eng.calls++;
-    if (runtimeMs > 0) eng.totalDurationMs = (eng.totalDurationMs || 0) + runtimeMs;
+    if (runtimeMs > 0) {
+      eng.totalDurationMs = (eng.totalDurationMs || 0) + runtimeMs;
+      eng.timedCalls = (eng.timedCalls || 0) + 1;
+    }
     if (taskUsage) {
       eng.costUsd += taskUsage.costUsd || 0;
       eng.inputTokens += taskUsage.inputTokens || 0;
