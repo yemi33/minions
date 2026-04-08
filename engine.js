@@ -415,6 +415,7 @@ async function spawnAgent(dispatchItem, config) {
           log('warn', `Proceeding with recovered worktree after add failure for ${branchName}`);
         } else {
           log('error', `Failed to create worktree for ${branchName}: ${err.message}${err.stderr ? '\n' + err.stderr.toString().slice(0, 500) : ''}`);
+          _cleanupPromptFiles();
           completeDispatch(id, DISPATCH_RESULT.ERROR, 'Worktree creation failed: ' + (err.message || '').slice(0, 200));
           return null;
         }

@@ -46,11 +46,15 @@ function trackEngineUsage(category, usage) {
 // ── Claude Binary Resolution (cached by spawn-agent.js) ─────────────────────
 
 let _claudeBinCache = null;
+let _claudeBinCacheTs = 0;
+const _CLAUDE_BIN_TTL = 300000; // 5 min — re-validate binary exists periodically
 function _resolveClaudeBin() {
-  if (_claudeBinCache) return _claudeBinCache;
+  if (_claudeBinCache && Date.now() - _claudeBinCacheTs < _CLAUDE_BIN_TTL) return _claudeBinCache;
+  _claudeBinCache = null;
   const caps = shared.safeJson(path.join(ENGINE_DIR, 'claude-caps.json'));
   if (caps?.claudeBin && require('fs').existsSync(caps.claudeBin)) {
     _claudeBinCache = { bin: caps.claudeBin, native: !!caps.claudeIsNative };
+    _claudeBinCacheTs = Date.now();
     return _claudeBinCache;
   }
   return null;
