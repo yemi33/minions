@@ -8758,6 +8758,55 @@ async function testAutoRecoveryAndAtomicity() {
     }
   });
 
+  // ── CC Model/Effort Settings ──────────────────────────────────────────────
+
+  await test('ENGINE_DEFAULTS includes ccModel and ccEffort', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccModel, 'sonnet', 'ccModel default should be sonnet');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccEffort, null, 'ccEffort default should be null');
+  });
+
+  await test('callLLM and callLLMStreaming accept effort parameter', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes("effort = null"), 'Should accept effort param with null default');
+    assert.ok(src.includes("args.push('--effort', effort)"), 'Should pass --effort to CLI');
+    const streamingFn = src.slice(src.indexOf('function callLLMStreaming('));
+    assert.ok(streamingFn.includes("effort = null"), 'callLLMStreaming should accept effort param');
+  });
+
+  await test('ccCall reads ccModel/ccEffort from config and passes effort to LLM', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('));
+    assert.ok(ccCallFn.includes('ccModel'), 'ccCall should reference ccModel config');
+    assert.ok(ccCallFn.includes('effort: ccEffort'), 'ccCall should pass effort to callLLM');
+  });
+
+  await test('settings endpoint validates ccModel and ccEffort', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("['sonnet', 'haiku', 'opus']"), 'Should validate ccModel against allowed values');
+    assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
+  });
+
+  // ── Agent Runtime Tracking ────────────────────────────────────────────────
+
+  await test('DEFAULT_AGENT_METRICS includes totalRuntimeMs', () => {
+    assert.strictEqual(shared.DEFAULT_AGENT_METRICS.totalRuntimeMs, 0, 'totalRuntimeMs should default to 0');
+  });
+
+  await test('updateMetrics tracks runtime and daily runtimeMs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fnBody = src.slice(src.indexOf('function updateMetrics('), src.indexOf('\n}\n', src.indexOf('function updateMetrics(')));
+    assert.ok(fnBody.includes('totalRuntimeMs'), 'updateMetrics should track totalRuntimeMs');
+    assert.ok(fnBody.includes('started_at') && fnBody.includes('completed_at'), 'Should compute runtime from dispatch timestamps');
+    assert.ok(fnBody.includes('daily.runtimeMs'), 'Daily metrics should track runtimeMs');
+  });
+
+  await test('dashboard metrics table includes Avg Runtime column', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    assert.ok(src.includes('Avg Runtime'), 'Metrics table should have Avg Runtime column');
+    assert.ok(src.includes('fmtAvgRuntime'), 'Should use fmtAvgRuntime formatter');
+    assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
+  });
+
   await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
