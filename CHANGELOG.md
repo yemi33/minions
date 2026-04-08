@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.622 (2026-04-08)
+
+### Fixes
+-  add 'When to Stop' to all playbooks missing explicit stop conditions
+
 ## 0.1.621 (2026-04-08)
 
 ### Fixes
