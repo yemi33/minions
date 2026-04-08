@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.612 (2026-04-08)
+
+### Features
+-  clickable pinned notes and skills with full content + doc-chat
+
+### Fixes
+-  accurate LLM call timing and agent metrics on engine page
+-  worktree count now checks for .git file instead of any directory
+
 ## 0.1.609 (2026-04-08)
 
 ### Fixes
