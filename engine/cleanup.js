@@ -40,39 +40,48 @@ function worktreeDirMatchesBranch(dirLower, branch) {
 }
 
 /**
- * Kill any tracked or PID-filed process whose dispatch ID appears in the worktree dir name.
- * Must run BEFORE removeWorktree so file handles are released on Windows.
+ * Kill orphaned processes whose dispatch ID appears in the worktree dir name.
+ * Only kills processes NOT in the active dispatch queue — never kills live agents.
  */
 function _killProcessInWorktree(dir, activeProcesses) {
   const dirLower = dir.toLowerCase();
-  // Check tracked active processes
+  const dispatch = getDispatch();
+  const activeIds = new Set((dispatch.active || []).map(d => d.id));
+
+  // Check tracked in-memory processes — only kill if dispatch is no longer active
   for (const [id, info] of activeProcesses.entries()) {
-    if (dirLower.includes(id.toLowerCase().slice(-8))) {
-      try { shared.killImmediate(info.proc); } catch {}
-      activeProcesses.delete(id);
-    }
+    if (!dirLower.includes(id.toLowerCase().slice(-8))) continue;
+    if (activeIds.has(id)) continue; // still active — do not kill
+    try { shared.killImmediate(info.proc); } catch {}
+    activeProcesses.delete(id);
+    log('info', `Killed orphaned process for dispatch ${id} before worktree removal`);
   }
-  // Check PID files in engine/tmp/ — format: pid-{label}-{id}.pid
+
+  // Check PID files in engine/tmp/ — only kill if no active dispatch matches
   try {
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
     for (const f of fs.readdirSync(tmpDir)) {
       if (!f.startsWith('pid-') || !f.endsWith('.pid')) continue;
-      // Extract dispatch ID suffix from filename
-      const parts = f.replace(/^pid-/, '').replace(/\.pid$/, '').split('-');
-      const suffix = parts.slice(-1)[0];
-      if (suffix && dirLower.includes(suffix)) {
-        const pid = parseInt(fs.readFileSync(path.join(tmpDir, f), 'utf8').trim(), 10);
-        if (pid > 0) {
-          try {
-            if (process.platform === 'win32') {
-              exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
-            } else {
-              process.kill(pid, 'SIGKILL');
-            }
-          } catch {} // process may already be dead
-        }
-        try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
+      const pidFileName = f.replace(/^pid-/, '').replace(/\.pid$/, '');
+      if (!dirLower.includes(pidFileName.slice(-8))) continue;
+      // Verify this PID file's dispatch is not active
+      const isActive = [...activeIds].some(id => pidFileName.includes(id.slice(-8)));
+      if (isActive) continue; // still active — do not kill
+      const pid = parseInt(fs.readFileSync(path.join(tmpDir, f), 'utf8').trim(), 10);
+      if (pid > 0) {
+        // Verify the process is actually a node/claude process before killing
+        try {
+          if (process.platform === 'win32') {
+            const taskInfo = exec(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
+            if (!taskInfo.toLowerCase().includes('node')) continue; // not a node process — skip
+            exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
+          } else {
+            process.kill(pid, 'SIGKILL');
+          }
+          log('info', `Killed orphaned PID ${pid} (${f}) before worktree removal`);
+        } catch {} // process may already be dead
       }
+      try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
     }
   } catch {} // tmp dir may not exist
 }
