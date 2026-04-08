@@ -43,10 +43,9 @@ function worktreeDirMatchesBranch(dirLower, branch) {
  * Kill orphaned processes whose dispatch ID appears in the worktree dir name.
  * Only kills processes NOT in the active dispatch queue — never kills live agents.
  */
-function _killProcessInWorktree(dir, activeProcesses) {
+function _killProcessInWorktree(dir, activeProcesses, activeDispatchIds) {
   const dirLower = dir.toLowerCase();
-  const dispatch = getDispatch();
-  const activeIds = new Set((dispatch.active || []).map(d => d.id));
+  const activeIds = activeDispatchIds;
 
   // Check tracked in-memory processes — only kill if dispatch is no longer active
   for (const [id, info] of activeProcesses.entries()) {
@@ -76,6 +75,11 @@ function _killProcessInWorktree(dir, activeProcesses) {
             if (!taskInfo.toLowerCase().includes('node')) continue; // not a node process — skip
             exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
           } else {
+            // Verify it's a node process before killing (prevent recycled PID kill)
+            try {
+              const psOut = exec(`ps -p ${pid} -o comm=`, { encoding: 'utf8', timeout: 3000 }).trim();
+              if (!psOut.includes('node') && !psOut.includes('claude')) continue;
+            } catch { continue; } // process dead or ps failed
             process.kill(pid, 'SIGKILL');
           }
           log('info', `Killed orphaned PID ${pid} (${f}) before worktree removal`);
@@ -200,6 +204,7 @@ function runCleanup(config, verbose = false) {
 
       const wtEntries = []; // { dir, wtPath, mtime, shouldClean, isProtected }
       const dispatch = getDispatch();
+      const activeDispatchIds = new Set((dispatch.active || []).map(d => d.id));
 
       for (const { dir, wtPath } of allDirs) {
 
@@ -312,7 +317,7 @@ function runCleanup(config, verbose = false) {
           if (_attemptedWorktreePaths.has(entry.wtPath)) continue;
           _attemptedWorktreePaths.add(entry.wtPath);
           // Kill any process still running in this worktree before removal
-          _killProcessInWorktree(entry.dir, activeProcesses);
+          _killProcessInWorktree(entry.dir, activeProcesses, activeDispatchIds);
           if (shared.removeWorktree(entry.wtPath, root, worktreeRoot)) {
             cleaned.worktrees++;
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
