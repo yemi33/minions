@@ -9296,22 +9296,22 @@ async function testDashboardResilience() {
 
   // ── CC abort clears queue (prevents queued messages from firing after stop) ──
 
-  await test('ccAbort clears the message queue', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
-    assert.ok(fn.includes('_ccQueue = []'),
-      'ccAbort must clear _ccQueue so queued messages do not fire after stop');
+  await test('_ccDoSend returns wasAborted flag for queue drain delay', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function _ccDoSend'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('async function _ccDoSend') + 1));
+    assert.ok(fn.includes('_wasAborted = true'), '_ccDoSend must set _wasAborted on AbortError');
+    assert.ok(fn.includes('return _wasAborted'), '_ccDoSend must return _wasAborted for caller');
   });
 
-  await test('ccAbort calls _renderQueueIndicator to remove queue UI', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
-    assert.ok(fn.includes('_renderQueueIndicator'),
-      'ccAbort must call _renderQueueIndicator to clear queue pills from UI');
-  });
-
-  await test('ccSend drain loop checks queue length on each iteration', () => {
+  await test('ccSend pauses after abort before draining queue', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('while (_ccQueue.length > 0)'),
-      'ccSend drain loop must check queue length (queue may be cleared by ccAbort mid-drain)');
+    assert.ok(fn.includes('wasAborted') && fn.includes('setTimeout'),
+      'ccSend must pause after abort to let server release ccInFlight before sending queued message');
+  });
+
+  await test('ccSend drain loop preserves queue on abort (does not clear)', () => {
+    const abortFn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
+    assert.ok(!abortFn.includes('_ccQueue = []'),
+      'ccAbort must NOT clear queue — queued messages should send after abort completes');
   });
 
   // ── CC server-side reset on new session ──

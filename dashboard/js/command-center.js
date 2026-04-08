@@ -31,9 +31,6 @@ function ccAbort() {
     _ccAbortController.abort();
     _ccAbortController = null;
   }
-  // Clear queue so aborted send doesn't drain queued messages
-  _ccQueue = [];
-  _renderQueueIndicator();
 }
 
 function toggleCommandCenter() {
@@ -158,10 +155,12 @@ async function ccSend() {
     _renderQueueIndicator();
     return;
   }
-  await _ccDoSend(message);
+  const wasAborted = await _ccDoSend(message);
 
-  // Drain queue — show each as a fresh user message + process
-  // Queue is cleared by ccAbort() if user stops mid-stream
+  // Brief pause after abort — gives server time to release ccInFlight guard
+  if (wasAborted && _ccQueue.length > 0) await new Promise(r => setTimeout(r, 500));
+
+  // Drain queue — send each queued message in order
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
     _renderQueueIndicator();
@@ -208,6 +207,7 @@ async function _ccDoSend(message, skipUserMsg) {
 
   _ccSending = true;
   _ccAbortController = new AbortController();
+  let _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
   if (!skipUserMsg) ccAddMessage('user', escHtml(message));
@@ -359,6 +359,7 @@ async function _ccDoSend(message, skipUserMsg) {
   } catch (e) {
     if (streamDiv?.parentNode) { clearInterval(phaseTimer); streamDiv.remove(); }
     if (e.name === 'AbortError') {
+      _wasAborted = true;
       if (streamedText) {
         const ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
         ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">Stopped after ' + ccElapsed + 's</div>');
@@ -382,6 +383,7 @@ async function _ccDoSend(message, skipUserMsg) {
     // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
+  return _wasAborted;
 }
 
 function ccRetryLast() {
