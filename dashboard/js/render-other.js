@@ -59,11 +59,20 @@ function renderMetrics(metrics) {
       merged.prsApproved += tm.prsApproved || 0;
       merged.prsRejected += tm.prsRejected || 0;
       merged.reviewsDone += tm.reviewsDone || 0;
+      merged.totalRuntimeMs = (merged.totalRuntimeMs || 0) + (tm.totalRuntimeMs || 0);
     }
     rows.push(['Temp Agents (' + temps.length + ')', merged]);
   }
 
-  let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th></tr></thead><tbody>';
+  function fmtAvgRuntime(m) {
+    const total = m.totalRuntimeMs || 0;
+    const count = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
+    if (!count || !total) return '-';
+    const avgMin = total / count / 60000;
+    return avgMin < 1 ? '<1m' : Math.round(avgMin) + 'm';
+  }
+
+  let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th><th>Avg Runtime</th></tr></thead><tbody>';
   for (const [id, m] of rows) {
     const rate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
     const rateColor = m.prsCreated > 0 ? (m.prsApproved / m.prsCreated >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
@@ -76,6 +85,7 @@ function renderMetrics(metrics) {
       '<td style="color:' + (m.prsRejected > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (m.prsRejected || 0) + '</td>' +
       '<td style="color:' + rateColor + ';font-weight:600">' + rate + '</td>' +
       '<td>' + (m.reviewsDone || 0) + '</td>' +
+      '<td style="color:var(--muted)">' + fmtAvgRuntime(m) + '</td>' +
     '</tr>';
   }
   html += '</tbody></table>';

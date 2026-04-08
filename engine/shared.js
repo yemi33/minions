@@ -529,6 +529,8 @@ const ENGINE_DEFAULTS = {
   lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
+  ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
+  ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
@@ -572,6 +574,7 @@ const DEFAULT_AGENT_METRICS = {
   reviewsDone: 0,
   lastTask: null, lastCompleted: null,
   totalCostUsd: 0, totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0,
+  totalRuntimeMs: 0, // cumulative agent runtime across all tasks
 };
 
 const DEFAULT_AGENTS = {

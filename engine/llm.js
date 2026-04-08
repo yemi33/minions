@@ -44,7 +44,7 @@ function trackEngineUsage(category, usage) {
 
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
-function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null } = {}) {
+function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null } = {}) {
   return new Promise((resolve) => {
     const id = uid();
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
@@ -61,6 +61,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
       '--verbose',
     ];
     if (allowedTools) args.push('--allowedTools', allowedTools);
+    if (effort) args.push('--effort', effort);
     args.push('--permission-mode', 'bypassPermissions');
 
     if (sessionId) args.push('--resume', sessionId);
@@ -113,7 +114,7 @@ function isResumeSessionStillValid(result) {
  * Returns the same result object as callLLM when the process completes.
  * onChunk(text) is called for each assistant text block as it arrives.
  */
-function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null } = {}) {
+function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null, effort = null } = {}) {
   let _abort = null;
   const promise = new Promise((resolve) => {
     const id = uid();
@@ -131,6 +132,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
       '--verbose',
     ];
     if (allowedTools) args.push('--allowedTools', allowedTools);
+    if (effort) args.push('--effort', effort);
     args.push('--permission-mode', 'bypassPermissions');
     if (sessionId) args.push('--resume', sessionId);
 

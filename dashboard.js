@@ -368,6 +368,8 @@ function getStatus() {
       decompose: CONFIG.engine?.autoDecompose !== false,
       tempAgents: !!CONFIG.engine?.allowTempAgents,
       inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
+      ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
+      ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
     },
     initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
     installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
@@ -568,7 +570,7 @@ Available action types:
 - **schedule**: Create or update a scheduled task. Fields: id (unique slug), title, cron (3-field: minute hour dayOfWeek), workType (implement/test/explore/ask/review/fix), project (optional), agent (optional), description (optional), priority (optional), enabled (default true). Example cron: "0 9 2" = every Tuesday at 9am.
 - **delete-schedule**: Delete a scheduled task. Fields: id.
 - **create-meeting**: Start a team meeting. Fields: title (short meeting name), agenda (detailed text — what agents should investigate/debate, numbered items work best), agents (array of agent IDs), rounds (optional, default 3), project (optional).
-- **set-config**: Update engine settings. Fields: setting (setting name), value (new value). Valid settings: autoApprovePlans (bool), autoDecompose (bool), allowTempAgents (bool), maxConcurrent (number), maxTurns (number). Example: { "type": "set-config", "setting": "autoApprovePlans", "value": true }
+- **set-config**: Update engine settings. Fields: setting (setting name), value (new value). Valid settings: autoApprovePlans (bool), autoDecompose (bool), allowTempAgents (bool), maxConcurrent (number), maxTurns (number), ccModel (sonnet/haiku/opus), ccEffort (null/low/medium/high). Example: { "type": "set-config", "setting": "autoApprovePlans", "value": true }
 - **edit-pipeline**: Update an existing pipeline. Fields: id (pipeline ID), title (optional), stages (optional, JSON array — omit "agent" on stages unless the user specifically requests one; the engine routes to any available agent by default), trigger (optional, { cron: "minute hour dow" } or null for manual).
 - **unpin**: Remove a pinned note. Fields: title (exact title of the pinned note to remove)
 - **archive-plan**: Archive a completed/paused plan. Fields: file (PRD .json or plan .md filename)
@@ -801,7 +803,9 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 50, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model = 'sonnet' } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 50, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+  if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
+  const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
@@ -817,7 +821,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
     result = await llm.callLLM(buildPrompt({ includePreamble: false }), '', {
-      timeout, label, model, maxTurns, allowedTools, sessionId,
+      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort,
     });
     llm.trackEngineUsage(label, result.usage);
 
@@ -852,7 +856,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 2: fresh session (include preamble for full context)
   const freshPrompt = buildPrompt();
   result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
-    timeout, label, model, maxTurns, allowedTools,
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort,
   });
   llm.trackEngineUsage(label, result.usage);
 
@@ -866,7 +870,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
   result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
-    timeout, label, model, maxTurns, allowedTools,
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort,
   });
   llm.trackEngineUsage(label, result.usage);
 
@@ -3374,10 +3378,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const prompt = preamble + '\n\n---\n\n' + body.message;
 
         const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
+        const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
+        const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-          timeout: 900000, label: 'command-center', model: 'sonnet', maxTurns: 50,
+          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 50,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-          sessionId,
+          sessionId, effort: streamEffort,
           onChunk: (text) => {
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
           },
@@ -3582,6 +3588,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         // String fields
         if (e.worktreeRoot !== undefined) config.engine.worktreeRoot = String(e.worktreeRoot || D.worktreeRoot);
+        // CC model/effort
+        if (e.ccModel !== undefined) {
+          const valid = ['sonnet', 'haiku', 'opus'];
+          config.engine.ccModel = valid.includes(e.ccModel) ? e.ccModel : D.ccModel;
+        }
+        if (e.ccEffort !== undefined) {
+          const valid = [null, 'low', 'medium', 'high'];
+          config.engine.ccEffort = valid.includes(e.ccEffort) ? e.ccEffort : null;
+        }
         // Boolean fields
         for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];

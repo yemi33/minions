@@ -1019,6 +1019,12 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     m.lastTask = dispatchItem.task;
     m.lastCompleted = ts();
     if (model) m.model = model;
+    // Track runtime (wall-clock duration from dispatch start to completion)
+    const runtimeMs = (dispatchItem.started_at && dispatchItem.completed_at)
+      ? new Date(dispatchItem.completed_at).getTime() - new Date(dispatchItem.started_at).getTime()
+      : 0;
+    if (runtimeMs > 0) m.totalRuntimeMs = (m.totalRuntimeMs || 0) + runtimeMs;
+
     if (result === DISPATCH_RESULT.SUCCESS) {
       m.tasksCompleted++;
       if (prsCreatedCount > 0) m.prsCreated = (m.prsCreated || 0) + prsCreatedCount;
@@ -1036,9 +1042,10 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
     }
     const today = dateStamp();
     if (!metrics._daily) metrics._daily = {};
-    if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0 };
+    if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0, runtimeMs: 0 };
     const daily = metrics._daily[today];
     daily.tasks++;
+    if (runtimeMs > 0) daily.runtimeMs = (daily.runtimeMs || 0) + runtimeMs;
     if (taskUsage) {
       daily.costUsd += taskUsage.costUsd || 0;
       daily.inputTokens += taskUsage.inputTokens || 0;
