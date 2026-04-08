@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.561 (2026-04-08)
+
+### Fixes
+-  add branch-level mutex to prevent concurrent dispatch to same branch (closes #493) (#498)
+
 ## 0.1.560 (2026-04-08)
 
 ### Features
