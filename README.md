@@ -141,7 +141,7 @@ minions work "Explore the codebase and document the architecture"
 | `minions spawn <agent> <prompt>` | Manually spawn an agent |
 | `minions plan <file\|text> [proj]` | Run a plan |
 | `minions cleanup` | Run cleanup manually (temp files, worktrees, zombies) |
-| `minions dash` | Start web dashboard (default port 7331) |
+| `minions dash` | Open dashboard (starts if not already running, port 7331) |
 
 You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.minions/dashboard.js`, etc.
 
@@ -209,7 +209,7 @@ You can also run scripts directly: `node ~/.minions/engine.js start`, `node ~/.m
 - **Routes intelligently** — fixes first, then reviews, then implementation, matched to agent strengths
 - **LLM-powered consolidation** — Claude Haiku summarizes notes (threshold: 5 files). Regex fallback. Source references required.
 - **Knowledge base** — `knowledge/` with categories: architecture, conventions, project-notes, build-reports, reviews. Full notes preserved. Dashboard browsable with inline Q&A.
-- **Token tracking** — per-agent and per-day usage. Dashboard Token Usage panel.
+- **Token tracking** — per-agent and per-day usage with runtime tracking. Dashboard Token Usage panel + LLM Call Performance tile (avg runtime by call type: agent-dispatch, command-center, doc-chat, consolidation).
 - **Engine watchdog** — dashboard auto-restarts dead engine.
 - **Agent re-attachment** — on restart, finds surviving agent processes via PID files.
 - **Learns from itself** — agents write findings, engine consolidates into institutional knowledge
@@ -246,7 +246,7 @@ The web dashboard at `http://localhost:7331` provides:
 - **Notes & KB** — inbox (paginated, 15/page), team notes (editable), knowledge base by category (paginated, 30/page) with inline Q&A. Pinned notes for critical context.
 - **Schedules** — create/edit/delete scheduled tasks with visual cron builder and natural language parsing. Paginated (15/page).
 - **Skills & MCP** — agent-created reusable workflows (minions-wide + project-specific), click to view full content. MCP server listing.
-- **Engine** — dispatch queue (completed paginated, 20/page), engine log (paginated, 50/page), agent metrics, token usage, context pressure.
+- **Engine** — dispatch queue (completed paginated, 20/page), engine log (paginated, 50/page), LLM call performance (avg runtime by call type), agent metrics (with avg runtime), token usage.
 - **Settings** — engine config, eval loop, agent management, routing editor.
 - **Document modals** — inline Q&A on any document modal. Auto-polls for live updates with scroll preservation.
 
@@ -369,15 +369,28 @@ Each item passes through: dedup (checks pending, active, AND recently completed)
 
 ### Spawn Chain
 
+**Agent dispatch** (engine agents):
 ```
-engine.js
+engine.js spawnAgent()
+  → builds prompt BEFORE worktree (parallel — no dependency on worktree path)
+  → git worktree add (write tasks only, 20-60s)
   → spawn node spawn-agent.js <prompt.md> <sysprompt.md> <args...>
-    → spawn-agent.js resolves claude-code cli.js path
-      → spawn node cli.js -p --system-prompt <content> <args...>
-        → prompt piped via stdin (avoids shell metacharacter issues)
+    → resolves claude binary path (cached in claude-caps.json)
+    → spawn node cli.js -p --system-prompt-file <file> <args...>
+      → prompt piped via stdin
 ```
 
-No bash or shell involved — Node spawns Node directly. Prompts with special characters (parentheses, backticks, etc.) are safe.
+**CC/doc-chat** (direct spawn — bypasses spawn-agent.js):
+```
+dashboard.js ccCall()
+  → llm.js callLLM({ direct: true })
+    → reads cached binary from claude-caps.json
+    → writes system prompt to temp file
+    → spawns claude CLI directly (1 process, 3 syscalls)
+      → prompt piped via stdin
+```
+
+No bash or shell involved — Node spawns Node directly. Dependency branches are fetched in parallel via `Promise.allSettled`.
 
 ### What Each Agent Gets
 

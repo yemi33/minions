@@ -12,7 +12,7 @@ Minions is a multi-agent orchestration engine that dispatches Claude Code instan
 # Start
 minions restart         # Start engine + dashboard
 minions start           # Start the engine only
-minions dash            # Start dashboard on :7331
+minions dash            # Open dashboard (starts if not running)
 
 # Tests
 npm test                # Unit tests (node test/unit.test.js)
@@ -38,10 +38,16 @@ Each phase is independently wrapped in try-catch — a failure in one phase does
 
 ```
 engine.js spawnAgent()
+  → builds prompt BEFORE worktree setup (parallel — prompt doesn't depend on worktree path)
+  → git worktree add (20-60s for write tasks, skipped for read-only)
   → node engine/spawn-agent.js <prompt> <sysprompt> [args]
-    → resolves claude CLI binary path
+    → resolves claude CLI binary path (cached in claude-caps.json)
     → node <claude-cli> -p --system-prompt-file ... (prompt piped via stdin)
 ```
+
+**CC/doc-chat use a direct spawn path** (`direct: true` in `callLLM`/`callLLMStreaming`) that bypasses `spawn-agent.js` entirely — spawns claude CLI directly using the cached binary path. Fewer file syscalls, no extra Node process.
+
+**Dependency branches are fetched in parallel** via `Promise.allSettled`, then merged sequentially into the worktree.
 
 Agents are **independent processes**. If the engine dies, agents keep running. On restart, the engine re-attaches via PID files and live-output.log mtimes, with a 20-minute grace period before orphan detection.
 
@@ -64,14 +70,14 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/pipeline.js` | Multi-stage pipeline execution (e.g. daily-arch-improvement) |
 | `engine/meeting.js` | Team meetings: investigate → debate → conclude rounds |
 | `engine/cooldown.js` | Exponential backoff for failed dispatches |
-| `engine/llm.js` | Claude CLI invocation wrapper for consolidation/CC |
+| `engine/llm.js` | Claude CLI invocation wrapper for consolidation/CC (direct spawn for CC/doc-chat, indirect via spawn-agent for engine agents) |
 
 ### State Files (all runtime, gitignored)
 
 - `engine/dispatch.json` — pending/active/completed queue
 - `engine/control.json` — engine state (running/paused/stopped)
 - `engine/log.json` — audit trail (2500 entries max, rotated to 2000)
-- `engine/metrics.json` — per-agent token usage and quality metrics
+- `engine/metrics.json` — per-agent token usage, quality metrics, runtime tracking, and LLM call performance (`_engine` for CC/doc-chat/consolidation/agent-dispatch, `_daily` for per-day aggregates)
 - `engine/pipeline-runs.json` — pipeline execution state
 - `engine/schedule-runs.json` — last-run times for cron schedules
 - `projects/<name>/work-items.json` — per-project work items
@@ -244,7 +250,9 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
     "allowTempAgents": false,
     "autoDecompose": true,
     "evalLoop": true,
-    "evalMaxIterations": 3
+    "evalMaxIterations": 3,
+    "ccModel": "sonnet",
+    "ccEffort": null
   },
   "schedules": [{
     "id": "nightly-tests", "cron": "0 2 *", "type": "test",
@@ -327,7 +335,7 @@ When a PR's build fails, the engine writes an inbox alert to the author agent wi
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 650+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 860+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 
