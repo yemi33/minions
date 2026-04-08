@@ -1347,6 +1347,35 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
+  // Detect plan-to-prd tasks that completed without creating a PRD file
+  if (effectiveSuccess && type === WORK_TYPE.PLAN_TO_PRD && meta?.item?.planFile) {
+    const prdFile = meta.item.planFile.replace(/\.md$/, '.json');
+    const prdPath = path.join(PRD_DIR, prdFile);
+    if (!fs.existsSync(prdPath)) {
+      const hasOutput = stdout && stdout.length > 500;
+      const wiPath = resolveWorkItemPath(meta);
+      if (wiPath) {
+        mutateJsonFileLocked(wiPath, data => {
+          if (!Array.isArray(data)) return data;
+          const w = data.find(i => i.id === meta.item.id);
+          if (!w) return data;
+          const retries = w._retryCount || 0;
+          if (retries < ENGINE_DEFAULTS.maxRetries) {
+            w.status = WI_STATUS.PENDING;
+            w._retryCount = retries + 1;
+            delete w.dispatched_at;
+            log('warn', `plan-to-prd ${meta.item.id} completed without PRD file — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
+          } else {
+            w.status = WI_STATUS.FAILED;
+            w.failReason = 'Completed without creating PRD file after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+            log('warn', `plan-to-prd ${meta.item.id} failed — no PRD file after ${ENGINE_DEFAULTS.maxRetries} retries`);
+          }
+          return data;
+        });
+      }
+    }
+  }
+
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
