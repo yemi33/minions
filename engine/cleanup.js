@@ -43,9 +43,8 @@ function worktreeDirMatchesBranch(dirLower, branch) {
  * Kill orphaned processes whose dispatch ID appears in the worktree dir name.
  * Only kills processes NOT in the active dispatch queue — never kills live agents.
  */
-function _killProcessInWorktree(dir, activeProcesses, activeDispatchIds) {
+function _killProcessInWorktree(dir, activeProcesses, activeIds) {
   const dirLower = dir.toLowerCase();
-  const activeIds = activeDispatchIds;
 
   // Check tracked in-memory processes — only kill if dispatch is no longer active
   for (const [id, info] of activeProcesses.entries()) {
@@ -64,7 +63,8 @@ function _killProcessInWorktree(dir, activeProcesses, activeDispatchIds) {
       const pidFileName = f.replace(/^pid-/, '').replace(/\.pid$/, '');
       if (!dirLower.includes(pidFileName.slice(-8))) continue;
       // Verify this PID file's dispatch is not active
-      const isActive = [...activeIds].some(id => pidFileName.includes(id.slice(-8)));
+      let isActive = false;
+      for (const id of activeIds) { if (pidFileName.includes(id.slice(-8))) { isActive = true; break; } }
       if (isActive) continue; // still active — do not kill
       const pid = parseInt(fs.readFileSync(path.join(tmpDir, f), 'utf8').trim(), 10);
       if (pid > 0) {
