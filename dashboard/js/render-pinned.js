@@ -8,15 +8,17 @@ function renderPinned(entries) {
     el.innerHTML = '<p class="empty">No pinned notes. Pin important context that all agents should see.</p>';
     return;
   }
-  el.innerHTML = entries.map(e =>
-    '<div style="padding:8px 12px;margin-bottom:6px;background:var(--surface2);border-left:3px solid ' +
+  // Store entries for click-to-view (full content available in status response)
+  window._pinnedEntries = entries;
+  el.innerHTML = entries.map((e, i) =>
+    '<div class="pinned-card" data-file="pinned:' + escHtml(e.title) + '" style="padding:8px 12px;margin-bottom:6px;background:var(--surface2);border-left:3px solid ' +
       (e.level === 'critical' ? 'var(--red)' : e.level === 'warning' ? 'var(--yellow)' : 'var(--blue)') +
-      ';border-radius:4px">' +
+      ';border-radius:4px;cursor:pointer" onclick="openPinnedView(' + i + ')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:var(--text-md)">' + escHtml(e.title) + '</strong>' +
-        '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" data-pin-title="' + escHtml(e.title) + '" onclick="removePinnedNote(this.dataset.pinTitle)">Unpin</button>' +
+        '<button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--red);border-color:var(--red)" data-pin-title="' + escHtml(e.title) + '" onclick="event.stopPropagation();removePinnedNote(this.dataset.pinTitle)">Unpin</button>' +
       '</div>' +
-      '<div style="font-size:var(--text-sm);color:var(--muted);margin-top:4px">' + renderMd(e.content.slice(0, 200)) + '</div>' +
+      '<div style="font-size:var(--text-sm);color:var(--muted);margin-top:4px">' + renderMd(e.content.slice(0, 200)) + (e.content.length > 200 ? '...' : '') + '</div>' +
     '</div>'
   ).join('');
 }
@@ -57,4 +59,17 @@ async function removePinnedNote(title) {
   } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
-window.MinionsPinned = { renderPinned, openPinNoteModal, submitPinnedNote, removePinnedNote };
+function openPinnedView(idx) {
+  const entry = (window._pinnedEntries || [])[idx];
+  if (!entry) return;
+  document.getElementById('modal-title').textContent = entry.title;
+  document.getElementById('modal-body').innerHTML = renderMd(entry.content);
+  document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
+  document.getElementById('modal').classList.add('open');
+  _modalDocContext = { title: entry.title, content: entry.content, selection: '' };
+  _modalFilePath = 'pinned.md';
+  showModalQa();
+}
+
+window.MinionsPinned = { renderPinned, openPinNoteModal, submitPinnedNote, removePinnedNote, openPinnedView };

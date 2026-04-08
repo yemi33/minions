@@ -76,16 +76,23 @@ function renderSkills(skills) {
 }
 
 function openSkill(file, source, dir) {
+  document.getElementById('modal-title').textContent = file;
+  document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+  document.getElementById('modal').classList.add('open');
   fetch('/api/skill?file=' + encodeURIComponent(file) + '&source=' + encodeURIComponent(source || 'claude-code') + (dir ? '&dir=' + encodeURIComponent(dir) : ''))
     .then(r => r.text())
     .then(content => {
       document.getElementById('modal-title').textContent = file;
-      document.getElementById('modal-body').textContent = content;
-      document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-      document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
-      document.getElementById('modal').classList.add('open');
+      document.getElementById('modal-body').innerHTML = renderMd(content);
+      document.getElementById('modal-body').style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+      document.getElementById('modal-body').style.whiteSpace = 'normal';
+      _modalDocContext = { title: file, content: content, selection: '' };
+      _modalFilePath = (dir ? dir + '/' : 'skills/') + file;
+      showModalQa();
     })
-    .catch(() => {});
+    .catch(() => {
+      document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to load skill.</p>';
+    });
 }
 
 window.MinionsSkills = { renderSkills, openSkill };
