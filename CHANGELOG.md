@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.610 (2026-04-08)
+
+### Fixes
+-  worktree count now checks for .git file instead of any directory
+
 ## 0.1.609 (2026-04-08)
 
 ### Fixes
