@@ -530,6 +530,7 @@ const ENGINE_DEFAULTS = {
   allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
+  autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes

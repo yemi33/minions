@@ -183,7 +183,11 @@ function renderPlans(plans) {
     let prdJsonStatus = p.status || 'active';
     if (prdFile && p.format !== 'prd') {
       const linkedPrd = plans.find(pp => pp.file === prdFile && pp.format === 'prd');
-      if (linkedPrd) prdJsonStatus = linkedPrd.status || prdJsonStatus;
+      if (linkedPrd) {
+        prdJsonStatus = linkedPrd.status || prdJsonStatus;
+        // Propagate archiveReady from PRD to source .md plan card
+        if (linkedPrd.archiveReady) p.archiveReady = true;
+      }
       else if (!linkedPrd) {
         const archivedPrd = archivedPlans.find(pp => pp.file === prdFile && pp.format === 'prd');
         if (archivedPrd) prdJsonStatus = 'completed';
@@ -245,8 +249,12 @@ function renderPlans(plans) {
       'onclick="event.stopPropagation();triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' : '';
     const showArchive = !isArchived;
     const archiveFile = prdFile || p.file;
-    const archiveBtn = showArchive ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px" ' +
-      'onclick="event.stopPropagation();planArchive(\'' + escHtml(archiveFile) + '\',this)">Archive</button>' : '';
+    const archiveReady = p.archiveReady && !isArchived;
+    const archiveBtn = showArchive ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px' +
+      (archiveReady ? ';color:var(--green);font-weight:600;border:1px solid var(--green)' : '') + '" ' +
+      'onclick="event.stopPropagation();planArchive(\'' + escHtml(archiveFile) + '\',this)">' +
+      (archiveReady ? '✓ Archive' : 'Archive') + '</button>' : '';
+    const archiveReadyBadge = archiveReady ? '<span style="font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(63,185,80,0.15);color:var(--green);vertical-align:middle" title="Verification passed — ready to archive">Ready to archive</span>' : '';
     const deleteBtn = !isArchived ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--red)" ' +
       'onclick="event.stopPropagation();planDelete(\'' + escHtml(p.file) + '\')">Delete</button>' : '';
 
@@ -263,7 +271,7 @@ function renderPlans(plans) {
             (p.updatedAt ? '<span title="Last updated: ' + p.updatedAt + '">Updated ' + timeAgo(p.updatedAt) + '</span>' : '') +
             (p.completedAt ? '<span>' + p.completedAt.slice(0, 10) + '</span>' : '') +
             (p.generatedBy ? '<span>by ' + escHtml(p.generatedBy) + '</span>' : '') +
-            executeBtn + pauseBtn + resumeBtn + verifyBtn + (hasVerifyWi ? _renderVerifyBadge(verifyWi) : '') + archiveBtn + deleteBtn +
+            executeBtn + pauseBtn + resumeBtn + verifyBtn + (hasVerifyWi ? _renderVerifyBadge(verifyWi) : '') + archiveReadyBadge + archiveBtn + deleteBtn +
           '</div>' +
         '</div>' +
       '</div>' +

@@ -47,6 +47,7 @@ async function openSettings() {
       settingsToggle('Eval Loop', 'set-evalLoop', e.evalLoop !== false, 'Auto-review implementations and iterate fix cycles until pass') +
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
+      settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
@@ -205,6 +206,7 @@ async function saveSettings() {
       evalLoop: document.getElementById('set-evalLoop').checked,
       autoDecompose: document.getElementById('set-autoDecompose').checked,
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
+      autoArchive: document.getElementById('set-autoArchive').checked,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
