@@ -808,7 +808,7 @@ function mutatePullRequests(filePath, mutator) {
  */
 function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   const resolved = path.resolve(wtPath);
-  const resolvedRoot = path.resolve(worktreeRoot);
+  const resolvedRoot = path.resolve(worktreeRoot) + path.sep;
   if (!resolved.startsWith(resolvedRoot)) {
     log('warn', `removeWorktree: refusing to remove ${wtPath} — not under ${worktreeRoot}`);
     return false;

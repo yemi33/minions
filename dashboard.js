@@ -2392,11 +2392,17 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       shared.sanitizePath(body.file, body.file.endsWith('.json') ? PRD_DIR : PLANS_DIR);
       const planPath = resolvePlanPath(body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan not found' });
-      // Read PRD content before deleting to get source_plan for cleanup
+      // Read plan content before deleting — needed for worktree cleanup and source_plan
+      let planObj = null;
       let prdSourcePlan = null;
       if (body.file.endsWith('.json')) {
-        try { prdSourcePlan = safeJsonObj(planPath).source_plan || null; } catch {}
+        try { planObj = safeJsonObj(planPath); prdSourcePlan = planObj?.source_plan || null; } catch {}
       }
+      // Clean up worktrees before deleting work items (needs branch info from work items)
+      try {
+        const { cleanupPlanWorktrees } = require('./engine/lifecycle');
+        cleanupPlanWorktrees(body.file, planObj || {}, PROJECTS, getConfig());
+      } catch (e) { console.error('plan worktree cleanup:', e.message); }
       safeUnlink(planPath);
 
       // Clean up materialized work items from all projects + central
@@ -2438,13 +2444,6 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           });
         } catch (e) { console.error('plan-to-prd cleanup:', e.message); }
       }
-
-      // Clean up worktrees associated with this plan
-      try {
-        const plan = body.file.endsWith('.json') ? (safeJsonObj(path.join(PRD_DIR, 'archive', body.file)) || safeJsonObj(path.join(PRD_DIR, body.file)) || {}) : {};
-        const { cleanupPlanWorktrees } = require('./engine/lifecycle');
-        cleanupPlanWorktrees(body.file, plan, PROJECTS, getConfig());
-      } catch (e) { console.error('plan worktree cleanup:', e.message); }
 
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, cleanedWorkItems: cleaned, cleanedDispatches: dispatchCleaned });
