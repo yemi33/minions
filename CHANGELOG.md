@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.560 (2026-04-08)
+
+### Features
+- max retry cap and escalation for build fix cycles (#488)
+
+### Fixes
+-  prevent duplicate conclude dispatches in meetings
+-  protect pinned KB items from sweep deduplication
+
 ## 0.1.557 (2026-04-08)
 
 ### Features
