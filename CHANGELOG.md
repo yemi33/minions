@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.562 (2026-04-08)
+
+### Fixes
+-  auto-reset CC session on resume failure, add error logging
+
 ## 0.1.561 (2026-04-08)
 
 ### Fixes
