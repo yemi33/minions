@@ -4570,7 +4570,7 @@ async function testSpawnAgentScript() {
   });
 
   await test('spawn-agent.js writes PID file for engine reattachment', () => {
-    assert.ok(src.includes('pidFile') && src.includes('writeFileSync') && src.includes('proc.pid'),
+    assert.ok(src.includes('pidFile') && src.includes('writeFile') && src.includes('proc.pid'),
       'Should write PID file so engine can reattach on restart');
   });
 

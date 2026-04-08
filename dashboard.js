@@ -4221,7 +4221,6 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
   ];
 
-  // Expose routes to CC preamble builder (once, on first request)
   // ── Route Dispatcher ────────────────────────────────────────────────────────
 
   const pathname = req.url.split('?')[0];
