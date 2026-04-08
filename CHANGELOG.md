@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.618 (2026-04-08)
+
+### Fixes
+-  also check for claude.exe in Windows tasklist before killing
+
 ## 0.1.617 (2026-04-08)
 
 ### Fixes
