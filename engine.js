@@ -492,6 +492,11 @@ async function spawnAgent(dispatchItem, config) {
     args.push('--allowedTools', claudeConfig.allowedTools);
   }
 
+  // Effort level: use 'low' for fast work types (explore, ask, review) unless configured otherwise
+  const FAST_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
+  const effort = engineConfig.agentEffort || (FAST_TYPES.has(type) ? 'low' : null);
+  if (effort) args.push('--effort', effort);
+
   // Session resume: reuse last session if same branch and recent enough (< 2 hours)
   let cachedSessionId = null;
   // Only resume when the context is relevant — same branch means the agent is

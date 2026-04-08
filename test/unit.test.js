@@ -4506,14 +4506,16 @@ async function testVerifyWorkflow() {
   // ── 17. Source code: playbook transparency requirements ──
   await test('verify: playbook requires transparent verification report', () => {
     const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
-    assert.ok(playbook.includes('What Was Built'),
-      'Should require "What Was Built" section');
-    assert.ok(playbook.includes('What Was Verified'),
-      'Should require "What Was Verified" section');
-    assert.ok(playbook.includes('What Could NOT Be Verified'),
-      'Should require "What Could NOT Be Verified" section');
+    // Template extracted to playbooks/templates/verify-guide.md — playbook references it
+    assert.ok(playbook.includes('verify-guide.md'),
+      'Should reference the verify guide template');
     assert.ok(playbook.includes('Be transparent'),
       'Should explicitly require transparency');
+    // Verify template has the required sections
+    const template = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'templates', 'verify-guide.md'), 'utf8');
+    assert.ok(template.includes('What Was Built'), 'Template should have "What Was Built" section');
+    assert.ok(template.includes('What Was Verified'), 'Template should have "What Was Verified" section');
+    assert.ok(template.includes('What Could NOT Be Verified'), 'Template should have "What Could NOT Be Verified" section');
   });
 
   // ── 18. Dashboard: verify badge hides trigger button ──
@@ -6469,9 +6471,8 @@ async function testSettingsComprehensive() {
 async function testCcActionTypes() {
   await test('CC system prompt includes schedule, create-meeting, set-config actions', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('**schedule**'), 'should have schedule action type');
-    assert.ok(src.includes('**create-meeting**'), 'should have create-meeting action type');
-    assert.ok(src.includes('**set-config**'), 'should have set-config action type');
+    assert.ok(src.includes('schedule') && src.includes('create-meeting') && src.includes('set-config'),
+      'should have schedule, create-meeting, and set-config action types');
   });
 
   await test('CC executor handles schedule, create-meeting, set-config', () => {
