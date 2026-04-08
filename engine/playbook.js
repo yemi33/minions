@@ -216,6 +216,12 @@ function renderPlaybook(type, vars) {
     return null;
   }
 
+  // Inject shared rules (apply to all playbooks)
+  try {
+    const sharedRules = fs.readFileSync(path.join(PLAYBOOKS_DIR, 'shared-rules.md'), 'utf8');
+    if (sharedRules) content += '\n\n' + sharedRules;
+  } catch { /* optional — shared rules file may not exist */ }
+
   // Inject pinned context (always visible to agents) — capped at 4KB
   let pinnedContent = '';
   try { pinnedContent = fs.readFileSync(path.join(MINIONS_DIR, 'pinned.md'), 'utf8'); } catch { /* optional */ }

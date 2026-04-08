@@ -71,4 +71,3 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 Your task is complete once you have: (1) posted your review comment on the PR, and (2) cast your vote. Do NOT continue reading unrelated files or performing additional analysis. Stop after voting.
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

@@ -63,6 +63,5 @@ Include:
 - The run command (absolute paths, copy-pasteable from any terminal)
 - Localhost URL if applicable
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 Do NOT remove worktrees — the engine handles cleanup automatically.

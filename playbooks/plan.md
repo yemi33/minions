@@ -93,7 +93,6 @@ High-level design decisions and rationale.
 
 ## Signal Completion
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Team Notes
 {{notes_content}}

@@ -73,4 +73,3 @@ After implementation:
 
 ## Signal Completion
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

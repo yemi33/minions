@@ -147,4 +147,3 @@ Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT
 
 Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up after the PR is merged or closed.
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

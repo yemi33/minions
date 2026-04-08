@@ -64,7 +64,6 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 Your task is complete once you have: (1) pushed your branch, (2) created the PR, and (3) confirmed the build passes. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately after the PR is created and verified.
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Build and Demo Rule
 

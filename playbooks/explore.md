@@ -50,7 +50,6 @@ Do NOT create additional worktrees — the engine handles worktree management.
 If the task is purely exploratory (no deliverable requested), skip this step.
 
 ### 6. Status
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Working Style
 

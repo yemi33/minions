@@ -150,4 +150,3 @@ Use subagents only for genuinely parallel, independent tasks (e.g., building sep
 - Use absolute paths everywhere so the user can copy-paste commands
 - E2E PRs are for review only — do NOT auto-complete or merge them
 
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.

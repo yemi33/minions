@@ -37,7 +37,6 @@ Write your answer to `{{team_root}}/notes/inbox/{{agent_id}}-answer-{{task_id}}-
 Keep it concise but complete. Write for a senior engineer who wants the real answer, not fluff.
 
 ### 4. Status
-**Note:** Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 
 ## Rules
 - Do NOT modify any code unless the question explicitly asks you to.
