@@ -76,7 +76,7 @@ function runCleanup(config, verbose = false) {
     }
   }
 
-  // 2. Clean live-output.log for idle agents (not currently working)
+  // 2. Clean live-output.log and live-output-prev.log for idle agents (not currently working)
   for (const [agentId] of Object.entries(config.agents || {})) {
     const status = getAgentStatus(agentId);
     if (status.status !== 'working') {
@@ -86,6 +86,17 @@ function runCleanup(config, verbose = false) {
           const stat = fs.statSync(livePath);
           if (stat.mtimeMs < oneHourAgo) {
             fs.unlinkSync(livePath);
+            cleaned.liveOutputs++;
+          }
+        } catch { /* cleanup */ }
+      }
+      // Also clean rotated previous session log
+      const prevPath = path.join(AGENTS_DIR, agentId, 'live-output-prev.log');
+      if (fs.existsSync(prevPath)) {
+        try {
+          const stat = fs.statSync(prevPath);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(prevPath);
             cleaned.liveOutputs++;
           }
         } catch { /* cleanup */ }

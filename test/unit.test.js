@@ -6965,7 +6965,8 @@ async function testDashboardBugFixes() {
 
   await test('handleAgentLive returns content and has fallback', () => {
     const startIdx = src.indexOf('async function handleAgentLive(');
-    const liveBody = src.slice(startIdx, startIdx + 1200);
+    const nextFn = src.indexOf('\n  async function', startIdx + 50);
+    const liveBody = src.slice(startIdx, nextFn > -1 ? nextFn : startIdx + 3000);
     assert.ok(liveBody.includes('res.end(') && liveBody.includes('toString'),
       'Should write buffer content to response');
     assert.ok(liveBody.includes('No live output'),
@@ -7024,6 +7025,32 @@ async function testDashboardBugFixes() {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('[steering-failed]'),
       'Should write [steering-failed] to live-output.log on resume failure');
+  });
+
+  // Bug #543: live-output.log rotation on spawn
+  await test('engine.js rotates live-output.log to live-output-prev.log before overwriting', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('live-output-prev.log'),
+      'Should reference live-output-prev.log for rotation');
+    assert.ok(engineSrc.includes('renameSync') && engineSrc.includes('prevPath'),
+      'Should use renameSync to rotate the file');
+    assert.ok(engineSrc.includes('LIVE_OUTPUT_SPARSE_THRESHOLD'),
+      'Should only rotate when file has meaningful content (above sparse threshold)');
+  });
+
+  await test('dashboard.js falls back to live-output-prev.log when current is sparse', () => {
+    assert.ok(src.includes('live-output-prev.log'),
+      'Dashboard should reference live-output-prev.log for fallback');
+    assert.ok(src.includes('SPARSE_THRESHOLD'),
+      'Dashboard should define a sparse threshold for fallback logic');
+    assert.ok(src.includes('previous session'),
+      'Dashboard should include a separator label when showing previous session content');
+  });
+
+  await test('cleanup.js cleans live-output-prev.log for idle agents', () => {
+    const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(cleanupSrc.includes('live-output-prev.log'),
+      'Cleanup should also remove rotated previous session logs');
   });
 
   // Bug #32: body.content validation

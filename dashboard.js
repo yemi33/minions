@@ -1499,6 +1499,26 @@ const server = http.createServer(async (req, res) => {
     try {
       const stat = fs.statSync(liveLogPath);
       const fileSize = stat.size;
+
+      // Fall back to previous session log when current is sparse (fixes #543)
+      const SPARSE_THRESHOLD = 500;
+      if (fileSize < SPARSE_THRESHOLD) {
+        const prevPath = path.join(agentDir, 'live-output-prev.log');
+        try {
+          const prevStat = fs.statSync(prevPath);
+          if (prevStat.size > SPARSE_THRESHOLD) {
+            const prevTailBytes = Math.min(tailBytes, prevStat.size);
+            const prevStart = Math.max(0, prevStat.size - prevTailBytes);
+            const prevFd = fs.openSync(prevPath, 'r');
+            const prevBuf = Buffer.alloc(prevStat.size - prevStart);
+            fs.readSync(prevFd, prevBuf, 0, prevBuf.length, prevStart);
+            fs.closeSync(prevFd);
+            const prevContent = prevBuf.toString('utf8');
+            if (prevContent) safeWrite(`data: ${JSON.stringify(prevContent + '\n\n--- previous session (new session starting) ---\n\n')}\n\n`);
+          }
+        } catch { /* prev file may not exist — that's fine */ }
+      }
+
       if (fileSize > 0) {
         const readStart = Math.max(0, fileSize - tailBytes);
         const readLen = fileSize - readStart;
@@ -1565,7 +1585,9 @@ const server = http.createServer(async (req, res) => {
 
   async function handleAgentLive(req, res, match) {
     const agentId = match[1];
-    const livePath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
+    const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+    const livePath = path.join(agentDir, 'live-output.log');
+    const prevPath = path.join(agentDir, 'live-output-prev.log');
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     const params = new URL(req.url, 'http://localhost').searchParams;
@@ -1576,6 +1598,28 @@ const server = http.createServer(async (req, res) => {
     try {
       const stat = fs.statSync(livePath);
       if (stat.size === 0) { res.end('No live output. Agent may not be running.'); return; }
+
+      // Fall back to previous session log when current is sparse (fixes #543)
+      // Sparse = only header + init JSON, typically < 500 bytes
+      const SPARSE_THRESHOLD = 500;
+      if (stat.size < SPARSE_THRESHOLD && fs.existsSync(prevPath)) {
+        try {
+          const prevStat = fs.statSync(prevPath);
+          if (prevStat.size > SPARSE_THRESHOLD) {
+            // Prepend separator + previous session tail, then append current sparse content
+            const prevTailBytes = Math.max(1, Math.min(tailBytes - stat.size - 100, prevStat.size));
+            const prevStart = Math.max(0, prevStat.size - prevTailBytes);
+            const prevBuf = Buffer.alloc(Math.min(prevTailBytes, prevStat.size));
+            const prevFd = fs.openSync(prevPath, 'r');
+            fs.readSync(prevFd, prevBuf, 0, prevBuf.length, prevStart);
+            fs.closeSync(prevFd);
+            const currentBuf = fs.readFileSync(livePath, 'utf8');
+            res.end(prevBuf.toString('utf8') + '\n\n--- previous session (new session starting) ---\n\n' + currentBuf);
+            return;
+          }
+        } catch { /* fall through to normal read */ }
+      }
+
       const start = Math.max(0, stat.size - tailBytes);
       const buf = Buffer.alloc(Math.min(tailBytes, stat.size));
       const fd = fs.openSync(livePath, 'r');
@@ -1583,6 +1627,21 @@ const server = http.createServer(async (req, res) => {
       fs.closeSync(fd);
       res.end(buf.toString('utf8'));
     } catch {
+      // If live-output.log doesn't exist but prev does, serve that
+      try {
+        if (fs.existsSync(prevPath)) {
+          const prevStat = fs.statSync(prevPath);
+          if (prevStat.size > 0) {
+            const start = Math.max(0, prevStat.size - tailBytes);
+            const buf = Buffer.alloc(Math.min(tailBytes, prevStat.size));
+            const fd = fs.openSync(prevPath, 'r');
+            fs.readSync(fd, buf, 0, buf.length, start);
+            fs.closeSync(fd);
+            res.end(buf.toString('utf8') + '\n\n--- previous session (current session output unavailable) ---\n');
+            return;
+          }
+        }
+      } catch { /* fall through */ }
       res.end('No live output. Agent may not be running.');
     }
     return;
