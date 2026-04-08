@@ -97,7 +97,7 @@ function _initQaSession() {
         title: freshTitle || prior.docContext.title || '',
       });
     }
-    if (prior.filePath) { _modalFilePath = prior.filePath; showModalQa(); }
+    if (prior.filePath) _modalFilePath = prior.filePath;
     document.getElementById('qa-clear-btn').style.display = 'block';
   } else {
     _qaHistory = [];
