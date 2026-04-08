@@ -3812,6 +3812,106 @@ async function testExtractSkills() {
     assert.ok(src.includes('scope') && src.includes('project'),
       'Should support project-scoped skill extraction');
   });
+
+  // Functional tests — actually call extractSkillsFromOutput
+  const restore = createTestMinionsDir();
+  const lifecycle = require('../engine/lifecycle');
+  const testConfig = { agents: { testbot: { name: 'TestBot' } }, engine: {}, projects: [] };
+
+  await test('extractSkillsFromOutput extracts valid skill to ~/.claude/skills/', () => {
+    const tmpHome = createTmpDir();
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    try {
+      // Bust os.homedir cache
+      delete require.cache[require.resolve('os')];
+      const output = [
+        'Some analysis text',
+        '```skill',
+        '---',
+        'name: deploy-workaround',
+        'description: Workaround for flaky deploy',
+        'scope: minions',
+        '---',
+        '',
+        '# Deploy Workaround',
+        '## Steps',
+        '1. Clear cache',
+        '2. Retry',
+        '```',
+        'Done.',
+      ].join('\n');
+      lifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-001', meta: {} }, testConfig);
+      const skillPath = path.join(tmpHome, '.claude', 'skills', 'deploy-workaround', 'SKILL.md');
+      assert.ok(fs.existsSync(skillPath), 'Skill file should be created at ~/.claude/skills/deploy-workaround/SKILL.md');
+      const content = fs.readFileSync(skillPath, 'utf8');
+      assert.ok(content.includes('name: deploy-workaround'), 'Skill should have name in frontmatter');
+      assert.ok(content.includes('Deploy Workaround'), 'Skill should have body content');
+    } finally {
+      process.env.HOME = origHome;
+      process.env.USERPROFILE = origUserProfile;
+    }
+  });
+
+  await test('extractSkillsFromOutput skips skill without name', () => {
+    const output = '```skill\n---\ndescription: no name here\n---\n\n# Content\n```';
+    // Should not throw — just logs a warning and skips
+    lifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-002', meta: {} }, testConfig);
+  });
+
+  await test('extractSkillsFromOutput skips skill without frontmatter', () => {
+    const output = '```skill\nJust raw content with no frontmatter\n```';
+    lifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-003', meta: {} }, testConfig);
+  });
+
+  await test('extractSkillsFromOutput handles empty output', () => {
+    lifecycle.extractSkillsFromOutput('', 'testbot', { id: 'D-004', meta: {} }, testConfig);
+    lifecycle.extractSkillsFromOutput(null, 'testbot', { id: 'D-005', meta: {} }, testConfig);
+  });
+
+  await test('extractSkillsFromOutput extracts from stream-json format', () => {
+    const tmpHome = createTmpDir();
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    try {
+      delete require.cache[require.resolve('os')];
+      const jsonLine = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '```skill\n---\nname: json-skill\ndescription: From JSON\nscope: minions\n---\n\n# JSON Skill\n```' }] }
+      });
+      lifecycle.extractSkillsFromOutput(jsonLine, 'testbot', { id: 'D-006', meta: {} }, testConfig);
+      const skillPath = path.join(tmpHome, '.claude', 'skills', 'json-skill', 'SKILL.md');
+      assert.ok(fs.existsSync(skillPath), 'Should extract skill from stream-json formatted output');
+    } finally {
+      process.env.HOME = origHome;
+      process.env.USERPROFILE = origUserProfile;
+    }
+  });
+
+  await test('extractSkillsFromOutput queues project-scoped skills as work items', () => {
+    const testMinionsDir = process.env.MINIONS_TEST_DIR;
+    const projConfig = {
+      agents: { testbot: { name: 'TestBot' } }, engine: {},
+      projects: [{ name: 'MyApp', localPath: '/tmp/myapp', repoHost: 'github' }]
+    };
+    fs.writeFileSync(path.join(testMinionsDir, 'config.json'), JSON.stringify(projConfig));
+    // Bust cache so getProjects reads fresh config
+    try { delete require.cache[require.resolve('../engine/shared')]; } catch {}
+    try { delete require.cache[require.resolve('../engine/lifecycle')]; } catch {}
+    const freshLifecycle = require('../engine/lifecycle');
+    const output = '```skill\n---\nname: app-deploy\ndescription: Deploy steps\nscope: project\nproject: MyApp\n---\n\n# Deploy\n```';
+    freshLifecycle.extractSkillsFromOutput(output, 'testbot', { id: 'D-007', meta: {} }, projConfig);
+    const wi = JSON.parse(fs.readFileSync(path.join(testMinionsDir, 'work-items.json'), 'utf8'));
+    const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
+    assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
+    assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
+  });
+
+  restore();
 }
 
 // ─── lifecycle.js — updateWorkItemStatus Tests ──────────────────────────────
