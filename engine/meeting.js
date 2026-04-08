@@ -85,6 +85,11 @@ function discoverMeetingWork(config) {
     const agents = config.agents || {};
 
     if (roundName === 'concluding') {
+      // Only one agent should conclude — skip if already concluded or any conclude dispatch is active
+      if (meeting.conclusion) continue;
+      const concludePrefix = `meeting-${meeting.id}-r${round}-`;
+      if ([...activeKeys].some(k => k.startsWith(concludePrefix))) continue;
+
       // Pick the first non-busy participant as concluder (fallback to any participant)
       const busyAgents = new Set(
         (dispatch.active || []).map(d => d.agent).filter(Boolean)
@@ -92,7 +97,7 @@ function discoverMeetingWork(config) {
       const concluder = meeting.participants.find(p => !busyAgents.has(p))
         || meeting.participants[0];
       if (!concluder) continue;
-      const key = `meeting-${meeting.id}-r${round}-${concluder}`;
+      const key = `${concludePrefix}${concluder}`;
       if (activeKeys.has(key)) continue;
 
       const humanNotes = (Array.isArray(meeting.humanNotes) ? meeting.humanNotes : []).map(n => '- ' + n).join('\n');
