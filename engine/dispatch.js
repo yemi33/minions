@@ -10,7 +10,7 @@ const queries = require('./queries');
 const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
-  getProjects, projectWorkItemsPath, log, ts, dateStamp,
+  mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
   WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
@@ -185,6 +185,31 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
               : `No downstream items are blocked.\n`)
           );
         } catch (e) { log('warn', 'write failure alert: ' + e.message); }
+      }
+    }
+
+    // Restore pendingFix on failed human-feedback fix so engine re-dispatches on next tick
+    if (result === DISPATCH_RESULT.ERROR && item.meta?.source === 'pr-human-feedback') {
+      const prId = item.meta.pr?.id;
+      const project = item.meta.project;
+      if (prId && project) {
+        try {
+          const prsPath = projectPrPath(project);
+          mutatePullRequests(prsPath, prs => {
+            const target = prs.find(p => p.id === prId);
+            if (target?.humanFeedback) target.humanFeedback.pendingFix = true;
+          });
+          log('info', `Restored pendingFix=true on ${prId} after failed human-feedback fix`);
+        } catch (e) { log('warn', `restore pendingFix: ${e.message}`); }
+      }
+      // Clear completed dispatch entry so dedup doesn't block re-dispatch
+      if (item.meta?.dispatchKey) {
+        try {
+          mutateDispatch((dp) => {
+            dp.completed = Array.isArray(dp.completed) ? dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey) : [];
+            return dp;
+          });
+        } catch (e) { log('warn', 'clear human-feedback dispatch for retry: ' + e.message); }
       }
     }
   }

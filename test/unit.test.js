@@ -3477,6 +3477,26 @@ async function testCompleteDispatch() {
     assert.ok(src.includes('dp.completed.filter(d => d.meta?.dispatchKey !== item.meta.dispatchKey)'),
       'Should clear completed dedupe marker so retried item can redispatch');
   });
+
+  await test('completeDispatch restores pendingFix on failed human-feedback fix', () => {
+    assert.ok(src.includes("item.meta?.source === 'pr-human-feedback'"),
+      'Should check for pr-human-feedback source on error');
+    assert.ok(src.includes('target.humanFeedback.pendingFix = true'),
+      'Should restore pendingFix=true so engine re-dispatches on next tick');
+  });
+
+  await test('completeDispatch clears completed dispatch entry for failed human-feedback fix', () => {
+    // After restoring pendingFix, the completed dispatch entry must be cleared
+    // to prevent dedup from blocking re-dispatch
+    const restoreBlock = src.slice(src.indexOf("item.meta?.source === 'pr-human-feedback'"));
+    assert.ok(restoreBlock.includes('clear human-feedback dispatch for retry'),
+      'Should clear completed dispatch key so dedup allows re-dispatch');
+  });
+
+  await test('completeDispatch human-feedback restore uses mutatePullRequests', () => {
+    assert.ok(src.includes('mutatePullRequests(prsPath'),
+      'Should use mutatePullRequests for atomic read-modify-write on PR file');
+  });
 }
 
 // ─── engine.js — discoverFromPrs Tests ──────────────────────────────────────
