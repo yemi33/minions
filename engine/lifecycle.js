@@ -1349,18 +1349,23 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   // Detect plan-to-prd tasks that completed without creating a PRD file
   if (effectiveSuccess && type === WORK_TYPE.PLAN_TO_PRD && meta?.item?.planFile) {
-    // PRD filename may differ from plan filename — scan prd/ for any file referencing this plan
-    const planFile = meta.item.planFile;
+    // Check by stored filename first (deterministic), fall back to source_plan scan
     let prdFound = false;
-    try {
-      for (const f of fs.readdirSync(PRD_DIR)) {
-        if (!f.endsWith('.json')) continue;
-        try {
-          const prd = safeJson(path.join(PRD_DIR, f));
-          if (prd && prd.source_plan === planFile) { prdFound = true; break; }
-        } catch {}
-      }
-    } catch {}
+    const expectedFile = meta.item._prdFilename;
+    if (expectedFile) {
+      prdFound = fs.existsSync(path.join(PRD_DIR, expectedFile));
+    }
+    if (!prdFound) {
+      try {
+        for (const f of fs.readdirSync(PRD_DIR)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const prd = safeJson(path.join(PRD_DIR, f));
+            if (prd && prd.source_plan === meta.item.planFile) { prdFound = true; break; }
+          } catch {}
+        }
+      } catch {}
+    }
     if (!prdFound) {
       const hasOutput = stdout && stdout.length > 500;
       const wiPath = resolveWorkItemPath(meta);

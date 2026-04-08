@@ -2305,6 +2305,7 @@ function discoverCentralWorkItems(config) {
         let prdCounter = 2;
         while (prdExisting.has(prdFilename)) { prdFilename = prdBase + '-' + prdCounter + '.json'; prdCounter++; }
         vars.prd_filename = prdFilename;
+        mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _prdFilename: prdFilename }));
         vars.branch_strategy_hint = item.branchStrategy
           ? `The user requested **${item.branchStrategy}** strategy. Use this unless the analysis strongly suggests otherwise.`
           : 'Choose the best strategy based on your analysis of item dependencies.';
