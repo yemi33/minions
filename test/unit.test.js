@@ -2334,8 +2334,8 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     // discoverCentralWorkItems must self-heal items stuck at pending when actively dispatched
     const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
-    assert.ok(centralFn.includes('if (isAlreadyDispatched(key))'),
-      'Central discovery must check isAlreadyDispatched separately for self-heal');
+    assert.ok(centralFn.includes('isAlreadyDispatched(key)'),
+      'Central discovery must check isAlreadyDispatched for self-heal');
     // Self-heal should only set DISPATCHED when item is in dispatch.active (not pending)
     assert.ok(centralFn.includes('const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key)'),
       'Central self-heal must check dispatch.active before setting dispatched status');

@@ -1696,15 +1696,28 @@ function discoverFromWorkItems(config, project) {
       delete item._resumedAt;
       needsWrite = true;
     }
+    // Skip dedup for items explicitly marked for retry (_retryCount set by engine)
+    const isRetry = !!item._retryCount;
     if (isAlreadyDispatched(key)) {
-      // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
-      const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
-      if (existingActive) {
-        if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
-        if (!item.dispatched_to && existingActive.agent) { item.dispatched_to = existingActive.agent; needsWrite = true; }
+      // Retry items should bypass the completed-dedup but still block if in-flight
+      if (isRetry) {
+        const inFlight = [...(getDispatch().pending || []), ...(getDispatch().active || [])];
+        if (!inFlight.some(d => d.meta?.dispatchKey === key)) {
+          // Not in-flight — allow retry to proceed
+        } else {
+          if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
+          skipped.gated++; continue;
+        }
+      } else {
+        // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
+        const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
+        if (existingActive) {
+          if (item.status === WI_STATUS.PENDING) { item.status = WI_STATUS.DISPATCHED; needsWrite = true; }
+          if (!item.dispatched_to && existingActive.agent) { item.dispatched_to = existingActive.agent; needsWrite = true; }
+        }
+        if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
+        skipped.gated++; continue;
       }
-      if (item._pendingReason !== 'already_dispatched') { item._pendingReason = 'already_dispatched'; needsWrite = true; }
-      skipped.gated++; continue;
     }
     if (isOnCooldown(key, cooldownMs)) {
       if (item._pendingReason !== 'cooldown') { item._pendingReason = 'cooldown'; needsWrite = true; }
@@ -2130,7 +2143,8 @@ function discoverCentralWorkItems(config) {
 
     const key = `central-work-${item.id}`;
     // Self-heal: if already dispatched but work item is still pending, fix the status
-    if (isAlreadyDispatched(key)) {
+    // Skip dedup for items explicitly marked for retry (_retryCount set by engine)
+    if (!item._retryCount && isAlreadyDispatched(key)) {
       // Only self-heal to DISPATCHED if actually in dispatch.active (agent spawned) (#480)
       const existingActive = getDispatch().active?.find(d => d.meta?.dispatchKey === key);
       if (existingActive) {
@@ -2140,6 +2154,11 @@ function discoverCentralWorkItems(config) {
         if (Object.keys(m).length > 0) mutations.set(item.id, m);
       }
       continue;
+    }
+    // Still block if actively in flight (pending or active dispatch)
+    if (item._retryCount && isAlreadyDispatched(key)) {
+      const inFlight = [...(getDispatch().pending || []), ...(getDispatch().active || [])];
+      if (inFlight.some(d => d.meta?.dispatchKey === key)) continue;
     }
     if (isOnCooldown(key, 0)) continue;
 
