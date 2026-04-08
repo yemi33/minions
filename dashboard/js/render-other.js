@@ -90,8 +90,36 @@ function renderMetrics(metrics) {
   }
   html += '</tbody></table>';
   el.innerHTML = html;
+  renderLlmPerf(metrics);
   renderTokenUsage(metrics);
   renderContextPressure(metrics);
+}
+
+function renderLlmPerf(metrics) {
+  const el = document.getElementById('llm-perf-content');
+  if (!el) return;
+  const engine = metrics._engine;
+  if (!engine || Object.keys(engine).length === 0) {
+    el.innerHTML = '<p class="empty">No LLM performance data yet.</p>';
+    return;
+  }
+  let html = '<table class="pr-table"><thead><tr><th>Call Type</th><th>Calls</th><th>Total Time</th><th>Avg Time</th><th>Cost</th></tr></thead><tbody>';
+  const entries = Object.entries(engine).sort((a, b) => (b[1].calls || 0) - (a[1].calls || 0));
+  for (const [type, m] of entries) {
+    const calls = m.calls || 0;
+    const totalMs = m.totalDurationMs || 0;
+    const avgMs = calls > 0 ? totalMs / calls : 0;
+    const fmtTotal = totalMs < 60000 ? Math.round(totalMs / 1000) + 's' : Math.round(totalMs / 60000) + 'm';
+    const fmtAvg = avgMs < 1000 ? Math.round(avgMs) + 'ms' : avgMs < 60000 ? Math.round(avgMs / 1000) + 's' : Math.round(avgMs / 60000) + 'm';
+    const cost = m.costUsd ? '$' + m.costUsd.toFixed(2) : '-';
+    html += '<tr><td style="font-weight:600">' + escHtml(type) + '</td>' +
+      '<td>' + calls + '</td>' +
+      '<td style="color:var(--muted)">' + (totalMs ? fmtTotal : '-') + '</td>' +
+      '<td style="color:var(--blue)">' + (avgMs ? fmtAvg : '-') + '</td>' +
+      '<td style="color:var(--muted)">' + cost + '</td></tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
 function renderTokenUsage(metrics) {
@@ -345,4 +373,4 @@ async function _addSelectedProjects() {
   }
 }
 
-window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderTokenUsage, renderContextPressure, openScanProjectsModal };
+window.MinionsOther = { renderProjects, renderMcpServers, renderMetrics, renderLlmPerf, renderTokenUsage, renderContextPressure, openScanProjectsModal };
