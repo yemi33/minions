@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.617 (2026-04-08)
+
+### Fixes
+-  audit fixes for _killProcessInWorktree
+
+### Other
+- simplify: remove redundant alias, avoid Set spread in hot loop
+
 ## 0.1.615 (2026-04-08)
 
 ### Features
