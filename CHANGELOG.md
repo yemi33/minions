@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.587 (2026-04-08)
+
+### Fixes
+-  use TCP socket probe for minions dash port check
+-  minions dash opens browser when dashboard already running
+-  add conditional block support to playbook renderer
+
+### Other
+- perf: per-type max-turns and explicit stop conditions in playbooks
+
 ## 0.1.583 (2026-04-08)
 
 ### Fixes
