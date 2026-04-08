@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.619 (2026-04-08)
+
+### Fixes
+-  engine stuck in stopped state after dashboard restart (closes #564) (#573)
+
 ## 0.1.618 (2026-04-08)
 
 ### Fixes
