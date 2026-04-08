@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.574 (2026-04-08)
+
+### Fixes
+-  remove dead stdin prepend path, clean up spawn-agent cache logic
+
+### Other
+- perf: skip preamble on streaming session resume
+
 ## 0.1.572 (2026-04-08)
 
 ### Features
