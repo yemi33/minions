@@ -39,6 +39,44 @@ function worktreeDirMatchesBranch(dirLower, branch) {
   return dirLower === branchSlug || dirLower.includes(branchSlug + '-') || dirLower.endsWith('-' + branchSlug);
 }
 
+/**
+ * Kill any tracked or PID-filed process whose dispatch ID appears in the worktree dir name.
+ * Must run BEFORE removeWorktree so file handles are released on Windows.
+ */
+function _killProcessInWorktree(dir, activeProcesses) {
+  const dirLower = dir.toLowerCase();
+  // Check tracked active processes
+  for (const [id, info] of activeProcesses.entries()) {
+    if (dirLower.includes(id.toLowerCase().slice(-8))) {
+      try { shared.killImmediate(info.proc); } catch {}
+      activeProcesses.delete(id);
+    }
+  }
+  // Check PID files in engine/tmp/ — format: pid-{label}-{id}.pid
+  try {
+    const tmpDir = path.join(ENGINE_DIR, 'tmp');
+    for (const f of fs.readdirSync(tmpDir)) {
+      if (!f.startsWith('pid-') || !f.endsWith('.pid')) continue;
+      // Extract dispatch ID suffix from filename
+      const parts = f.replace(/^pid-/, '').replace(/\.pid$/, '').split('-');
+      const suffix = parts.slice(-1)[0];
+      if (suffix && dirLower.includes(suffix)) {
+        const pid = parseInt(fs.readFileSync(path.join(tmpDir, f), 'utf8').trim(), 10);
+        if (pid > 0) {
+          try {
+            if (process.platform === 'win32') {
+              exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
+            } else {
+              process.kill(pid, 'SIGKILL');
+            }
+          } catch {} // process may already be dead
+        }
+        try { fs.unlinkSync(path.join(tmpDir, f)); } catch {}
+      }
+    }
+  } catch {} // tmp dir may not exist
+}
+
 // ─── Cleanup Orchestrator ────────────────────────────────────────────────────
 
 function runCleanup(config, verbose = false) {
@@ -264,6 +302,8 @@ function runCleanup(config, verbose = false) {
 
           if (_attemptedWorktreePaths.has(entry.wtPath)) continue;
           _attemptedWorktreePaths.add(entry.wtPath);
+          // Kill any process still running in this worktree before removal
+          _killProcessInWorktree(entry.dir, activeProcesses);
           if (shared.removeWorktree(entry.wtPath, root, worktreeRoot)) {
             cleaned.worktrees++;
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
