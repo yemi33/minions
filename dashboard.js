@@ -170,7 +170,7 @@ function getEngineState() { return queries.getControl(); }
 function _countWorktrees() {
   try {
     const config = queries.getConfig();
-    const projects = queries.getProjects(config);
+    const projects = shared.getProjects(config);
     let count = 0;
     for (const p of projects) {
       const root = p.localPath ? path.resolve(p.localPath) : null;
@@ -1696,7 +1696,7 @@ Respond with ONLY valid JSON: { "duplicates": [{ "keep": N, "remove": [N], "reas
 If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
         const result = await callLLM(prompt, 'Output only JSON.', {
-          timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1
+          timeout: 120000, label: 'kb-sweep', model: 'haiku', maxTurns: 1, direct: true
         });
         trackEngineUsage('kb-sweep', result.usage);
 
@@ -3400,7 +3400,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     const prompt = `Convert this schedule description to a 3-field cron expression (minute hour dayOfWeek, where dayOfWeek is 0=Sun..6=Sat or ranges like 1-5). Return JSON only: {"cron": "...", "description": "..."}. Input: ${text.trim()}`;
     try {
-      const result = await llm.callLLM(prompt, '', { model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse' });
+      const result = await llm.callLLM(prompt, '', { model: 'haiku', maxTurns: 1, timeout: 30000, label: 'schedule-parse', direct: true });
       const parsed = JSON.parse(result.text.trim());
       if (!parsed.cron) return jsonReply(res, 422, { error: 'Could not parse schedule' });
       return jsonReply(res, 200, { cron: parsed.cron, description: parsed.description || '' });
