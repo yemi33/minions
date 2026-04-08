@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.575 (2026-04-08)
+
+### Fixes
+-  remove dead stdin prepend path, clean up spawn-agent cache logic
+
+### Other
+- perf: slim preamble, async PID write, remove dead API routes code
+- perf: skip preamble on streaming session resume
+
 ## 0.1.572 (2026-04-08)
 
 ### Features
