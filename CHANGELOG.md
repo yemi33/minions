@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.597 (2026-04-08)
+
+### Features
+-  per-type max-turns configurable from settings page
+
+### Fixes
+-  filter test categories from LLM Call Performance tile
+
 ## 0.1.595 (2026-04-08)
 
 ### Features
