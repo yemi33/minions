@@ -25,9 +25,21 @@ const env = cleanChildEnv();
 // Resolve claude binary — supports both npm install (cli.js) and native installer (binary on PATH)
 let claudeBin;
 let claudeIsNative = false; // true = native binary, false = node cli.js
+const capsCachePath = path.join(__dirname, 'claude-caps.json');
+let _sysPromptFileSupported = null;
+
+// Fast path: use cached binary path if it still exists on disk
+try {
+  const caps = JSON.parse(fs.readFileSync(capsCachePath, 'utf8'));
+  if (caps.claudeBin && fs.existsSync(caps.claudeBin)) {
+    claudeBin = caps.claudeBin;
+    claudeIsNative = !!caps.claudeIsNative;
+    _sysPromptFileSupported = caps.sysPromptFile ?? null;
+  }
+} catch {}
 
 // Strategy 1: Check if `claude` is on PATH (native installer or npm global bin)
-try {
+if (!claudeBin) try {
   const isWin = process.platform === 'win32';
   const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
   const which = exec(cmd, { encoding: 'utf8', env, timeout: 10000 }).trim().split('\n')[0].trim();
@@ -79,11 +91,11 @@ if (!claudeBin) {
   } catch { /* optional */ }
 }
 
-// Debug log
+// Debug log (async — not on critical path)
 const tmpDir = path.join(__dirname, 'tmp');
 if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 const debugPath = path.join(tmpDir, 'spawn-debug.log');
-fs.writeFileSync(debugPath, `spawn-agent.js at ${ts()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`);
+fs.writeFile(debugPath, `spawn-agent.js at ${ts()}\nclaudeBin=${claudeBin || 'not found'}\nnative=${claudeIsNative}\nprompt=${promptFile}\nsysPrompt=${sysPromptFile}\nextraArgs=${extraArgs.join(' ')}\n`, () => {});
 
 // When resuming a session, skip system prompt (it's baked into the session)
 const isResume = extraArgs.includes('--resume');
@@ -104,14 +116,8 @@ if (!claudeBin) {
   process.exit(78); // 78 = configuration error (distinct from runtime failures)
 }
 
-// Check if --system-prompt-file is supported (cached to avoid spawning claude --help every call)
+// Check if --system-prompt-file is supported (cached alongside binary path above)
 let actualArgs = cliArgs;
-const capsCachePath = path.join(__dirname, 'claude-caps.json');
-let _sysPromptFileSupported = null;
-try {
-  const caps = JSON.parse(fs.readFileSync(capsCachePath, 'utf8'));
-  if (caps.claudeBin === claudeBin) _sysPromptFileSupported = caps.sysPromptFile;
-} catch {}
 if (_sysPromptFileSupported === null) {
   try {
     const { spawnSync } = require('child_process');
@@ -119,8 +125,9 @@ if (_sysPromptFileSupported === null) {
       ? spawnSync(claudeBin, ['--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true })
       : spawnSync(process.execPath, [claudeBin, '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true });
     _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
-    try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, sysPromptFile: _sysPromptFileSupported, checkedAt: ts() })); } catch { /* optional */ }
   } catch { _sysPromptFileSupported = true; /* assume supported */ }
+  // Save binary path + capability flag together
+  try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, claudeIsNative, sysPromptFile: _sysPromptFileSupported, checkedAt: ts() })); } catch {}
 }
 if (!isResume) try {
   if (!_sysPromptFileSupported) {
@@ -147,7 +154,7 @@ const proc = claudeIsNative
   ? runFile(claudeBin, actualArgs, { stdio: ['pipe', 'pipe', 'pipe'], env })
   : runFile(process.execPath, [claudeBin, ...actualArgs], { stdio: ['pipe', 'pipe', 'pipe'], env });
 
-fs.appendFileSync(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`);
+fs.appendFile(debugPath, `PID=${proc.pid || 'none'}\nargs=${actualArgs.join(' ').slice(0, 500)}\n`, () => {});
 
 // Write PID file for parent engine to verify spawn
 const pidFile = promptFile.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
