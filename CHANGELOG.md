@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.639 (2026-04-08)
+
+### Fixes
+-  clear _retryCount on successful completion
+
+### Other
+- refactor: unify retry bypass pattern in discoverCentralWorkItems
+- perf: reduce CC/doc-chat tool eagerness and max-turns
+
 ## 0.1.636 (2026-04-08)
 
 ### Fixes
