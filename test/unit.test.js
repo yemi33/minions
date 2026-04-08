@@ -6229,6 +6229,9 @@ async function main() {
 
     // Branch-level dispatch mutex (#493)
     await testBranchMutex();
+
+    // spawnEngine state preservation (#564)
+    await testSpawnEngineStatePreservation();
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -9929,6 +9932,58 @@ async function testBuildErrorLogFeature() {
     const closeBlock = src.slice(anchor, src.indexOf('handlePostMerge', anchor) + 50);
     assert.ok(closeBlock.includes('delete pr.buildErrorLog'),
       'Should clear buildErrorLog when PR is merged/abandoned');
+  });
+}
+
+// ─── spawnEngine state preservation (#564) ──────────────────────────────────
+
+async function testSpawnEngineStatePreservation() {
+  console.log('\n── spawnEngine state preservation (#564): no pre-write of stopped ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('spawnEngine does NOT pre-write state: stopped', () => {
+    // Extract the spawnEngine function body
+    const fnStart = dashSrc.indexOf('function spawnEngine()');
+    assert.ok(fnStart !== -1, 'spawnEngine must exist');
+    // Find the closing brace — count braces from the opening {
+    let braceDepth = 0;
+    let fnEnd = fnStart;
+    for (let i = dashSrc.indexOf('{', fnStart); i < dashSrc.length; i++) {
+      if (dashSrc[i] === '{') braceDepth++;
+      else if (dashSrc[i] === '}') braceDepth--;
+      if (braceDepth === 0) { fnEnd = i + 1; break; }
+    }
+    const fnBody = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(!fnBody.includes("state: 'stopped'"),
+      'spawnEngine must NOT pre-write state: stopped — this causes #564 stuck engine');
+  });
+
+  await test('spawnEngine preserves existing control state via spread', () => {
+    const fnStart = dashSrc.indexOf('function spawnEngine()');
+    let braceDepth = 0;
+    let fnEnd = fnStart;
+    for (let i = dashSrc.indexOf('{', fnStart); i < dashSrc.length; i++) {
+      if (dashSrc[i] === '{') braceDepth++;
+      else if (dashSrc[i] === '}') braceDepth--;
+      if (braceDepth === 0) { fnEnd = i + 1; break; }
+    }
+    const fnBody = dashSrc.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('...control'),
+      'spawnEngine should spread existing control.json to preserve state');
+    assert.ok(fnBody.includes('restarted_at'),
+      'spawnEngine should write restarted_at timestamp');
+    assert.ok(fnBody.includes('pid: null'),
+      'spawnEngine should clear stale pid');
+  });
+
+  await test('engine start handles running state with dead PID (cli.js)', () => {
+    // Verify the engine start code handles the case where state is running but PID is dead
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes("control.state === 'running'"),
+      'cli.js start should check for running state');
+    assert.ok(cliSrc.includes('process is dead') && cliSrc.includes('restarting'),
+      'cli.js start should handle dead PID case and proceed with restart');
   });
 }
 

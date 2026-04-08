@@ -907,7 +907,11 @@ function cleanDispatchEntries(matchFn) {
 
 function spawnEngine() {
   const controlPath = path.join(ENGINE_DIR, 'control.json');
-  safeWrite(controlPath, { state: 'stopped', pid: null, restarted_at: new Date().toISOString() });
+  // Don't pre-write 'stopped' — let the new engine process own its state transition.
+  // The engine start code already handles state:'running' with a dead PID gracefully.
+  // Only set restarted_at + clear stale pid so dashboard shows the restart timestamp.
+  const control = safeJson(controlPath) || {};
+  safeWrite(controlPath, { ...control, pid: null, restarted_at: new Date().toISOString() });
   const { spawn: cpSpawn } = require('child_process');
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
