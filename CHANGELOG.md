@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.558 (2026-04-08)
+
+### Features
+- max retry cap and escalation for build fix cycles (#488)
+
 ## 0.1.557 (2026-04-08)
 
 ### Features
