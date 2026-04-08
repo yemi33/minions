@@ -91,6 +91,7 @@ const { getProjects, projectRoot, projectStateDir, projectWorkItemsPath, project
 const safeJson = shared.safeJson;
 const safeRead = shared.safeRead;
 const safeWrite = shared.safeWrite;
+const safeUnlink = shared.safeUnlink;
 const mutateJsonFileLocked = shared.mutateJsonFileLocked;
 const mutateWorkItems = shared.mutateWorkItems;
 const mutatePullRequests = shared.mutatePullRequests;
