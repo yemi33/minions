@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.566 (2026-04-08)
+
+### Other
+- refactor: use safeJson/safeWrite for spawn-agent cache, remove unused checkedAt
+
 ## 0.1.565 (2026-04-08)
 
 ### Fixes
