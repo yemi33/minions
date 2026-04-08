@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { exec, runFile, cleanChildEnv, killGracefully, killImmediate, ts } = require('./shared');
+const { exec, runFile, cleanChildEnv, killGracefully, killImmediate, ts, safeJson, safeWrite } = require('./shared');
 
 const [,, promptFile, sysPromptFile, ...extraArgs] = process.argv;
 
@@ -29,14 +29,12 @@ const capsCachePath = path.join(__dirname, 'claude-caps.json');
 let _sysPromptFileSupported = null;
 
 // Fast path: use cached binary path if it still exists on disk
-try {
-  const caps = JSON.parse(fs.readFileSync(capsCachePath, 'utf8'));
-  if (caps.claudeBin && fs.existsSync(caps.claudeBin)) {
-    claudeBin = caps.claudeBin;
-    claudeIsNative = !!caps.claudeIsNative;
-    _sysPromptFileSupported = caps.sysPromptFile ?? null;
-  }
-} catch {}
+const caps = safeJson(capsCachePath);
+if (caps?.claudeBin && fs.existsSync(caps.claudeBin)) {
+  claudeBin = caps.claudeBin;
+  claudeIsNative = !!caps.claudeIsNative;
+  _sysPromptFileSupported = caps.sysPromptFile ?? null;
+}
 
 // Strategy 1: Check if `claude` is on PATH (native installer or npm global bin)
 if (!claudeBin) try {
@@ -127,7 +125,7 @@ if (_sysPromptFileSupported === null) {
     _sysPromptFileSupported = (testResult.stdout || '').includes('system-prompt-file');
   } catch { _sysPromptFileSupported = true; /* assume supported */ }
   // Save binary path + capability flag together
-  try { fs.writeFileSync(capsCachePath, JSON.stringify({ claudeBin, claudeIsNative, sysPromptFile: _sysPromptFileSupported, checkedAt: ts() })); } catch {}
+  try { safeWrite(capsCachePath, { claudeBin, claudeIsNative, sysPromptFile: _sysPromptFileSupported }); } catch {}
 }
 if (!isResume) try {
   if (!_sysPromptFileSupported) {
