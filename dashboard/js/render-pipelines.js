@@ -6,6 +6,62 @@ let _pipelinePollInterval = null;
 function _stopPipelinePoll() { if (_pipelinePollInterval) { clearInterval(_pipelinePollInterval); _pipelinePollInterval = null; } _pipelinePollId = null; }
 
 /**
+ * Collect all monitoredResources from a pipeline (pipeline-level + all stages).
+ * Returns a deduplicated array of resource objects.
+ */
+function _collectMonitoredResources(pipeline) {
+  var seen = new Set();
+  var result = [];
+  function add(r) {
+    var key = typeof r === 'string' ? r : (r.url || r.label || JSON.stringify(r));
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(typeof r === 'string' ? { label: r, url: r } : r);
+  }
+  (pipeline.monitoredResources || []).forEach(add);
+  (pipeline.stages || []).forEach(function(s) { (s.monitoredResources || []).forEach(add); });
+  return result;
+}
+
+/**
+ * Render monitored resources as compact pills on a pipeline card or stage detail.
+ * Supports both string resources (URLs/IDs) and objects with {type, label, url}.
+ * @param {Array} resources - array of resource strings or {type?, label, url?} objects
+ * @param {Object} [options] - { compact: true } limits display and shows "+N more"
+ * @returns {string} HTML string
+ */
+function _renderMonitoredResources(resources, options) {
+  if (!resources || resources.length === 0) return '';
+  var compact = options && options.compact;
+  var maxShow = compact ? 4 : resources.length;
+  var shown = resources.slice(0, maxShow);
+  var overflow = resources.length - maxShow;
+
+  var iconMap = { pr: '🔀', workitem: '⚙', url: '🔗', issue: '🐛' };
+  var pillStyle = 'display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;font-size:10px;text-decoration:none;' +
+    'color:var(--text);background:color-mix(in srgb, var(--muted) 10%, transparent);border:1px solid color-mix(in srgb, var(--muted) 20%, transparent);max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+
+  var pills = shown.map(function(r) {
+    var res = typeof r === 'string' ? { label: r, url: r.startsWith('http') ? r : '' } : r;
+    var icon = iconMap[res.type] || (res.url ? '🔗' : '📌');
+    var label = res.label || res.url || '(resource)';
+    // Truncate label for compact view
+    var displayLabel = compact && label.length > 28 ? label.slice(0, 26) + '…' : label;
+    if (res.url) {
+      return '<a href="' + escHtml(res.url) + '" target="_blank" rel="noopener" style="' + pillStyle + ';cursor:pointer" onclick="event.stopPropagation()" title="' + escHtml(label) + '">' + icon + ' ' + escHtml(displayLabel) + '</a>';
+    }
+    return '<span style="' + pillStyle + ';cursor:default" title="' + escHtml(label) + '">' + icon + ' ' + escHtml(displayLabel) + '</span>';
+  });
+
+  if (overflow > 0) {
+    pills.push('<span style="' + pillStyle + ';cursor:default;opacity:0.7" title="' + overflow + ' more resource' + (overflow !== 1 ? 's' : '') + '">+' + overflow + ' more</span>');
+  }
+
+  var heading = compact ? '' : '<span style="font-size:10px;color:var(--muted);margin-right:4px">Monitoring:</span>';
+  return '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px;align-items:center">' + heading + pills.join('') + '</div>';
+}
+
+/**
  * Render clickable artifact links for a pipeline stage.
  * Each artifact type gets an icon and navigates to the relevant detail view.
  */
@@ -154,6 +210,10 @@ function renderPipelines(pipelines) {
       progressHtml = _buildProgressBar(p.stages || [], displayRun);
     }
 
+    // Monitored resources (pipeline-level + stage-level, compact on card)
+    var allResources = _collectMonitoredResources(p);
+    var resourcesHtml = _renderMonitoredResources(allResources, { compact: true });
+
     return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;cursor:pointer" onclick="openPipelineDetail(\'' + escHtml(p.id) + '\')">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<strong style="font-size:13px">' + escHtml(p.title) + '</strong>' +
@@ -164,6 +224,7 @@ function renderPipelines(pipelines) {
         '</div>' +
       '</div>' +
       '<div style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + stageFlow + '</div>' +
+      resourcesHtml +
       progressHtml +
     '</div>';
   }).join('');
@@ -196,6 +257,15 @@ function openPipelineDetail(id) {
   if (detailRun && (p.stages || []).length > 0) {
     html += _buildProgressBar(p.stages || [], detailRun, { height: '8px', detailLabel: true });
   }
+  // Pipeline-level monitored resources (full view in detail)
+  var pipelineResources = _collectMonitoredResources(p);
+  if (pipelineResources.length > 0) {
+    html += '<div style="border:1px solid color-mix(in srgb, var(--blue) 20%, transparent);border-radius:6px;padding:6px 10px;background:color-mix(in srgb, var(--blue) 4%, transparent)">' +
+      '<span style="font-size:10px;font-weight:600;color:var(--blue)">📡 Monitored Resources</span>' +
+      _renderMonitoredResources(pipelineResources) +
+    '</div>';
+  }
+
   html += '<h4 style="font-size:12px;color:var(--blue);margin:0">Stages</h4>';
   (p.stages || []).forEach(function(s, i) {
     var stageRun = activeRun?.stages?.[s.id] || {};
@@ -209,6 +279,7 @@ function openPipelineDetail(id) {
         '<span style="color:' + statusColor + ';font-size:10px;font-weight:600">' + stageStatus.toUpperCase() + '</span>' +
       '</div>' +
       '<div style="font-size:10px;color:var(--muted);margin-top:4px">Type: ' + escHtml(s.type) + ' | Depends on: ' + escHtml(deps) + (s.agent ? ' | Agent: ' + escHtml(s.agent) : '') + '</div>' +
+      _renderMonitoredResources(s.monitoredResources || []) +
       _renderArtifactLinks(stageRun.artifacts) +
       (stageRun.output ? '<div style="margin-top:6px;font-size:11px;max-height:150px;overflow-y:auto">' + renderMd(stageRun.output.slice(0, 500)) + '</div>' : '') +
       (stageStatus === 'waiting-human' ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green);margin-top:6px" onclick="_continuePipeline(\'' + escHtml(id) + '\',\'' + escHtml(s.id) + '\',this)">Continue</button>' : '') +

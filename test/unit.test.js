@@ -8249,6 +8249,38 @@ async function testEngineAuditCritical() {
       'must handle the async result (await or .catch)');
   });
 
+  await test('render-pipelines.js has _renderMonitoredResources function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _renderMonitoredResources('),
+      'render-pipelines.js must define _renderMonitoredResources for displaying monitored resources');
+  });
+
+  await test('render-pipelines.js has _collectMonitoredResources function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _collectMonitoredResources('),
+      'render-pipelines.js must define _collectMonitoredResources to aggregate resources from pipeline + stages');
+  });
+
+  await test('render-pipelines.js renders monitored resources on pipeline card', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('_collectMonitoredResources(p)'),
+      'renderPipelines card must call _collectMonitoredResources to gather resources');
+    assert.ok(src.includes('resourcesHtml'),
+      'renderPipelines card must include resourcesHtml in output');
+  });
+
+  await test('render-pipelines.js renders stage-level monitored resources in detail modal', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('s.monitoredResources'),
+      'openPipelineDetail must render per-stage monitoredResources');
+  });
+
+  await test('dashboard.js pipeline create/update API supports monitoredResources', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('body.monitoredResources'),
+      'pipeline API handlers must support monitoredResources field');
+  });
+
   await test('handlePostMerge guards against null project', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);

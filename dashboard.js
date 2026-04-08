@@ -3952,17 +3952,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const result = pipelines.map(p => ({ ...p, runs: (runs[p.id] || []).slice(-5) }));
       return jsonReply(res, 200, result);
     }},
-    { method: 'POST', path: '/api/pipelines', desc: 'Create a pipeline', params: 'id, title, stages[], trigger?', handler: async (req, res) => {
+    { method: 'POST', path: '/api/pipelines', desc: 'Create a pipeline', params: 'id, title, stages[], trigger?, monitoredResources?', handler: async (req, res) => {
       const body = await readBody(req);
       if (!body.id || !body.title || !body.stages) return jsonReply(res, 400, { error: 'id, title, and stages required' });
       const { savePipeline, getPipeline } = require('./engine/pipeline');
       if (getPipeline(body.id)) return jsonReply(res, 409, { error: 'Pipeline already exists' });
       const pipeline = { id: body.id, title: body.title, stages: body.stages, trigger: body.trigger || {}, enabled: body.enabled !== false };
+      if (Array.isArray(body.monitoredResources) && body.monitoredResources.length > 0) pipeline.monitoredResources = body.monitoredResources;
       savePipeline(pipeline);
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id: pipeline.id });
     }},
-    { method: 'POST', path: '/api/pipelines/update', desc: 'Update a pipeline', params: 'id, title?, stages?, trigger?, enabled?', handler: async (req, res) => {
+    { method: 'POST', path: '/api/pipelines/update', desc: 'Update a pipeline', params: 'id, title?, stages?, trigger?, enabled?, monitoredResources?', handler: async (req, res) => {
       const body = await readBody(req);
       if (!body.id) return jsonReply(res, 400, { error: 'id required' });
       const { getPipeline, savePipeline } = require('./engine/pipeline');
@@ -3972,6 +3973,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (body.stages !== undefined) pipeline.stages = body.stages;
       if (body.trigger !== undefined) pipeline.trigger = body.trigger;
       if (body.enabled !== undefined) pipeline.enabled = body.enabled;
+      if (body.monitoredResources !== undefined) pipeline.monitoredResources = body.monitoredResources;
       savePipeline(pipeline);
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true });
