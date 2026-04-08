@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.570 (2026-04-08)
+
+### Features
+-  add LLM Call Performance tile to engine page
+-  add ccModel/ccEffort settings and agent runtime tracking
+
+### Fixes
+-  remove dead Context Pressure tile from engine page
+
+### Other
+- refactor: use safeJson/safeWrite for spawn-agent cache, remove unused checkedAt
+
 ## 0.1.565 (2026-04-08)
 
 ### Fixes
