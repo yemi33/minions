@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.594 (2026-04-08)
+
+### Features
+-  show worktree count and engine quick stats on engine page
+
+### Fixes
+-  Pipeline UI show monitored resources in pipeline card (closes #523) (#542)
+-  move 'When to Stop' after Build/Test in implement playbook
+-  per-type maxTurns bypassed when config has default maxTurns=100
+
 ## 0.1.590 (2026-04-08)
 
 ### Other
