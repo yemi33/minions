@@ -508,6 +508,7 @@ function updateWorkItemStatus(meta, status, reason) {
         target.status = WI_STATUS.DONE;
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAgents = Object.entries(target.agentResults)
           .filter(([, r]) => r.status === WI_STATUS.DONE)
           .map(([a]) => a);
@@ -523,6 +524,7 @@ function updateWorkItemStatus(meta, status, reason) {
       if (status === WI_STATUS.DONE) {
         delete target.failReason;
         delete target.failedAt;
+        delete target._retryCount;
         target.completedAt = ts();
         // Restore agent info from dispatch metadata (cleared on retry reset)
         if (meta._agentId && !target.dispatched_to) target.dispatched_to = meta._agentId;

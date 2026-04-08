@@ -6593,7 +6593,8 @@ async function testSettingsComprehensive() {
 
 async function testCcActionTypes() {
   await test('CC system prompt includes schedule, create-meeting, set-config actions', () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     assert.ok(src.includes('schedule') && src.includes('create-meeting') && src.includes('set-config'),
       'should have schedule, create-meeting, and set-config action types');
   });
@@ -9075,7 +9076,8 @@ async function testAutoRecoveryAndAtomicity() {
   });
 
   await test('CC system prompt discourages excessive tool use', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
     assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
   });
