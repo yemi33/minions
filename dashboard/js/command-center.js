@@ -31,6 +31,9 @@ function ccAbort() {
     _ccAbortController.abort();
     _ccAbortController = null;
   }
+  // Clear queue so aborted send doesn't drain queued messages
+  _ccQueue = [];
+  _renderQueueIndicator();
 }
 
 function toggleCommandCenter() {
@@ -158,9 +161,10 @@ async function ccSend() {
   await _ccDoSend(message);
 
   // Drain queue — show each as a fresh user message + process
+  // Queue is cleared by ccAbort() if user stops mid-stream
   while (_ccQueue.length > 0) {
     const next = _ccQueue.shift();
-    _renderQueueIndicator(); // update or remove indicator
+    _renderQueueIndicator();
     await _ccDoSend(next);
   }
 }

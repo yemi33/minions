@@ -9294,6 +9294,26 @@ async function testDashboardResilience() {
       'cc-sending must be cleared at module load (before any function) to prevent stale state after reload');
   });
 
+  // ── CC abort clears queue (prevents queued messages from firing after stop) ──
+
+  await test('ccAbort clears the message queue', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
+    assert.ok(fn.includes('_ccQueue = []'),
+      'ccAbort must clear _ccQueue so queued messages do not fire after stop');
+  });
+
+  await test('ccAbort calls _renderQueueIndicator to remove queue UI', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
+    assert.ok(fn.includes('_renderQueueIndicator'),
+      'ccAbort must call _renderQueueIndicator to clear queue pills from UI');
+  });
+
+  await test('ccSend drain loop checks queue length on each iteration', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
+    assert.ok(fn.includes('while (_ccQueue.length > 0)'),
+      'ccSend drain loop must check queue length (queue may be cleared by ccAbort mid-drain)');
+  });
+
   // ── CC server-side reset on new session ──
 
   await test('server-side handleCommandCenterNewSession resets ccInFlight', () => {
