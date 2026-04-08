@@ -167,6 +167,21 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+function _countWorktrees() {
+  try {
+    const config = queries.getConfig();
+    const projects = queries.getProjects(config);
+    let count = 0;
+    for (const p of projects) {
+      const root = p.localPath ? path.resolve(p.localPath) : null;
+      if (!root) continue;
+      const wtRoot = path.resolve(root, config.engine?.worktreeRoot || shared.ENGINE_DEFAULTS.worktreeRoot);
+      try { count += fs.readdirSync(wtRoot).filter(f => fs.statSync(path.join(wtRoot, f)).isDirectory()).length; } catch {}
+    }
+    return count;
+  } catch { return 0; }
+}
+
 // ── npm update check ────────────────────────────────────────────────────────
 let _npmVersionCache = null;
 let _npmVersionCacheTs = 0;
@@ -347,7 +362,7 @@ function getStatus() {
     pullRequests: getPullRequests(),
     verifyGuides: getVerifyGuides(),
     archivedPrds: getArchivedPrds(),
-    engine: getEngineState(),
+    engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
     dispatch: getDispatchQueue(),
     engineLog: getEngineLog(),
     metrics: getMetrics(),

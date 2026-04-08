@@ -64,7 +64,16 @@ function _processStatusUpdate(data) {
   if (_changed('prd', [data.prd, data.prdProgress])) renderPrd(data.prd, data.prdProgress);
   if (_changed('prs', data.pullRequests)) renderPrs(data.pullRequests || []);
   if (_changed('archivedPrds', data.archivedPrds)) renderArchiveButtons(data.archivedPrds || []);
-  if (_changed('engine', data.engine)) renderEngineStatus(data.engine);
+  if (_changed('engine', data.engine)) {
+    renderEngineStatus(data.engine);
+    var qs = document.getElementById('engine-quick-stats');
+    if (qs && data.engine) {
+      var wt = data.engine.worktreeCount != null ? data.engine.worktreeCount : '-';
+      var tick = data.engine.tick || '-';
+      var pid = data.engine.pid || '-';
+      qs.innerHTML = '<span>PID: <b>' + pid + '</b></span><span>Tick: <b>' + tick + '</b></span><span>Worktrees: <b>' + wt + '</b></span>';
+    }
+  }
   if (_changed('version', data.version)) renderVersionBanner(data.version);
   if (_changed('dispatch', data.dispatch)) renderDispatch(data.dispatch);
   window._lastDispatch = data.dispatch;
