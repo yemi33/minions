@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.606 (2026-04-08)
+
+### Fixes
+-  load correct doc-chat session when modal opens, not on first send
+
 ## 0.1.605 (2026-04-08)
 
 ### Fixes
