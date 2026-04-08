@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.631 (2026-04-08)
+
+### Fixes
+-  PRD existence check scans by source_plan, not filename
+-  add 'When to Stop' to remaining 5 playbooks
+-  hold _ccSending during abort delay, check wasAborted per queue item
+-  abort+queue sends queued message after brief delay, not discard
+
 ## 0.1.627 (2026-04-08)
 
 ### Fixes
