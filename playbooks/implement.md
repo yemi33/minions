@@ -60,11 +60,6 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 {{pr_section}}
 
-## When to Stop
-
-Your task is complete once you have: (1) pushed your branch, (2) created the PR, and (3) confirmed the build passes. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately after the PR is created and verified.
-
-
 ## Build and Demo Rule
 
 After implementation:
@@ -90,3 +85,7 @@ Before creating a PR, run the project's test suite and ensure all existing tests
    - Re-run tests until all pass
 4. If tests were already failing before your changes (pre-existing failures), note them in the PR description but do NOT block on them
 5. Do NOT create a PR with failing tests that you introduced
+
+## When to Stop
+
+Your task is complete once you have: (1) pushed your branch, (2) created the PR, and (3) confirmed the build and tests pass. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately.
