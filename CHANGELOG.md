@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.636 (2026-04-08)
+
+### Fixes
+-  retry items bypass completed-dedup in isAlreadyDispatched
+
+### Other
+- perf: extend caches, skip doc re-send on session resume
+
 ## 0.1.634 (2026-04-08)
 
 ### Fixes
