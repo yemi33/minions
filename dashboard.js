@@ -757,8 +757,8 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model }) {
   const docContext = `## Document Context\n**${title || 'Document'}**${filePath ? ' (`' + filePath + '`)' : ''}${isJson ? ' (JSON)' : ''}\n${selection ? '\n**Selected text:**\n> ' + selection.slice(0, 1500) + '\n' : ''}\n\`\`\`\n${document.slice(0, 20000)}\n\`\`\`\n${canEdit ? '\nIf editing: respond with your explanation, then `---DOCUMENT---` on its own line, then the COMPLETE updated file.' : '\n(Read-only — answer questions only.)'}`;
 
-  // Session key: use filePath if available, otherwise title+filePath hash to avoid collisions
-  const sessionKey = filePath || `${title || 'doc'}:${(document || '').slice(0, 100)}`;
+  // Session key: filePath is stable and unique; title is the fallback for read-only Q&A
+  const sessionKey = filePath || title;
   const result = await ccCall(message, {
     store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
