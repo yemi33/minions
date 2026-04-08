@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.627 (2026-04-08)
+
+### Fixes
+-  ccAbort clears queue to prevent queued messages firing after stop
+-  add test/check steps and stop condition to work-item playbook
+
 ## 0.1.625 (2026-04-08)
 
 ### Fixes
