@@ -283,6 +283,12 @@ function renderPlaybook(type, vars) {
   };
   const allVars = { ...projectVars, ...vars };
 
+  // Process conditional blocks: {{#key}}...{{/key}} — include block only if key is truthy
+  content = content.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key, block) => {
+    const val = allVars[key];
+    return (val && String(val).trim()) ? block : '';
+  });
+
   // Substitute variables
   for (const [key, val] of Object.entries(allVars)) {
     content = content.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), String(val));
