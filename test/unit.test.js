@@ -8328,6 +8328,81 @@ async function testEngineAuditCritical() {
       'pipeline API handlers must support monitoredResources field');
   });
 
+  // ── Pipeline: conditional stages & stopWhen (#522) ──
+
+  await test('STAGE_TYPE includes CONDITION', () => {
+    const shared = require('../engine/shared');
+    assert.ok(shared.STAGE_TYPE.CONDITION, 'STAGE_TYPE must include CONDITION');
+    assert.strictEqual(shared.STAGE_TYPE.CONDITION, 'condition');
+  });
+
+  await test('PIPELINE_STATUS includes STOPPED', () => {
+    const shared = require('../engine/shared');
+    assert.ok(shared.PIPELINE_STATUS.STOPPED, 'PIPELINE_STATUS must include STOPPED');
+    assert.strictEqual(shared.PIPELINE_STATUS.STOPPED, 'stopped');
+  });
+
+  await test('pipeline.js exports evaluateCondition', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('evaluateCondition'), 'must define evaluateCondition');
+    assert.ok(src.includes('module.exports') && src.includes('evaluateCondition'),
+      'must export evaluateCondition');
+  });
+
+  await test('pipeline.js handles condition stage type in executeStage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('STAGE_TYPE.CONDITION'), 'must reference STAGE_TYPE.CONDITION');
+    assert.ok(src.includes('executeConditionStage'), 'must define executeConditionStage');
+  });
+
+  await test('pipeline.js evaluates stopWhen after run completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('pipeline.stopWhen'), 'must check pipeline.stopWhen');
+    assert.ok(src.includes('evaluateCondition(pipeline.stopWhen'), 'must evaluate stopWhen with evaluateCondition');
+  });
+
+  await test('pipeline.js condition stage can stop-pipeline', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes("'stop-pipeline'"), 'must handle stop-pipeline action');
+    assert.ok(src.includes('_stopPipeline'), 'must signal _stopPipeline to break dispatch loop');
+  });
+
+  await test('pipeline.js evaluateCondition supports all checks', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes("case 'runSucceeded'"), 'must support runSucceeded check');
+    assert.ok(src.includes("case 'noFailedItems'"), 'must support noFailedItems check');
+    assert.ok(src.includes("case 'maxRuns'"), 'must support maxRuns check');
+    assert.ok(src.includes("case 'allBuildsGreen'"), 'must support allBuildsGreen check');
+  });
+
+  await test('pipeline.js isStageComplete handles CONDITION type', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('STAGE_TYPE.CONDITION'), 'isStageComplete must handle CONDITION type');
+  });
+
+  await test('dashboard.js pipeline API supports stopWhen field', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('body.stopWhen'), 'pipeline create/update must support stopWhen');
+    assert.ok(src.includes('stopWhen?'), 'pipeline API params must list stopWhen');
+  });
+
+  await test('render-pipelines.js shows condition stage icon', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes("condition:"), 'stage icon map must include condition type');
+  });
+
+  await test('render-pipelines.js shows stopWhen badge', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('p.stopWhen'), 'must check pipeline stopWhen for display');
+    assert.ok(src.includes('STOP-WHEN'), 'must show STOP-WHEN badge');
+  });
+
+  await test('render-pipelines.js shows stopped run status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes("'stopped'"), 'must handle stopped status in run display');
+    assert.ok(src.includes('AUTO-STOPPED'), 'must show AUTO-STOPPED label for pipelines stopped by condition');
+  });
+
   await test('handlePostMerge guards against null project', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);

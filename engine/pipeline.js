@@ -1,7 +1,7 @@
 /**
  * engine/pipeline.js — Multi-stage pipeline orchestration.
- * Pipelines chain stages (task, meeting, plan, merge-prs, api, wait, parallel)
- * with dependency tracking and artifact discovery.
+ * Pipelines chain stages (task, meeting, plan, merge-prs, api, wait, parallel, condition)
+ * with dependency tracking, artifact discovery, and conditional stop/termination.
  */
 
 const fs = require('fs');
@@ -124,6 +124,79 @@ function resolveStageConfig(stage, run) {
   return resolved;
 }
 
+// ── Condition Evaluation ─────────────────────────────────────────────────────
+
+/**
+ * Evaluate a pipeline condition. Used by both `stopWhen` and `condition` stages.
+ * @param {string|object} condition — condition name (string shorthand) or { check, ... } object
+ * @param {{ run, pipeline, config }} ctx — evaluation context
+ * @returns {boolean} whether the condition is met
+ */
+function evaluateCondition(condition, ctx) {
+  const { run, pipeline, config } = ctx;
+  // Normalize: string shorthand → { check: string }
+  const cond = typeof condition === 'string' ? { check: condition } : (condition || {});
+
+  switch (cond.check) {
+    case 'runSucceeded': {
+      // True when the current/last run completed with all stages succeeded (none failed)
+      if (!run) return false;
+      return Object.values(run.stages || {}).every(
+        s => s.status === PIPELINE_STATUS.COMPLETED || s.status === PIPELINE_STATUS.PENDING
+      );
+    }
+    case 'noFailedItems': {
+      // True when all work items created by the pipeline are done (not failed)
+      if (!run) return false;
+      const wiPath = path.join(__dirname, '..', 'work-items.json');
+      const workItems = safeJson(wiPath) || [];
+      const allProjectWi = shared.getProjects(config).reduce((acc, p) => {
+        return acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []);
+      }, []);
+      const all = [...workItems, ...allProjectWi];
+      const pipelineWis = all.filter(w => w._pipelineRun === run.runId);
+      if (pipelineWis.length === 0) return true; // no items = nothing failed
+      return pipelineWis.every(w => w.status !== WI_STATUS.FAILED);
+    }
+    case 'maxRuns': {
+      // True when total run count for this pipeline >= threshold
+      const threshold = cond.value || 1;
+      const runs = getPipelineRuns();
+      const pipelineRuns = runs[pipeline?.id] || [];
+      return pipelineRuns.length >= threshold;
+    }
+    case 'allBuildsGreen': {
+      // True when all PRs in monitoredResources (or run artifacts) have buildStatus 'passing'
+      const projects = shared.getProjects(config);
+      const allPrs = projects.reduce((acc, p) => {
+        return acc.concat(safeJson(shared.projectPrPath(p)) || []);
+      }, []);
+
+      // Collect PR IDs to check: from monitoredResources (type: 'pr') or run artifact PRs
+      const prIds = new Set();
+      for (const res of (pipeline?.monitoredResources || [])) {
+        const r = typeof res === 'string' ? { label: res } : res;
+        if (r.type === 'pr' && r.label) prIds.add(r.label);
+      }
+      // Also check PRs from run artifacts
+      if (run) {
+        for (const [, s] of Object.entries(run.stages || {})) {
+          for (const prId of (s.artifacts?.prs || [])) prIds.add(prId);
+        }
+      }
+      if (prIds.size === 0) return false; // no PRs to check = can't confirm green
+      for (const prId of prIds) {
+        const pr = allPrs.find(p => p.id === prId);
+        if (!pr || pr.buildStatus !== 'passing') return false;
+      }
+      return true;
+    }
+    default:
+      log('warn', `Pipeline condition: unknown check '${cond.check}'`);
+      return false;
+  }
+}
+
 // ── Stage Execution ──────────────────────────────────────────────────────────
 
 async function executeStage(stage, run, pipeline, config) {
@@ -143,6 +216,8 @@ async function executeStage(stage, run, pipeline, config) {
       return executeMergePrsStage(resolved, stageState, run, config);
     case STAGE_TYPE.SCHEDULE:
       return executeScheduleStage(resolved, stageState, config);
+    case STAGE_TYPE.CONDITION:
+      return executeConditionStage(resolved, stageState, run, pipeline, config);
     case STAGE_TYPE.WAIT:
       // wait stages just sit in waiting-human status until continued via API
       return { status: PIPELINE_STATUS.WAITING_HUMAN };
@@ -375,6 +450,38 @@ function executeScheduleStage(stage, stageState, config) {
   return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts() };
 }
 
+function executeConditionStage(stage, stageState, run, pipeline, config) {
+  const check = stage.check || stage.condition;
+  if (!check) {
+    log('warn', `Pipeline ${pipeline.id}: condition stage ${stage.id} has no check defined`);
+    return { status: PIPELINE_STATUS.FAILED, error: 'no check defined' };
+  }
+
+  const met = evaluateCondition(check, { run, pipeline, config });
+  const action = met ? (stage.onMet || 'complete') : (stage.onUnmet || 'fail');
+  log('info', `Pipeline ${pipeline.id}: condition '${typeof check === 'string' ? check : check.check}' → ${met ? 'met' : 'unmet'}, action: ${action}`);
+
+  switch (action) {
+    case 'complete':
+    case 'continue':
+      return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output: `Condition ${met ? 'met' : 'unmet'}` };
+    case 'fail':
+      return { status: PIPELINE_STATUS.FAILED, error: `Condition ${met ? 'met' : 'unmet'}` };
+    case 'stop-pipeline':
+      // Disable the pipeline and complete the run
+      pipeline.enabled = false;
+      pipeline._stoppedBy = stage.id;
+      pipeline._stoppedAt = ts();
+      pipeline._stopReason = `Condition '${typeof check === 'string' ? check : check.check}' ${met ? 'met' : 'unmet'}`;
+      savePipeline(pipeline);
+      log('info', `Pipeline ${pipeline.id}: auto-disabled by condition stage ${stage.id}`);
+      return { status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), output: `Pipeline stopped: condition ${met ? 'met' : 'unmet'}`, _stopPipeline: true };
+    default:
+      log('warn', `Pipeline ${pipeline.id}: unknown condition action '${action}'`);
+      return { status: PIPELINE_STATUS.FAILED, error: `unknown action '${action}'` };
+  }
+}
+
 async function executeParallelStage(stage, stageState, run, pipeline, config) {
   const subStages = stage.stages || [];
   const subResults = {};
@@ -496,7 +603,8 @@ function isStageComplete(stage, stageState, run, config) {
     }
     case STAGE_TYPE.API:
     case STAGE_TYPE.SCHEDULE:
-      return true; // fire-and-forget
+    case STAGE_TYPE.CONDITION:
+      return true; // immediate — resolved synchronously on execute
     case STAGE_TYPE.WAIT:
       return stageState.status === PIPELINE_STATUS.COMPLETED;
     case STAGE_TYPE.PARALLEL: {
@@ -626,6 +734,12 @@ async function discoverPipelineWork(config) {
           updateRunStage(pipeline.id, activeRun.runId, stage.id, { ...result, startedAt: ts() });
           Object.assign(stageState, result, { startedAt: ts() });
           if (result.status === PIPELINE_STATUS.RUNNING) anyRunning = true;
+          // Condition stage signaled pipeline stop — complete the run immediately
+          if (result._stopPipeline) {
+            completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.STOPPED);
+            allComplete = true;
+            break;
+          }
           log('info', `Pipeline ${pipeline.id}: started stage ${stage.id} (${stage.type})`);
         }
       }
@@ -636,7 +750,25 @@ async function discoverPipelineWork(config) {
 
     // Check if run is done
     if (allComplete) {
-      completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.COMPLETED);
+      // Only complete if not already stopped by a condition stage
+      if (activeRun.status !== PIPELINE_STATUS.STOPPED) {
+        completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.COMPLETED);
+      }
+
+      // Evaluate top-level stopWhen after successful run completion
+      if (pipeline.stopWhen && pipeline.enabled !== false) {
+        try {
+          const stopMet = evaluateCondition(pipeline.stopWhen, { run: activeRun, pipeline, config });
+          if (stopMet) {
+            pipeline.enabled = false;
+            pipeline._stoppedBy = 'stopWhen';
+            pipeline._stoppedAt = ts();
+            pipeline._stopReason = `stopWhen condition '${typeof pipeline.stopWhen === 'string' ? pipeline.stopWhen : (pipeline.stopWhen.check || 'unknown')}' met`;
+            savePipeline(pipeline);
+            log('info', `Pipeline ${pipeline.id}: auto-disabled by stopWhen condition`);
+          }
+        } catch (e) { log('warn', `Pipeline ${pipeline.id}: stopWhen evaluation failed: ${e.message}`); }
+      }
     } else if (anyFailed && !anyRunning) {
       completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.FAILED);
     }
@@ -648,4 +780,5 @@ module.exports = {
   getPipelines, getPipeline, savePipeline, deletePipeline,
   getPipelineRuns, getActiveRun, startRun, updateRunStage, completeRun,
   discoverPipelineWork,
+  evaluateCondition, // exported for testing
 };
