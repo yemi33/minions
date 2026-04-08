@@ -1040,6 +1040,22 @@ function updateMetrics(agentId, dispatchItem, result, taskUsage, prsCreatedCount
       m.totalOutputTokens = (m.totalOutputTokens || 0) + (taskUsage.outputTokens || 0);
       m.totalCacheRead = (m.totalCacheRead || 0) + (taskUsage.cacheRead || 0);
     }
+    // Track agent runs in _engine for LLM performance tile (alongside CC/doc-chat)
+    if (!metrics._engine) metrics._engine = {};
+    if (!metrics._engine['agent-dispatch']) {
+      metrics._engine['agent-dispatch'] = { calls: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0, totalDurationMs: 0 };
+    }
+    const eng = metrics._engine['agent-dispatch'];
+    eng.calls++;
+    if (runtimeMs > 0) eng.totalDurationMs = (eng.totalDurationMs || 0) + runtimeMs;
+    if (taskUsage) {
+      eng.costUsd += taskUsage.costUsd || 0;
+      eng.inputTokens += taskUsage.inputTokens || 0;
+      eng.outputTokens += taskUsage.outputTokens || 0;
+      eng.cacheRead += taskUsage.cacheRead || 0;
+      eng.cacheCreation = (eng.cacheCreation || 0) + (taskUsage.cacheCreation || 0);
+    }
+
     const today = dateStamp();
     if (!metrics._daily) metrics._daily = {};
     if (!metrics._daily[today]) metrics._daily[today] = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, tasks: 0, runtimeMs: 0 };
