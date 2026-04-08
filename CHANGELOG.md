@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.578 (2026-04-08)
+
+### Other
+- refactor: extract _spawnProcess helper, fix dep fetch error tracking, cleanup file leak
+
 ## 0.1.577 (2026-04-08)
 
 ### Other
