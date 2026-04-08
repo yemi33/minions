@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.557 (2026-04-08)
+
+### Features
+-  add pin/unpin button to inbox and KB document modals
+
+### Fixes
+- add max retry cap and escalation for build fix cycles (#497)
+- defer dispatched status until spawnAgent succeeds + add _any_ routing token (#482)
+-  move pin button to modal header next to Copy button
+- fetch actual build error logs instead of just reason string (#489)
+
 ## 0.1.552 (2026-04-07)
 
 ### Features
