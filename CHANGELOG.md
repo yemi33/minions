@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.591 (2026-04-08)
+
+### Fixes
+-  per-type maxTurns bypassed when config has default maxTurns=100
+
 ## 0.1.590 (2026-04-08)
 
 ### Other
