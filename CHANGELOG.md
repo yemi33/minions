@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.580 (2026-04-08)
+
+### Fixes
+-  cleanup prompt files on worktree failure, add TTL to binary cache
+-  CC response renderer HTML-escape before innerHTML injection (closes #506) (#525)
+
 ## 0.1.578 (2026-04-08)
 
 ### Other
