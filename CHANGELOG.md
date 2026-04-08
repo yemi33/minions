@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.629 (2026-04-08)
+
+### Fixes
+-  hold _ccSending during abort delay, check wasAborted per queue item
+-  abort+queue sends queued message after brief delay, not discard
+
 ## 0.1.627 (2026-04-08)
 
 ### Fixes
