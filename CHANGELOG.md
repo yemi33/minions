@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.608 (2026-04-08)
+
+### Other
+- docs: add CC/doc-chat flow section, fix stale claims in CLAUDE.md
+
 ## 0.1.607 (2026-04-08)
 
 ### Fixes
