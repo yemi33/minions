@@ -722,6 +722,7 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     } catch {}
   });
   sock.on('error', () => {
+    sock.destroy();
     if (handled) return;
     handled = true;
     delegate('dashboard.js', rest);
