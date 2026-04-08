@@ -103,6 +103,21 @@ function isAlreadyDispatched(key) {
   return recentCompleted.some(d => d.meta?.dispatchKey === key);
 }
 
+/**
+ * Check if a branch is currently locked by an active dispatch.
+ * Returns the conflicting dispatch item, or null if the branch is free.
+ */
+function isBranchActive(branch) {
+  if (!branch) return null;
+  const { sanitizeBranch } = require('./shared');
+  const normalized = sanitizeBranch(branch);
+  const dispatch = queries.getDispatch();
+  return (dispatch.active || []).find(d => {
+    const dBranch = d.meta?.branch;
+    return dBranch && sanitizeBranch(dBranch) === normalized;
+  }) || null;
+}
+
 module.exports = {
   COOLDOWN_PATH,
   dispatchCooldowns,
@@ -114,4 +129,5 @@ module.exports = {
   getCoalescedContexts,
   setCooldownFailure,
   isAlreadyDispatched,
+  isBranchActive,
 };

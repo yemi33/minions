@@ -987,7 +987,7 @@ function updateSnapshot(config) {
 
 const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
   isOnCooldown, setCooldown, setCooldownWithContext, getCoalescedContexts,
-  setCooldownFailure, isAlreadyDispatched } = require('./engine/cooldown');
+  setCooldownFailure, isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
 
 
 
@@ -1399,6 +1399,11 @@ async function discoverFromPrs(config, project) {
   for (const pr of prs) {
     if (pr.status !== 'active') continue;
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
+    // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
+    if (pr.branch && isBranchActive(pr.branch)) {
+      log('info', `Branch mutex: skipping PR ${pr.id} dispatch — branch ${pr.branch} locked by another agent`);
+      continue;
+    }
     // Skip human-authored PRs not linked to any work item — only auto-manage agent PRs
     // Manually-linked PRs with autoObserve are allowed through (they have _autoObserve flag)
     const isAgentPr = knownAgents.has((pr.agent || '').toLowerCase()) || (pr.prdItems && pr.prdItems.length > 0) || pr._autoObserve;
@@ -1678,6 +1683,16 @@ function discoverFromWorkItems(config, project) {
 
     const isShared = item.branchStrategy === 'shared-branch' && item.featureBranch;
     const branchName = isShared ? item.featureBranch : (item.branch || `work/${item.id}`);
+
+    // Branch mutex: skip if target branch is locked by an active dispatch
+    const branchConflict = isBranchActive(branchName);
+    if (branchConflict) {
+      if (item._pendingReason !== 'branch_locked') { item._pendingReason = 'branch_locked'; needsWrite = true; }
+      skipped.gated++;
+      log('info', `Branch mutex: skipping ${item.id} — branch ${branchName} locked by ${branchConflict.id} (${branchConflict.agent})`);
+      continue;
+    }
+
     const vars = {
       ...buildBaseVars(agentId, config, project),
       item_id: item.id,
@@ -2158,6 +2173,14 @@ function discoverCentralWorkItems(config) {
       const firstProject = projects.length > 0 ? projects[0] : null;
       if (!firstProject) { log('warn', `Dispatch: skipping ${item.id} — no projects configured`); continue; }
 
+      // Branch mutex: skip if target branch is locked by an active dispatch
+      const centralBranch = item.branch || item.featureBranch || `work/${item.id}`;
+      const centralBranchConflict = isBranchActive(centralBranch);
+      if (centralBranchConflict) {
+        log('info', `Branch mutex: skipping central ${item.id} — branch ${centralBranch} locked by ${centralBranchConflict.id} (${centralBranchConflict.agent})`);
+        continue;
+      }
+
       const vars = {
         ...buildBaseVars(agentId, config, firstProject),
         item_id: item.id,
@@ -2172,9 +2195,6 @@ function discoverCentralWorkItems(config) {
         scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
       };
-
-      // Build common vars: references, acceptance criteria, checkpoint, notes, task context
-      const centralBranch = item.branch || `work/${item.id}`;
       const centralWtPath = firstProject?.localPath
         ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
         : '';
@@ -2639,6 +2659,11 @@ async function tickInner() {
 
   // Build set of agents currently active (one task per agent at a time).
   const busyAgents = new Set((dispatch.active || []).map(d => d.agent));
+  // Branch mutex: track branches locked by active dispatches to prevent concurrent writes
+  const lockedBranches = new Set();
+  for (const d of (dispatch.active || [])) {
+    if (d.meta?.branch) lockedBranches.add(sanitizeBranch(d.meta.branch));
+  }
   const seenPendingIds = new Set();
   const toDispatch = [];
   let generalSlots = slotsAvailable;
@@ -2649,12 +2674,16 @@ async function tickInner() {
       continue;
     }
     if (busyAgents.has(item.agent)) continue;
+    // Branch mutex: skip items targeting a branch already locked by an active or newly-dispatched task
+    const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
+    if (itemBranch && lockedBranches.has(itemBranch)) continue;
     // Items explicitly assigned to an agent bypass concurrency cap — dispatch if agent is free
     const isExplicitAssignment = !!item.meta?.item?.agent;
     if (!isExplicitAssignment && generalSlots <= 0) continue;
     seenPendingIds.add(item.id);
     toDispatch.push(item);
     busyAgents.add(item.agent);
+    if (itemBranch) lockedBranches.add(itemBranch);
     if (!isExplicitAssignment) generalSlots--;
   }
 
@@ -2713,6 +2742,11 @@ async function tickInner() {
   const postDispatch = getDispatch();
   const postBusyAgents = new Set((postDispatch.active || []).map(d => d.agent));
   const postActiveCount = (postDispatch.active || []).length;
+  // Rebuild locked branches from post-dispatch active set for skip-reason annotation
+  const postLockedBranches = new Set();
+  for (const d of (postDispatch.active || [])) {
+    if (d.meta?.branch) postLockedBranches.add(sanitizeBranch(d.meta.branch));
+  }
   let skipReasonChanged = false;
   for (const item of (postDispatch.pending || [])) {
     let reason = null;
@@ -2720,6 +2754,12 @@ async function tickInner() {
       reason = 'max_concurrency';
     } else if (postBusyAgents.has(item.agent)) {
       reason = 'agent_busy';
+    } else {
+      // Branch mutex: annotate items waiting for a branch to become free
+      const pendingBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
+      if (pendingBranch && postLockedBranches.has(pendingBranch)) {
+        reason = 'branch_locked';
+      }
     }
     if (item.skipReason !== reason) {
       item.skipReason = reason;
