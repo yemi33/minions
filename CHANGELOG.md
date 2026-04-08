@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.604 (2026-04-08)
+
+### Fixes
+-  revert doc-chat session key to stable filePath || title
+-  doc-chat session key collision and model passthrough
+
 ## 0.1.602 (2026-04-08)
 
 ### Features
