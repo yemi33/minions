@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.621 (2026-04-08)
+
+### Fixes
+-  detect plan-to-prd completing without PRD file, auto-retry
+
 ## 0.1.620 (2026-04-08)
 
 ### Fixes
