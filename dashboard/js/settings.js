@@ -51,6 +51,7 @@ async function openSettings() {
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
+      settingsField('Max Build Fix Attempts', 'set-maxBuildFixAttempts', e.maxBuildFixAttempts || 3, '', 'Max auto-fix dispatches per PR before escalating to human (1-10)') +
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
     '</div>' +
 
@@ -169,6 +170,7 @@ async function saveSettings() {
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
+      maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
     };
 
