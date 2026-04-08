@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.609 (2026-04-08)
+
+### Fixes
+-  show lifetime completed count instead of capped dispatch window
+
+### Other
+- docs: add CC/doc-chat flow section, fix stale claims in CLAUDE.md
+
 ## 0.1.607 (2026-04-08)
 
 ### Fixes
