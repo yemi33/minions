@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.633 (2026-04-08)
+
+### Fixes
+-  spread pending mutations into dispatch meta.item snapshot
+
 ## 0.1.632 (2026-04-08)
 
 ### Features
