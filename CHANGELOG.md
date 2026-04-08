@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.583 (2026-04-08)
+
+### Fixes
+-  use Date.now() for agent runtime since completed_at not yet set
+
 ## 0.1.582 (2026-04-08)
 
 ### Fixes
