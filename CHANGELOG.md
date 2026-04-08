@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.559 (2026-04-08)
+
+### Features
+- max retry cap and escalation for build fix cycles (#488)
+
+### Fixes
+-  protect pinned KB items from sweep deduplication
+
 ## 0.1.557 (2026-04-08)
 
 ### Features
