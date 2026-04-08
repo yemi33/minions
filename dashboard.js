@@ -788,7 +788,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
     result = await llm.callLLM(buildPrompt({ includePreamble: false }), '', {
-      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort,
+      timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
     });
     llm.trackEngineUsage(label, result.usage);
 
@@ -823,7 +823,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   // Attempt 2: fresh session (include preamble for full context)
   const freshPrompt = buildPrompt();
   result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort,
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
   });
   llm.trackEngineUsage(label, result.usage);
 
@@ -837,7 +837,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
   result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
-    timeout, label, model, maxTurns, allowedTools, effort: ccEffort,
+    timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
   });
   llm.trackEngineUsage(label, result.usage);
 
@@ -3350,7 +3350,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
           timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 50,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
-          sessionId, effort: streamEffort,
+          sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
           },

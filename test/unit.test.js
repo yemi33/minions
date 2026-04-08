@@ -8802,6 +8802,43 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
   });
 
+  // ── Perf: Prompt building before worktree, direct spawn, parallel dep fetch ─
+
+  await test('spawnAgent builds prompt before worktree setup', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const spawnFn = src.slice(src.indexOf('async function spawnAgent('));
+    const promptBuildIdx = spawnFn.indexOf('buildSystemPrompt(');
+    const worktreeIdx = spawnFn.indexOf('findExistingWorktree(');
+    assert.ok(promptBuildIdx > 0 && worktreeIdx > 0, 'Should have both buildSystemPrompt and findExistingWorktree');
+    assert.ok(promptBuildIdx < worktreeIdx, 'Prompt building should come before worktree setup');
+  });
+
+  await test('callLLM supports direct spawn mode', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('direct = false'), 'callLLM should accept direct param with false default');
+    assert.ok(src.includes('_resolveClaudeBin'), 'Should have _resolveClaudeBin for direct spawn');
+    assert.ok(src.includes('claude-caps.json'), 'Should read cached binary from claude-caps.json');
+  });
+
+  await test('callLLMStreaming supports direct spawn mode', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    const streamFn = src.slice(src.indexOf('function callLLMStreaming('));
+    assert.ok(streamFn.includes('direct = false'), 'callLLMStreaming should accept direct param');
+    assert.ok(streamFn.includes('_resolveClaudeBin'), 'Should use _resolveClaudeBin for direct spawn');
+  });
+
+  await test('ccCall passes direct:true to callLLM', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const ccCallFn = src.slice(src.indexOf('async function ccCall('));
+    assert.ok(ccCallFn.includes('direct: true'), 'ccCall should pass direct: true to callLLM');
+  });
+
+  await test('dependency fetches run in parallel with Promise.allSettled', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('Promise.allSettled'), 'Should use Promise.allSettled for parallel dep fetches');
+    assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
+  });
+
   await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');

@@ -43,32 +43,79 @@ function trackEngineUsage(category, usage) {
   } catch (e) { console.error('metrics update:', e.message); }
 }
 
+// ── Claude Binary Resolution (cached by spawn-agent.js) ─────────────────────
+
+let _claudeBinCache = null;
+function _resolveClaudeBin() {
+  if (_claudeBinCache) return _claudeBinCache;
+  const caps = shared.safeJson(path.join(ENGINE_DIR, 'claude-caps.json'));
+  if (caps?.claudeBin && require('fs').existsSync(caps.claudeBin)) {
+    _claudeBinCache = { bin: caps.claudeBin, native: !!caps.claudeIsNative };
+    return _claudeBinCache;
+  }
+  return null;
+}
+
+// ── Spawn Helpers ───────────────────────────────────────────────────────────
+
+function _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile }) {
+  const args = ['-p', '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model, '--verbose'];
+  if (sysPromptFile) args.push('--system-prompt-file', sysPromptFile);
+  if (allowedTools) args.push('--allowedTools', allowedTools);
+  if (effort) args.push('--effort', effort);
+  args.push('--permission-mode', 'bypassPermissions');
+  if (sessionId) args.push('--resume', sessionId);
+  return args;
+}
+
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
-function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null } = {}) {
+function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null, direct = false } = {}) {
   return new Promise((resolve) => {
+    const _startMs = Date.now();
+    const fs = require('fs');
     const id = uid();
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
-    if (!require('fs').existsSync(tmpDir)) require('fs').mkdirSync(tmpDir, { recursive: true });
-    const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
-    const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
-    safeWrite(promptPath, promptText);
-    safeWrite(sysPath, sysPromptText || '');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-    const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-    const args = [
-      spawnScript, promptPath, sysPath,
-      '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
-      '--verbose',
-    ];
-    if (allowedTools) args.push('--allowedTools', allowedTools);
-    if (effort) args.push('--effort', effort);
-    args.push('--permission-mode', 'bypassPermissions');
+    let proc;
+    const cleanupFiles = [];
+    const resolved = direct ? _resolveClaudeBin() : null;
 
-    if (sessionId) args.push('--resume', sessionId);
+    if (resolved) {
+      // Direct spawn: skip spawn-agent.js — fewer file syscalls, no extra process
+      let sysTmpPath = null;
+      if (!sessionId && sysPromptText) {
+        sysTmpPath = path.join(tmpDir, `direct-sys-${id}.md`);
+        fs.writeFileSync(sysTmpPath, sysPromptText);
+        cleanupFiles.push(sysTmpPath);
+      }
+      const cliArgs = _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile: sysTmpPath });
+      proc = resolved.native
+        ? runFile(resolved.bin, cliArgs, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() })
+        : runFile(process.execPath, [resolved.bin, ...cliArgs], { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+      try { proc.stdin.write(promptText); proc.stdin.end(); } catch { /* broken pipe */ }
+    } else {
+      // Indirect: use spawn-agent.js (for agent dispatches or if binary not cached)
+      const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
+      const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
+      safeWrite(promptPath, promptText);
+      safeWrite(sysPath, sysPromptText || '');
+      cleanupFiles.push(promptPath, sysPath);
 
-    const _startMs = Date.now();
-    const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+      const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+      const args = [
+        spawnScript, promptPath, sysPath,
+        '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
+        '--verbose',
+      ];
+      if (allowedTools) args.push('--allowedTools', allowedTools);
+      if (effort) args.push('--effort', effort);
+      args.push('--permission-mode', 'bypassPermissions');
+      if (sessionId) args.push('--resume', sessionId);
+
+      proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+    }
 
     let stdout = '';
     let stderr = '';
@@ -79,8 +126,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      safeUnlink(promptPath);
-      safeUnlink(sysPath);
+      for (const f of cleanupFiles) safeUnlink(f);
       const parsed = parseStreamJsonOutput(stdout);
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
@@ -89,8 +135,7 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      safeUnlink(promptPath);
-      safeUnlink(sysPath);
+      for (const f of cleanupFiles) safeUnlink(f);
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
     });
   });
@@ -118,30 +163,51 @@ function isResumeSessionStillValid(result) {
  * Returns the same result object as callLLM when the process completes.
  * onChunk(text) is called for each assistant text block as it arrives.
  */
-function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null, effort = null } = {}) {
+function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, onChunk = () => {}, onToolUse = null, effort = null, direct = false } = {}) {
   let _abort = null;
   const promise = new Promise((resolve) => {
+    const _startMs = Date.now();
+    const fs = require('fs');
     const id = uid();
     const tmpDir = path.join(ENGINE_DIR, 'tmp');
-    if (!require('fs').existsSync(tmpDir)) require('fs').mkdirSync(tmpDir, { recursive: true });
-    const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
-    const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
-    safeWrite(promptPath, promptText);
-    safeWrite(sysPath, sysPromptText || '');
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-    const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
-    const args = [
-      spawnScript, promptPath, sysPath,
-      '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
-      '--verbose',
-    ];
-    if (allowedTools) args.push('--allowedTools', allowedTools);
-    if (effort) args.push('--effort', effort);
-    args.push('--permission-mode', 'bypassPermissions');
-    if (sessionId) args.push('--resume', sessionId);
+    let proc;
+    const cleanupFiles = [];
+    const resolved = direct ? _resolveClaudeBin() : null;
 
-    const _startMs = Date.now();
-    const proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+    if (resolved) {
+      let sysTmpPath = null;
+      if (!sessionId && sysPromptText) {
+        sysTmpPath = path.join(tmpDir, `direct-sys-${id}.md`);
+        fs.writeFileSync(sysTmpPath, sysPromptText);
+        cleanupFiles.push(sysTmpPath);
+      }
+      const cliArgs = _buildCliArgs({ model, maxTurns, allowedTools, effort, sessionId, sysPromptFile: sysTmpPath });
+      proc = resolved.native
+        ? runFile(resolved.bin, cliArgs, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() })
+        : runFile(process.execPath, [resolved.bin, ...cliArgs], { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+      try { proc.stdin.write(promptText); proc.stdin.end(); } catch { /* broken pipe */ }
+    } else {
+      const promptPath = path.join(tmpDir, `${label}-prompt-${id}.md`);
+      const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
+      safeWrite(promptPath, promptText);
+      safeWrite(sysPath, sysPromptText || '');
+      cleanupFiles.push(promptPath, sysPath);
+
+      const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
+      const args = [
+        spawnScript, promptPath, sysPath,
+        '--output-format', 'stream-json', '--max-turns', String(maxTurns), '--model', model,
+        '--verbose',
+      ];
+      if (allowedTools) args.push('--allowedTools', allowedTools);
+      if (effort) args.push('--effort', effort);
+      args.push('--permission-mode', 'bypassPermissions');
+      if (sessionId) args.push('--resume', sessionId);
+
+      proc = runFile(process.execPath, args, { cwd: MINIONS_DIR, stdio: ['pipe', 'pipe', 'pipe'], env: cleanChildEnv() });
+    }
 
     _abort = () => { shared.killImmediate(proc); };
 
@@ -181,8 +247,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
 
     proc.on('close', (code) => {
       clearTimeout(timer);
-      safeUnlink(promptPath);
-      safeUnlink(sysPath);
+      for (const f of cleanupFiles) safeUnlink(f);
       const parsed = parseStreamJsonOutput(stdout);
       const durationMs = Date.now() - _startMs;
       const usage = parsed.usage ? { ...parsed.usage, durationMs } : { durationMs };
@@ -191,8 +256,7 @@ function callLLMStreaming(promptText, sysPromptText, { timeout = 120000, label =
 
     proc.on('error', (err) => {
       clearTimeout(timer);
-      safeUnlink(promptPath);
-      safeUnlink(sysPath);
+      for (const f of cleanupFiles) safeUnlink(f);
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
     });
   });

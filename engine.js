@@ -278,6 +278,21 @@ async function spawnAgent(dispatchItem, config) {
   const _gitOpts = { stdio: 'pipe', timeout: 30000, windowsHide: true, env: shared.gitEnv() };
   const _worktreeGitOpts = { ..._gitOpts, timeout: worktreeCreateTimeout };
 
+  // Build prompt before worktree setup — prompt doesn't depend on worktree path
+  // and this avoids blocking 200ms of file reads behind 20-60s of git operations
+  const systemPrompt = buildSystemPrompt(agentId, config, project);
+  const agentContext = buildAgentContext(agentId, config, project);
+  const fullTaskPrompt = agentContext
+    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPrompt}`
+    : taskPrompt;
+  const tmpDir = path.join(ENGINE_DIR, 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const safeId = id.replace(/[:\\/*?"<>|]/g, '-');
+  const promptPath = path.join(tmpDir, `prompt-${safeId}.md`);
+  safeWrite(promptPath, fullTaskPrompt);
+  const sysPromptPath = path.join(tmpDir, `sysprompt-${safeId}.md`);
+  safeWrite(sysPromptPath, systemPrompt);
+
   if (branchName) {
     const wtSuffix = id ? id.split('-').pop() : shared.uid();
     const projectSlug = (project.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -413,21 +428,37 @@ async function spawnAgent(dispatchItem, config) {
         try {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
           let depMergeFailed = false;
-          for (const { branch: depBranch, prId } of depBranches) {
-            // Skip refs already known to be missing this tick (avoids repeated 30s ETIMEDOUT)
-            if (_failedRefCache.has(depBranch)) {
-              log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
+          // Fetch all dependency branches in parallel (git fetches are independent)
+          const fetchable = depBranches.filter(d => !_failedRefCache.has(d.branch));
+          const unfetchable = depBranches.filter(d => _failedRefCache.has(d.branch));
+          for (const { branch: depBranch } of unfetchable) {
+            log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
+            depMergeFailed = true;
+          }
+          const fetchResults = await Promise.allSettled(
+            fetchable.map(({ branch: depBranch }) =>
+              execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir }).then(() => depBranch)
+            )
+          );
+          for (const r of fetchResults) {
+            if (r.status === 'rejected') {
+              const failedBranch = fetchable.find(d => r.reason?.message?.includes(d.branch))?.branch || 'unknown';
+              _failedRefCache.add(failedBranch);
+              log('warn', `Failed to fetch dependency ${failedBranch}: ${r.reason?.message}`);
               depMergeFailed = true;
-              continue;
             }
-            try {
-              await execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir });
-              await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
-              log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
-            } catch (mergeErr) {
-              _failedRefCache.add(depBranch);
-              log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
-              depMergeFailed = true;
+          }
+          // Merge fetched branches sequentially (merges modify the worktree)
+          if (!depMergeFailed) {
+            for (const { branch: depBranch, prId } of fetchable) {
+              try {
+                await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
+                log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
+              } catch (mergeErr) {
+                log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
+                depMergeFailed = true;
+                break;
+              }
             }
           }
           if (depMergeFailed) {
@@ -441,29 +472,10 @@ async function spawnAgent(dispatchItem, config) {
     }
   }
 
-  // Build lean system prompt (identity + rules, ~2-4KB) and bulk context (history, notes, skills)
-  const systemPrompt = buildSystemPrompt(agentId, config, project);
-  const agentContext = buildAgentContext(agentId, config, project);
-
   // Safety check: warn if a write-capable task is running in the main repo without a worktree
   if (cwd === rootDir && ['implement', 'implement:large', 'fix', 'test', 'verify', 'plan-to-prd'].includes(type)) {
     log('warn', `Agent ${agentId} running ${type} task in main repo (no worktree) for ${id} — changes may land on master directly`);
   }
-
-  // Prepend bulk context to task prompt — keeps system prompt small and stable
-  const fullTaskPrompt = agentContext
-    ? `## Agent Context\n\n${agentContext}\n---\n\n## Your Task\n\n${taskPrompt}`
-    : taskPrompt;
-
-  // Write prompt and system prompt to temp files (avoids shell escaping issues)
-  const tmpDir = path.join(ENGINE_DIR, 'tmp');
-  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-  const safeId = id.replace(/[:\\/*?"<>|]/g, '-');
-  const promptPath = path.join(tmpDir, `prompt-${safeId}.md`);
-  safeWrite(promptPath, fullTaskPrompt);
-
-  const sysPromptPath = path.join(tmpDir, `sysprompt-${safeId}.md`);
-  safeWrite(sysPromptPath, systemPrompt);
 
   // Build claude CLI args
   const args = [
