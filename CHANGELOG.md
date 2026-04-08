@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.582 (2026-04-08)
+
+### Fixes
+-  restore actions example in CC prompt, hoist FAST_WORK_TYPES
+
+### Other
+- perf: trim CC prompt, extract verify template, add effort levels
+
 ## 0.1.580 (2026-04-08)
 
 ### Fixes
