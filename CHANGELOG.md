@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.567 (2026-04-08)
+
+### Features
+-  add ccModel/ccEffort settings and agent runtime tracking
+
+### Other
+- refactor: use safeJson/safeWrite for spawn-agent cache, remove unused checkedAt
+
 ## 0.1.565 (2026-04-08)
 
 ### Fixes
