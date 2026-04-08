@@ -250,12 +250,11 @@ function runCleanup(config, verbose = false) {
             }
           }
 
-          try {
-            exec(`git worktree remove "${entry.wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 30000 });
+          if (shared.removeWorktree(entry.wtPath, root, worktreeRoot)) {
             cleaned.worktrees++;
             if (verbose) console.log(`  Removed worktree: ${entry.wtPath}`);
-          } catch (e) {
-            if (verbose) console.log(`  Failed to remove worktree ${entry.wtPath}: ${e.message}`);
+          } else {
+            if (verbose) console.log(`  Failed to remove worktree ${entry.wtPath}`);
           }
         }
       }

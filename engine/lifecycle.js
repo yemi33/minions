@@ -313,33 +313,39 @@ function archivePlan(planFile, plan, projects, config) {
   } catch (err) { log('warn', `Plan archive scan: ${err.message}`); }
 
   // Clean up ALL worktrees created for this plan's work items (shared-branch + per-item)
+  cleanupPlanWorktrees(planFile, plan, projects, config);
+}
+
+/**
+ * Clean up worktrees associated with a plan's work items and PRs.
+ * Called from archivePlan() and also from plan delete/archive handlers.
+ */
+function cleanupPlanWorktrees(planFile, plan, projects, config) {
   try {
     const branchSlugs = new Set();
-    if (plan.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
+    if (plan?.feature_branch) branchSlugs.add(shared.sanitizeBranch(plan.feature_branch).toLowerCase());
 
-    // Collect work items for this plan
     const allWorkItems = queries.getWorkItems(config);
     const planItems = allWorkItems.filter(w => w.sourcePlan === planFile);
-    const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
-
-    for (const w of doneItems) {
+    for (const w of planItems) {
       if (w.branch) branchSlugs.add(shared.sanitizeBranch(w.branch).toLowerCase());
       if (w.id) branchSlugs.add(w.id.toLowerCase());
     }
 
-    // Collect PR branches
     for (const p of projects) {
       try {
         const prs = safeJson(shared.projectPrPath(p)) || [];
         const prLinks = getPrLinks();
         for (const pr of prs) {
           const linkedId = prLinks[pr.id];
-          if (linkedId && doneItems.find(w => w.id === linkedId) && pr.branch) {
+          if (linkedId && planItems.find(w => w.id === linkedId) && pr.branch) {
             branchSlugs.add(shared.sanitizeBranch(pr.branch).toLowerCase());
           }
         }
       } catch { /* optional */ }
     }
+
+    if (branchSlugs.size === 0) return;
 
     let cleanedWt = 0;
     for (const p of projects) {
@@ -352,15 +358,12 @@ function archivePlan(planFile, plan, projects, config) {
         const matches = [...branchSlugs].some(slug => dirLower.includes(slug));
         if (matches) {
           const wtPath = path.join(wtRoot, dir);
-          try {
-            execSilent(`git worktree remove "${wtPath}" --force`, { cwd: root, stdio: 'pipe', timeout: 15000 });
-            cleanedWt++;
-          } catch (err) { log('warn', `Failed to remove worktree ${dir}: ${err.message}`); }
+          if (shared.removeWorktree(wtPath, root, wtRoot)) cleanedWt++;
         }
       }
     }
-    if (cleanedWt > 0) log('info', `Archive: cleaned ${cleanedWt} worktree(s)`);
-  } catch (err) { log('warn', `Worktree cleanup: ${err.message}`); }
+    if (cleanedWt > 0) log('info', `Plan worktree cleanup: removed ${cleanedWt} worktree(s)`);
+  } catch (err) { log('warn', `Plan worktree cleanup: ${err.message}`); }
 }
 
 // ─── Plan → PRD Chaining ─────────────────────────────────────────────────────
@@ -1245,11 +1248,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         if (!otherActive) {
           for (const dir of dirs) {
             const wtPath = path.join(worktreeRoot, dir);
-            try {
-              shared.exec(`git worktree remove "${wtPath}" --force`, { cwd: rootDir, stdio: 'pipe', timeout: 15000, windowsHide: true });
+            if (shared.removeWorktree(wtPath, rootDir, worktreeRoot)) {
               log('info', `Post-completion: removed worktree ${dir}`);
-            } catch (err) {
-              log('warn', `Post-completion: failed to remove worktree ${dir}: ${err.message}`);
             }
           }
         }
@@ -1392,6 +1392,7 @@ function syncPrdFromPrs(config) {
 module.exports = {
   checkPlanCompletion,
   archivePlan,
+  cleanupPlanWorktrees,
   updateWorkItemStatus,
   syncPrdItemStatus,
   syncPrsFromOutput,

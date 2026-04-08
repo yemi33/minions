@@ -412,10 +412,12 @@ async function spawnAgent(dispatchItem, config) {
       if (depIds.length > 0) {
         try {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
+          let depMergeFailed = false;
           for (const { branch: depBranch, prId } of depBranches) {
             // Skip refs already known to be missing this tick (avoids repeated 30s ETIMEDOUT)
             if (_failedRefCache.has(depBranch)) {
               log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
+              depMergeFailed = true;
               continue;
             }
             try {
@@ -425,7 +427,12 @@ async function spawnAgent(dispatchItem, config) {
             } catch (mergeErr) {
               _failedRefCache.add(depBranch);
               log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
+              depMergeFailed = true;
             }
+          }
+          if (depMergeFailed) {
+            completeDispatch(id, DISPATCH_RESULT.ERROR, `Dependency merge failed — will retry next tick`);
+            return;
           }
         } catch (e) {
           log('warn', `Could not resolve dependency branches for ${branchName}: ${e.message}`);

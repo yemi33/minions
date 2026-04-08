@@ -621,7 +621,13 @@ Many common English words have specific meanings in the Minions context. **When 
 // Hash the system prompt so we can detect changes and invalidate stale sessions
 const _ccPromptHash = require('crypto').createHash('md5').update(CC_STATIC_SYSTEM_PROMPT).digest('hex').slice(0, 8);
 
+let _preambleCache = null;
+let _preambleCacheTs = 0;
+const PREAMBLE_TTL = 10000; // 10s — same as status cache
+
 function buildCCStatePreamble() {
+  const now = Date.now();
+  if (_preambleCache && now - _preambleCacheTs < PREAMBLE_TTL) return _preambleCache;
   // Lightweight snapshot — just enough to orient. Use tools for details.
   const agents = getAgents().map(a => `- ${a.name} (${a.id}): ${a.status}${a.currentTask ? ' — ' + a.currentTask.slice(0, 60) : ''}`).join('\n');
   const projects = PROJECTS.map(p => `- ${p.name}: ${p.localPath}`).join('\n');
@@ -656,7 +662,7 @@ function buildCCStatePreamble() {
     }
   } catch {}
 
-  return `### Agents
+  const result = `### Agents
 ${agents}
 
 ### Active Dispatch
@@ -675,10 +681,13 @@ ${schedSummary}
 ### Pipelines
 ${pipelineSummary}
 
-### Dashboard API (all endpoints)
-${_getApiRoutesSummary()}
+### Dashboard API
+Run \`curl http://localhost:7331/api/routes\` for full endpoint listing.
 
 For details on any of the above, use your tools to read files under \`${MINIONS_DIR}\`.`;
+  _preambleCache = result;
+  _preambleCacheTs = now;
+  return result;
 }
 
 function parseCCActions(text) {
@@ -796,16 +805,18 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   const existing = resolveSession(store, sessionKey);
   let sessionId = existing ? existing.sessionId : null;
 
-  const parts = skipStatePreamble ? [] : [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`];
-  if (extraContext) parts.push(extraContext);
-  parts.push(message);
-  const prompt = parts.join('\n\n---\n\n');
+  function buildPrompt({ includePreamble = true } = {}) {
+    const parts = (!skipStatePreamble && includePreamble) ? [`## Current Minions State (${new Date().toISOString().slice(0, 16)})\n\n${buildCCStatePreamble()}`] : [];
+    if (extraContext) parts.push(extraContext);
+    parts.push(message);
+    return parts.join('\n\n---\n\n');
+  }
 
   let result;
 
-  // Attempt 1: resume existing session (skip for single-turn/no-tool calls — nothing to resume)
+  // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
-    result = await llm.callLLM(prompt, '', {
+    result = await llm.callLLM(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId,
     });
     llm.trackEngineUsage(label, result.usage);
@@ -838,8 +849,9 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     }
   }
 
-  // Attempt 2: fresh session
-  result = await llm.callLLM(prompt, CC_STATIC_SYSTEM_PROMPT, {
+  // Attempt 2: fresh session (include preamble for full context)
+  const freshPrompt = buildPrompt();
+  result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools,
   });
   llm.trackEngineUsage(label, result.usage);
@@ -853,7 +865,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (maxTurns <= 1) return result;
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
-  result = await llm.callLLM(prompt, CC_STATIC_SYSTEM_PROMPT, {
+  result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools,
   });
   llm.trackEngineUsage(label, result.usage);
@@ -2427,6 +2439,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         } catch (e) { console.error('plan-to-prd cleanup:', e.message); }
       }
 
+      // Clean up worktrees associated with this plan
+      try {
+        const plan = body.file.endsWith('.json') ? (safeJsonObj(path.join(PRD_DIR, 'archive', body.file)) || safeJsonObj(path.join(PRD_DIR, body.file)) || {}) : {};
+        const { cleanupPlanWorktrees } = require('./engine/lifecycle');
+        cleanupPlanWorktrees(body.file, plan, PROJECTS, getConfig());
+      } catch (e) { console.error('plan worktree cleanup:', e.message); }
+
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, cleanedWorkItems: cleaned, cleanedDispatches: dispatchCleaned });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2466,6 +2485,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           }
         } catch { /* optional */ }
       }
+
+      // Clean up worktrees associated with this plan
+      try {
+        const plan = body.file.endsWith('.json') ? (safeJsonObj(archivePath) || {}) : {};
+        const { cleanupPlanWorktrees } = require('./engine/lifecycle');
+        cleanupPlanWorktrees(body.file, plan, PROJECTS, getConfig());
+      } catch (e) { console.error('plan worktree cleanup:', e.message); }
 
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, archived: body.file, archivedSource });

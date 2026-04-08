@@ -394,14 +394,17 @@ function resolveMainBranch(rootDir, configuredBranch) {
 
 // ── Environment ─────────────────────────────────────────────────────────────
 
+let _cleanEnvCache = null;
 function cleanChildEnv() {
+  if (_cleanEnvCache) return { ..._cleanEnvCache };
   const env = { ...process.env };
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   for (const key of Object.keys(env)) {
     if (key.startsWith('CLAUDE_CODE') || key.startsWith('CLAUDECODE_')) delete env[key];
   }
-  return env;
+  _cleanEnvCache = env;
+  return { ..._cleanEnvCache };
 }
 
 // Environment for git commands — prevents credential manager from opening browser
@@ -799,6 +802,33 @@ function mutatePullRequests(filePath, mutator) {
   }, { defaultValue: [] });
 }
 
+/**
+ * Remove a git worktree, falling back to fs.rmSync if git fails (e.g., locked on Windows).
+ * Only removes directories under worktreeRoot to prevent accidental deletion.
+ */
+function removeWorktree(wtPath, gitRoot, worktreeRoot) {
+  const resolved = path.resolve(wtPath);
+  const resolvedRoot = path.resolve(worktreeRoot);
+  if (!resolved.startsWith(resolvedRoot)) {
+    log('warn', `removeWorktree: refusing to remove ${wtPath} — not under ${worktreeRoot}`);
+    return false;
+  }
+  try {
+    exec(`git worktree remove "${wtPath}" --force`, { cwd: gitRoot, stdio: 'pipe', timeout: 15000, windowsHide: true });
+    return true;
+  } catch (gitErr) {
+    try {
+      fs.rmSync(resolved, { recursive: true, force: true });
+      // Also prune the stale worktree entry from git metadata
+      try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
+      return true;
+    } catch (rmErr) {
+      log('warn', `removeWorktree: both git and rm failed for ${wtPath}: ${rmErr.message}`);
+      return false;
+    }
+  }
+}
+
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
@@ -852,6 +882,7 @@ module.exports = {
   sleepMs,
   killGracefully,
   killImmediate,
+  removeWorktree,
   LOCK_STALE_MS,
   flushLogs,
   _logBuffer, // exported for testing
