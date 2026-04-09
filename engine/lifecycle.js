@@ -657,7 +657,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
     if (titleMatch) title = titleMatch[1].trim();
-    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120) {
+    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120 || /[{}"\[\]]/.test(title) || /^[0-9a-f-]{8,}$/i.test(title)) {
       title = meta?.item?.title || '';
     }
 

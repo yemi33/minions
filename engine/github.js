@@ -229,7 +229,9 @@ async function forEachActiveGhPr(config, callback) {
         if (pr.title.includes('polling...') || pr.agent === 'human' || pr.description === undefined) {
           const prData = await ghApi(`/pulls/${prNum}`, slug);
           if (prData) {
-            if (pr.title.includes('polling...')) pr.title = (prData.title || pr.title).slice(0, 120);
+            if (pr.title.includes('polling...') || /[{}"\[\]]/.test(pr.title) || /^[0-9a-f-]{8,}$/i.test(pr.title)) {
+              pr.title = (prData.title || pr.title).slice(0, 120);
+            }
             if (pr.description === undefined) pr.description = (prData.body || '').slice(0, 500);
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
             if (!pr.branch && prData.head?.ref) pr.branch = prData.head.ref;
