@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.750 (2026-04-09)
+
+### Fixes
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
 ## 0.1.749 (2026-04-09)
 
 ### Features
