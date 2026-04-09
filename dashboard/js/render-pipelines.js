@@ -176,6 +176,81 @@ function _buildProgressBar(stages, run, options) {
   '</div>';
 }
 
+var _nodeIcons = { task: '\u2699', meeting: '\uD83D\uDCAC', plan: '\uD83D\uDCCB', 'merge-prs': '\uD83D\uDD04', condition: '\u2753', wait: '\u23F8', parallel: '\u2693', schedule: '\u23F0', api: '\uD83C\uDF10' };
+
+function _buildNodeChain(stages, run, options) {
+  var compact = options && options.compact;
+  var pipeline = options && options.pipeline;
+  var html = '<div class="pl-node-chain">';
+
+  for (var i = 0; i < stages.length; i++) {
+    var s = stages[i];
+    var stageRun = run?.stages?.[s.id];
+    var st = stageRun?.status || 'pending';
+    var cls = st === 'completed' ? 'complete' : st === 'running' ? 'running' : st === 'failed' ? 'failed' : st === 'waiting-human' ? 'waiting' : 'pending';
+    var icon = _nodeIcons[s.type] || '\u2699';
+    var isCondition = s.type === 'condition';
+    var isWait = s.type === 'wait';
+
+    // Arrow before node (except first)
+    if (i > 0) html += '<div class="pl-node-arrow">\u2192</div>';
+
+    html += '<div class="pl-node">';
+    html += '<div class="pl-node-box ' + cls + (isCondition ? ' condition' : '') + '" title="' + escHtml(s.id) + ': ' + st + '">';
+    html += icon + ' ' + escHtml(s.title || s.id);
+    if (isWait && s.duration) html += ' ' + escHtml(s.duration);
+    html += '</div>';
+
+    // Meta line (agent, timing) — skip in compact mode
+    if (!compact) {
+      var meta = [];
+      var agent = stageRun?.agent || s.agent;
+      if (agent) meta.push(escHtml(agent));
+      if (st === 'completed' && stageRun?.completedAt) meta.push(timeSinceStr(new Date(stageRun.completedAt)));
+      if (st === 'running' && stageRun?.startedAt) meta.push(timeSinceStr(new Date(stageRun.startedAt)));
+      // Artifact counts
+      var arts = stageRun?.artifacts || {};
+      var artCounts = [];
+      if (arts.workItems?.length) artCounts.push(arts.workItems.length + ' WI');
+      if (arts.prs?.length) artCounts.push(arts.prs.length + ' PR');
+      if (arts.notes?.length) artCounts.push(arts.notes.length + ' notes');
+      if (artCounts.length) meta.push(artCounts.join(', '));
+      if (meta.length) html += '<div class="pl-node-meta">' + meta.join(' \u00b7 ') + '</div>';
+    }
+
+    // Condition fork labels
+    if (isCondition) {
+      html += '<div class="pl-node-meta" style="font-style:italic">';
+      if (s.onMet) html += '\u2714 ' + escHtml(s.onMet);
+      if (s.onMet && s.onUnmet) html += ' / ';
+      if (s.onUnmet) html += '\u2718 ' + escHtml(s.onUnmet);
+      html += '</div>';
+    }
+
+    html += '</div>';
+  }
+
+  // Stop/exit condition terminal node
+  var stopWhen = pipeline?.stopWhen;
+  if (stopWhen) {
+    html += '<div class="pl-node-arrow">\u2192</div>';
+    html += '<div class="pl-node"><div class="pl-node-box pl-node-stop">\u23F9 Stop</div>';
+    html += '<div class="pl-node-meta">' + escHtml(stopWhen) + '</div></div>';
+  }
+
+  html += '</div>';
+
+  // Loop indicator
+  if (pipeline?.trigger?.cron) {
+    var runCount = (pipeline.runs || []).length;
+    html += '<div class="pl-node-loop">\u21BA Loop (' + escHtml(_cronToHuman(pipeline.trigger.cron)) + ')';
+    if (runCount > 0) html += ' \u00b7 Run ' + runCount;
+    html += '</div>';
+  }
+
+  return html;
+}
+
 function renderPipelines(pipelines) {
   _pipelinesData = pipelines || [];
   const el = document.getElementById('pipelines-content');
@@ -207,7 +282,7 @@ function renderPipelines(pipelines) {
     var progressHtml = '';
     var displayRun = activeRun || lastRun;
     if (displayRun && (p.stages || []).length > 0) {
-      progressHtml = _buildProgressBar(p.stages || [], displayRun);
+      progressHtml = _buildNodeChain(p.stages || [], displayRun, { compact: true, pipeline: p });
     }
 
     // Monitored resources (pipeline-level + stage-level, compact on card)
@@ -256,7 +331,7 @@ function openPipelineDetail(id) {
   // Stage detail with progress bar
   var detailRun = activeRun || (p.runs || []).slice(-1)[0];
   if (detailRun && (p.stages || []).length > 0) {
-    html += _buildProgressBar(p.stages || [], detailRun, { height: '8px', detailLabel: true });
+    html += _buildNodeChain(p.stages || [], detailRun, { compact: false, pipeline: p });
   }
   // Pipeline-level monitored resources (full view in detail)
   var pipelineResources = _collectMonitoredResources(p);

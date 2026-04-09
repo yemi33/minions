@@ -8532,6 +8532,82 @@ async function testEngineAuditCritical() {
       'Should conditionally show Abort (running) or Run Now (idle)');
   });
 
+  // ── Pipeline Node Chain Visualization (TDD) ──
+
+  await test('_buildNodeChain function exists and replaces _buildProgressBar', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('function _buildNodeChain'), '_buildNodeChain function should exist');
+  });
+
+  await test('node chain renders pl-node-chain container', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('pl-node-chain'), 'Should use pl-node-chain CSS class');
+  });
+
+  await test('node chain renders status-colored nodes for each stage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('pl-node-box'), 'Should render pl-node-box for each stage');
+    assert.ok(fn.includes('complete') && fn.includes('running') && fn.includes('failed'),
+      'Should apply status classes: complete, running, failed');
+  });
+
+  await test('node chain renders arrows between stages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('pl-node-arrow') || fn.includes('→') || fn.includes('arrow'),
+      'Should render arrows/connectors between nodes');
+  });
+
+  await test('node chain renders type icons per stage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('task') && fn.includes('meeting') && fn.includes('condition'),
+      'Should map stage types to icons');
+  });
+
+  await test('node chain renders condition stages with fork', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('condition') && (fn.includes('onMet') || fn.includes('fork')),
+      'Should render condition stages with branching');
+  });
+
+  await test('node chain renders stop/exit conditions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('stopWhen') || fn.includes('exitIf') || fn.includes('pl-node-stop'),
+      'Should render stop/exit condition terminal node');
+  });
+
+  await test('node chain renders wait stages with duration', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('wait') && (fn.includes('duration') || fn.includes('⏸')),
+      'Should render wait stages with duration indicator');
+  });
+
+  await test('node chain renders loop indicator for cron-triggered pipelines', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('loop') || fn.includes('cron') || fn.includes('↺'),
+      'Should show loop indicator for recurring pipelines');
+  });
+
+  await test('node chain supports compact mode for card view', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _buildNodeChain'));
+    assert.ok(fn.includes('compact'),
+      'Should support compact option for pipeline card vs detail view');
+  });
+
+  await test('CSS has pl-node-chain and pl-node-box classes', () => {
+    const css = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+    assert.ok(css.includes('.pl-node-chain'), 'Should have .pl-node-chain CSS class');
+    assert.ok(css.includes('.pl-node-box'), 'Should have .pl-node-box CSS class');
+    assert.ok(css.includes('.pl-node-box.running'), 'Should have running animation on node');
+  });
+
   await test('dashboard.js pipeline create/update API supports monitoredResources', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('body.monitoredResources'),
