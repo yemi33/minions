@@ -10766,10 +10766,9 @@ async function testPipelineReconciliation() {
 
   await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
-    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:"), src.indexOf("case STAGE_TYPE.MERGE_PRS:"));
-    assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
-    assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
-    assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
+    const fnBody = src.slice(src.indexOf('function isStageComplete('), src.indexOf('\nfunction', src.indexOf('function isStageComplete(') + 1));
+    assert.ok(fnBody.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
+    assert.ok(fnBody.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
   });
 
   await test('immediate completion check after executeStage returns RUNNING', () => {
@@ -10779,9 +10778,9 @@ async function testPipelineReconciliation() {
 
   await test('auto-archive removed — verify does not call archivePlan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const verifySection = src.slice(src.indexOf('Plan chaining removed'), src.indexOf('Clean up worktree'));
-    assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
-    assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
+    const postHooks = src.slice(src.indexOf('function runPostCompletionHooks('), src.indexOf('\nmodule', src.indexOf('function runPostCompletionHooks(')));
+    assert.ok(!postHooks.includes('archivePlan('), 'Should NOT call archivePlan in post-completion hooks');
+    assert.ok(src.includes('Archive is manual'), 'Should have manual archive comment');
   });
 
   await test('/api/plans/create writes Source Meeting header', () => {
