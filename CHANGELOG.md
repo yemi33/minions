@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.739 (2026-04-09)
+
+### Fixes
+-  heartbeat feedback loop resets own mtime-based timeout (closes #724) (#728)
+
 ## 0.1.738 (2026-04-09)
 
 ### Fixes
