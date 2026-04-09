@@ -518,7 +518,8 @@ const ENGINE_DEFAULTS = {
   maxConcurrent: 5,
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
-  heartbeatTimeout: 300000, // 5min
+  heartbeatTimeout: 300000, // 5min — base heartbeat for most work types
+  heartbeatTimeouts: {}, // per-type overrides; merged with defaults at runtime (see timeout.js)
   maxTurns: 100,
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
