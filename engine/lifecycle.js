@@ -1560,7 +1560,7 @@ function classifyFailure(code, stdout = '', stderr = '') {
   }
 
   // Context window / max turns exhausted
-  if (/context window|max.*turns.*reached|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+  if (/context window|max.*turns.*reached|error_max_turns|terminal_reason.*max_turns|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
     return FAILURE_CLASS.OUT_OF_CONTEXT;
   }
 
