@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.715 (2026-04-09)
+
+### Features
+-  agents must check minions state before starting fresh research
+
 ## 0.1.714 (2026-04-09)
 
 ### Other
