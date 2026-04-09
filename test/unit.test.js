@@ -8157,14 +8157,14 @@ async function testStatusMutationGuards() {
 
   await test('dashboard manual retry checks for done items', () => {
     // Find the manual retry handler section
-    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*'pending';\s*\n\s*item\._retryCount\s*=\s*0/);
+    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*(?:WI_STATUS\.PENDING|'pending');\s*\n\s*item\._retryCount\s*=\s*0/);
     assert.ok(retryMatch, 'dashboard.js must have manual retry handler');
     // The section before the reset should have a done/completedAt guard or force check
     const retrySection = dashboardSrc.substring(
       dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") - 400,
       dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") + 50
     );
-    assert.ok(retrySection.includes('completedAt') || retrySection.includes('WI_STATUS.DONE') || retrySection.includes("'done'") || retrySection.includes('force'),
+    assert.ok(retrySection.includes('completedAt') || retrySection.includes('DONE_STATUSES') || retrySection.includes('WI_STATUS.DONE') || retrySection.includes("'done'") || retrySection.includes('force'),
       'Dashboard manual retry must check completedAt/done or require force flag');
   });
 
