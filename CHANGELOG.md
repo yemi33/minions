@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.648 (2026-04-09)
+
+### Fixes
+-  use full slug for plan matching to prevent false-positive collisions
+
 ## 0.1.647 (2026-04-09)
 
 ### Features
