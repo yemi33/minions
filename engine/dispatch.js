@@ -19,6 +19,8 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 // Lazy require to break circular dependency with engine.js
 let _lifecycle = null;
 function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); return _lifecycle; }
+let _recovery = null;
+function recovery() { if (!_recovery) _recovery = require('./recovery'); return _recovery; }
 
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 
@@ -136,8 +138,10 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         if (wi) retries = wi._retryCount || 0;
       } catch (e) { log('warn', 'read retry count: ' + e.message); }
       const maxRetries = ENGINE_DEFAULTS.maxRetries;
-      if (retryableFailure && retries < maxRetries) {
-        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}`);
+      // Use per-class retry limits from recovery.js when failureClass is available
+      const classAllowsRetry = failureClass ? recovery().shouldRetry(failureClass, retries) : (retries < maxRetries);
+      if (retryableFailure && classAllowsRetry) {
+        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}${failureClass ? ' [' + failureClass + ']' : ''}`);
         lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
         // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
         if (item.meta?.dispatchKey) {

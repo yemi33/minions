@@ -2300,8 +2300,8 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
-    assert.ok(src.includes('retryableFailure && retries < maxRetries'),
-      'Auto-retry should run only for retryable failures under retry cap');
+    assert.ok(src.includes('retryableFailure && classAllowsRetry'),
+      'Auto-retry should run only for retryable failures under per-class retry cap');
     assert.ok(src.includes('Non-retryable failure:'),
       'Non-retryable failures should be surfaced explicitly');
   });
@@ -6324,6 +6324,9 @@ async function main() {
 
     // P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure()
     await testFailureClassEnum();
+
+    // P-d9q4w7e6: Recovery recipes
+    await testRecoveryRecipes();
 
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
@@ -10514,6 +10517,111 @@ async function testFailureClassEnum() {
     // Retryable reasons
     assert.strictEqual(dispatch.isRetryableFailureReason('agent timed out'), true);
     assert.strictEqual(dispatch.isRetryableFailureReason(''), true);
+  });
+}
+
+// ─── P-d9q4w7e6: Recovery recipes ──────────────────────────────────────────
+
+async function testRecoveryRecipes() {
+  console.log('\n── Recovery recipes (engine/recovery.js) ──');
+  const recoveryMod = require('../engine/recovery');
+
+  await test('engine/recovery.js exists and exports expected functions', () => {
+    assert.ok(typeof recoveryMod.getRecoveryRecipe === 'function',
+      'getRecoveryRecipe should be exported');
+    assert.ok(typeof recoveryMod.shouldRetry === 'function',
+      'shouldRetry should be exported');
+    assert.ok(recoveryMod.RECOVERY_RECIPES instanceof Map,
+      'RECOVERY_RECIPES should be a Map');
+  });
+
+  await test('RECOVERY_RECIPES has entry for every FAILURE_CLASS value', () => {
+    const { FAILURE_CLASS } = shared;
+    for (const fc of Object.values(FAILURE_CLASS)) {
+      const recipe = recoveryMod.getRecoveryRecipe(fc);
+      assert.ok(recipe, `Missing recipe for failure class: ${fc}`);
+      assert.ok('maxAttempts' in recipe, `Recipe for ${fc} missing maxAttempts`);
+      assert.ok(recipe.escalation, `Recipe for ${fc} missing escalation`);
+      assert.ok(typeof recipe.freshSession === 'boolean', `Recipe for ${fc} missing freshSession`);
+      assert.ok(recipe.description, `Recipe for ${fc} missing description`);
+    }
+  });
+
+  await test('getRecoveryRecipe returns UNKNOWN recipe for unrecognized class', () => {
+    const recipe = recoveryMod.getRecoveryRecipe('nonexistent-class');
+    assert.ok(recipe, 'Should return fallback recipe');
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.AUTO);
+  });
+
+  await test('CONFIG_ERROR: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.CONFIG_ERROR, 0), false);
+  });
+
+  await test('PERMISSION_BLOCKED: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.PERMISSION_BLOCKED, 0), false);
+  });
+
+  await test('MERGE_CONFLICT: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 2), false);
+  });
+
+  await test('BUILD_FAILURE: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 2), false);
+  });
+
+  await test('TIMEOUT: maxAttempts=1, freshSession=true', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.TIMEOUT);
+    assert.strictEqual(recipe.freshSession, true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 1), false);
+  });
+
+  await test('NETWORK_ERROR: maxAttempts=3, most retries', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 3), false);
+  });
+
+  await test('UNKNOWN: falls back to ENGINE_DEFAULTS.maxRetries', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.UNKNOWN);
+    assert.strictEqual(recipe.maxAttempts, null, 'UNKNOWN maxAttempts should be null (fallback)');
+    // ENGINE_DEFAULTS.maxRetries is 3
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 3), false);
+  });
+
+  await test('shouldRetry with empty failureClass falls back to UNKNOWN', () => {
+    // No failureClass → treated as UNKNOWN → uses ENGINE_DEFAULTS.maxRetries
+    assert.strictEqual(recoveryMod.shouldRetry('', 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(null, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(undefined, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry('', 3), false);
+  });
+
+  await test('completeDispatch uses shouldRetry from recovery.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes("recovery().shouldRetry("),
+      'completeDispatch should call shouldRetry from recovery module');
+  });
+
+  await test('recovery.js has zero external dependencies', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'recovery.js'), 'utf8');
+    const requires = src.match(/require\(['"](.*?)['"]\)/g) || [];
+    for (const req of requires) {
+      assert.ok(req.includes('./shared') || req.includes('node:'),
+        `recovery.js should only import from shared.js or node builtins, found: ${req}`);
+    }
   });
 }
 
