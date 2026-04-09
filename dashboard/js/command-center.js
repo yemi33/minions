@@ -209,7 +209,7 @@ function ccShowAllConversations() {
 function ccRenderTabBar() {
   var bar = document.getElementById('cc-tab-bar');
   if (!bar) return;
-  var html = '<button onclick="ccNewTab()" style="background:none;border:1px solid var(--border);color:var(--blue);font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;flex-shrink:0" title="New tab">+</button>';
+  var html = '';
   for (var i = 0; i < _ccTabs.length; i++) {
     var t = _ccTabs[i];
     var isActive = t.id === _ccActiveTabId;
@@ -218,7 +218,8 @@ function ccRenderTabBar() {
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
   }
-  html += '<button id="cc-all-btn" onclick="ccShowAllConversations()" style="background:none;border:1px solid var(--border);color:var(--muted);font-size:11px;padding:2px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;flex-shrink:0;margin-left:auto" title="All conversations">&#x25BC;</button>';
+  html += '<div class="cc-tab" onclick="ccNewTab()" title="New tab" style="color:var(--muted);padding:4px 8px">+</div>';
+  html += '<button id="cc-all-btn" onclick="ccShowAllConversations()" style="background:none;border:none;color:var(--muted);font-size:11px;padding:4px 6px;cursor:pointer;white-space:nowrap;flex-shrink:0;margin-left:auto" title="All conversations">&#x25BC;</button>';
   bar.innerHTML = html;
 }
 
