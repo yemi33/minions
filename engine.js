@@ -646,6 +646,8 @@ async function spawnAgent(dispatchItem, config) {
       }
 
       log('info', `Steering: re-spawning ${agentId} with --resume ${steerSessionId}`);
+      // Write status to live output so the UI shows the agent is resuming (not stuck)
+      try { fs.appendFileSync(liveOutputPath, `\n[steering] Resuming session with your message... (this may take 10-30s)\n`); } catch {}
 
       // Write new prompt with steering message
       const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
