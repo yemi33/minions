@@ -359,15 +359,18 @@ const commands = {
     // Start tick loop
     const tickTimer = setInterval(() => e.tick(), interval);
 
-    // Fast poll for immediate wakeup signals (checks control.json every 2s)
-    const wakeupTimer = setInterval(() => {
+    // Fast poll: check steering every 3s (lightweight — just fs.stat per agent)
+    // and wakeup signals every 3s (control.json read)
+    const { checkSteering } = require('./timeout');
+    const fastPollTimer = setInterval(() => {
+      try { checkSteering(getConfig()); } catch {}
       const ctrl = getControl();
       if (ctrl._wakeupAt && Date.now() - ctrl._wakeupAt < 5000) {
         delete ctrl._wakeupAt;
         safeWrite(CONTROL_PATH, ctrl);
         e.tick();
       }
-    }, 2000);
+    }, 3000);
 
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');

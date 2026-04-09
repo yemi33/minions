@@ -3932,7 +3932,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
       if (!fs.existsSync(agentDir)) return jsonReply(res, 404, { error: 'Agent not found' });
 
-      // Write steering file — engine picks it up on next tick
+      // Write steering file
       safeWrite(steerPath, message);
 
       // Also append to live-output.log so it shows in the chat view
