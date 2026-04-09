@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.735 (2026-04-09)
+
+### Features
+-  configurable ccMaxTurns, native binary detection, relaxed CC exit check
+
 ## 0.1.734 (2026-04-09)
 
 ### Fixes
