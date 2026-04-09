@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.727 (2026-04-09)
+
+### Features
+- make post-verify plan archiving opt-in via autoArchive config
+
+### Fixes
+-  reject JSON/UUID fragments as PR titles, self-heal from platform
+
 ## 0.1.725 (2026-04-09)
 
 ### Fixes
