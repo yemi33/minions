@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.675 (2026-04-09)
+
+### Fixes
+-  output log matching used work item ID suffix, not dispatch ID
+
+### Other
+- simplify: include featureBranch in artifacts, not just branch
+
 ## 0.1.672 (2026-04-09)
 
 ### Features
