@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT } = shared;
+  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -104,6 +104,7 @@ function checkTimeouts(config) {
     const elapsed = Date.now() - new Date(info.startedAt).getTime();
     if (elapsed > itemTimeout) {
       log('warn', `Agent ${info.agentId} (${id}) hit hard timeout after ${Math.round(elapsed / 1000)}s — killing`);
+      dispatch().updateAgentStatus(id, AGENT_STATUS.TIMED_OUT, `Hard timeout after ${Math.round(elapsed / 1000)}s`);
       shared.killGracefully(info.proc, 5000);
     }
   }
@@ -217,12 +218,14 @@ function checkTimeouts(config) {
     if (!hasProcess && silentMs > effectiveTimeout && Date.now() > engineRestartGraceUntil) {
       // No tracked process AND no recent output past effective timeout AND grace period expired → orphaned
       log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
+      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
       // Clear session so retry starts fresh
       try { shared.safeUnlink(path.join(AGENTS_DIR, item.agent, 'session.json')); } catch {}
       deadItems.push({ item, reason: `Orphaned — no process, silent for ${silentSec}s` });
     } else if (hasProcess && silentMs > effectiveTimeout) {
       // Has process but no output past effective timeout → hung
       log('warn', `Hung agent: ${item.agent} (${item.id}) — process exists but no output for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
+      dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Hung — no output for ${silentSec}s`);
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
         shared.killGracefully(procInfo.proc, 5000);
