@@ -11,7 +11,7 @@ const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
-  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS } = shared;
+  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -227,6 +227,29 @@ function writeInboxAlert(slug, content) {
   } catch (e) { log('warn', 'write inbox alert: ' + e.message); }
 }
 
+// ─── Agent Worker Status ────────────────────────────────────────────────────
+
+/**
+ * Update the worker-state fields on an active dispatch entry.
+ * Uses mutateDispatch() for atomic read-modify-write.
+ * @param {string} dispatchId — dispatch entry ID
+ * @param {string} status — one of AGENT_STATUS values
+ * @param {string} [detail] — optional human-readable detail string
+ */
+function updateAgentStatus(dispatchId, status, detail) {
+  if (!dispatchId || !status) return;
+  mutateDispatch((dispatch) => {
+    const entry = (dispatch.active || []).find(d => d.id === dispatchId)
+      || (dispatch.pending || []).find(d => d.id === dispatchId);
+    if (entry) {
+      entry.workerState = status;
+      entry.workerStateAt = ts();
+      if (detail !== undefined) entry.workerStateDetail = detail;
+    }
+    return dispatch;
+  });
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -235,4 +258,5 @@ module.exports = {
   isRetryableFailureReason,
   completeDispatch,
   writeInboxAlert,
+  updateAgentStatus,
 };

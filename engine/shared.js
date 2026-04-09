@@ -585,6 +585,11 @@ const MEETING_STATUS = {
   INVESTIGATING: 'investigating', DEBATING: 'debating', CONCLUDING: 'concluding',
   COMPLETED: 'completed', ARCHIVED: 'archived',
 };
+const AGENT_STATUS = {
+  SPAWNING: 'spawning', WORKTREE_SETUP: 'worktree-setup', READY: 'ready',
+  RUNNING: 'running', FINISHED: 'finished', FAILED: 'failed',
+  TRUST_BLOCKED: 'trust-blocked', TIMED_OUT: 'timed-out',
+};
 
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
@@ -911,7 +916,7 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS,
+  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,

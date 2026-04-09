@@ -6596,6 +6596,9 @@ async function main() {
     // Version check feature
     await testVersionCheck();
 
+    // P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking
+    await testAgentStatusEnum();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -10801,6 +10804,136 @@ async function testSpawnEngineStatePreservation() {
       'cli.js start should check for running state');
     assert.ok(cliSrc.includes('process is dead') && cliSrc.includes('restarting'),
       'cli.js start should handle dead PID case and proceed with restart');
+  });
+}
+
+// ─── P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking ──────────────
+
+async function testAgentStatusEnum() {
+  console.log('\n── AGENT_STATUS enum and worker-state tracking ──');
+
+  await test('AGENT_STATUS enum has all 8 required values', () => {
+    const { AGENT_STATUS } = shared;
+    assert.ok(AGENT_STATUS, 'AGENT_STATUS should be exported from shared.js');
+    assert.strictEqual(AGENT_STATUS.SPAWNING, 'spawning');
+    assert.strictEqual(AGENT_STATUS.WORKTREE_SETUP, 'worktree-setup');
+    assert.strictEqual(AGENT_STATUS.READY, 'ready');
+    assert.strictEqual(AGENT_STATUS.RUNNING, 'running');
+    assert.strictEqual(AGENT_STATUS.FINISHED, 'finished');
+    assert.strictEqual(AGENT_STATUS.FAILED, 'failed');
+    assert.strictEqual(AGENT_STATUS.TRUST_BLOCKED, 'trust-blocked');
+    assert.strictEqual(AGENT_STATUS.TIMED_OUT, 'timed-out');
+    assert.strictEqual(Object.keys(AGENT_STATUS).length, 8, 'AGENT_STATUS should have exactly 8 values');
+  });
+
+  await test('AGENT_STATUS values are all unique', () => {
+    const values = Object.values(shared.AGENT_STATUS);
+    assert.strictEqual(new Set(values).size, values.length, 'All AGENT_STATUS values should be unique');
+  });
+
+  await test('updateAgentStatus exported from engine/dispatch.js', () => {
+    const dispatchMod = require('../engine/dispatch');
+    assert.ok(typeof dispatchMod.updateAgentStatus === 'function',
+      'updateAgentStatus should be a function exported from dispatch.js');
+  });
+
+  await test('updateAgentStatus uses mutateDispatch for atomic updates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    // Extract the updateAgentStatus function body
+    const fnStart = src.indexOf('function updateAgentStatus(');
+    assert.ok(fnStart > -1, 'updateAgentStatus function should exist in dispatch.js');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart) + 2);
+    assert.ok(fnBody.includes('mutateDispatch('), 'updateAgentStatus should use mutateDispatch()');
+    assert.ok(fnBody.includes('workerState'), 'updateAgentStatus should set workerState');
+    assert.ok(fnBody.includes('workerStateAt'), 'updateAgentStatus should set workerStateAt');
+    assert.ok(fnBody.includes('workerStateDetail'), 'updateAgentStatus should set workerStateDetail');
+  });
+
+  await test('updateAgentStatus updates dispatch entry fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Seed dispatch with an active entry
+      testDispatch.mutateDispatch((dp) => {
+        dp.active.push({ id: 'test-status-1', agent: 'dallas', type: 'implement' });
+        return dp;
+      });
+
+      // Update the agent status
+      testDispatch.updateAgentStatus('test-status-1', shared.AGENT_STATUS.RUNNING, 'Process spawned');
+
+      // Read back and verify
+      const dp = testQueries.getDispatch();
+      const entry = dp.active.find(d => d.id === 'test-status-1');
+      assert.ok(entry, 'Active entry should still exist');
+      assert.strictEqual(entry.workerState, 'running');
+      assert.ok(entry.workerStateAt, 'workerStateAt should be set');
+      assert.strictEqual(entry.workerStateDetail, 'Process spawned');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentStatus no-ops gracefully on missing dispatch ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      // Should not throw
+      testDispatch.updateAgentStatus('nonexistent-id', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus('', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus(null, shared.AGENT_STATUS.RUNNING, 'test');
+    } finally { restore(); }
+  });
+
+  await test('spawnAgent emits SPAWNING, WORKTREE_SETUP, READY, RUNNING statuses', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.SPAWNING'), 'spawnAgent should emit SPAWNING status');
+    assert.ok(src.includes('AGENT_STATUS.WORKTREE_SETUP'), 'spawnAgent should emit WORKTREE_SETUP status');
+    assert.ok(src.includes('AGENT_STATUS.READY'), 'spawnAgent should emit READY status');
+    assert.ok(src.includes('AGENT_STATUS.RUNNING'), 'spawnAgent should emit RUNNING status');
+  });
+
+  await test('onAgentClose emits FINISHED on code 0, FAILED on nonzero', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.FINISHED'), 'onAgentClose should emit FINISHED');
+    assert.ok(src.includes('AGENT_STATUS.FAILED'), 'onAgentClose should emit FAILED');
+    // Verify the conditional: code === 0 → FINISHED, else FAILED
+    assert.ok(src.includes('code === 0 ? AGENT_STATUS.FINISHED : AGENT_STATUS.FAILED'),
+      'Should use ternary to choose FINISHED/FAILED based on exit code');
+  });
+
+  await test('timeout.js emits TIMED_OUT status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TIMED_OUT'), 'timeout.js should emit TIMED_OUT status');
+    // Verify it's called for both hard timeout and heartbeat timeout
+    const timedOutCount = (src.match(/AGENT_STATUS\.TIMED_OUT/g) || []).length;
+    assert.ok(timedOutCount >= 3, `TIMED_OUT should be emitted for hard timeout, orphan, and hung agent (found ${timedOutCount} occurrences)`);
+  });
+
+  await test('trust gate detection checks first 30s of output', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TRUST_BLOCKED'), 'engine.js should emit TRUST_BLOCKED');
+    assert.ok(src.includes('_trustCheckDone'), 'Should track whether trust check is complete');
+    assert.ok(src.includes('30000'), 'Should use 30s window for trust gate detection');
+    assert.ok(src.includes('trust-blocked'), 'Should write inbox alert for trust gate');
+  });
+
+  await test('engine.js uses updateAgentStatus (not raw dispatch mutation) for status transitions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // All status transitions should go through updateAgentStatus
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.SPAWNING"),
+      'SPAWNING should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.READY"),
+      'READY should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.RUNNING"),
+      'RUNNING should use updateAgentStatus helper');
+  });
+
+  await test('dashboard API returns workerState as passthrough', () => {
+    // The dashboard's getStatus returns dispatch data directly — workerState flows through
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('dispatch: getDispatchQueue()'),
+      'Dashboard status should include dispatch queue as passthrough');
   });
 }
 
