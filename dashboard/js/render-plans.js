@@ -414,7 +414,7 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
     const items = (plan.missing_features || []).map((f, i) =>
       (i + 1) + '. [' + f.id + '] ' + f.name + ' (' + (f.estimated_complexity || '?') + ', ' + (f.priority || '?') + ')' +
       (f.depends_on?.length ? ' \u2192 depends on: ' + f.depends_on.join(', ') : '') +
-      '\n   ' + (f.description || '').slice(0, 200) +
+      '\n   ' + (f.description || '') +
       (f.acceptance_criteria?.length ? '\n   Criteria: ' + f.acceptance_criteria.join('; ') : '')
     ).join('\n\n');
     text = 'Project: ' + (plan.project || '?') +
