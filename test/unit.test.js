@@ -233,6 +233,78 @@ async function testIdGeneration() {
     assert.strictEqual(shared.parseNoteId(''), null);
   });
 
+  await test('parseNoteId handles CRLF line endings', () => {
+    assert.strictEqual(shared.parseNoteId('---\r\nid: NOTE-crlf123\r\nagent: dallas\r\n---\r\n\r\n# Content'), 'NOTE-crlf123');
+  });
+
+  await test('parseNoteId handles extra whitespace in id field', () => {
+    assert.strictEqual(shared.parseNoteId('---\nid:   NOTE-spaces  \nagent: x\n---'), 'NOTE-spaces');
+  });
+
+  await test('parseNoteId ignores content without closing ---', () => {
+    assert.strictEqual(shared.parseNoteId('---\nid: NOTE-noclosing\nagent: x\n'), null);
+  });
+
+  await test('writeToInbox injects frontmatter with id, agent, date', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('dallas', 'findings', '# My findings', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.startsWith('---\n'), 'Should start with frontmatter');
+    assert.ok(content.includes('id: ' + noteId), 'Should include note ID');
+    assert.ok(content.includes('agent: dallas'), 'Should include agent name');
+    assert.ok(content.includes('date: '), 'Should include date');
+    assert.ok(content.includes('# My findings'), 'Should include original content after frontmatter');
+  });
+
+  await test('writeToInbox merges ID into existing frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('ripley', 'analysis', '---\ntitle: My Analysis\n---\n\n# Content', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('id: ' + noteId), 'Should inject note ID');
+    assert.ok(content.includes('title: My Analysis'), 'Should preserve existing frontmatter fields');
+    assert.ok(content.includes('# Content'), 'Should preserve content');
+  });
+
+  await test('writeToInbox handles CRLF frontmatter in existing content', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('ralph', 'crlf', '---\r\ntitle: CRLF Test\r\n---\r\n\r\n# Body', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('id: ' + noteId), 'Should inject ID into CRLF frontmatter');
+  });
+
+  await test('writeToInbox returns unique IDs for different notes', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const id1 = shared.writeToInbox('dallas', 'note-a', '# A', inboxDir);
+    const id2 = shared.writeToInbox('dallas', 'note-b', '# B', inboxDir);
+    assert.ok(id1 && id2, 'Both should return IDs');
+    assert.notStrictEqual(id1, id2, 'IDs should be unique');
+  });
+
+  await test('parseNoteId roundtrips with writeToInbox output', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('lambert', 'roundtrip', '# Roundtrip test', inboxDir);
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    const parsed = shared.parseNoteId(content);
+    assert.strictEqual(parsed, noteId, 'parseNoteId should extract the same ID that writeToInbox returned');
+  });
+
   await test('nextWorkItemId increments from existing items', () => {
     const items = [{ id: 'W001' }, { id: 'W002' }, { id: 'W005' }];
     assert.strictEqual(shared.nextWorkItemId(items, 'W'), 'W006');
@@ -9183,6 +9255,69 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('Avg Runtime'), 'Metrics table should have Avg Runtime column');
     assert.ok(src.includes('fmtAvgRuntime'), 'Should use fmtAvgRuntime formatter');
     assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
+  });
+
+  // ── Work Item Artifacts ────────────────────────────────────────────────────
+
+  await test('spawnAgent tracks _artifacts on work items after completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const spawnFn = src.slice(src.indexOf('async function spawnAgent('));
+    assert.ok(spawnFn.includes('_artifacts'), 'spawnAgent should write _artifacts to work item');
+    assert.ok(spawnFn.includes('arts.outputLog'), 'Should track output log path');
+    assert.ok(spawnFn.includes('arts.branch'), 'Should track branch name');
+    assert.ok(spawnFn.includes('arts.notes'), 'Should track inbox notes');
+    assert.ok(spawnFn.includes('arts.plan'), 'Should track plan file');
+    assert.ok(spawnFn.includes('arts.prd'), 'Should track PRD file');
+  });
+
+  await test('artifact note collection uses startsWith for agent matching', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("f.startsWith(agentId + '-')"),
+      'Note matching must use startsWith to prevent false substring matches');
+  });
+
+  await test('artifact note collection extracts structured IDs via parseNoteId', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('shared.parseNoteId'), 'Should use parseNoteId to extract note IDs');
+  });
+
+  await test('/api/agent-output endpoint validates path traversal', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("file.startsWith('agents/')"), 'Should require agents/ prefix');
+    assert.ok(src.includes("file.includes('..')"), 'Should block path traversal with ..');
+    assert.ok(src.includes("file.includes('\\0')"), 'Should block null bytes');
+  });
+
+  await test('work item modal renders artifact pills', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('_artifacts'), 'Should read _artifacts from work item');
+    assert.ok(src.includes('viewAgentOutput'), 'Should have viewAgentOutput click handler');
+    assert.ok(src.includes('arts.outputLog'), 'Should render output log pill');
+    assert.ok(src.includes('arts.branch'), 'Should render branch pill');
+    assert.ok(src.includes('arts.plan'), 'Should render plan pill');
+    assert.ok(src.includes('arts.notes'), 'Should render note pills');
+  });
+
+  await test('viewAgentOutput checks HTTP status before rendering', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function viewAgentOutput'));
+    assert.ok(fn.includes('r.ok'), 'Should check response.ok before processing');
+    assert.ok(fn.includes('.catch'), 'Should have error handler');
+  });
+
+  await test('note label rendering handles null and object and string formats', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('n && typeof n'), 'Should guard against null in notes array');
+    assert.ok(src.includes("typeof n === 'object'"), 'Should handle object format {id, file}');
+    assert.ok(src.includes('String(n'), 'Should handle string format (backward compat)');
+  });
+
+  await test('playbook injects note ID template for agent-written notes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    assert.ok(src.includes('NOTE-'), 'Playbook should include NOTE- ID in frontmatter template');
+    assert.ok(src.includes('shared.uid()'), 'Playbook should generate unique ID via shared.uid()');
+    assert.ok(src.includes('agent:'), 'Playbook frontmatter should include agent field');
+    assert.ok(src.includes('date:'), 'Playbook frontmatter should include date field');
   });
 
   // ── Perf: Prompt building before worktree, direct spawn, parallel dep fetch ─
