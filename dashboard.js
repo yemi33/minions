@@ -654,7 +654,8 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+  if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
   const existing = resolveSession(store, sessionKey);
@@ -676,18 +677,16 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     });
     llm.trackEngineUsage(label, result.usage);
 
-    if (result.code === 0 && result.text) {
+    if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
     }
 
-    // Distinguish "session exists but call failed" (e.g. tool timeout, signal timeout)
+    // No text — distinguish "session exists but call failed" (e.g. tool timeout)
     // from "session is truly dead" (no sessionId returned, or stderr indicates invalid session).
-    // If the session still exists, preserve it so the next "try again" can resume.
     const sessionStillValid = llm.isResumeSessionStillValid(result);
     if (sessionStillValid) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
-      // Update lastActiveAt so session doesn't expire while user retries
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
     }
@@ -711,7 +710,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   });
   llm.trackEngineUsage(label, result.usage);
 
-  if (result.code === 0 && result.text) {
+  if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
     return result;
   }
@@ -725,7 +724,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   });
   llm.trackEngineUsage(label, result.usage);
 
-  if (result.code === 0 && result.text) {
+  if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
   }
   return result;
@@ -3277,7 +3276,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         const result = await ccCall(body.message, { store: 'cc' });
 
-        if (result.code !== 0 || !result.text) {
+        // Non-zero exit with text = max_turns or partial success — still usable
+        if (!result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-5).join(' | ');
           console.error(`[CC] LLM failed after retries ${debugInfo}: ${stderrTail}`);
@@ -3330,8 +3330,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
         const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
+        const ccMaxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 25,
+          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
@@ -3345,8 +3346,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
-        // Handle failure — same error reporting as non-streaming
-        if (result.code !== 0 || !result.text) {
+        // Handle failure — non-zero exit with text = max_turns or partial success, still usable
+        if (!result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
@@ -3520,7 +3521,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const D = shared.ENGINE_DEFAULTS;
         // Numeric fields: { key: [min, max?] }
         const numericFields = {
-          tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
+          tickInterval: [10000], maxConcurrent: [1, 50], inboxConsolidateThreshold: [1],
           agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
           worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
           idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
@@ -3528,11 +3529,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
         };
+        const clamped = [];
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
             let val = Number(e[key]) || D[key];
+            const raw = val;
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
+            if (val !== raw) clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
             config.engine[key] = val;
           }
         }
@@ -3593,7 +3597,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
-      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Engine picks up changes on next tick.' });
+      const msg = clamped.length > 0
+        ? 'Settings saved. Some values were adjusted: ' + clamped.join('; ')
+        : 'Settings saved. Engine picks up changes on next tick.';
+      return jsonReply(res, 200, { ok: true, message: msg, clamped });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 

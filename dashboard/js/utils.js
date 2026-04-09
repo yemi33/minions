@@ -9,31 +9,42 @@ function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppr
 function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
 
 // Pin-to-top — persisted server-side so CC and agents can also pin items
-let _pinsCache = null;
-function invalidatePinsCache() { _pinsCache = null; }
+let _pinsCache = [];
+function invalidatePinsCache() { /* no-op — cache updated by sync and togglePin only */ }
 function getPinnedItems() {
-  if (_pinsCache) return _pinsCache;
-  // Migrate from localStorage if server hasn't been seeded yet
-  try { _pinsCache = JSON.parse(localStorage.getItem('minions-pinned-items') || '[]'); } catch { _pinsCache = []; }
   return _pinsCache;
 }
 function isPinned(key) { return getPinnedItems().includes(key); }
+var _pinWriteInFlight = false;
 function togglePin(key) {
   const pins = getPinnedItems();
   const idx = pins.indexOf(key);
   if (idx >= 0) pins.splice(idx, 1); else pins.unshift(key);
   _pinsCache = pins;
-  // Persist to server (fire-and-forget)
-  fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins }) }).catch(function() {});
+  _pinWriteInFlight = true;
+  fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins }) })
+    .finally(function() { _pinWriteInFlight = false; });
   return idx < 0; // true if now pinned
 }
 function _syncPinsFromServer() {
   fetch('/api/kb-pins').then(function(r) { return r.json(); }).then(function(d) {
-    if (Array.isArray(d.pins) && d.pins.length > 0) {
-      _pinsCache = d.pins;
-      // Clear legacy localStorage
+    var serverPins = Array.isArray(d.pins) ? d.pins : [];
+    // Migrate: merge localStorage pins into server if not already there
+    var localPins = [];
+    try { localPins = JSON.parse(localStorage.getItem('minions-pinned-items') || '[]'); } catch {}
+    if (localPins.length > 0) {
+      var merged = serverPins.slice();
+      var changed = false;
+      for (var i = 0; i < localPins.length; i++) {
+        if (merged.indexOf(localPins[i]) < 0) { merged.unshift(localPins[i]); changed = true; }
+      }
+      if (changed) {
+        fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins: merged }) }).catch(function() {});
+        serverPins = merged;
+      }
       localStorage.removeItem('minions-pinned-items');
     }
+    if (!_pinWriteInFlight) _pinsCache = serverPins;
   }).catch(function() {});
 }
 function inboxPinKey(name) { return 'notes/inbox/' + name; }

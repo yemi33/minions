@@ -132,8 +132,8 @@ function checkTimeouts(config) {
   const timeout = config.engine?.agentTimeout || DEFAULTS.agentTimeout;
   const heartbeatTimeout = config.engine?.heartbeatTimeout || DEFAULTS.heartbeatTimeout;
 
-  // Per-type heartbeat timeouts: merge defaults ← ENGINE_DEFAULTS ← config overrides
-  const perTypeTimeouts = { ...DEFAULT_HEARTBEAT_TIMEOUTS, ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+  // Per-type heartbeat timeouts: merge ENGINE_DEFAULTS ← config overrides
+  const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
 
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {

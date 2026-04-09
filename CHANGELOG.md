@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.736 (2026-04-09)
+
+### Fixes
+-  remove undefined DEFAULT_HEARTBEAT_TIMEOUTS, fix 5 stale tests
+
+## 0.1.735 (2026-04-09)
+
+### Features
+-  configurable ccMaxTurns, native binary detection, relaxed CC exit check
+
+## 0.1.734 (2026-04-09)
+
+### Fixes
+-  prevent sync from overwriting pins during in-flight write
+-  merge localStorage pins to server on migration, always sync cache
+
+## 0.1.732 (2026-04-09)
+
+### Fixes
+-  notify user when settings values are clamped to allowed range
+-  raise maxConcurrent cap from 10 to 50
+
 ## 0.1.730 (2026-04-09)
 
 ### Features
