@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.733 (2026-04-09)
+
+### Fixes
+-  merge localStorage pins to server on migration, always sync cache
+
 ## 0.1.732 (2026-04-09)
 
 ### Fixes
