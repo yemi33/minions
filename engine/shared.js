@@ -544,6 +544,7 @@ const ENGINE_DEFAULTS = {
   lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
+  buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
 };

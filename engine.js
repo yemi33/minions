@@ -1604,7 +1604,7 @@ async function discoverFromPrs(config, project) {
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? 600000; // 10 min default
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
