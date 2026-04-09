@@ -422,8 +422,8 @@ function renderPrdProgress(prog) {
   const renderViewToggle = () => {
     const isGraph = window._prdViewMode === 'graph';
     return '<div style="display:flex;gap:4px;margin-bottom:8px;padding:0 8px">' +
-      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'graph\';refresh()">Graph</button>' +
-      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'list\';refresh()">List</button>' +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'graph\';rerenderPrdFromCache()">Graph</button>' +
+      '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;' + (!isGraph ? 'background:var(--blue);color:#fff;border-color:var(--blue)' : '') + '" onclick="window._prdViewMode=\'list\';rerenderPrdFromCache()">List</button>' +
     '</div>';
   };
 
