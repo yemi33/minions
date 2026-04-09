@@ -374,7 +374,18 @@ async function _abortPipeline(id, btn) {
     if (res.ok) {
       var d = await res.json().catch(function() { return {}; });
       showToast('cmd-toast', 'Pipeline aborted — ' + (d.cancelledWorkItems || 0) + ' work items cancelled', true);
-      if (btn) { btn.textContent = '\u2713 Aborted'; btn.style.color = 'var(--red)'; }
+      // Replace abort button with Run Now
+      if (btn) {
+        btn.textContent = 'Run Now';
+        btn.style.color = 'var(--green)';
+        btn.style.borderColor = 'var(--green)';
+        btn.style.pointerEvents = '';
+        btn.style.opacity = '';
+        btn.onclick = function() { _triggerPipeline(id, btn); };
+        // Remove the retrigger button next to it (no longer needed)
+        var next = btn.nextElementSibling;
+        if (next && next.textContent.trim() === 'Retrigger') next.remove();
+      }
       refresh();
       openPipelineDetail(id);
     } else { var d = await res.json().catch(function() { return {}; }); alert('Abort failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
