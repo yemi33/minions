@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.694 (2026-04-09)
+
+### Fixes
+-  ADO build error log fallback when targetUrl lacks buildId
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
 ## 0.1.692 (2026-04-09)
 
 ### Fixes
