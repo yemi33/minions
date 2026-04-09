@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.731 (2026-04-09)
+
+### Fixes
+-  raise maxConcurrent cap from 10 to 50
+
 ## 0.1.730 (2026-04-09)
 
 ### Features
