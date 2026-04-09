@@ -154,3 +154,18 @@ Use subagents only for genuinely parallel, independent tasks (e.g., building sep
 ## When to Stop
 
 Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s). Stop after creating PRs.
+
+## Completion
+
+After finishing, output a structured completion block so the engine can parse your results:
+
+```completion
+status: done | partial | failed
+files_changed: <comma-separated list of key files changed>
+tests: pass | fail | skipped | N/A
+pr: PR-<number> or N/A
+failure_class: N/A
+pending: <any remaining work, or none>
+```
+
+Replace the values with your actual results. This block MUST appear in your final output.

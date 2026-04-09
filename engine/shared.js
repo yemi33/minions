@@ -594,6 +594,9 @@ const ESCALATION_POLICY = {
   AUTO: 'auto',                 // UNKNOWN, NETWORK_ERROR — use default retry logic
 };
 
+// Structured completion protocol — fields agents must produce in ```completion blocks
+const COMPLETION_FIELDS = ['status', 'files_changed', 'tests', 'pr', 'pending', 'failure_class'];
+
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
   prsCreated: 0, prsApproved: 0, prsRejected: 0, prsMerged: 0,
@@ -899,7 +902,7 @@ module.exports = {
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
-  FAILURE_CLASS, ESCALATION_POLICY,
+  FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,

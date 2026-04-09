@@ -6328,6 +6328,9 @@ async function main() {
     // P-d9q4w7e6: Recovery recipes
     await testRecoveryRecipes();
 
+    // P-h2t6r1j8: Structured completion protocol
+    await testStructuredCompletion();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -8963,8 +8966,8 @@ async function testAutoRecoveryAndAtomicity() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered }'),
-      'runPostCompletionHooks must return autoRecovered in its result');
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion }'),
+      'runPostCompletionHooks must return autoRecovered and structuredCompletion in its result');
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
@@ -10622,6 +10625,148 @@ async function testRecoveryRecipes() {
       assert.ok(req.includes('./shared') || req.includes('node:'),
         `recovery.js should only import from shared.js or node builtins, found: ${req}`);
     }
+  });
+}
+
+// ─── P-h2t6r1j8: Structured completion protocol ─────────────────────────────
+
+async function testStructuredCompletion() {
+  console.log('\n── Structured completion protocol ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('COMPLETION_FIELDS exported from engine/shared.js', () => {
+    assert.ok(Array.isArray(shared.COMPLETION_FIELDS),
+      'COMPLETION_FIELDS should be an array');
+    assert.strictEqual(shared.COMPLETION_FIELDS.length, 6,
+      'COMPLETION_FIELDS should have 6 fields');
+    assert.ok(shared.COMPLETION_FIELDS.includes('status'), 'Should include status');
+    assert.ok(shared.COMPLETION_FIELDS.includes('files_changed'), 'Should include files_changed');
+    assert.ok(shared.COMPLETION_FIELDS.includes('tests'), 'Should include tests');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pr'), 'Should include pr');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pending'), 'Should include pending');
+    assert.ok(shared.COMPLETION_FIELDS.includes('failure_class'), 'Should include failure_class');
+  });
+
+  await test('parseStructuredCompletion exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.parseStructuredCompletion === 'function',
+      'parseStructuredCompletion should be a function exported from lifecycle.js');
+  });
+
+  await test('parseStructuredCompletion: valid block returns parsed object', () => {
+    const stdout = 'Some agent output...\n```completion\nstatus: done\nfiles_changed: engine/shared.js, engine/lifecycle.js\ntests: pass\npr: PR-456\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object');
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.files_changed, 'engine/shared.js, engine/lifecycle.js');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.pr, 'PR-456');
+    assert.strictEqual(result.failure_class, 'N/A');
+    assert.strictEqual(result.pending, 'none');
+  });
+
+  await test('parseStructuredCompletion: missing block returns null', () => {
+    const stdout = 'Agent output without completion block\nDone!';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when no completion block found');
+  });
+
+  await test('parseStructuredCompletion: empty/null input returns null', () => {
+    assert.strictEqual(lifecycle.parseStructuredCompletion(''), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(null), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(undefined), null);
+  });
+
+  await test('parseStructuredCompletion: malformed block (no status) returns null', () => {
+    const stdout = '```completion\nfiles_changed: foo.js\ntests: pass\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when status field is missing');
+  });
+
+  await test('parseStructuredCompletion: multiple blocks takes last one', () => {
+    const stdout = '```completion\nstatus: partial\npr: N/A\n```\nRetrying...\n```completion\nstatus: done\npr: PR-789\ntests: pass\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object from last block');
+    assert.strictEqual(result.status, 'done', 'Should use last block');
+    assert.strictEqual(result.pr, 'PR-789', 'Should use last block PR');
+  });
+
+  await test('parseStructuredCompletion: failed status with failure_class', () => {
+    const stdout = '```completion\nstatus: failed\nfiles_changed: none\ntests: fail\npr: N/A\nfailure_class: build-failure\npending: fix compilation errors\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.failure_class, 'build-failure');
+    assert.strictEqual(result.pending, 'fix compilation errors');
+  });
+
+  await test('implement.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'implement.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'implement.md should have ```completion block');
+    assert.ok(src.includes('status:'), 'implement.md completion should have status field');
+    assert.ok(src.includes('pr:'), 'implement.md completion should have pr field');
+  });
+
+  await test('fix.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'fix.md should have ```completion block');
+  });
+
+  await test('verify.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'verify.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'verify.md should have ```completion block');
+  });
+
+  await test('## Completion is after ## When to Stop in implement.md', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
+    const stopIdx = src.indexOf('## When to Stop');
+    const completionIdx = src.indexOf('## Completion');
+    assert.ok(stopIdx >= 0 && completionIdx > stopIdx,
+      '## Completion must come after ## When to Stop');
+  });
+
+  await test('decompose.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'decompose.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'decompose.md should NOT have Completion section (uses structured JSON output)');
+  });
+
+  await test('review.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'review.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('explore.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'explore.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'explore.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('runPostCompletionHooks uses parseStructuredCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('parseStructuredCompletion(stdout)'),
+      'runPostCompletionHooks should call parseStructuredCompletion');
+    assert.ok(src.includes('structuredCompletion'),
+      'runPostCompletionHooks should use structuredCompletion variable');
+  });
+
+  await test('runPostCompletionHooks returns structuredCompletion in result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('structuredCompletion }'),
+      'Return object should include structuredCompletion');
+  });
+
+  await test('parseStructuredCompletion: keys are lowercased', () => {
+    const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.pr, 'PR-100');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.failure_class, 'N/A');
   });
 }
 

@@ -1094,6 +1094,49 @@ function parseAgentOutput(stdout) {
 }
 
 /**
+ * Parse structured completion block from agent output.
+ * Agents produce a ```completion fenced block with key: value pairs.
+ * Returns parsed object or null if not found / malformed.
+ * If multiple blocks exist, the last one wins (agent may retry).
+ */
+function parseStructuredCompletion(stdout) {
+  if (!stdout || typeof stdout !== 'string') return null;
+
+  // Extract text from stream-json output if needed
+  let text = stdout;
+  if (stdout.includes('"type":')) {
+    try {
+      const parsed = shared.parseStreamJsonOutput(stdout);
+      if (parsed.text) text = parsed.text;
+    } catch {}
+  }
+
+  // Find all ```completion blocks, take the last one
+  const blockPattern = /```completion\s*\n([\s\S]*?)```/g;
+  let lastMatch = null;
+  let m;
+  while ((m = blockPattern.exec(text)) !== null) {
+    lastMatch = m[1];
+  }
+  if (!lastMatch) return null;
+
+  // Parse key: value pairs
+  const result = {};
+  const lines = lastMatch.trim().split('\n');
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 1) continue;
+    const key = line.slice(0, colonIdx).trim().toLowerCase();
+    const value = line.slice(colonIdx + 1).trim();
+    if (key && value) result[key] = value;
+  }
+
+  // Must have at least the status field to be valid
+  if (!result.status) return null;
+  return result;
+}
+
+/**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
  */
@@ -1183,6 +1226,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
+  // Try structured completion protocol first (```completion block from agent output)
+  const structuredCompletion = parseStructuredCompletion(stdout);
+  if (structuredCompletion) {
+    log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}`);
+  }
+
   // Save session for potential resume on next dispatch
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
@@ -1198,6 +1247,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   try {
     prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
   } catch (err) { log('warn', `PR sync from output: ${err.message}`); }
+
+  // Structured completion may report PR even when regex didn't find it
+  const scHasPr = structuredCompletion && structuredCompletion.pr && structuredCompletion.pr !== 'N/A';
+  if (scHasPr && prsCreatedCount === 0) {
+    log('info', `Structured completion reports PR (${structuredCompletion.pr}) but regex sync found none — PR may already be tracked`);
+  }
 
   // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
   const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
@@ -1417,7 +1472,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
-  return { resultSummary, taskUsage, autoRecovered };
+  return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
@@ -1540,6 +1595,7 @@ module.exports = {
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,
+  parseStructuredCompletion,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,
