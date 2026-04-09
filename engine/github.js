@@ -562,9 +562,13 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
+        const existing = currentPrs.find(p => p.id === prId);
+        // Backfill prNumber for existing PRs missing the field
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = ghPr.number;
+        }
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = currentPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -580,6 +584,7 @@ async function reconcilePrs(config) {
 
       currentPrs.push({
         id: prId,
+        prNumber: ghPr.number,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
         branch,

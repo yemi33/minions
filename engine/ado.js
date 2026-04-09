@@ -561,10 +561,13 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
-        // PR already tracked — write link to pr-links.json if we can extract an ID
+        // PR already tracked — backfill prNumber if missing, write link to pr-links.json if we can extract an ID
+        const existing = existingPrs.find(p => p.id === prId);
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = adoPr.pullRequestId;
+        }
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -582,6 +585,7 @@ async function reconcilePrs(config) {
       const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
+        prNumber: adoPr.pullRequestId,
         title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
         branch,

@@ -3860,6 +3860,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (prs.some(p => p.id === prId || p.url === url)) { duplicate = true; return prs; }
         prs.push({
           id: prId,
+          prNumber: parseInt(prNum, 10) || prNum,
           title: (title || 'PR #' + prNum + ' (polling...)').slice(0, 120),
           description: '',
           agent: 'human',
