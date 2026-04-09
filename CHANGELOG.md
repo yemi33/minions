@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.644 (2026-04-09)
+
+### Features
+-  track notes, plans, and PRDs as work item artifacts
+
+### Fixes
+-  use startsWith for inbox note matching to prevent false matches
+
 ## 0.1.642 (2026-04-09)
 
 ### Features
