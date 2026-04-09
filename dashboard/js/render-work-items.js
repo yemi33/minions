@@ -458,22 +458,20 @@ function openWorkItemDetail(id) {
   if (arts.prd) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
   if (arts.sourcePlan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
   if (arts.notes && arts.notes.length > 0) {
-    var wiId = escHtml(item.id);
     arts.notes.forEach(function(n) {
       var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
-      var backFn = "pushModalBack(function(){openWorkItemDetail('" + wiId + "')});";
       if (noteFile.startsWith('kb:')) {
         var kbParts = noteFile.slice(3).split('/');
         var kbCat = kbParts[0];
         var kbFile = kbParts.slice(1).join('/');
         var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
-        artPills += '<span onclick="' + backFn + 'kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
+        artPills += '<span onclick="' + artBackFn + 'kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
       } else if (noteFile.startsWith('archive:')) {
         var archLabel = noteFile.slice(8).replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30);
-        artPills += '<span onclick="' + backFn + 'openInboxNote(\'' + escHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
       } else {
         var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
-        artPills += '<span onclick="' + backFn + 'openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
       }
     });
   }
