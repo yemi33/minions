@@ -9,9 +9,16 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
+
+// Per-type heartbeat timeouts — read-heavy work types get longer heartbeat windows
+const DEFAULT_HEARTBEAT_TIMEOUTS = {
+  [WORK_TYPE.EXPLORE]: 600000,  // 10min — explore tasks do long reads
+  [WORK_TYPE.ASK]: 600000,      // 10min — ask tasks do long reads
+  [WORK_TYPE.REVIEW]: 480000,   // 8min — review tasks read large diffs
+};
 const MINIONS_DIR = shared.MINIONS_DIR;
 
 // Lazy require to break circular dependency with engine.js
