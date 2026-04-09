@@ -296,14 +296,21 @@ function _findMeetingsInRun(run) {
 }
 
 // Check if a plan already exists for a given meeting (created manually via dashboard)
-function _findExistingPlanForMeeting(meetingIds, planSlug, plansDir) {
+function _findExistingPlanForMeeting(meetingIds, plansDir) {
   const files = safeReadDir(plansDir).filter(f => f.endsWith('.md'));
-  const slugPrefix = planSlug.slice(0, 30);
+  // Build slug prefixes for both pipeline and dashboard naming conventions
+  const slugPrefixes = [];
+  for (const mid of meetingIds) {
+    const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
+    if (mtg?.title) {
+      // Dashboard convention: "Meeting follow-up: {title}" → slug
+      const dashSlug = ('meeting-follow-up-' + mtg.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      slugPrefixes.push(dashSlug.slice(0, 30));
+    }
+  }
   let slugMatch = null;
   for (const file of files) {
-    // Fallback: title-slug filename match (checked first to avoid unnecessary reads)
-    if (!slugMatch && file.startsWith(slugPrefix)) slugMatch = file;
-    // Primary: explicit Source Meeting header (written by dashboard /api/plans/create)
+    if (!slugMatch && slugPrefixes.some(p => file.startsWith(p))) slugMatch = file;
     const content = safeRead(path.join(plansDir, file));
     if (!content) continue;
     for (const mid of meetingIds) {
@@ -324,7 +331,7 @@ async function executePlanStage(stage, stageState, run, config) {
   // ── Reconciliation: check if a plan already exists for a meeting in this run ──
   const meetingIds = _findMeetingsInRun(run);
   if (meetingIds.length > 0) {
-    const existingPlanFile = _findExistingPlanForMeeting(meetingIds, slug, plansDir);
+    const existingPlanFile = _findExistingPlanForMeeting(meetingIds, plansDir);
     if (existingPlanFile) {
       log('info', `Pipeline ${run.pipelineId}: reconciling plan stage — adopting existing plan "${existingPlanFile}"`);
       // Adopt or create plan-to-prd WI atomically under lock
