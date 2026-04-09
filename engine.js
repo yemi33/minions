@@ -791,11 +791,18 @@ async function spawnAgent(dispatchItem, config) {
       try {
         const artWiPath = resolveWorkItemPath(dispatchItem.meta);
         if (artWiPath) {
-          // Collect inbox notes written by this agent today
+          // Collect inbox notes written by this agent today (with structured IDs if available)
           const _artToday = shared.dateStamp();
           const _artInboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
           let _artNotes = [];
-          try { _artNotes = shared.safeReadDir(_artInboxDir).filter(f => f.startsWith(agentId + '-') && f.includes(_artToday)); } catch {}
+          try {
+            const noteFiles = shared.safeReadDir(_artInboxDir).filter(f => f.startsWith(agentId + '-') && f.includes(_artToday));
+            for (const f of noteFiles) {
+              const content = shared.safeRead(path.join(_artInboxDir, f));
+              const noteId = shared.parseNoteId(content);
+              _artNotes.push({ file: f, id: noteId || f.replace(/\.md$/, '') });
+            }
+          } catch {}
 
           mutateJsonFileLocked(artWiPath, data => {
             if (!Array.isArray(data)) return data;
@@ -806,7 +813,7 @@ async function spawnAgent(dispatchItem, config) {
             if (dispatchItem.meta.branch) arts.branch = dispatchItem.meta.branch;
             if (wi._pr) arts.pr = wi._pr;
             if (wi._prUrl) arts.prUrl = wi._prUrl;
-            if (_artNotes.length > 0) arts.notes = _artNotes;
+            if (_artNotes.length > 0) arts.notes = _artNotes.map(n => ({ id: n.id, file: n.file }));
             // Track plan/PRD artifacts from dispatch metadata
             if (dispatchItem.meta.item?.planFile) arts.plan = dispatchItem.meta.item.planFile;
             if (dispatchItem.meta.item?._prdFilename) arts.prd = dispatchItem.meta.item._prdFilename;

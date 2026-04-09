@@ -454,7 +454,10 @@ function openWorkItemDetail(id) {
   if (arts.plan) artPills += '<span onclick="planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
   if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
   if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
-  if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) { artPills += '<span onclick="closeModal();switchPage(\'inbox\')" style="' + pillStyle + '">📝 ' + escHtml(n.replace(/\.md$/, '').slice(0, 30)) + '</span> '; });
+  if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
+    var noteLabel = typeof n === 'object' ? (n.id || n.file || 'note').slice(0, 30) : String(n).replace(/\.md$/, '').slice(0, 30);
+    artPills += '<span onclick="closeModal();switchPage(\'inbox\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+  });
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 

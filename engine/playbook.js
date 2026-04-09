@@ -250,8 +250,11 @@ function renderPlaybook(type, vars) {
   const timeStamp = ts().slice(11, 16).replace(':', '');
   const inboxSlug = [vars.agent_id || 'agent', vars.task_id || '', dateStamp(), timeStamp].filter(Boolean).join('-');
   content += `\n\n---\n\n## REQUIRED: Write Learnings\n\n`;
+  const noteId = `NOTE-${shared.uid()}`;
   content += `After completing your task, write **one** findings file to:\n`;
   content += `\`${MINIONS_DIR}/notes/inbox/${inboxSlug}.md\`\n\n`;
+  content += `Start the file with this YAML frontmatter (required for tracking):\n`;
+  content += `\`\`\`\n---\nid: ${noteId}\nagent: ${vars.agent_id || 'agent'}\ndate: ${dateStamp()}\n---\n\`\`\`\n\n`;
   content += `**IMPORTANT: Write exactly ONE inbox file per task.** If the playbook above already specifies an inbox path, use THAT path instead and include your learnings in the same document. Do NOT create a second file — duplicates clog consolidation.\n\n`;
   content += `Include in your findings file:\n`;
   content += `- What you learned about the codebase\n`;

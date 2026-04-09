@@ -286,15 +286,30 @@ function uniquePath(filePath) {
  * @param {string} content - Markdown content to write
  * @returns {boolean} true if a write occurred, false if deduped/skipped
  */
+/**
+ * Extract note ID from frontmatter of an inbox file. Returns null if no ID found.
+ */
+function parseNoteId(content) {
+  if (!content) return null;
+  const m = content.match(/^---\n[\s\S]*?id:\s*(NOTE-\w+)[\s\S]*?---/);
+  return m ? m[1] : null;
+}
+
 function writeToInbox(agentId, slug, content, _inboxDir) {
   try {
     const inboxDir = _inboxDir || path.join(MINIONS_DIR, 'notes', 'inbox');
     const prefix = `${agentId}-${slug}-${dateStamp()}`;
     const existing = safeReadDir(inboxDir).find(f => f.startsWith(prefix));
     if (existing) return false;
+    const noteId = `NOTE-${uid()}`;
+    // Inject structured ID as YAML frontmatter if content doesn't already have it
+    const hasFrontmatter = content.trimStart().startsWith('---');
+    const tagged = hasFrontmatter
+      ? content.replace(/^---\n/, `---\nid: ${noteId}\n`)
+      : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n---\n\n${content}`;
     const filePath = path.join(inboxDir, `${prefix}.md`);
-    safeWrite(filePath, content);
-    return true;
+    safeWrite(filePath, tagged);
+    return noteId;
   } catch (e) {
     log('warn', `writeToInbox failed: ${e.message}`);
     return false;
@@ -860,7 +875,7 @@ module.exports = {
   mutatePullRequests,
   uid,
   uniquePath,
-  writeToInbox,
+  writeToInbox, parseNoteId,
   exec,
   execAsync,
   execSilent,
