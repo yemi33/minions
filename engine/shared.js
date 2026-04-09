@@ -546,6 +546,7 @@ const ENGINE_DEFAULTS = {
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
+  heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
@@ -563,6 +564,15 @@ const WORK_TYPE = {
   VERIFY: 'verify', PLAN: 'plan', PLAN_TO_PRD: 'plan-to-prd', DECOMPOSE: 'decompose',
   MEETING: 'meeting', EXPLORE: 'explore', ASK: 'ask', TEST: 'test', DOCS: 'docs',
 };
+
+// Per-work-type heartbeat timeouts (ms) — read-heavy tasks need longer silence windows.
+// Keyed by WORK_TYPE constants; types not listed fall back to ENGINE_DEFAULTS.heartbeatTimeout.
+Object.assign(ENGINE_DEFAULTS.heartbeatTimeouts, {
+  [WORK_TYPE.EXPLORE]: 600000,   // 10 min — spends most time reading/analyzing, minimal stdout
+  [WORK_TYPE.ASK]:     600000,   // 10 min — research-heavy, long silent analysis periods
+  [WORK_TYPE.REVIEW]:  480000,   // 8 min — code review reads extensively before producing output
+});
+
 const PLAN_STATUS = {
   ACTIVE: 'active', AWAITING_APPROVAL: 'awaiting-approval', APPROVED: 'approved',
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',

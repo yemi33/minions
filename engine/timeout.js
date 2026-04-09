@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT } = shared;
+  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT } = shared;
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -130,7 +130,10 @@ function checkTimeouts(config) {
   const { runPostCompletionHooks } = require('./lifecycle');
 
   const timeout = config.engine?.agentTimeout || DEFAULTS.agentTimeout;
-  const heartbeatTimeout = config.engine?.heartbeatTimeout || DEFAULTS.heartbeatTimeout;
+  const defaultHeartbeatTimeout = config.engine?.heartbeatTimeout || DEFAULTS.heartbeatTimeout;
+
+  // Per-work-type heartbeat timeouts: merge defaults with config overrides
+  const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
 
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {
@@ -150,6 +153,10 @@ function checkTimeouts(config) {
 
   for (const item of (dispatchData.active || [])) {
     if (!item.agent) continue;
+
+    // Per-type heartbeat: look up work type from dispatch item, fall back to default
+    const workType = item.workType || item.meta?.item?.type;
+    const heartbeatTimeout = (workType && perTypeTimeouts[workType]) || defaultHeartbeatTimeout;
 
     const hasProcess = activeProcesses.has(item.id);
     const liveLogPath = path.join(AGENTS_DIR, item.agent, 'live-output.log');
