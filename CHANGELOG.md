@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.650 (2026-04-09)
+
+### Fixes
+-  handle CRLF in note frontmatter parsing and injection
+-  stop dispatch.json file watcher feedback loop, increase debounce
+-  use full slug for plan matching to prevent false-positive collisions
+
 ## 0.1.647 (2026-04-09)
 
 ### Features
