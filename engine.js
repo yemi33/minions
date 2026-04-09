@@ -454,7 +454,13 @@ async function spawnAgent(dispatchItem, config) {
           // Fetch all dependency branches in parallel (git fetches are independent)
           const fetchable = depBranches.filter(d => !_failedRefCache.has(d.branch));
           const unfetchable = depBranches.filter(d => _failedRefCache.has(d.branch));
-          for (const { branch: depBranch } of unfetchable) {
+          const allPrsForDeps = unfetchable.length > 0 ? shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectPrPath(p)) || []), []) : [];
+          for (const { branch: depBranch, prId } of unfetchable) {
+            const pr = allPrsForDeps.find(p => p.id === prId);
+            if (pr && (pr.status === 'merged' || pr.status === 'closed')) {
+              log('info', `Dependency ${depBranch} (${prId}) already merged — skipping, changes already in main`);
+              continue;
+            }
             log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
             depMergeFailed = true;
           }
@@ -463,17 +469,26 @@ async function spawnAgent(dispatchItem, config) {
               execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir }).then(() => depBranch)
             )
           );
+          const hasFetchFailures = fetchResults.some(r => r.status === 'rejected');
+          const allPrsForFetch = hasFetchFailures ? shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectPrPath(p)) || []), []) : [];
           for (let i = 0; i < fetchResults.length; i++) {
             if (fetchResults[i].status === 'rejected') {
               const failedBranch = fetchable[i].branch;
+              const failedPrId = fetchable[i].prId;
+              const pr = allPrsForFetch.find(p => p.id === failedPrId);
+              if (pr && (pr.status === 'merged' || pr.status === 'closed')) {
+                log('info', `Dependency ${failedBranch} (${failedPrId}) already merged — skipping, changes already in main`);
+                continue;
+              }
               _failedRefCache.add(failedBranch);
               log('warn', `Failed to fetch dependency ${failedBranch}: ${fetchResults[i].reason?.message}`);
               depMergeFailed = true;
             }
           }
-          // Merge fetched branches sequentially (merges modify the worktree)
+          // Merge successfully-fetched branches sequentially (merges modify the worktree)
+          const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled');
           if (!depMergeFailed) {
-            for (const { branch: depBranch, prId } of fetchable) {
+            for (const { branch: depBranch, prId } of fetched) {
               try {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                 log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
