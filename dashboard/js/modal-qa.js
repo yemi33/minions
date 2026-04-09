@@ -98,11 +98,11 @@ function _initQaSession() {
       });
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
-    document.getElementById('qa-clear-btn').style.display = 'block';
+    _showThreadWrap();
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
-    document.getElementById('qa-clear-btn').style.display = 'none';
+    _hideThreadWrap();
   }
 }
 
@@ -111,7 +111,7 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
-  document.getElementById('qa-clear-btn').style.display = 'none';
+  _hideThreadWrap();
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -146,6 +146,7 @@ function modalSend() {
   qHtml += '</div>';
   thread.innerHTML += qHtml;
   thread.scrollTop = thread.scrollHeight;
+  _showThreadWrap();
 
   // Clear input immediately so user can type next message
   input.value = '';
@@ -334,4 +335,27 @@ function qaAbort() {
   }
 }
 
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort };
+function toggleDocChat() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (!wrap) return;
+  var isVisible = wrap.style.display !== 'none';
+  wrap.style.display = isVisible ? 'none' : '';
+  if (expandBar) expandBar.style.display = isVisible ? '' : 'none';
+}
+
+function _showThreadWrap() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = '';
+  if (expandBar) expandBar.style.display = 'none';
+}
+
+function _hideThreadWrap() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = 'none';
+  if (expandBar) expandBar.style.display = 'none';
+}
+
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat };

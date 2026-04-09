@@ -592,10 +592,12 @@ function getKnowledgeBaseEntries() {
       const title = titleMatch ? titleMatch[1].trim() : f.replace(/\.md$/, '');
       const agentMatch = f.match(/^\d{4}-\d{2}-\d{2}-(\w+)-/);
       const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})/);
+      const sourceMatch = content.match(/^source:\s*(.+)/m);
       entries.push({
         cat, file: f, title,
         agent: agentMatch ? agentMatch[1] : '',
         date: dateMatch ? dateMatch[1] : '',
+        source: sourceMatch ? sourceMatch[1].trim() : '',
         preview: content.slice(0, 200),
         size: content.length,
       });
@@ -719,6 +721,9 @@ function getWorkItems(config) {
   }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
+  const _archiveFiles = safeReadDir(ARCHIVE_DIR);
+  // Use cached KB entries (includes source frontmatter field)
+  const _kbEntries = getKnowledgeBaseEntries();
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
@@ -732,9 +737,20 @@ function getWorkItems(config) {
         const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
         if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      // Inbox notes — match by agent ID + work item ID in filename
-      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(item.id || '___'));
-      if (matchNotes.length > 0) arts.notes = matchNotes;
+      // Notes: inbox → KB (via source field) → archive (fallback if KB was swept)
+      const itemId = item.id || '___';
+      const matchInbox = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+      const matchKb = _kbEntries.filter(kb => kb.source && kb.source.includes(agentId) && kb.source.includes(itemId));
+      const allNotes = [
+        ...matchInbox,
+        ...matchKb.map(kb => 'kb:' + kb.cat + '/' + kb.file),
+      ];
+      // Archive fallback — only if nothing found in inbox or KB
+      if (allNotes.length === 0) {
+        const matchArchive = _archiveFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+        for (const f of matchArchive) allNotes.push('archive:' + f);
+      }
+      if (allNotes.length > 0) arts.notes = allNotes;
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
