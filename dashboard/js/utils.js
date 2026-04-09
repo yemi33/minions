@@ -29,11 +29,23 @@ function togglePin(key) {
 }
 function _syncPinsFromServer() {
   fetch('/api/kb-pins').then(function(r) { return r.json(); }).then(function(d) {
-    if (Array.isArray(d.pins) && d.pins.length > 0) {
-      _pinsCache = d.pins;
-      // Clear legacy localStorage
+    var serverPins = Array.isArray(d.pins) ? d.pins : [];
+    // Migrate: merge localStorage pins into server if not already there
+    var localPins = [];
+    try { localPins = JSON.parse(localStorage.getItem('minions-pinned-items') || '[]'); } catch {}
+    if (localPins.length > 0) {
+      var merged = serverPins.slice();
+      var changed = false;
+      for (var i = 0; i < localPins.length; i++) {
+        if (merged.indexOf(localPins[i]) < 0) { merged.unshift(localPins[i]); changed = true; }
+      }
+      if (changed) {
+        fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins: merged }) }).catch(function() {});
+        serverPins = merged;
+      }
       localStorage.removeItem('minions-pinned-items');
     }
+    _pinsCache = serverPins;
   }).catch(function() {});
 }
 function inboxPinKey(name) { return 'notes/inbox/' + name; }
