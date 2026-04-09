@@ -707,21 +707,23 @@ function getWorkItems(config) {
   }
 
   // Populate _artifacts for the work item detail modal
+  // Cache directory listings to avoid N × readdirSync
+  const _agentDirCache = {};
+  const _inboxFiles = safeReadDir(INBOX_DIR);
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
     if (agentId) {
-      // Output log — find most recent matching dispatch output
-      const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
-      try {
-        const files = safeReadDir(agentDir).filter(f => f.startsWith('output-') && f.includes(item.id?.slice(-8) || '___') && f.endsWith('.log'));
-        if (files.length > 0) arts.outputLog = agentId + '/' + files[files.length - 1];
-      } catch {}
-      // Inbox notes created by this agent for this task
-      try {
-        const inboxFiles = safeReadDir(INBOX_DIR).filter(f => f.includes(agentId) && (f.includes(item.id || '___') || f.includes(item.id?.slice(-8) || '___')));
-        if (inboxFiles.length > 0) arts.notes = inboxFiles;
-      } catch {}
+      const idSuffix = item.id?.slice(-8) || '___';
+      // Output log
+      if (!_agentDirCache[agentId]) {
+        _agentDirCache[agentId] = safeReadDir(path.join(MINIONS_DIR, 'agents', agentId)).filter(f => f.startsWith('output-') && f.endsWith('.log'));
+      }
+      const matchLog = _agentDirCache[agentId].filter(f => f.includes(idSuffix));
+      if (matchLog.length > 0) arts.outputLog = agentId + '/' + matchLog[matchLog.length - 1];
+      // Inbox notes
+      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && (f.includes(item.id || '___') || f.includes(idSuffix)));
+      if (matchNotes.length > 0) arts.notes = matchNotes;
     }
     if (item.branch) arts.branch = item.branch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;

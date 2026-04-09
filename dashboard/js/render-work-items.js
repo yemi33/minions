@@ -457,8 +457,9 @@ function openWorkItemDetail(id) {
   if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
   if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
   if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
-    var noteLabel = (n && typeof n === 'object') ? (n.id || n.file || 'note').slice(0, 30) : String(n || 'note').replace(/\.md$/, '').slice(0, 30);
-    artPills += '<span onclick="closeModal();switchPage(\'inbox\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+    var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
+    var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
+    artPills += '<span onclick="openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
   });
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
@@ -501,4 +502,16 @@ function viewAgentOutput(logPath) {
     });
 }
 
-window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput };
+function openInboxNote(filename) {
+  // Find in inboxData by filename, or open directly via fetch
+  var idx = (inboxData || []).findIndex(function(item) { return item.name === filename; });
+  if (idx >= 0) {
+    openModal(idx);
+  } else {
+    // Fallback: switch to inbox page
+    closeModal();
+    switchPage('inbox');
+  }
+}
+
+window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput, openInboxNote };
