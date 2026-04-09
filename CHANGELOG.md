@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.755 (2026-04-09)
+
+### Features
+-  show branch strategy badge on PRD group header
+
+### Fixes
+-  restore same thinking UX when switching back to processing tab
+-  show thinking indicator when switching back to a processing tab
+-  CC messages go to originating tab, not whichever tab is visible
+-  tab title no longer covers close button
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
 ## 0.1.749 (2026-04-09)
 
 ### Features
