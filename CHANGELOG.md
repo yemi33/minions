@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.693 (2026-04-09)
+
+### Fixes
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
 ## 0.1.692 (2026-04-09)
 
 ### Fixes
