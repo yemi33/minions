@@ -666,6 +666,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       prId, fullId,
       entry: {
         id: fullId,
+        prNumber: parseInt(prId, 10) || prId,
         title: (title || `PR created by ${agentName}`).slice(0, 120),
         agent: agentName,
         branch: meta?.branch || '',

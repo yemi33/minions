@@ -561,10 +561,14 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
+        const existing = existingPrs.find(p => p.id === prId);
+        // Backfill prNumber for existing records missing it
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = adoPr.pullRequestId;
+        }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -582,6 +586,7 @@ async function reconcilePrs(config) {
       const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
+        prNumber: adoPr.pullRequestId,
         title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
         branch,
@@ -595,6 +600,14 @@ async function reconcilePrs(config) {
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
+    }
+
+    // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
+    for (const pr of existingPrs) {
+      if (pr.prNumber == null) {
+        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        if (derived) pr.prNumber = derived;
+      }
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
