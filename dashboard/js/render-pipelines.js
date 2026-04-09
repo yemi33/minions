@@ -241,10 +241,13 @@ function _buildNodeChain(stages, run, options) {
 
   html += '</div>';
 
-  // Loop indicator
-  if (pipeline?.trigger?.cron) {
+  // Loop indicator — only for pipelines with stopWhen or condition stages (repeat-until pattern)
+  var hasStopWhen = !!pipeline?.stopWhen;
+  var hasConditionStage = (pipeline?.stages || []).some(function(s) { return s.type === 'condition'; });
+  if (hasStopWhen || hasConditionStage) {
     var runCount = (pipeline.runs || []).length;
-    html += '<div class="pl-node-loop">\u21BA Loop (' + escHtml(_cronToHuman(pipeline.trigger.cron)) + ')';
+    var cronLabel = pipeline?.trigger?.cron ? _cronToHuman(pipeline.trigger.cron) : 'until condition met';
+    html += '<div class="pl-node-loop">\u21BA Loop (' + escHtml(cronLabel) + ')';
     if (runCount > 0) html += ' \u00b7 Run ' + runCount;
     html += '</div>';
   }
@@ -271,18 +274,10 @@ function renderPipelines(pipelines) {
     const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status === 'stopped' ? 'Stopped' : lastRun.status) : 'Never run';
     const trigger = p.trigger?.cron ? _cronToHuman(p.trigger.cron) : 'Manual';
 
-    // Stage flow visualization
-    var stageFlow = (p.stages || []).map(function(s) {
-      var icon = { task: '\u2699', meeting: '\uD83D\uDCAC', plan: '\uD83D\uDCCB', 'merge-prs': '\uD83D\uDD00', api: '\uD83C\uDF10', wait: '\u23F8', parallel: '\u2693', schedule: '\u23F0', condition: '\u2753' }[s.type] || '\u2022';
-      var stageStatus = activeRun?.stages?.[s.id]?.status || 'pending';
-      var color = stageStatus === 'completed' ? 'var(--green)' : stageStatus === 'running' ? 'var(--blue)' : stageStatus === 'failed' ? 'var(--red)' : stageStatus === 'waiting-human' ? 'var(--yellow)' : 'var(--muted)';
-      return '<span style="color:' + color + ';font-size:11px" title="' + escHtml(s.id) + ': ' + escHtml(s.title || s.type) + ' (' + stageStatus + ')">' + icon + ' ' + escHtml(s.id) + '</span>';
-    }).join(' <span style="color:var(--border)">\u2192</span> ');
-
-    // Build step-progress indicator for pipelines with a run
+    // Build node chain (renders for all pipelines, even never-run)
     var progressHtml = '';
     var displayRun = activeRun || lastRun;
-    if (displayRun && (p.stages || []).length > 0) {
+    if ((p.stages || []).length > 0) {
       progressHtml = _buildNodeChain(p.stages || [], displayRun, { compact: true, pipeline: p });
     }
 
@@ -330,7 +325,7 @@ function openPipelineDetail(id) {
 
   // Stage detail with progress bar
   var detailRun = activeRun || (p.runs || []).slice(-1)[0];
-  if (detailRun && (p.stages || []).length > 0) {
+  if ((p.stages || []).length > 0) {
     html += _buildNodeChain(p.stages || [], detailRun, { compact: false, pipeline: p });
   }
   // Pipeline-level monitored resources (full view in detail)

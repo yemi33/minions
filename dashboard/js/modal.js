@@ -4,6 +4,7 @@ function closeModal() {
   const modalEl = document.querySelector('#modal .modal');
   if (modalEl) modalEl.classList.remove('modal-wide');
   document.getElementById('modal').classList.remove('open');
+  clearModalBackStack();
   // Hide Q&A section (only shown for document modals)
   document.getElementById('modal-qa').style.display = 'none';
   // Remove settings buttons if present

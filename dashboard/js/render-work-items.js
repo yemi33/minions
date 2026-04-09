@@ -419,6 +419,7 @@ async function _submitCreateWorkItem(e) {
 }
 
 function openWorkItemDetail(id) {
+  if (window.getSelection && window.getSelection().toString().length > 0) return;
   const item = allWorkItems.find(i => i.id === id);
   if (!item) return;
 
@@ -452,24 +453,29 @@ function openWorkItemDetail(id) {
   var artPills = '';
   var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
   // Output log pill removed — raw stream-json output is not human-readable
+  var artBackFn = "pushModalBack(function(){openWorkItemDetail('" + escHtml(item.id) + "')});";
   if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
-  if (arts.plan) artPills += '<span onclick="planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
-  if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
-  if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
-  if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
-    var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
-    // KB entries prefixed with 'kb:category/file'
-    if (noteFile.startsWith('kb:')) {
-      var kbParts = noteFile.slice(3).split('/');
-      var kbCat = kbParts[0];
-      var kbFile = kbParts.slice(1).join('/');
-      var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
-      artPills += '<span onclick="kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
-    } else {
-      var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
-      artPills += '<span onclick="openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
-    }
-  });
+  if (arts.plan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
+  if (arts.prd) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
+  if (arts.sourcePlan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
+  if (arts.notes && arts.notes.length > 0) {
+    arts.notes.forEach(function(n) {
+      var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
+      if (noteFile.startsWith('kb:')) {
+        var kbParts = noteFile.slice(3).split('/');
+        var kbCat = kbParts[0];
+        var kbFile = kbParts.slice(1).join('/');
+        var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
+      } else if (noteFile.startsWith('archive:')) {
+        var archLabel = noteFile.slice(8).replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
+      } else {
+        var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+      }
+    });
+  }
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 

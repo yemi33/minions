@@ -194,7 +194,7 @@
   .pl-progress-label { display: flex; gap: 8px; align-items: center; margin-top: 4px; font-size: 10px; }
   .pl-node-chain { display: flex; align-items: flex-start; gap: 2px; overflow-x: auto; padding: 8px 0; }
   .pl-node { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
-  .pl-node-box { padding: 4px 8px; border-radius: 6px; border: 2px solid var(--border); background: var(--surface2); text-align: center; font-size: 10px; transition: border-color 0.2s; white-space: nowrap; }
+  .pl-node-box { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface2); text-align: center; font-size: 10px; transition: border-color 0.2s; white-space: nowrap; }
   .pl-node-box.complete { border-color: var(--green); background: rgba(63,185,80,0.08); }
   .pl-node-box.running { border-color: var(--blue); animation: plSegPulse 1.5s ease-in-out infinite; }
   .pl-node-box.failed { border-color: var(--red); background: rgba(248,81,73,0.08); }

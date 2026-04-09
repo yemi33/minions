@@ -98,6 +98,7 @@
     <div class="modal-header">
       <h3 id="modal-title">—</h3>
       <div class="modal-header-actions">
+        <button class="modal-copy" id="modal-back-btn" onclick="modalGoBack()" title="Back" style="display:none">&larr; Back</button>
         <button class="modal-copy" id="modal-edit-btn" onclick="modalToggleEdit()" title="Edit" style="display:none"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zM12.9 2.97L4.288 11.58l-.537 1.878 1.878-.537L14.242 4.31 12.9 2.97z"/></svg> Edit</button>
         <button class="modal-copy" id="modal-save-btn" onclick="modalSaveEdit()" title="Save" style="display:none;color:var(--green);border-color:var(--green)"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save</button>
         <button class="modal-copy" id="modal-cancel-edit-btn" onclick="modalCancelEdit()" title="Cancel edit" style="display:none">Cancel</button>
@@ -108,9 +109,15 @@
     </div>
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-qa" id="modal-qa" style="display:none">
-      <div style="display:flex;align-items:center;justify-content:space-between;min-height:0">
-        <div class="modal-qa-thread" id="modal-qa-thread" style="flex:1"></div>
-        <button id="qa-clear-btn" style="display:none;background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px;white-space:nowrap;align-self:flex-start" onclick="clearQaConversation()" title="Clear conversation">Clear chat</button>
+      <div id="modal-qa-thread-wrap" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <button id="qa-clear-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="clearQaConversation()" title="Clear conversation">Clear</button>
+          <button id="qa-toggle-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()" title="Collapse thread">&#x25BC; Collapse</button>
+        </div>
+        <div class="modal-qa-thread" id="modal-qa-thread"></div>
+      </div>
+      <div id="qa-expand-bar" style="display:none;margin-bottom:4px">
+        <button style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()">&#x25B2; Show thread</button>
       </div>
       <div class="modal-qa-selection-pill" id="modal-qa-pill" style="display:none">
         <span class="pill-label">Selection:</span>
@@ -118,7 +125,7 @@
         <button class="pill-clear" onclick="clearQaSelection()" title="Clear selection">&times;</button>
       </div>
       <div class="modal-qa-input-wrap">
-        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document..." onkeydown="if(event.key==='Enter')modalSend()">
+        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document (or select text first)..." onkeydown="if(event.key==='Enter')modalSend()">
         <button class="modal-qa-btn" id="modal-send-btn" onclick="modalSend()">Send</button>
       </div>
     </div>

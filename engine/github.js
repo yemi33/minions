@@ -108,27 +108,28 @@ async function fetchGhBuildErrorLog(slug, failedRuns) {
     for (const run of (failedRuns || []).slice(0, 3)) {
       if (!run?.id) continue;
 
-      // Try annotations first — these contain structured compiler/lint errors
+      // Try annotations for structured compiler/lint errors
+      let hasUsefulAnnotations = false;
       try {
         const annotations = await ghApi(`/check-runs/${run.id}/annotations`, slug);
         if (Array.isArray(annotations) && annotations.length > 0) {
-          const formatted = annotations
-            .filter(a => a.annotation_level === 'failure' || a.annotation_level === 'warning')
-            .map(a => `${a.path || ''}:${a.start_line || ''} [${a.annotation_level}] ${a.message || ''}`)
-            .join('\n');
-          if (formatted) {
+          const failures = annotations.filter(a => a.annotation_level === 'failure');
+          if (failures.length > 0) {
+            const formatted = failures
+              .map(a => `${a.path || ''}:${a.start_line || ''} [${a.annotation_level}] ${a.message || ''}`)
+              .join('\n');
             logParts.push(`--- ${run.name || 'Check'} (annotations) ---\n${formatted}`);
-            continue; // annotations are sufficient for this run
+            hasUsefulAnnotations = true;
           }
         }
       } catch { /* fall through to job log */ }
 
-      // Fallback: fetch the full Actions job log
+      // Always fetch job log — annotations alone often lack test failure details
       try {
         const cmd = `gh api "repos/${slug}/actions/jobs/${run.id}/logs" 2>&1`;
         const result = await execAsync(cmd, { timeout: 15000, encoding: 'utf-8' });
         if (result && !result.includes('Not Found')) {
-          logParts.push(`--- ${run.name || 'Check'} ---\n${result}`);
+          logParts.push(`--- ${run.name || 'Check'} (log) ---\n${result}`);
         }
       } catch { /* skip individual log fetch failures */ }
     }

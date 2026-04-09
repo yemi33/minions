@@ -583,6 +583,13 @@ function syncPrsFromOutput(output, agentId, meta, config) {
               while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
             }
           }
+          // Also scan assistant text blocks for PR URLs and "PR created" patterns
+          if (block.type === 'text' && block.text) {
+            while ((match = urlPattern.exec(block.text)) !== null) prMatches.add(match[1] || match[2]);
+            const textCreatedPattern = /(?:PR created|created PR|E2E PR)[:\s#-]*(\d{1,})/gi;
+            let m2;
+            while ((m2 = textCreatedPattern.exec(block.text)) !== null) prMatches.add(m2[1]);
+          }
         }
         if (parsed.type === 'result' && parsed.result) {
           const resultText = parsed.result;
