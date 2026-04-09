@@ -656,6 +656,33 @@ function getWorkItems(config) {
     }
   }
 
+  // Cross-reference with dispatch pending entries to surface skipReason + blockedBy (#617)
+  const pendingByWiId = new Map();
+  for (const d of (dispatch.pending || [])) {
+    if (d.meta?.item?.id && d.skipReason) {
+      pendingByWiId.set(d.meta.item.id, d);
+    }
+  }
+  if (pendingByWiId.size > 0) {
+    // Build branch → active agent name map for blockedBy lookup
+    const branchToAgent = new Map();
+    for (const d of (dispatch.active || [])) {
+      if (d.meta?.branch) branchToAgent.set(d.meta.branch, d.agentName || d.agent || '');
+    }
+    for (const item of allItems) {
+      const pendingEntry = pendingByWiId.get(item.id);
+      if (!pendingEntry) continue;
+      item._skipReason = pendingEntry.skipReason;
+      if (pendingEntry.skipReason === 'branch_locked' && pendingEntry.meta?.branch) {
+        const blocker = branchToAgent.get(pendingEntry.meta.branch);
+        if (blocker) item._blockedBy = blocker;
+      } else if (pendingEntry.skipReason === 'agent_busy') {
+        const activeEntry = (dispatch.active || []).find(d => d.agent === pendingEntry.agent);
+        if (activeEntry) item._blockedBy = activeEntry.agentName || activeEntry.agent || '';
+      }
+    }
+  }
+
   // Cross-reference with PRs
   const allPrs = getPullRequests(config);
   for (const item of allItems) {

@@ -49,6 +49,7 @@ function wiRow(item) {
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
       (item._pendingReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escHtml(item._blockedBy) + ')' : '') + '">' + escHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
       (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
     '<td>' +
@@ -439,6 +440,7 @@ function openWorkItemDetail(id) {
   if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
   if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
   if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escHtml(item._blockedBy) + '</strong>' : ''));
   if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
   if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
   if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
