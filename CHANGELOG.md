@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.732 (2026-04-09)
+
+### Fixes
+-  notify user when settings values are clamped to allowed range
+-  raise maxConcurrent cap from 10 to 50
+
 ## 0.1.730 (2026-04-09)
 
 ### Features
