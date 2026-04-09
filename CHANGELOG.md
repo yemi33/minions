@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.668 (2026-04-09)
+
+### Fixes
+- reduce Bash blocking grace and errored task dedup window (closes #593) (#630)
+
 ## 0.1.667 (2026-04-09)
 
 ### Features
