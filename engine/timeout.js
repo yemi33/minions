@@ -132,8 +132,7 @@ function checkTimeouts(config) {
     // Check if the agent actually completed (result event in live output)
     // Optimization: only read file if recent activity (avoids reading stale 1MB logs)
     let completedViaOutput = false;
-    try {
-      if (silentMs > 600000) throw new Error('skip'); // No point reading a file silent for >10min
+    if (silentMs <= 600000) try {
       const liveLog = safeRead(liveLogPath);
       if (liveLog && liveLog.includes('"type":"result"')) {
         completedViaOutput = true;
