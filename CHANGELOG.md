@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.660 (2026-04-09)
+
+### Fixes
+-  retry button broken for project-level work items, add _source field
+-  use PowerShell instead of wmic for process kill on Windows 11
+-  bust require cache for package.json in engine start
+-  PRD discovery loop, github.js duplicate const, transcript null guards
+
+### Other
+- perf: run checkSteering every 3s instead of every 60s tick
+
 ## 0.1.655 (2026-04-09)
 
 ### Fixes
