@@ -18,13 +18,15 @@ function getPinnedItems() {
   return _pinsCache;
 }
 function isPinned(key) { return getPinnedItems().includes(key); }
+var _pinWriteInFlight = false;
 function togglePin(key) {
   const pins = getPinnedItems();
   const idx = pins.indexOf(key);
   if (idx >= 0) pins.splice(idx, 1); else pins.unshift(key);
   _pinsCache = pins;
-  // Persist to server (fire-and-forget)
-  fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins }) }).catch(function() {});
+  _pinWriteInFlight = true;
+  fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins }) })
+    .finally(function() { _pinWriteInFlight = false; });
   return idx < 0; // true if now pinned
 }
 function _syncPinsFromServer() {
@@ -45,7 +47,7 @@ function _syncPinsFromServer() {
       }
       localStorage.removeItem('minions-pinned-items');
     }
-    _pinsCache = serverPins;
+    if (!_pinWriteInFlight) _pinsCache = serverPins;
   }).catch(function() {});
 }
 function inboxPinKey(name) { return 'notes/inbox/' + name; }
