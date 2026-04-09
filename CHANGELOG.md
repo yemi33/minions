@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.681 (2026-04-09)
+
+### Features
+-  horizontal node chain pipeline visualization (TDD)
+
 ## 0.1.678 (2026-04-09)
 
 ### Fixes
