@@ -3398,6 +3398,13 @@ async function testCooldownSystem() {
       'Should check pending + active + completed within last hour');
   });
 
+  await test('isAlreadyDispatched uses shorter dedup window for errored tasks (#593)', () => {
+    assert.ok(src.includes("d.result === 'error'") && src.includes('900000'),
+      'Should use 15-min (900000ms) dedup window for errored dispatches');
+    assert.ok(src.includes('3600000'),
+      'Should retain 1-hour (3600000ms) dedup window for successful dispatches');
+  });
+
   await test('cooldown backoff formula is truly exponential', () => {
     // Verify that different failure counts produce different backoff multipliers
     // 0 failures: 2^0 = 1x, 1 failure: 2^1 = 2x, 2 failures: 2^2 = 4x, 3 failures: 2^3 = 8x (capped)
@@ -3860,6 +3867,18 @@ async function testCheckTimeouts() {
   await test('checkTimeouts detects completion via output scan', () => {
     assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
       'Should scan live output for completion markers');
+  });
+
+  await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
+    // The Bash tool default timeout in Claude Code is 120s, not 600s.
+    // Grace = max(heartbeatTimeout, bashTimeout + 60000) = max(300000, 120000+60000) = 300000 (5min)
+    // This ensures hung agents are killed within ~5min, not ~11min.
+    assert.ok(src.includes("input.timeout || 120000"),
+      'Bash default timeout should be 120000ms (120s) to match Claude Code actual default');
+    // Verify the Bash-specific block uses 120000, not 600000
+    const bashBlock = src.slice(src.indexOf("if (name === 'Bash')"), src.indexOf("if (name === 'Bash')") + 300);
+    assert.ok(bashBlock.includes('120000') && !bashBlock.includes('600000'),
+      'Bash blocking block should use 120000ms, not 600000ms');
   });
 }
 
@@ -9274,8 +9293,8 @@ async function testAutoRecoveryAndAtomicity() {
     const fn = src.slice(src.indexOf('function isAlreadyDispatched('));
     assert.ok(fn.includes('dispatch.pending') && fn.includes('dispatch.active'),
       'Should check pending and active for in-flight');
-    assert.ok(fn.includes('dispatch.completed') && fn.includes('3600000'),
-      'Should check completed within 1-hour window');
+    assert.ok(fn.includes('dispatch.completed') && fn.includes('3600000') && fn.includes('900000'),
+      'Should check completed with result-based window (15min errors, 1hr success)');
   });
 
   await test('both discovery functions use equivalent retry bypass pattern', () => {
