@@ -48,10 +48,13 @@ Write the decomposition result as a JSON code block in your response:
     {
       "id": "{{item_id}}-a",
       "name": "Short descriptive name",
+      "objective": "One-sentence goal — what this sub-task achieves in the overall plan.",
       "description": "What to build, where, and how. Be specific enough that an engineer can implement without further exploration.",
+      "expected_output": "What 'done' looks like — artifact produced, PR shape, file format, or observable behavior.",
+      "scope_boundaries": ["What is explicitly OUT of scope for this sub-task", "Another exclusion"],
       "estimated_complexity": "small|medium",
       "depends_on": [],
-      "acceptance_criteria": ["Criterion 1", "Criterion 2"]
+      "acceptance_criteria": ["Verifiable criterion 1", "Verifiable criterion 2"]
     }
   ]
 }
