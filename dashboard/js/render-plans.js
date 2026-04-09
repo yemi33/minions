@@ -710,12 +710,18 @@ async function planRegeneratePRD(source) {
 function _renderVerifyBadge(verifyWi) {
   const statusColors = { pending: 'var(--muted)', dispatched: 'var(--blue)', done: 'var(--green)', failed: 'var(--red)' };
   const color = statusColors[verifyWi.status] || 'var(--muted)';
-  const label = verifyWi.status === 'dispatched' ? 'Verifying...' : verifyWi.status === 'done' ? 'Verified' : verifyWi.status === 'failed' ? 'Verify failed' : 'Verify pending';
+  const label = verifyWi.status === 'dispatched' ? 'Verifying...' : verifyWi.status === 'done' ? '\u2714 Verified' : verifyWi.status === 'failed' ? 'Verify failed' : 'Verify pending';
+  // E2E PR — check by prdItems, branch, or title
   const allPrs = (window._lastStatus?.pullRequests) || [];
-  const verifyPr = allPrs.find(pr => (pr.prdItems || []).includes(verifyWi.id));
-  const prLink = verifyPr?.url ? ' <a href="' + escHtml(verifyPr.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:none;font-size:9px">E2E PR</a>' : '';
-  const branchInfo = verifyPr?.branch ? ' <span style="font-size:8px;color:var(--muted)" title="' + escHtml(verifyPr.branch) + '">(' + escHtml(verifyPr.branch.slice(0, 25)) + ')</span>' : '';
-  return '<span style="font-size:9px;font-weight:600;color:' + color + ';padding:0 4px">' + label + '</span>' + prLink + branchInfo;
+  const planFile = verifyWi.sourcePlan || '';
+  const planSlug = planFile.replace('.json', '');
+  const verifyPr = allPrs.find(pr => (pr.prdItems || []).includes(verifyWi.id) || (pr.branch && pr.branch.includes(planSlug) && (pr.title || '').includes('[E2E]')));
+  const prLink = verifyPr?.url ? ' <a href="' + escHtml(verifyPr.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--blue);text-decoration:underline;font-size:9px">' + escHtml(verifyPr.id || 'E2E PR') + '</a>' : '';
+  // Testing guide
+  const guides = window._lastStatus?.verifyGuides || [];
+  const guide = guides.find(g => g.planFile === planFile);
+  const guideLink = guide ? ' <span onclick="event.stopPropagation();openVerifyGuide(\'' + escHtml(guide.file) + '\')" style="color:var(--green);cursor:pointer;text-decoration:underline;font-size:9px">Testing Guide</span>' : '';
+  return '<span style="font-size:9px;font-weight:600;color:' + color + ';padding:0 4px">' + label + '</span>' + prLink + guideLink;
 }
 
 async function openVerifyGuide(file) {
