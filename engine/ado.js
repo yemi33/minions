@@ -99,7 +99,7 @@ const BUILD_ERROR_LOG_MAX_LINES = 150;
  * for failed tasks, and fetches their logs.
  * Returns truncated log text or null if unavailable.
  */
-async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr) {
+async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, seenBuildIds) {
   try {
     // Try extracting buildId from targetUrl (e.g. .../_build/results?buildId=12345)
     const targetUrl = failedStatus?.targetUrl || '';
@@ -112,10 +112,11 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr) 
       try {
         const branch = pr?.branch || pr?.sourceRefName?.replace('refs/heads/', '');
         if (branch) {
-          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=refs/heads/${encodeURIComponent(branch)}&statusFilter=completed&resultFilter=failed&$top=1&api-version=7.1`;
+          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=refs/heads/${encodeURIComponent(branch)}&statusFilter=completed&resultFilter=failed&$top=3&api-version=7.1`;
           const builds = await adoFetch(buildsUrl, token);
-          if (builds?.value?.[0]?.id) {
-            buildId = String(builds.value[0].id);
+          const fresh = (builds?.value || []).find(b => !seenBuildIds?.has(String(b.id)));
+          if (fresh?.id) {
+            buildId = String(fresh.id);
             log('debug', `Found buildId ${buildId} via branch query for ${branch}`);
           }
         }
@@ -125,6 +126,8 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr) 
       log('debug', `No buildId from targetUrl or branch query: ${targetUrl.slice(0, 120)}`);
       return null;
     }
+    if (seenBuildIds?.has(buildId)) return null; // already fetched this build
+    if (seenBuildIds) seenBuildIds.add(buildId);
 
     // Fetch build timeline to find failed tasks
     const timelineUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/timeline?api-version=7.1`;
@@ -390,11 +393,16 @@ async function pollPrStatus(config) {
 
       // Fetch actual compiler/build error logs when transitioning to failing
       if (buildStatus === 'failing') {
-        const failedStatusObj = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
-        const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr);
-        if (errorLog) {
-          pr.buildErrorLog = errorLog;
-          log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
+        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 3);
+        const logParts = [];
+        const seenBuildIds = new Set();
+        for (const failedStatusObj of failedStatusObjs) {
+          const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
+          if (errorLog) logParts.push(errorLog);
+        }
+        if (logParts.length > 0) {
+          pr.buildErrorLog = logParts.join('\n\n');
+          log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
         }
       }
     }
