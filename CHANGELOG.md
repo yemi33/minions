@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.726 (2026-04-09)
+
+### Fixes
+-  reject JSON/UUID fragments as PR titles, self-heal from platform
+
 ## 0.1.725 (2026-04-09)
 
 ### Fixes
