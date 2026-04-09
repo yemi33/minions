@@ -976,7 +976,7 @@ function getPrdInfo(config) {
     items: items.map(i => ({
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
-      description: (i.description || '').slice(0, 200), projects: i.projects || [],
+      description: i.description || '', projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null, prdCompletedAt: i._prdCompletedAt || '',
