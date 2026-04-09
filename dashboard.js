@@ -3329,16 +3329,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       req.on('close', () => { ccInFlightTabs.delete(tabId); if (_ccStreamAbort) _ccStreamAbort(); });
 
       try {
-        // Session management — per-tab: use sessionId from request if provided
+        // Session management — per-tab: use sessionId from request, don't mutate global ccSession
         const tabSessionId = body.sessionId || null;
-        if (tabSessionId) {
-          // Resume the tab's specific session
-          ccSession = { sessionId: tabSessionId, createdAt: ccSession.createdAt, lastActiveAt: Date.now(), turnCount: ccSession.turnCount || 0, _promptHash: _ccPromptHash };
-        } else if (!ccSessionValid()) {
-          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-        }
-        const wasResume = !!tabSessionId || !!(ccSessionValid() && ccSession.sessionId);
-        const sessionId = tabSessionId || (wasResume ? ccSession.sessionId : null);
+        const wasResume = !!tabSessionId;
+        const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
         const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
 
@@ -3367,42 +3361,33 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
           // If resuming a session failed, auto-reset so next attempt starts fresh
-          let retryHint;
-          if (wasResume && result.code !== 0) {
-            ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-            safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
-            retryHint = 'Session was reset — send your message again to start fresh.';
-          } else {
-            retryHint = ccSession.sessionId
-              ? 'Your session is still active — just send your message again to retry.'
-              : 'Try clicking **New Session** and sending your message again.';
-          }
-          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: ccSession.sessionId }) + '\n\n');
+          const retryHint = wasResume && result.code !== 0
+            ? 'Session was reset — send your message again to start fresh.'
+            : 'Send your message again to retry.';
+          // Return null sessionId on resume failure so client clears the stale session
+          const errorSessionId = (wasResume && result.code !== 0) ? null : tabSessionId;
+          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: errorSessionId }) + '\n\n');
           res.end();
           return;
         }
 
         // Update session
+        // Persist tab→session mapping (no global ccSession mutation)
         const now = Date.now();
-        if (result.sessionId) {
-          ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1, _promptHash: _ccPromptHash };
-          safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
-        }
-
-        // Persist tab→session mapping if tabId provided
+        const responseSessionId = result.sessionId || tabSessionId;
         const tabId = body.tabId;
-        if (tabId && ccSession.sessionId) {
+        if (tabId && responseSessionId) {
           try {
             const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
             const existing = sessions.find(s => s.id === tabId);
             const preview = (body.message || '').slice(0, 80);
             if (existing) {
-              existing.sessionId = ccSession.sessionId;
+              existing.sessionId = responseSessionId;
               existing.lastActiveAt = new Date(now).toISOString();
-              existing.turnCount = ccSession.turnCount;
+              existing.turnCount = (existing.turnCount || 0) + 1;
               existing.preview = preview;
             } else {
-              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: ccSession.sessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: ccSession.turnCount, preview });
+              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -3410,7 +3395,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
-        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId, newSession: !wasResume }) + '\n\n');
+        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume }) + '\n\n');
         res.end();
       } finally {
         ccInFlightTabs.delete(tabId);

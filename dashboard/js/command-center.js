@@ -625,7 +625,7 @@ async function _ccDoSend(message, skipUserMsg) {
         ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
-    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; }
+    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
