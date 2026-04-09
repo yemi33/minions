@@ -455,7 +455,7 @@ function openWorkItemDetail(id) {
   if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
   if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
   if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
-    var noteLabel = typeof n === 'object' ? (n.id || n.file || 'note').slice(0, 30) : String(n).replace(/\.md$/, '').slice(0, 30);
+    var noteLabel = (n && typeof n === 'object') ? (n.id || n.file || 'note').slice(0, 30) : String(n || 'note').replace(/\.md$/, '').slice(0, 30);
     artPills += '<span onclick="closeModal();switchPage(\'inbox\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
   });
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
@@ -490,7 +490,7 @@ function viewAgentOutput(logPath) {
   document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
   document.getElementById('modal').classList.add('open');
   fetch('/api/agent-output?file=' + encodeURIComponent(logPath))
-    .then(function(r) { return r.text(); })
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(function(content) {
       document.getElementById('modal-body').textContent = content;
     })
