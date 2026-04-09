@@ -3520,7 +3520,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const D = shared.ENGINE_DEFAULTS;
         // Numeric fields: { key: [min, max?] }
         const numericFields = {
-          tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
+          tickInterval: [10000], maxConcurrent: [1, 50], inboxConsolidateThreshold: [1],
           agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
           worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
           idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
