@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.717 (2026-04-09)
+
+### Features
+-  add 11 missing CC action types for comprehensive API coverage
+-  agents must check minions state before starting fresh research
+
+### Fixes
+-  add skill block format example to shared playbook
+
 ## 0.1.714 (2026-04-09)
 
 ### Other
