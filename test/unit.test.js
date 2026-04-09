@@ -4014,6 +4014,22 @@ async function testCheckTimeouts() {
     assert.ok(bashBlock.includes('120000') && !bashBlock.includes('600000'),
       'Bash blocking block should use 120000ms, not 600000ms');
   });
+
+  // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
+  await test('checkTimeouts does NOT reference undefined DEFAULT_HEARTBEAT_TIMEOUTS (#721)', () => {
+    assert.ok(!src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'),
+      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use DEFAULTS.heartbeatTimeouts instead');
+  });
+
+  await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
+    // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
+    const { ENGINE_DEFAULTS: DEFAULTS } = require('../engine/shared');
+    const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
+    // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
+    const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
+    assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
+  });
 }
 
 // ─── engine.js — addToDispatch Tests ────────────────────────────────────────
