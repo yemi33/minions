@@ -291,7 +291,7 @@ function uniquePath(filePath) {
  */
 function parseNoteId(content) {
   if (!content) return null;
-  const m = content.match(/^---\n[\s\S]*?id:\s*(NOTE-\w+)[\s\S]*?---/);
+  const m = content.match(/^---[\r\n]+[\s\S]*?id:\s*(NOTE-\w+)[\s\S]*?---/);
   return m ? m[1] : null;
 }
 
@@ -305,7 +305,7 @@ function writeToInbox(agentId, slug, content, _inboxDir) {
     // Inject structured ID as YAML frontmatter if content doesn't already have it
     const hasFrontmatter = content.trimStart().startsWith('---');
     const tagged = hasFrontmatter
-      ? content.replace(/^---\n/, `---\nid: ${noteId}\n`)
+      ? content.replace(/^---[\r\n]+/, `---\nid: ${noteId}\n`)
       : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n---\n\n${content}`;
     const filePath = path.join(inboxDir, `${prefix}.md`);
     safeWrite(filePath, tagged);

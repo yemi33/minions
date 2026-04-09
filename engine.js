@@ -813,7 +813,7 @@ async function spawnAgent(dispatchItem, config) {
             if (dispatchItem.meta.branch) arts.branch = dispatchItem.meta.branch;
             if (wi._pr) arts.pr = wi._pr;
             if (wi._prUrl) arts.prUrl = wi._prUrl;
-            if (_artNotes.length > 0) arts.notes = _artNotes.map(n => ({ id: n.id, file: n.file }));
+            if (_artNotes.length > 0) arts.notes = _artNotes;
             // Track plan/PRD artifacts from dispatch metadata
             if (dispatchItem.meta.item?.planFile) arts.plan = dispatchItem.meta.item.planFile;
             if (dispatchItem.meta.item?._prdFilename) arts.prd = dispatchItem.meta.item._prdFilename;
