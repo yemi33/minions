@@ -50,11 +50,19 @@ function killByPort(port) {
 function killMinionsProcesses(patterns) {
   try {
     if (process.platform === 'win32') {
-      const out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      // Use PowerShell Get-CimInstance (works on Win11 where wmic is removed)
+      let out;
+      try {
+        out = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name=\'node.exe\'\\" | Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation"', { encoding: 'utf8', timeout: 10000, windowsHide: true });
+      } catch {
+        // Fallback to wmic for older Windows
+        try { out = execSync('wmic process where "name=\'node.exe\'" get processid,commandline /format:csv', { encoding: 'utf8', timeout: 10000, windowsHide: true }); } catch { return; }
+      }
       for (const line of out.split('\n')) {
         if (patterns.some(p => line.includes(p))) {
-          const pid = line.split(',').pop()?.trim();
-          if (pid && /^\d+$/.test(pid) && pid !== String(process.pid)) try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
+          const pidMatch = line.match(/(\d{2,})/);
+          const pid = pidMatch ? pidMatch[1] : null;
+          if (pid && pid !== String(process.pid)) try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch {}
         }
       }
     } else {
