@@ -592,10 +592,12 @@ function getKnowledgeBaseEntries() {
       const title = titleMatch ? titleMatch[1].trim() : f.replace(/\.md$/, '');
       const agentMatch = f.match(/^\d{4}-\d{2}-\d{2}-(\w+)-/);
       const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})/);
+      const sourceMatch = content.match(/^source:\s*(.+)/m);
       entries.push({
         cat, file: f, title,
         agent: agentMatch ? agentMatch[1] : '',
         date: dateMatch ? dateMatch[1] : '',
+        source: sourceMatch ? sourceMatch[1].trim() : '',
         preview: content.slice(0, 200),
         size: content.length,
       });
@@ -719,7 +721,8 @@ function getWorkItems(config) {
   }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
-  const _archiveFiles = safeReadDir(ARCHIVE_DIR);
+  // Use cached KB entries (includes source frontmatter field)
+  const _kbEntries = getKnowledgeBaseEntries();
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
@@ -733,11 +736,14 @@ function getWorkItems(config) {
         const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
         if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      // Inbox + archive notes — match by agent ID + work item ID in filename
+      // Notes: check inbox first, then KB (consolidated destination) via source field
       const itemId = item.id || '___';
-      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
-      const matchArchive = _archiveFiles.filter(f => f.includes(agentId) && f.includes(itemId));
-      const allNotes = [...matchNotes, ...matchArchive.map(f => 'archive/' + f)];
+      const matchInbox = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+      const matchKb = _kbEntries.filter(kb => kb.source && kb.source.includes(agentId) && kb.source.includes(itemId));
+      const allNotes = [
+        ...matchInbox,
+        ...matchKb.map(kb => 'kb:' + kb.cat + '/' + kb.file),
+      ];
       if (allNotes.length > 0) arts.notes = allNotes;
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;

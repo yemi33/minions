@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.683 (2026-04-09)
+
+### Features
+-  horizontal node chain pipeline visualization (TDD)
+
+### Fixes
+-  search notes/archive for consolidated learnings in artifacts
+-  pipeline node chain overlap — truncate labels, remove old stageFlow
+
 ## 0.1.678 (2026-04-09)
 
 ### Fixes

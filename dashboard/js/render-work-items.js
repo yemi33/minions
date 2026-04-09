@@ -458,8 +458,17 @@ function openWorkItemDetail(id) {
   if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
   if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
     var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
-    var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
-    artPills += '<span onclick="openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+    // KB entries prefixed with 'kb:category/file'
+    if (noteFile.startsWith('kb:')) {
+      var kbParts = noteFile.slice(3).split('/');
+      var kbCat = kbParts[0];
+      var kbFile = kbParts.slice(1).join('/');
+      var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
+      artPills += '<span onclick="kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
+    } else {
+      var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
+      artPills += '<span onclick="openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+    }
   });
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
@@ -503,17 +512,10 @@ function viewAgentOutput(logPath) {
 }
 
 function openInboxNote(filename) {
-  var isArchive = filename.startsWith('archive/');
-  var baseName = isArchive ? filename.replace('archive/', '') : filename;
-  // Try inbox first
-  var idx = (inboxData || []).findIndex(function(item) { return item.name === baseName; });
+  var idx = (inboxData || []).findIndex(function(item) { return item.name === filename; });
   if (idx >= 0) { openModal(idx); return; }
-  // Archived or not found in inbox — show label indicating it was consolidated
-  document.getElementById('modal-title').textContent = baseName.replace(/\.md$/, '');
-  document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">This note was consolidated into the Knowledge Base.' +
-    (isArchive ? ' <span style="font-size:10px">(archived: ' + escHtml(baseName) + ')</span>' : '') +
-    '</p><div style="margin-top:8px"><button class="pr-pager-btn" onclick="closeModal();switchPage(\'inbox\')">Go to Notes & KB</button></div>';
-  document.getElementById('modal').classList.add('open');
+  closeModal();
+  switchPage('inbox');
 }
 
 window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput, openInboxNote };
