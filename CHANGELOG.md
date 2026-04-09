@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.705 (2026-04-09)
+
+### Fixes
+-  modal buttons now derive status from linked PRD when plan not in status
+
 ## 0.1.704 (2026-04-09)
 
 ### Other
