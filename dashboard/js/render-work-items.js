@@ -503,15 +503,17 @@ function viewAgentOutput(logPath) {
 }
 
 function openInboxNote(filename) {
-  // Find in inboxData by filename, or open directly via fetch
-  var idx = (inboxData || []).findIndex(function(item) { return item.name === filename; });
-  if (idx >= 0) {
-    openModal(idx);
-  } else {
-    // Fallback: switch to inbox page
-    closeModal();
-    switchPage('inbox');
-  }
+  var isArchive = filename.startsWith('archive/');
+  var baseName = isArchive ? filename.replace('archive/', '') : filename;
+  // Try inbox first
+  var idx = (inboxData || []).findIndex(function(item) { return item.name === baseName; });
+  if (idx >= 0) { openModal(idx); return; }
+  // Archived or not found in inbox — show label indicating it was consolidated
+  document.getElementById('modal-title').textContent = baseName.replace(/\.md$/, '');
+  document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">This note was consolidated into the Knowledge Base.' +
+    (isArchive ? ' <span style="font-size:10px">(archived: ' + escHtml(baseName) + ')</span>' : '') +
+    '</p><div style="margin-top:8px"><button class="pr-pager-btn" onclick="closeModal();switchPage(\'inbox\')">Go to Notes & KB</button></div>';
+  document.getElementById('modal').classList.add('open');
 }
 
 window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput, openInboxNote };

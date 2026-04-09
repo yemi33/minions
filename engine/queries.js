@@ -719,6 +719,7 @@ function getWorkItems(config) {
   }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
+  const _archiveFiles = safeReadDir(ARCHIVE_DIR);
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
@@ -732,9 +733,12 @@ function getWorkItems(config) {
         const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
         if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      // Inbox notes — match by agent ID + work item ID in filename
-      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(item.id || '___'));
-      if (matchNotes.length > 0) arts.notes = matchNotes;
+      // Inbox + archive notes — match by agent ID + work item ID in filename
+      const itemId = item.id || '___';
+      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+      const matchArchive = _archiveFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+      const allNotes = [...matchNotes, ...matchArchive.map(f => 'archive/' + f)];
+      if (allNotes.length > 0) arts.notes = allNotes;
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
