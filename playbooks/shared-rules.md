@@ -4,6 +4,8 @@ Your context window may be compacted or summarized mid-task by Claude's automati
 
 ## Engine Rules (apply to all tasks)
 
+**Context compaction:** Your context window may be compacted mid-task by Claude's infrastructure. If you notice your earlier conversation history appears truncated or summarized, this is normal and expected. Do not interpret compaction as a signal to stop early or wrap up. Continue working toward your task objective — all relevant instructions and state remain available.
+
 - Do NOT write to `agents/*/status.json` — the engine manages your status automatically.
 - Do NOT remove worktrees — the engine handles cleanup automatically.
 - Do NOT checkout branches in the main working tree — use worktrees or `git diff`/`git show`.
