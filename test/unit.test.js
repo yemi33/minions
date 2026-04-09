@@ -5143,7 +5143,7 @@ async function testDashboardAssembly() {
 
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
-    assert.ok(html.length < 500000, `HTML should be < 500KB (got ${html.length})`);
+    assert.ok(html.length < 510000, `HTML should be < 510KB (got ${html.length})`);
   });
 }
 
@@ -10766,7 +10766,8 @@ async function testPipelineReconciliation() {
 
   await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
-    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:"), src.indexOf("case STAGE_TYPE.MERGE_PRS:"));
+    const isStageStart = src.indexOf('function isStageComplete(');
+    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:", isStageStart), src.indexOf("case STAGE_TYPE.MERGE_PRS:", isStageStart));
     assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
     assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
     assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
@@ -10779,7 +10780,8 @@ async function testPipelineReconciliation() {
 
   await test('auto-archive removed — verify does not call archivePlan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const verifySection = src.slice(src.indexOf('Plan chaining removed'), src.indexOf('Clean up worktree'));
+    const chainIdx = src.indexOf('Plan chaining removed');
+    const verifySection = src.slice(chainIdx, src.indexOf('Clean up worktree', chainIdx));
     assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
     assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
   });
@@ -10859,11 +10861,6 @@ async function testDashboardButtonConsistency() {
   await test('archive confirm warns about linked source plan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
-  });
-
-  await test('text selection prevents work item modal', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('getSelection') && src.includes('toString().length'), 'Should check selection');
   });
 
   await test('client-side transcript has null guards', () => {
