@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.725 (2026-04-09)
+
+### Fixes
+- PRD item descriptions truncated to 200 chars in plan viewer (#705)
+
 ## 0.1.724 (2026-04-09)
 
 ### Features
