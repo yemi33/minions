@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.678 (2026-04-09)
+
+### Fixes
+-  plan/PRD button consistency, remove auto-archive, UX fixes
+-  abort button shows 'Aborting...' then becomes 'Run Now'
+
 ## 0.1.676 (2026-04-09)
 
 ### Fixes
