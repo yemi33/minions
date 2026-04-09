@@ -754,6 +754,8 @@ function getWorkItems(config) {
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
+    if (item._planFileName) arts.plan = item._planFileName;
+    else if (item.planFile) arts.plan = item.planFile;
     if (item._pr) arts.pr = item._pr;
     if (Object.keys(arts).length > 0) item._artifacts = arts;
   }
