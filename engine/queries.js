@@ -721,6 +721,7 @@ function getWorkItems(config) {
   }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
+  const _archiveFiles = safeReadDir(ARCHIVE_DIR);
   // Use cached KB entries (includes source frontmatter field)
   const _kbEntries = getKnowledgeBaseEntries();
   for (const item of allItems) {
@@ -736,7 +737,7 @@ function getWorkItems(config) {
         const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
         if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      // Notes: check inbox first, then KB (consolidated destination) via source field
+      // Notes: inbox → KB (via source field) → archive (fallback if KB was swept)
       const itemId = item.id || '___';
       const matchInbox = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
       const matchKb = _kbEntries.filter(kb => kb.source && kb.source.includes(agentId) && kb.source.includes(itemId));
@@ -744,6 +745,11 @@ function getWorkItems(config) {
         ...matchInbox,
         ...matchKb.map(kb => 'kb:' + kb.cat + '/' + kb.file),
       ];
+      // Archive fallback — only if nothing found in inbox or KB
+      if (allNotes.length === 0) {
+        const matchArchive = _archiveFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+        for (const f of matchArchive) allNotes.push('archive:' + f);
+      }
       if (allNotes.length > 0) arts.notes = allNotes;
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
