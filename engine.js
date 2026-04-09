@@ -1601,6 +1601,12 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with build failures — route to author (has session context from implementing)
+    // Grace period: after a build fix push, wait for CI to run before re-dispatching
+    // Skip if build hasn't transitioned since last fix (still showing the old failure)
+    if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? 600000; // 10 min default
+      if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
+    }
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
@@ -1646,7 +1652,10 @@ async function discoverFromPrs(config, project) {
           const prPath = projectPrPath(project);
           mutatePullRequests(prPath, prs => {
             const target = prs.find(p => p.id === pr.id);
-            if (target) target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
+            if (target) {
+              target.buildFixAttempts = (target.buildFixAttempts || 0) + 1;
+              target._buildFixPushedAt = ts();
+            }
           });
         } catch (e) { log('warn', 'increment build fix attempts: ' + e.message); }
       }

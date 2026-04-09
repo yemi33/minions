@@ -383,6 +383,8 @@ async function pollPrStatus(config) {
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
+      // Build transitioned — clear grace period so next failure can trigger immediately
+      delete pr._buildFixPushedAt;
       if (buildStatus !== 'failing') {
         delete pr._buildFailNotified;
         delete pr.buildErrorLog;
