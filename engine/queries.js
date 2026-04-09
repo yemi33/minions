@@ -216,6 +216,10 @@ function getAgentStatus(agentId) {
       branch: active.meta?.branch || '',
       started_at: active.started_at || active.created_at || null,
     };
+    // Surface blocking tool call state from dispatch annotation (set by timeout.js)
+    if (active._blockingToolCall) {
+      result._blockingToolCall = active._blockingToolCall;
+    }
     // Detect permission-waiting: read only head+tail of live-output.log (max 2KB total)
     try {
       const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
@@ -330,6 +334,7 @@ function getAgents(config) {
       ...a, status: s.status, lastAction,
       currentTask: (s.task || '').slice(0, 200),
       resultSummary: (s.resultSummary || '').slice(0, 500),
+      _blockingToolCall: s._blockingToolCall || null,
       _warning: s._warning || null,
       _permissionMode: s._permissionMode || null,
       chartered, inboxCount: inboxFiles.length
