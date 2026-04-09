@@ -5366,7 +5366,8 @@ async function testAgentSteering() {
   await test('checkSteering deletes steer.md before setting flags (race prevention)', () => {
     const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     const unlinkIdx = timeoutSrc.indexOf('unlinkSync(steerPath)');
-    const killIdx = timeoutSrc.indexOf('killImmediate(info.proc)');
+    // Find the killImmediate that follows the unlink (not the stale-recovery kill at top of loop)
+    const killIdx = timeoutSrc.indexOf('killImmediate(info.proc)', unlinkIdx);
     assert.ok(unlinkIdx > 0 && killIdx > 0 && unlinkIdx < killIdx,
       'steer.md should be deleted before killing the process to prevent re-read on next poll');
   });
@@ -5376,6 +5377,26 @@ async function testAgentSteering() {
       'Re-spawn prompt should frame the steering as a teammate message');
     assert.ok(engineSrc.includes('continue working on your current task'),
       'Re-spawn prompt should tell agent to continue after responding');
+  });
+
+  // Stale steering recovery: if kill didn't terminate agent within 30s, retry
+  await test('checkSteering has stale steering recovery with retry', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(timeoutSrc.includes('_steeringRetried'),
+      'Should track retry attempts to prevent infinite re-kills');
+    assert.ok(timeoutSrc.includes('STEERING_KILL_RETRY_MS'),
+      'Should use a named constant for the retry timeout');
+  });
+
+  // No-sessionId handling: kill agent and forward message to inbox
+  await test('checkSteering handles no-sessionId by killing and forwarding to inbox', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(timeoutSrc.includes('_steeringNoSession'),
+      'Should flag no-session kills for close handler differentiation');
+    assert.ok(timeoutSrc.includes('inbox') && timeoutSrc.includes('steering-'),
+      'Should write steering message to agent inbox for retry delivery');
+    assert.ok(timeoutSrc.includes('no session to resume'),
+      'Should write confirmation to live-output.log so user sees it in dashboard');
   });
 
   // Functional test: checkSteering with mock activeProcesses
