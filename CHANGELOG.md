@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.708 (2026-04-09)
+
+### Fixes
+-  defer doc-chat scroll after display transition, update stale tests
+
+### Other
+- simplify: remove unused isActive, isPaused variables from plan modal
+
 ## 0.1.706 (2026-04-09)
 
 ### Other
