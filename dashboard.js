@@ -1941,6 +1941,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
               requiresApproval: plan.requires_approval || false,
               revisionFeedback: plan.revision_feedback || null,
               sourcePlan: plan.source_plan || null,
+              archiveReady: plan._archiveReady || false,
+              archiveReadyAt: plan._archiveReadyAt || null,
             });
           } catch { /* JSON parse fallback */ }
         } else {
@@ -3555,7 +3557,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           config.engine.maxTurnsByType = mbt;
         }
         // Boolean fields
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
+        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents', 'autoArchive']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
         // Eval loop settings

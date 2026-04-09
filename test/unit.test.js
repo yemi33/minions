@@ -6651,6 +6651,11 @@ async function testAutoApproveMode() {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoApprovePlans, false);
   });
 
+  await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
+      'autoArchive should default to false (opt-in, not automatic)');
+  });
+
   await test('parseStreamJsonOutput extracts model from init message', () => {
     const initLine = '{"type":"system","subtype":"init","model":"claude-opus-4-6[1m]","session_id":"abc"}';
     const resultLine = '{"type":"result","result":"done","total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":50}}';
