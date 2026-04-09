@@ -39,7 +39,7 @@
   .timestamp { color: var(--muted); font-size: var(--text-md); font-variant-numeric: tabular-nums; }
 
   .layout { display: none; } /* Replaced by page-layout */
-  section { padding: var(--space-8) var(--space-9); border-bottom: 1px solid var(--border); overflow: hidden; min-width: 0; }
+  section { padding: var(--space-8) var(--space-9); border-bottom: 1px solid var(--border); overflow: visible; min-width: 0; }
 
   /* Sidebar navigation */
   .page-layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }

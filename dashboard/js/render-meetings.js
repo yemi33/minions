@@ -380,12 +380,22 @@ function _viewPlanWithBack(file, meetingId) {
 }
 
 function _findLinkedPlan(meeting) {
-  if (!meeting?.conclusion?.content) return null;
-  const match = meeting.conclusion.content.match(/plans\/([\w-]+\.md)/);
-  if (!match) return null;
-  const file = match[1];
-  const plans = window._lastStatus?.plans || [];
-  return plans.find(function(p) { return p.file === file; }) || { file, summary: file };
+  var plans = window._lastStatus?.plans || [];
+  // Check 1: regex in conclusion text (agent may reference plan path)
+  if (meeting?.conclusion?.content) {
+    var match = meeting.conclusion.content.match(/plans\/([\w-]+\.md)/);
+    if (match) {
+      var file = match[1];
+      return plans.find(function(p) { return p.file === file; }) || { file, summary: file };
+    }
+  }
+  // Check 2: title-slug filename match (dashboard naming convention: "meeting-follow-up-{title}")
+  if (meeting?.title) {
+    var titleSlug = ('Meeting follow-up: ' + meeting.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+    var found = plans.find(function(p) { return p.file && p.file.startsWith(titleSlug); });
+    if (found) return found;
+  }
+  return null;
 }
 
 async function _createPlanFromMeeting(id, btn) {
@@ -435,7 +445,7 @@ async function _createPlanFromMeeting(id, btn) {
     const title = 'Meeting follow-up: ' + (m.title || id);
     const planRes = await fetch('/api/plans/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, content: planContent })
+      body: JSON.stringify({ title, content: planContent, meetingId: id })
     });
     const planData = await planRes.json();
     if (planRes.ok && planData.ok) {

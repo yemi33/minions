@@ -284,39 +284,91 @@ function executeMeetingStage(stage, stageState, run, config) {
   return { status: PIPELINE_STATUS.RUNNING, artifacts: { meetings: createdIds } };
 }
 
+// Find meeting artifacts from any stage in the run (not just direct deps)
+function _findMeetingsInRun(run) {
+  const meetings = [];
+  for (const [, stageState] of Object.entries(run.stages || {})) {
+    for (const mid of (stageState.artifacts?.meetings || [])) {
+      if (!meetings.includes(mid)) meetings.push(mid);
+    }
+  }
+  return meetings;
+}
+
+// Check if a plan already exists for a given meeting (created manually via dashboard)
+function _findExistingPlanForMeeting(meetingIds, planSlug, plansDir) {
+  const files = safeReadDir(plansDir).filter(f => f.endsWith('.md'));
+  const slugPrefix = planSlug.slice(0, 30);
+  let slugMatch = null;
+  for (const file of files) {
+    // Fallback: title-slug filename match (checked first to avoid unnecessary reads)
+    if (!slugMatch && file.startsWith(slugPrefix)) slugMatch = file;
+    // Primary: explicit Source Meeting header (written by dashboard /api/plans/create)
+    const content = safeRead(path.join(plansDir, file));
+    if (!content) continue;
+    for (const mid of meetingIds) {
+      if (content.includes('**Source Meeting:** ' + mid)) return file;
+    }
+  }
+  return slugMatch;
+}
+
 async function executePlanStage(stage, stageState, run, config) {
-  // Create a plan .md file from the stage config + previous stage output
   const plansDir = path.join(__dirname, '..', 'plans');
   if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
 
   const slug = (stage.title || 'pipeline-plan').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
-  const filename = `${slug}-${dateStamp()}.md`;
-  const filePath = shared.uniquePath(path.join(plansDir, filename));
+  const wiPath = path.join(__dirname, '..', 'work-items.json');
+  const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
 
-  // Build meeting context from dependency stages
+  // ── Reconciliation: check if a plan already exists for a meeting in this run ──
+  const meetingIds = _findMeetingsInRun(run);
+  if (meetingIds.length > 0) {
+    const existingPlanFile = _findExistingPlanForMeeting(meetingIds, slug, plansDir);
+    if (existingPlanFile) {
+      log('info', `Pipeline ${run.pipelineId}: reconciling plan stage — adopting existing plan "${existingPlanFile}"`);
+      // Adopt or create plan-to-prd WI atomically under lock
+      let adoptedWiId = wiId;
+      mutateWorkItems(wiPath, workItems => {
+        const existing = workItems.find(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === existingPlanFile);
+        if (existing) {
+          existing._pipelineRun = run.runId;
+          existing._pipelineStage = stage.id;
+          adoptedWiId = existing.id;
+        } else if (!workItems.some(w => w.id === wiId)) {
+          workItems.push({
+            id: wiId, title: `Convert plan to PRD: ${existingPlanFile}`,
+            type: WORK_TYPE.PLAN_TO_PRD, priority: 'high', status: WI_STATUS.PENDING,
+            planFile: existingPlanFile, created: ts(), createdBy: 'pipeline:' + run.pipelineId,
+            branch: `pipeline/${run.pipelineId}/${stage.id}`, _pipelineRun: run.runId, _pipelineStage: stage.id,
+          });
+        }
+      });
+      return {
+        status: PIPELINE_STATUS.RUNNING,
+        artifacts: { plans: [existingPlanFile], workItems: [adoptedWiId], prds: [], prs: [] },
+      };
+    }
+  }
+
+  // ── No existing plan — build meeting context from ALL run stages (not just direct deps) ──
   let meetingContext = '';
+  for (const mid of meetingIds) {
+    try {
+      const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
+      if (mtg) {
+        const transcript = (mtg.transcript || []).map(t =>
+          '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '')
+        ).join('\n\n---\n\n');
+        meetingContext += '# Meeting: ' + (mtg.title || mid) + '\n\n**Agenda:** ' + (mtg.agenda || '') + '\n\n' + transcript + '\n\n';
+      }
+    } catch (e) { log('warn', `Pipeline plan: failed to read meeting ${mid}: ${e.message}`); }
+  }
+  // Also include direct dep output (for non-meeting stages)
   if (stage.dependsOn) {
     for (const depId of stage.dependsOn) {
       const depStage = run.stages[depId];
-      if (!depStage) continue;
-
-      const meetingId = depStage.artifacts?.meetings?.[0];
-      if (meetingId) {
-        try {
-          const mtgPath = path.join(__dirname, '..', 'meetings', meetingId + '.json');
-          const mtg = safeJson(mtgPath);
-          if (mtg) {
-            // Build full meeting document (same as dashboard "Create Plan from Meeting")
-            const transcript = (mtg.transcript || []).map(t =>
-              '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '')
-            ).join('\n\n---\n\n');
-            meetingContext += '# Meeting: ' + (mtg.title || depId) + '\n\n**Agenda:** ' + (mtg.agenda || '') + '\n\n' + transcript + '\n\n';
-            continue;
-          }
-        } catch { /* fall through */ }
-      }
-
-      if (depStage.output) {
+      if (depStage?.output && !depStage.artifacts?.meetings?.length) {
         meetingContext += '## From: ' + depId + '\n\n' + depStage.output + '\n\n';
       }
     }
@@ -350,11 +402,11 @@ async function executePlanStage(stage, stageState, run, config) {
     if (stage.description) content += stage.description + '\n';
   }
 
+  const filename = `${slug}-${dateStamp()}.md`;
+  const filePath = shared.uniquePath(path.join(plansDir, filename));
   safeWrite(filePath, content);
 
   // Create plan-to-prd work item — atomic write to prevent race with dispatch status updates
-  const wiPath = path.join(__dirname, '..', 'work-items.json');
-  const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
   mutateWorkItems(wiPath, workItems => {
     if (!workItems.some(w => w.id === wiId)) {
       workItems.push({
