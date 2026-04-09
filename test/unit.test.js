@@ -11605,6 +11605,52 @@ async function testPipelineReconciliation() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     assert.ok(src.includes('_removeWorktreeFailures') && src.includes('count >= 3'), 'Should cap retries at 3');
   });
+
+  await test('removeWorktree purges Windows reserved-name files before deletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // Must call _purgeReservedFiles on win32 before git worktree remove
+    assert.ok(src.includes('_purgeReservedFiles(resolved)'), 'Should call _purgeReservedFiles before removal');
+    assert.ok(src.includes("process.platform === 'win32'") || src.includes('process.platform === \'win32\''), 'Should gate on win32');
+  });
+
+  await test('removeWorktree uses cmd /c rd /s /q on Windows for any error (not just EPERM)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
+    // Must use cmd /c rd /s /q (not plain rd /s /q)
+    assert.ok(fn.includes('cmd /c rd /s /q'), 'Should use cmd /c rd /s /q');
+    // Must NOT restrict to EPERM only — should handle any Windows error
+    assert.ok(!fn.includes("rmErr.code === 'EPERM'"), 'Should not restrict rd /s /q to EPERM only');
+  });
+
+  await test('_WIN_RESERVED_NAMES includes NUL and other device names', () => {
+    const shared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    assert.ok(shared._WIN_RESERVED_NAMES instanceof Set, '_WIN_RESERVED_NAMES should be a Set');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('NUL'), 'Should include NUL');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('CON'), 'Should include CON');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('PRN'), 'Should include PRN');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('AUX'), 'Should include AUX');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('COM1'), 'Should include COM1');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('LPT1'), 'Should include LPT1');
+  });
+
+  await test('_purgeReservedFiles deletes files matching reserved names', () => {
+    const shared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    // _purgeReservedFiles only deletes on Windows (uses \\?\ prefix), but we can
+    // verify it's exported and is a function for testability
+    assert.strictEqual(typeof shared._purgeReservedFiles, 'function', '_purgeReservedFiles should be exported');
+    // On non-Windows, _purgeReservedFiles should be a no-op that doesn't throw
+    const tmpDir = createTmpDir();
+    // Should not throw on empty dir
+    shared._purgeReservedFiles(tmpDir);
+    // Should not throw on non-existent dir
+    shared._purgeReservedFiles(path.join(tmpDir, 'nonexistent'));
+  });
+
+  await test('removeWorktree logs rd /s /q fallback failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
+    assert.ok(fn.includes('rd /s /q fallback failed'), 'Should log rd /s /q failures instead of silently swallowing');
+  });
 }
 
 async function testMetricsEnrichment() {

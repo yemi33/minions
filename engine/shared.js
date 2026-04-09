@@ -857,8 +857,49 @@ function mutatePullRequests(filePath, mutator) {
  * Remove a git worktree, falling back to fs.rmSync if git fails (e.g., locked on Windows).
  * Only removes directories under worktreeRoot to prevent accidental deletion.
  * Tracks persistent failures to avoid retrying locked paths every cleanup cycle.
+ *
+ * On Windows, reserved device-name files (NUL, CON, PRN, AUX, etc.) can appear in
+ * worktree directories when shell redirections run under Git Bash/WSL. These block
+ * git worktree remove, fs.rmSync, and PowerShell Remove-Item. Two mitigations:
+ * 1. _purgeReservedFiles() deletes them via the \\?\ extended path prefix before removal
+ * 2. cmd /c rd /s /q as final fallback handles any remaining reserved names
  */
 const _removeWorktreeFailures = new Map(); // path → { count, lastAttempt }
+
+// Windows reserved device names that cannot be deleted via normal paths
+const _WIN_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
+/**
+ * Recursively purge Windows reserved-name pseudo-files (NUL, CON, PRN, AUX, etc.)
+ * using the \\?\ extended path prefix that bypasses reserved-name interpretation.
+ * Called before normal deletion attempts on Windows to unblock git/fs operations.
+ */
+function _purgeReservedFiles(dirPath) {
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        _purgeReservedFiles(fullPath);
+      } else {
+        // Match NUL, NUL.txt, con, con.log, etc.
+        const baseName = entry.name.toUpperCase().split('.')[0];
+        if (_WIN_RESERVED_NAMES.has(baseName)) {
+          // \\?\ prefix bypasses Win32 reserved-name interpretation
+          fs.unlinkSync('\\\\?\\' + fullPath);
+        }
+      }
+    } catch {
+      // Best-effort: file may already be gone or inaccessible
+    }
+  }
+}
+
 function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   const resolved = path.resolve(wtPath);
   const resolvedRoot = path.resolve(worktreeRoot) + path.sep;
@@ -869,6 +910,11 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   // Skip paths that failed 3+ times — retry after 1 hour cooldown
   const prior = _removeWorktreeFailures.get(resolved);
   if (prior && prior.count >= 3 && Date.now() - prior.lastAttempt < 3600000) return false;
+
+  // Windows: purge reserved-name pseudo-files (NUL, CON, etc.) that block normal deletion
+  if (process.platform === 'win32') {
+    _purgeReservedFiles(resolved);
+  }
 
   try {
     exec(`git worktree remove "${wtPath}" --force`, { cwd: gitRoot, stdio: 'pipe', timeout: 15000, windowsHide: true });
@@ -881,14 +927,17 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
       _removeWorktreeFailures.delete(resolved);
       return true;
     } catch (rmErr) {
-      // Windows EPERM: a process may hold file handles — try rd /s /q as fallback
-      if (process.platform === 'win32' && rmErr.code === 'EPERM') {
+      // Windows: try cmd /c rd /s /q for any error — handles reserved device names,
+      // locked files, and partially-deleted directories (not just EPERM)
+      if (process.platform === 'win32') {
         try {
-          exec(`rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
+          exec(`cmd /c rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
           try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
           _removeWorktreeFailures.delete(resolved);
           return true;
-        } catch {}
+        } catch (rdErr) {
+          log('warn', `removeWorktree: rd /s /q fallback failed for ${wtPath}: ${rdErr.message}`);
+        }
       }
       const fail = _removeWorktreeFailures.get(resolved) || { count: 0, lastAttempt: 0 };
       fail.count++;
@@ -963,6 +1012,8 @@ module.exports = {
   killGracefully,
   killImmediate,
   removeWorktree,
+  _purgeReservedFiles, // exported for testing
+  _WIN_RESERVED_NAMES, // exported for testing
   LOCK_STALE_MS,
   flushLogs,
   slugify,
