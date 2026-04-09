@@ -56,6 +56,7 @@ async function _submitCreatePlan() {
 async function refreshPlans() {
   try {
     const plans = await fetch('/api/plans').then(r => r.json());
+    window._lastPlans = plans; // Store globally so plan modal can access
     renderPlans(plans);
   } catch (e) { console.error('plans refresh:', e.message); }
 }
@@ -434,13 +435,15 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const isMdPlan = normalizedFile.endsWith('.md');
   let planStatus = '';
   try { if (normalizedFile.endsWith('.json')) planStatus = JSON.parse(raw).status || ''; } catch {}
-  // Modal buttons mirror card logic — derive effectiveStatus the same way
-  const allPlans = window._lastStatus?.plans || [];
+  // Modal buttons mirror card logic — use cached plans data (from /api/plans, not /api/status)
+  const allPlans = window._lastPlans || [];
   const cardPlan = allPlans.find(p => p.file === normalizedFile || p.sourcePlan === normalizedFile || (p.file?.endsWith('.json') && p.file === normalizedFile));
   // Also check for linked PRD by searching all plans for a PRD whose source_plan matches this file
   const linkedPrd = allPlans.find(p => p.sourcePlan === normalizedFile && p.format === 'prd');
-  const effectiveStatus = cardPlan ? derivePlanStatus(cardPlan) : (linkedPrd ? derivePlanStatus(linkedPrd) : (planStatus || 'active'));
   const prdFile = cardPlan?.file?.endsWith('.json') ? cardPlan.file : (linkedPrd?.file || '');
+  const prdJsonStatus = linkedPrd?.status || (cardPlan?.file?.endsWith('.json') ? cardPlan.status : '') || planStatus || '';
+  const allWi = window._lastWorkItems || [];
+  const effectiveStatus = (prdFile || normalizedFile) ? derivePlanStatus(prdFile, normalizedFile, prdJsonStatus, allWi) : (planStatus || 'active');
   const isArchived = !!(cardPlan?.archived || linkedPrd?.archived);
   const isCompleted = effectiveStatus === 'completed';
   const isDraft = isMdPlan && !prdFile && !isCompleted;

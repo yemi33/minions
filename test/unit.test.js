@@ -4765,6 +4765,51 @@ async function testVerifyWorkflow() {
       'Should normalize branch names via sanitizeBranch');
   });
 
+  // ── Plan modal button consistency with card ──
+
+  await test('plan modal derives effectiveStatus using derivePlanStatus with correct args', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('derivePlanStatus(prdFile, normalizedFile, prdJsonStatus, allWi)'),
+      'Modal must call derivePlanStatus with (prdFile, mdFile, prdJsonStatus, workItems) — same as card');
+  });
+
+  await test('plan modal uses _lastPlans not _lastStatus.plans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('window._lastPlans'),
+      'Modal should use _lastPlans (from /api/plans) not _lastStatus.plans');
+  });
+
+  await test('refreshPlans stores plans in window._lastPlans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('window._lastPlans = plans'),
+      'refreshPlans must store plans globally for modal access');
+  });
+
+  await test('plan modal hides Execute for completed plans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('!isCompleted'),
+      'isDraft must check !isCompleted to prevent Execute on completed plans');
+  });
+
+  await test('plan modal shows Completed and In Progress labels', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('>Completed<'),
+      'Should show Completed status label');
+    assert.ok(modalFn.includes('>In Progress<'),
+      'Should show In Progress status label');
+  });
+
+  await test('plan modal shows Approve/Reject for awaiting-approval', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('isNeedsAction') && modalFn.includes('planApprove') && modalFn.includes('planReject'),
+      'Should show Approve and Reject buttons when plan needs action');
+  });
+
   // ── Verify badge: E2E PR + Testing Guide display logic ──
 
   await test('verify badge shows checkmark and "Verified" when done', () => {
