@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.655 (2026-04-09)
+
+### Fixes
+-  skip PR reconciliation for projects with no PRs or work items
+
 ## 0.1.654 (2026-04-09)
 
 ### Fixes
