@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.729 (2026-04-09)
+
+### Features
+- playbook improvements — soften CAPS, add context-awareness, restructure decompose output
+- pipeline auto-detect — skip wait/plan stages when artifacts exist
+- replace raw status strings with WI_STATUS constants in dashboard.js
+- Soften playbook CAPS emphasis and add context-awareness guidance
+-  Add structured completion protocol to PR-producing playbooks
+-  Create engine/recovery.js with recovery recipes
+-  Add FAILURE_CLASS enum and classifyFailure() function
+-  Add AGENT_STATUS enum and worker-state tracking
+-  Validate required template variables before dispatch
+- make post-verify plan archiving opt-in via autoArchive config
+
+### Fixes
+-  resolve 3 failing unit tests on PR-661
+-  repair 3 pre-existing test failures in source-pattern tests
+-  merge master, sync dashboard-build jsFiles, bump HTML size limit
+-  resolve 4 pre-existing test failures breaking CI
+-  reject JSON/UUID fragments as PR titles, self-heal from platform
+
 ## 0.1.725 (2026-04-09)
 
 ### Fixes
