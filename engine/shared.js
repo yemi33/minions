@@ -303,9 +303,9 @@ function writeToInbox(agentId, slug, content, _inboxDir) {
     if (existing) return false;
     const noteId = `NOTE-${uid()}`;
     // Inject structured ID as YAML frontmatter if content doesn't already have it
-    const hasFrontmatter = content.trimStart().startsWith('---');
+    const hasFrontmatter = /^\s*---[\r\n]/.test(content);
     const tagged = hasFrontmatter
-      ? content.replace(/^---[\r\n]+/, `---\nid: ${noteId}\n`)
+      ? content.replace(/^\s*---[\r\n]+/, `---\nid: ${noteId}\n`)
       : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n---\n\n${content}`;
     const filePath = path.join(inboxDir, `${prefix}.md`);
     safeWrite(filePath, tagged);
