@@ -196,8 +196,9 @@ function _buildNodeChain(stages, run, options) {
     if (i > 0) html += '<div class="pl-node-arrow">\u2192</div>';
 
     html += '<div class="pl-node">';
-    html += '<div class="pl-node-box ' + cls + (isCondition ? ' condition' : '') + '" title="' + escHtml(s.id) + ': ' + st + '">';
-    html += icon + ' ' + escHtml(s.title || s.id);
+    var label = compact ? (s.id || '').slice(0, 16) : (s.title || s.id || '').slice(0, 24);
+    html += '<div class="pl-node-box ' + cls + (isCondition ? ' condition' : '') + '" title="' + escHtml((s.title || s.id) + ': ' + st) + '">';
+    html += icon + ' ' + escHtml(label);
     if (isWait && s.duration) html += ' ' + escHtml(s.duration);
     html += '</div>';
 
@@ -299,7 +300,6 @@ function renderPipelines(pipelines) {
           (p.enabled === false ? '<span style="font-size:9px;color:var(--red)"' + (p._stopReason ? ' title="' + escHtml(p._stopReason) + '"' : '') + '>' + (p._stoppedBy ? 'AUTO-STOPPED' : 'DISABLED') + '</span>' : '') +
         '</div>' +
       '</div>' +
-      '<div style="margin-top:6px;display:flex;gap:4px;align-items:center;flex-wrap:wrap">' + stageFlow + '</div>' +
       resourcesHtml +
       progressHtml +
     '</div>';
