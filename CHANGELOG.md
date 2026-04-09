@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.738 (2026-04-09)
+
+### Fixes
+- add regression tests for undefined DEFAULT_HEARTBEAT_TIMEOUTS (closes #721) (#726)
+-  pins not showing — invalidatePinsCache was clearing cache before async sync
+
 ## 0.1.736 (2026-04-09)
 
 ### Fixes
