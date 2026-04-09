@@ -85,9 +85,20 @@ const commands = {
     }
 
     // Record version + git commit so dashboard can detect stale engine code
+    // Bust require cache so npm updates are detected after minions restart
     let codeVersion = null;
-    try { codeVersion = require('../package.json').version; } catch {}
-    if (!codeVersion) { try { codeVersion = require('@yemi33/minions/package.json').version; } catch {} }
+    try {
+      const pkgPath = require.resolve('../package.json');
+      delete require.cache[pkgPath];
+      codeVersion = require('../package.json').version;
+    } catch {}
+    if (!codeVersion) {
+      try {
+        const pkgPath = require.resolve('@yemi33/minions/package.json');
+        delete require.cache[pkgPath];
+        codeVersion = require('@yemi33/minions/package.json').version;
+      } catch {}
+    }
     let codeCommit = null;
     try { codeCommit = require('child_process').execSync('git rev-parse --short HEAD', { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', timeout: 5000, windowsHide: true }).trim(); } catch {}
     safeWrite(CONTROL_PATH, { state: 'running', pid: process.pid, started_at: e.ts(), codeVersion, codeCommit });

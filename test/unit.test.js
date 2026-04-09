@@ -8731,6 +8731,11 @@ async function testVersionCheck() {
     assert.ok(cliSrc.includes('git rev-parse --short HEAD'), 'codeCommit should come from git');
   });
 
+  await test('engine cli.js busts require cache for package.json before reading version', () => {
+    assert.ok(cliSrc.includes("delete require.cache[") && cliSrc.includes("require.resolve('../package.json')"),
+      'cli.js must bust require cache for package.json so npm updates are detected after restart');
+  });
+
   await test('dashboard getStatus includes version object with engine + dashboard stale flags', () => {
     assert.ok(dashSrc.includes('version:') && dashSrc.includes('engineStale') && dashSrc.includes('dashboardStale') && dashSrc.includes('updateAvailable:'),
       'status response must include version with engineStale, dashboardStale, and updateAvailable fields');
