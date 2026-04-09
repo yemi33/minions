@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT } = shared;
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -100,7 +100,7 @@ const withFileLock = shared.withFileLock;
 // ─── Dispatch Management (extracted to engine/dispatch.js) ───────────────────
 
 const { mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch,
-  writeInboxAlert } = require('./engine/dispatch');
+  writeInboxAlert, updateAgentStatus } = require('./engine/dispatch');
 
 // ─── Timeout / Steering / Idle (extracted to engine/timeout.js) ──────────────
 
@@ -125,7 +125,8 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
-const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
+const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
+  buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
   getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
@@ -136,7 +137,7 @@ const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -278,6 +279,8 @@ async function spawnAgent(dispatchItem, config) {
   const engineConfig = config.engine || {};
   const startedAt = ts();
 
+  updateAgentStatus(id, AGENT_STATUS.SPAWNING, `Preparing ${type} task for ${agentId}`);
+
   // Resolve project context for this dispatch
   // meta.project has {name, localPath} — enrich with full config (mainBranch, repoHost, etc.)
   const metaProject = meta?.project || {};
@@ -311,6 +314,7 @@ async function spawnAgent(dispatchItem, config) {
   const _cleanupPromptFiles = () => { safeUnlink(promptPath); safeUnlink(sysPromptPath); };
 
   if (branchName) {
+    updateAgentStatus(id, AGENT_STATUS.WORKTREE_SETUP, `Setting up worktree for branch ${branchName}`);
     const wtSuffix = id ? id.split('-').pop() : shared.uid();
     const projectSlug = (project.name || 'default').replace(/[^a-zA-Z0-9_-]/g, '-');
     const wtDirName = `${projectSlug}-${branchName}-${wtSuffix}`;
@@ -491,6 +495,8 @@ async function spawnAgent(dispatchItem, config) {
     }
   }
 
+  updateAgentStatus(id, AGENT_STATUS.READY, 'Worktree ready, preparing to spawn process');
+
   // Safety check: warn if a write-capable task is running in the main repo without a worktree
   if (cwd === rootDir && ['implement', 'implement:large', 'fix', 'test', 'verify', 'plan-to-prd'].includes(type)) {
     log('warn', `Agent ${agentId} running ${type} task in main repo (no worktree) for ${id} — changes may land on master directly`);
@@ -558,6 +564,8 @@ async function spawnAgent(dispatchItem, config) {
   let stderr = '';
   let lastOutputAt = Date.now();
   let heartbeatTimer = null;
+  let _trustCheckDone = false;
+  const _spawnTime = Date.now();
 
   // Live output file — written as data arrives so dashboard can tail it
   const liveOutputPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
@@ -592,6 +600,25 @@ async function spawnAgent(dispatchItem, config) {
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
 
+    // Trust gate detection: check first 30s of output for trust/permission prompts
+    if (!_trustCheckDone && (Date.now() - _spawnTime) <= 30000) {
+      const lower = chunk.toLowerCase();
+      if (/\b(trust this|do you trust|allow access|grant permission|approve tools?|permission prompt)\b/.test(lower)) {
+        _trustCheckDone = true;
+        updateAgentStatus(id, AGENT_STATUS.TRUST_BLOCKED, 'Agent appears to be waiting for trust approval');
+        log('warn', `Trust gate detected for ${agentId} (${id}) — agent may be blocked on a permission prompt`);
+        writeInboxAlert(`trust-blocked-${id}`,
+          `# Trust Gate Blocked — \`${id}\`\n\n` +
+          `**Agent:** ${agentId}\n` +
+          `**Task:** ${dispatchItem.task || type}\n\n` +
+          `The agent appears to be blocked on a trust/permission prompt within 30s of spawn.\n` +
+          `Check the agent's live output and approve the trust gate manually.\n`
+        );
+      }
+    } else if (!_trustCheckDone) {
+      _trustCheckDone = true; // past 30s window
+    }
+
     // Capture sessionId early for mid-session steering
     const procInfo = activeProcesses.get(id);
     if (procInfo && !procInfo.sessionId && chunk.includes('session_id')) {
@@ -621,6 +648,10 @@ async function spawnAgent(dispatchItem, config) {
   async function onAgentClose(code) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('info', `Agent ${agentId} (${id}) exited with code ${code}`);
+
+    // Emit worker-state transition: FINISHED or FAILED
+    updateAgentStatus(id, code === 0 ? AGENT_STATUS.FINISHED : AGENT_STATUS.FAILED,
+      code === 0 ? 'Agent completed successfully' : `Agent exited with code ${code}`);
 
     // Clear stale session if resume failed — prevents burning all retries on the same bad session
     if (code !== 0 && cachedSessionId && stderr.includes('No conversation found')) {
@@ -762,11 +793,14 @@ async function spawnAgent(dispatchItem, config) {
     safeWrite(archivePath, outputContent);
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
+    // Classify failure for non-zero exits
+    const failureClass = code !== 0 ? classifyFailure(code, stdout, stderr) : undefined;
+
     // Detect configuration errors (e.g. Claude CLI not found) — fail immediately with clear message
     if (code === 78) {
       const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
-      log('error', `Agent ${agentId} (${id}) failed: ${errMsg}`);
-      completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '');
+      log('error', `Agent ${agentId} (${id}) failed: ${errMsg} [${failureClass}]`);
+      completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '', { failureClass });
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
@@ -779,7 +813,8 @@ async function spawnAgent(dispatchItem, config) {
     // Move from active to completed in dispatch (single source of truth for agent status)
     // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
     const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
-    completeDispatch(id, effectiveResult, '', resultSummary);
+    const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
+    completeDispatch(id, effectiveResult, '', resultSummary, completeOpts);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
@@ -857,6 +892,8 @@ async function spawnAgent(dispatchItem, config) {
 
   // Track process — even if PID isn't available yet (async on Windows)
   activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
+
+  updateAgentStatus(id, AGENT_STATUS.RUNNING, `Process spawned for ${agentId}`);
 
   // Log PID and persist to registry
   if (proc.pid) {
@@ -2919,7 +2956,7 @@ module.exports = {
   validateConfig,
 
   // Dispatch management (re-exported from engine/dispatch.js)
-  mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert,
+  mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert, updateAgentStatus,
   activeProcesses, get engineRestartGraceUntil() { return engineRestartGraceUntil; },
   set engineRestartGraceUntil(v) { engineRestartGraceUntil = v; },
 
@@ -2934,7 +2971,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
 
   // Playbooks
-  renderPlaybook, buildWorkItemDispatchVars,
+  renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,

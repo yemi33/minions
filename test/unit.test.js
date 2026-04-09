@@ -2380,8 +2380,8 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
-    assert.ok(src.includes('retryableFailure && retries < maxRetries'),
-      'Auto-retry should run only for retryable failures under retry cap');
+    assert.ok(src.includes('retryableFailure && classAllowsRetry'),
+      'Auto-retry should run only for retryable failures under per-class retry cap');
     assert.ok(src.includes('Non-retryable failure:'),
       'Non-retryable failures should be surfaced explicitly');
   });
@@ -3492,7 +3492,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(typeof result === 'string' && result.length > 0,
@@ -3503,7 +3504,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'UNIQUE_AGENT_SENTINEL', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(result && result.includes('UNIQUE_AGENT_SENTINEL'),
@@ -3520,6 +3522,107 @@ async function testRenderPlaybook() {
   await test('renderPlaybook injects skill extraction instructions', () => {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
+  });
+}
+
+// ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
+
+async function testValidatePlaybookVars() {
+  console.log('\n── engine/playbook.js — validatePlaybookVars ──');
+
+  let validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, renderPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    validatePlaybookVars = pb.validatePlaybookVars;
+    PLAYBOOK_REQUIRED_VARS = pb.PLAYBOOK_REQUIRED_VARS;
+    renderPlaybook = pb.renderPlaybook;
+  } catch {}
+
+  if (!validatePlaybookVars) {
+    skip('validatePlaybookVars', 'engine/playbook.validatePlaybookVars not available');
+    return;
+  }
+
+  await test('validatePlaybookVars returns valid for unknown playbook type', () => {
+    const result = validatePlaybookVars('nonexistent-playbook', {});
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars returns missing vars for implement with empty vars', () => {
+    const result = validatePlaybookVars('implement', {});
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('item_id'), 'Should flag item_id as missing');
+    assert.ok(result.missing.includes('item_name'), 'Should flag item_name as missing');
+    assert.ok(result.missing.includes('branch_name'), 'Should flag branch_name as missing');
+    assert.ok(result.missing.includes('project_path'), 'Should flag project_path as missing');
+  });
+
+  await test('validatePlaybookVars passes when all required vars are provided', () => {
+    const result = validatePlaybookVars('implement', {
+      item_id: 'W-001', item_name: 'Test feature',
+      branch_name: 'work/W-001', project_path: '/tmp/repo',
+    });
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars treats empty strings as missing', () => {
+    const result = validatePlaybookVars('fix', { pr_id: '', pr_branch: 'some-branch' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'Empty string should count as missing');
+    assert.ok(!result.missing.includes('pr_branch'), 'Non-empty string should not be flagged');
+  });
+
+  await test('validatePlaybookVars treats whitespace-only strings as missing', () => {
+    const result = validatePlaybookVars('ask', { question: '   ' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('question'), 'Whitespace-only should count as missing');
+  });
+
+  await test('validatePlaybookVars treats null/undefined as missing', () => {
+    const result = validatePlaybookVars('review', { pr_id: null, pr_branch: undefined });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'null should count as missing');
+    assert.ok(result.missing.includes('pr_branch'), 'undefined should count as missing');
+  });
+
+  await test('PLAYBOOK_REQUIRED_VARS covers all dispatched playbook types', () => {
+    const expectedTypes = [
+      'implement', 'implement-shared', 'fix', 'review', 'build-and-test',
+      'explore', 'ask', 'plan', 'plan-to-prd', 'decompose', 'verify',
+      'test', 'work-item', 'meeting-investigate', 'meeting-debate', 'meeting-conclude',
+    ];
+    for (const t of expectedTypes) {
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t], `Should define required vars for "${t}"`);
+      assert.ok(Array.isArray(PLAYBOOK_REQUIRED_VARS[t]), `Required vars for "${t}" should be an array`);
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t].length > 0, `Required vars for "${t}" should not be empty`);
+    }
+  });
+
+  await test('validatePlaybookVars works for all meeting playbook types', () => {
+    for (const type of ['meeting-investigate', 'meeting-debate', 'meeting-conclude']) {
+      const result = validatePlaybookVars(type, { meeting_title: 'Daily Standup', agenda: 'Review progress' });
+      assert.strictEqual(result.valid, true, `${type} should pass with title and agenda`);
+    }
+  });
+
+  await test('renderPlaybook returns null when required vars are missing', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation', 'renderPlaybook not available'); return; }
+    // implement requires item_id, item_name, branch_name, project_path — provide none
+    const result = renderPlaybook('implement', { agent_id: 'test', agent_name: 'Test' });
+    assert.strictEqual(result, null, 'Should return null when required vars are missing');
+  });
+
+  await test('renderPlaybook succeeds when all required vars are provided', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation-pass', 'renderPlaybook not available'); return; }
+    const result = renderPlaybook('implement', {
+      agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+      item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+      project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return rendered playbook when all required vars are provided');
   });
 }
 
@@ -6390,6 +6493,7 @@ async function main() {
     await testCooldownSystem();
     await testResolveAgent();
     await testRenderPlaybook();
+    await testValidatePlaybookVars();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
@@ -6491,6 +6595,18 @@ async function main() {
 
     // Version check feature
     await testVersionCheck();
+
+    // P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking
+    await testAgentStatusEnum();
+
+    // P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure()
+    await testFailureClassEnum();
+
+    // P-d9q4w7e6: Recovery recipes
+    await testRecoveryRecipes();
+
+    // P-h2t6r1j8: Structured completion protocol
+    await testStructuredCompletion();
 
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
@@ -9240,8 +9356,8 @@ async function testAutoRecoveryAndAtomicity() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered }'),
-      'runPostCompletionHooks must return autoRecovered in its result');
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion }'),
+      'runPostCompletionHooks must return autoRecovered and structuredCompletion in its result');
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
@@ -10702,6 +10818,528 @@ async function testSpawnEngineStatePreservation() {
       'cli.js start should check for running state');
     assert.ok(cliSrc.includes('process is dead') && cliSrc.includes('restarting'),
       'cli.js start should handle dead PID case and proceed with restart');
+  });
+}
+
+// ─── P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking ──────────────
+
+async function testAgentStatusEnum() {
+  console.log('\n── AGENT_STATUS enum and worker-state tracking ──');
+
+  await test('AGENT_STATUS enum has all 8 required values', () => {
+    const { AGENT_STATUS } = shared;
+    assert.ok(AGENT_STATUS, 'AGENT_STATUS should be exported from shared.js');
+    assert.strictEqual(AGENT_STATUS.SPAWNING, 'spawning');
+    assert.strictEqual(AGENT_STATUS.WORKTREE_SETUP, 'worktree-setup');
+    assert.strictEqual(AGENT_STATUS.READY, 'ready');
+    assert.strictEqual(AGENT_STATUS.RUNNING, 'running');
+    assert.strictEqual(AGENT_STATUS.FINISHED, 'finished');
+    assert.strictEqual(AGENT_STATUS.FAILED, 'failed');
+    assert.strictEqual(AGENT_STATUS.TRUST_BLOCKED, 'trust-blocked');
+    assert.strictEqual(AGENT_STATUS.TIMED_OUT, 'timed-out');
+    assert.strictEqual(Object.keys(AGENT_STATUS).length, 8, 'AGENT_STATUS should have exactly 8 values');
+  });
+
+  await test('AGENT_STATUS values are all unique', () => {
+    const values = Object.values(shared.AGENT_STATUS);
+    assert.strictEqual(new Set(values).size, values.length, 'All AGENT_STATUS values should be unique');
+  });
+
+  await test('updateAgentStatus exported from engine/dispatch.js', () => {
+    const dispatchMod = require('../engine/dispatch');
+    assert.ok(typeof dispatchMod.updateAgentStatus === 'function',
+      'updateAgentStatus should be a function exported from dispatch.js');
+  });
+
+  await test('updateAgentStatus uses mutateDispatch for atomic updates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    // Extract the updateAgentStatus function body
+    const fnStart = src.indexOf('function updateAgentStatus(');
+    assert.ok(fnStart > -1, 'updateAgentStatus function should exist in dispatch.js');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart) + 2);
+    assert.ok(fnBody.includes('mutateDispatch('), 'updateAgentStatus should use mutateDispatch()');
+    assert.ok(fnBody.includes('workerState'), 'updateAgentStatus should set workerState');
+    assert.ok(fnBody.includes('workerStateAt'), 'updateAgentStatus should set workerStateAt');
+    assert.ok(fnBody.includes('workerStateDetail'), 'updateAgentStatus should set workerStateDetail');
+  });
+
+  await test('updateAgentStatus updates dispatch entry fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Seed dispatch with an active entry
+      testDispatch.mutateDispatch((dp) => {
+        dp.active.push({ id: 'test-status-1', agent: 'dallas', type: 'implement' });
+        return dp;
+      });
+
+      // Update the agent status
+      testDispatch.updateAgentStatus('test-status-1', shared.AGENT_STATUS.RUNNING, 'Process spawned');
+
+      // Read back and verify
+      const dp = testQueries.getDispatch();
+      const entry = dp.active.find(d => d.id === 'test-status-1');
+      assert.ok(entry, 'Active entry should still exist');
+      assert.strictEqual(entry.workerState, 'running');
+      assert.ok(entry.workerStateAt, 'workerStateAt should be set');
+      assert.strictEqual(entry.workerStateDetail, 'Process spawned');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentStatus no-ops gracefully on missing dispatch ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      // Should not throw
+      testDispatch.updateAgentStatus('nonexistent-id', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus('', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus(null, shared.AGENT_STATUS.RUNNING, 'test');
+    } finally { restore(); }
+  });
+
+  await test('spawnAgent emits SPAWNING, WORKTREE_SETUP, READY, RUNNING statuses', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.SPAWNING'), 'spawnAgent should emit SPAWNING status');
+    assert.ok(src.includes('AGENT_STATUS.WORKTREE_SETUP'), 'spawnAgent should emit WORKTREE_SETUP status');
+    assert.ok(src.includes('AGENT_STATUS.READY'), 'spawnAgent should emit READY status');
+    assert.ok(src.includes('AGENT_STATUS.RUNNING'), 'spawnAgent should emit RUNNING status');
+  });
+
+  await test('onAgentClose emits FINISHED on code 0, FAILED on nonzero', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.FINISHED'), 'onAgentClose should emit FINISHED');
+    assert.ok(src.includes('AGENT_STATUS.FAILED'), 'onAgentClose should emit FAILED');
+    // Verify the conditional: code === 0 → FINISHED, else FAILED
+    assert.ok(src.includes('code === 0 ? AGENT_STATUS.FINISHED : AGENT_STATUS.FAILED'),
+      'Should use ternary to choose FINISHED/FAILED based on exit code');
+  });
+
+  await test('timeout.js emits TIMED_OUT status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TIMED_OUT'), 'timeout.js should emit TIMED_OUT status');
+    // Verify it's called for both hard timeout and heartbeat timeout
+    const timedOutCount = (src.match(/AGENT_STATUS\.TIMED_OUT/g) || []).length;
+    assert.ok(timedOutCount >= 3, `TIMED_OUT should be emitted for hard timeout, orphan, and hung agent (found ${timedOutCount} occurrences)`);
+  });
+
+  await test('trust gate detection checks first 30s of output', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TRUST_BLOCKED'), 'engine.js should emit TRUST_BLOCKED');
+    assert.ok(src.includes('_trustCheckDone'), 'Should track whether trust check is complete');
+    assert.ok(src.includes('30000'), 'Should use 30s window for trust gate detection');
+    assert.ok(src.includes('trust-blocked'), 'Should write inbox alert for trust gate');
+  });
+
+  await test('engine.js uses updateAgentStatus (not raw dispatch mutation) for status transitions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // All status transitions should go through updateAgentStatus
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.SPAWNING"),
+      'SPAWNING should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.READY"),
+      'READY should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.RUNNING"),
+      'RUNNING should use updateAgentStatus helper');
+  });
+
+  await test('dashboard API returns workerState as passthrough', () => {
+    // The dashboard's getStatus returns dispatch data directly — workerState flows through
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('dispatch: getDispatchQueue()'),
+      'Dashboard status should include dispatch queue as passthrough');
+  });
+}
+
+// ─── P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure() ──────────────────
+
+async function testFailureClassEnum() {
+  console.log('\n── FAILURE_CLASS enum and classifyFailure() ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('FAILURE_CLASS enum has all 10 required values', () => {
+    const { FAILURE_CLASS } = shared;
+    assert.ok(FAILURE_CLASS, 'FAILURE_CLASS should be exported from shared.js');
+    assert.strictEqual(FAILURE_CLASS.CONFIG_ERROR, 'config-error');
+    assert.strictEqual(FAILURE_CLASS.PERMISSION_BLOCKED, 'permission-blocked');
+    assert.strictEqual(FAILURE_CLASS.MERGE_CONFLICT, 'merge-conflict');
+    assert.strictEqual(FAILURE_CLASS.BUILD_FAILURE, 'build-failure');
+    assert.strictEqual(FAILURE_CLASS.TIMEOUT, 'timeout');
+    assert.strictEqual(FAILURE_CLASS.EMPTY_OUTPUT, 'empty-output');
+    assert.strictEqual(FAILURE_CLASS.SPAWN_ERROR, 'spawn-error');
+    assert.strictEqual(FAILURE_CLASS.NETWORK_ERROR, 'network-error');
+    assert.strictEqual(FAILURE_CLASS.OUT_OF_CONTEXT, 'out-of-context');
+    assert.strictEqual(FAILURE_CLASS.UNKNOWN, 'unknown');
+    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 10, 'FAILURE_CLASS should have exactly 10 values');
+  });
+
+  await test('ESCALATION_POLICY enum has all 5 values', () => {
+    const { ESCALATION_POLICY } = shared;
+    assert.ok(ESCALATION_POLICY, 'ESCALATION_POLICY should be exported from shared.js');
+    assert.strictEqual(ESCALATION_POLICY.NO_RETRY, 'no-retry');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_SAME, 'retry-same');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_FRESH, 'retry-fresh');
+    assert.strictEqual(ESCALATION_POLICY.HUMAN_REVIEW, 'human-review');
+    assert.strictEqual(ESCALATION_POLICY.AUTO, 'auto');
+    assert.strictEqual(Object.keys(ESCALATION_POLICY).length, 5, 'ESCALATION_POLICY should have exactly 5 values');
+  });
+
+  await test('classifyFailure exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.classifyFailure === 'function',
+      'classifyFailure should be a function exported from lifecycle.js');
+  });
+
+  await test('classifyFailure: exit code 78 → CONFIG_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(78, '', ''),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(78, 'some output', 'claude-code not found'),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+  });
+
+  await test('classifyFailure: permission denied → PERMISSION_BLOCKED', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: permission denied'),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'access denied for resource', ''),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+  });
+
+  await test('classifyFailure: merge conflict → MERGE_CONFLICT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'CONFLICT (content): Merge conflict in file.js\nAutomatic merge failed'),
+      shared.FAILURE_CLASS.MERGE_CONFLICT);
+  });
+
+  await test('classifyFailure: build/test failure → BUILD_FAILURE', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'npm ERR! Test failed', ''),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'error TS2304: Cannot find name'),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+  });
+
+  await test('classifyFailure: network/rate limit → NETWORK_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: rate limit exceeded (429)', ''),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: ECONNREFUSED 127.0.0.1:443'),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+  });
+
+  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: max turns reached', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'context window exceeded', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+  });
+
+  await test('classifyFailure: empty output → EMPTY_OUTPUT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'short', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+  });
+
+  await test('classifyFailure: spawn error → SPAWN_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: spawn ENOENT'),
+      shared.FAILURE_CLASS.SPAWN_ERROR);
+  });
+
+  await test('classifyFailure: unknown failure → UNKNOWN', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'some long agent output that is more than fifty characters of normal text without any error patterns', ''),
+      shared.FAILURE_CLASS.UNKNOWN);
+  });
+
+  await test('completeDispatch stores failureClass on error entries', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes('failureClass') && src.includes('item.failureClass'),
+      'completeDispatch should store failureClass on completed dispatch entry');
+    // Only stored on errors
+    assert.ok(src.includes("result === DISPATCH_RESULT.ERROR) item.failureClass"),
+      'failureClass should only be stored when result is error');
+  });
+
+  await test('isRetryableFailureReason rejects CONFIG_ERROR and PERMISSION_BLOCKED', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.CONFIG_ERROR), false,
+      'CONFIG_ERROR should never be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.PERMISSION_BLOCKED), false,
+      'PERMISSION_BLOCKED should never be retryable');
+    // Other classes remain retryable (unless reason matches non-retryable strings)
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.BUILD_FAILURE), true,
+      'BUILD_FAILURE should be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.UNKNOWN), true,
+      'UNKNOWN should be retryable');
+  });
+
+  await test('onAgentClose calls classifyFailure and passes failureClass to completeDispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('classifyFailure(code, stdout, stderr)'),
+      'onAgentClose should call classifyFailure with code, stdout, stderr');
+    assert.ok(src.includes('{ failureClass }'),
+      'onAgentClose should pass failureClass to completeDispatch opts');
+  });
+
+  await test('exit code 78 uses classifyFailure result (CONFIG_ERROR)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // The code=78 handler should pass failureClass to completeDispatch
+    const section78 = src.slice(src.indexOf('code === 78'), src.indexOf('code === 78') + 500);
+    assert.ok(section78.includes('failureClass'),
+      'Exit code 78 handler should use failureClass from classifyFailure');
+  });
+
+  await test('existing reason-based non-retryable strings still work', () => {
+    const dispatch = require('../engine/dispatch');
+    // Without failureClass, reason-based classification still works
+    assert.strictEqual(dispatch.isRetryableFailureReason('no playbook rendered'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('validation failed'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('missing required vars'), false);
+    // Retryable reasons
+    assert.strictEqual(dispatch.isRetryableFailureReason('agent timed out'), true);
+    assert.strictEqual(dispatch.isRetryableFailureReason(''), true);
+  });
+}
+
+// ─── P-d9q4w7e6: Recovery recipes ──────────────────────────────────────────
+
+async function testRecoveryRecipes() {
+  console.log('\n── Recovery recipes (engine/recovery.js) ──');
+  const recoveryMod = require('../engine/recovery');
+
+  await test('engine/recovery.js exists and exports expected functions', () => {
+    assert.ok(typeof recoveryMod.getRecoveryRecipe === 'function',
+      'getRecoveryRecipe should be exported');
+    assert.ok(typeof recoveryMod.shouldRetry === 'function',
+      'shouldRetry should be exported');
+    assert.ok(recoveryMod.RECOVERY_RECIPES instanceof Map,
+      'RECOVERY_RECIPES should be a Map');
+  });
+
+  await test('RECOVERY_RECIPES has entry for every FAILURE_CLASS value', () => {
+    const { FAILURE_CLASS } = shared;
+    for (const fc of Object.values(FAILURE_CLASS)) {
+      const recipe = recoveryMod.getRecoveryRecipe(fc);
+      assert.ok(recipe, `Missing recipe for failure class: ${fc}`);
+      assert.ok('maxAttempts' in recipe, `Recipe for ${fc} missing maxAttempts`);
+      assert.ok(recipe.escalation, `Recipe for ${fc} missing escalation`);
+      assert.ok(typeof recipe.freshSession === 'boolean', `Recipe for ${fc} missing freshSession`);
+      assert.ok(recipe.description, `Recipe for ${fc} missing description`);
+    }
+  });
+
+  await test('getRecoveryRecipe returns UNKNOWN recipe for unrecognized class', () => {
+    const recipe = recoveryMod.getRecoveryRecipe('nonexistent-class');
+    assert.ok(recipe, 'Should return fallback recipe');
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.AUTO);
+  });
+
+  await test('CONFIG_ERROR: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.CONFIG_ERROR, 0), false);
+  });
+
+  await test('PERMISSION_BLOCKED: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.PERMISSION_BLOCKED, 0), false);
+  });
+
+  await test('MERGE_CONFLICT: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 2), false);
+  });
+
+  await test('BUILD_FAILURE: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 2), false);
+  });
+
+  await test('TIMEOUT: maxAttempts=1, freshSession=true', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.TIMEOUT);
+    assert.strictEqual(recipe.freshSession, true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 1), false);
+  });
+
+  await test('NETWORK_ERROR: maxAttempts=3, most retries', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 3), false);
+  });
+
+  await test('UNKNOWN: falls back to ENGINE_DEFAULTS.maxRetries', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.UNKNOWN);
+    assert.strictEqual(recipe.maxAttempts, null, 'UNKNOWN maxAttempts should be null (fallback)');
+    // ENGINE_DEFAULTS.maxRetries is 3
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 3), false);
+  });
+
+  await test('shouldRetry with empty failureClass falls back to UNKNOWN', () => {
+    // No failureClass → treated as UNKNOWN → uses ENGINE_DEFAULTS.maxRetries
+    assert.strictEqual(recoveryMod.shouldRetry('', 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(null, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(undefined, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry('', 3), false);
+  });
+
+  await test('completeDispatch uses shouldRetry from recovery.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes("recovery().shouldRetry("),
+      'completeDispatch should call shouldRetry from recovery module');
+  });
+
+  await test('recovery.js has zero external dependencies', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'recovery.js'), 'utf8');
+    const requires = src.match(/require\(['"](.*?)['"]\)/g) || [];
+    for (const req of requires) {
+      assert.ok(req.includes('./shared') || req.includes('node:'),
+        `recovery.js should only import from shared.js or node builtins, found: ${req}`);
+    }
+  });
+}
+
+// ─── P-h2t6r1j8: Structured completion protocol ─────────────────────────────
+
+async function testStructuredCompletion() {
+  console.log('\n── Structured completion protocol ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('COMPLETION_FIELDS exported from engine/shared.js', () => {
+    assert.ok(Array.isArray(shared.COMPLETION_FIELDS),
+      'COMPLETION_FIELDS should be an array');
+    assert.strictEqual(shared.COMPLETION_FIELDS.length, 6,
+      'COMPLETION_FIELDS should have 6 fields');
+    assert.ok(shared.COMPLETION_FIELDS.includes('status'), 'Should include status');
+    assert.ok(shared.COMPLETION_FIELDS.includes('files_changed'), 'Should include files_changed');
+    assert.ok(shared.COMPLETION_FIELDS.includes('tests'), 'Should include tests');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pr'), 'Should include pr');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pending'), 'Should include pending');
+    assert.ok(shared.COMPLETION_FIELDS.includes('failure_class'), 'Should include failure_class');
+  });
+
+  await test('parseStructuredCompletion exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.parseStructuredCompletion === 'function',
+      'parseStructuredCompletion should be a function exported from lifecycle.js');
+  });
+
+  await test('parseStructuredCompletion: valid block returns parsed object', () => {
+    const stdout = 'Some agent output...\n```completion\nstatus: done\nfiles_changed: engine/shared.js, engine/lifecycle.js\ntests: pass\npr: PR-456\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object');
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.files_changed, 'engine/shared.js, engine/lifecycle.js');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.pr, 'PR-456');
+    assert.strictEqual(result.failure_class, 'N/A');
+    assert.strictEqual(result.pending, 'none');
+  });
+
+  await test('parseStructuredCompletion: missing block returns null', () => {
+    const stdout = 'Agent output without completion block\nDone!';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when no completion block found');
+  });
+
+  await test('parseStructuredCompletion: empty/null input returns null', () => {
+    assert.strictEqual(lifecycle.parseStructuredCompletion(''), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(null), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(undefined), null);
+  });
+
+  await test('parseStructuredCompletion: malformed block (no status) returns null', () => {
+    const stdout = '```completion\nfiles_changed: foo.js\ntests: pass\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when status field is missing');
+  });
+
+  await test('parseStructuredCompletion: multiple blocks takes last one', () => {
+    const stdout = '```completion\nstatus: partial\npr: N/A\n```\nRetrying...\n```completion\nstatus: done\npr: PR-789\ntests: pass\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object from last block');
+    assert.strictEqual(result.status, 'done', 'Should use last block');
+    assert.strictEqual(result.pr, 'PR-789', 'Should use last block PR');
+  });
+
+  await test('parseStructuredCompletion: failed status with failure_class', () => {
+    const stdout = '```completion\nstatus: failed\nfiles_changed: none\ntests: fail\npr: N/A\nfailure_class: build-failure\npending: fix compilation errors\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.failure_class, 'build-failure');
+    assert.strictEqual(result.pending, 'fix compilation errors');
+  });
+
+  await test('implement.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'implement.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'implement.md should have ```completion block');
+    assert.ok(src.includes('status:'), 'implement.md completion should have status field');
+    assert.ok(src.includes('pr:'), 'implement.md completion should have pr field');
+  });
+
+  await test('fix.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'fix.md should have ```completion block');
+  });
+
+  await test('verify.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'verify.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'verify.md should have ```completion block');
+  });
+
+  await test('## Completion is after ## When to Stop in implement.md', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
+    const stopIdx = src.indexOf('## When to Stop');
+    const completionIdx = src.indexOf('## Completion');
+    assert.ok(stopIdx >= 0 && completionIdx > stopIdx,
+      '## Completion must come after ## When to Stop');
+  });
+
+  await test('decompose.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'decompose.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'decompose.md should NOT have Completion section (uses structured JSON output)');
+  });
+
+  await test('review.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'review.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('explore.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'explore.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'explore.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('runPostCompletionHooks uses parseStructuredCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('parseStructuredCompletion(stdout)'),
+      'runPostCompletionHooks should call parseStructuredCompletion');
+    assert.ok(src.includes('structuredCompletion'),
+      'runPostCompletionHooks should use structuredCompletion variable');
+  });
+
+  await test('runPostCompletionHooks returns structuredCompletion in result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('structuredCompletion }'),
+      'Return object should include structuredCompletion');
+  });
+
+  await test('parseStructuredCompletion: keys are lowercased', () => {
+    const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.pr, 'PR-100');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.failure_class, 'N/A');
   });
 }
 

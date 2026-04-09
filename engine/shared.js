@@ -586,6 +586,33 @@ const MEETING_STATUS = {
   INVESTIGATING: 'investigating', DEBATING: 'debating', CONCLUDING: 'concluding',
   COMPLETED: 'completed', ARCHIVED: 'archived',
 };
+const AGENT_STATUS = {
+  SPAWNING: 'spawning', WORKTREE_SETUP: 'worktree-setup', READY: 'ready',
+  RUNNING: 'running', FINISHED: 'finished', FAILED: 'failed',
+  TRUST_BLOCKED: 'trust-blocked', TIMED_OUT: 'timed-out',
+};
+const FAILURE_CLASS = {
+  CONFIG_ERROR: 'config-error',           // Exit code 78, CLI not found, bad config
+  PERMISSION_BLOCKED: 'permission-blocked', // Trust gate, permission denied, auth failure
+  MERGE_CONFLICT: 'merge-conflict',       // Git merge conflict in worktree or dependency
+  BUILD_FAILURE: 'build-failure',         // Compilation, lint, or test failure
+  TIMEOUT: 'timeout',                     // Hard timeout or heartbeat timeout
+  EMPTY_OUTPUT: 'empty-output',           // Agent produced no meaningful output
+  SPAWN_ERROR: 'spawn-error',             // Process failed to start or crashed immediately
+  NETWORK_ERROR: 'network-error',         // API rate limit, DNS, connectivity
+  OUT_OF_CONTEXT: 'out-of-context',       // Context window exhausted, max turns reached
+  UNKNOWN: 'unknown',                     // Unclassified failure
+};
+const ESCALATION_POLICY = {
+  NO_RETRY: 'no-retry',         // CONFIG_ERROR, PERMISSION_BLOCKED — never retry
+  RETRY_SAME: 'retry-same',     // MERGE_CONFLICT, BUILD_FAILURE — retry same agent
+  RETRY_FRESH: 'retry-fresh',   // TIMEOUT, SPAWN_ERROR — retry with fresh session
+  HUMAN_REVIEW: 'human-review', // EMPTY_OUTPUT, OUT_OF_CONTEXT — flag for human
+  AUTO: 'auto',                 // UNKNOWN, NETWORK_ERROR — use default retry logic
+};
+
+// Structured completion protocol — fields agents must produce in ```completion blocks
+const COMPLETION_FIELDS = ['status', 'files_changed', 'tests', 'pr', 'pending', 'failure_class'];
 
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
@@ -912,7 +939,8 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS,
+  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
+  FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
