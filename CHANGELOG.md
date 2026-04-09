@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.700 (2026-04-09)
+
+### Fixes
+-  PRD E2E section not updating when pullRequests change
+-  ADO build error log fetches all failing pipelines, not just first
+-  verify/implement playbooks must include PR URL in final message
+-  ADO build error log fallback when targetUrl lacks buildId
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
+### Other
+- simplify: hoist textCreatedPattern regex out of block loop
+- refactor: reorder card buttons (Approve first), split modal approve/reject
+
 ## 0.1.692 (2026-04-09)
 
 ### Fixes
