@@ -54,9 +54,28 @@ function checkIdleThreshold(config) {
 
 // ─── Steering Checker ────────────────────────────────────────────────────────
 
+// How long to wait for a steered agent to exit before retrying the kill
+const STEERING_KILL_RETRY_MS = 30000;
+
 function checkSteering(config) {
   const activeProcesses = engine().activeProcesses;
   for (const [id, info] of activeProcesses) {
+    // Recovery: if steering kill hasn't resulted in process exit within 30s, force-retry.
+    // This catches cases where killImmediate silently failed (e.g., orphaned subprocess
+    // on Unix where SIGKILL only hit spawn-agent.js, not the Claude CLI tree).
+    if (info._steeringAt && Date.now() - info._steeringAt > STEERING_KILL_RETRY_MS) {
+      if (!info._steeringRetried) {
+        log('warn', `Steering: ${info.agentId} (${id}) didn't exit ${STEERING_KILL_RETRY_MS / 1000}s after kill — retrying`);
+        shared.killImmediate(info.proc);
+        // On Unix, also try to kill children that may have been orphaned
+        if (process.platform !== 'win32' && info.proc?.pid) {
+          try { shared.exec(`pkill -KILL -P ${info.proc.pid}`, { timeout: 3000 }); } catch { /* children may already be dead */ }
+        }
+        info._steeringRetried = true;
+      }
+      continue;
+    }
+
     // Skip if already being steered (prevents double-kill race)
     if (info._steeringMessage || info._steeringAt) continue;
 
@@ -64,18 +83,33 @@ function checkSteering(config) {
     let steerMtime;
     try { steerMtime = fs.statSync(steerPath).mtimeMs; } catch { continue; } // ENOENT = no steering message
 
-    const sessionId = info.sessionId;
-    if (!sessionId) {
-      if (Date.now() - steerMtime > 300000) {
-        log('warn', `Steering: no sessionId for ${info.agentId} after 5m — deleting stale message`);
-        try { fs.unlinkSync(steerPath); } catch {}
-      }
-      continue;
-    }
-
+    // Read and consume the message immediately — always delete to prevent stale messages
     const message = safeRead(steerPath);
     try { fs.unlinkSync(steerPath); } catch { /* cleanup */ }
     if (!message) continue;
+
+    const sessionId = info.sessionId;
+    if (!sessionId) {
+      // No session to resume — kill agent and deliver message via inbox for retry.
+      // Previously this silently skipped for up to 5m then deleted the message (#627).
+      log('info', `Steering: no sessionId for ${info.agentId} (${id}) — killing and forwarding message to inbox`);
+
+      // Write steering message to agent inbox so it survives the retry
+      const inboxDir = path.join(AGENTS_DIR, info.agentId, 'inbox');
+      try { fs.mkdirSync(inboxDir, { recursive: true }); } catch {}
+      safeWrite(path.join(inboxDir, `steering-${Date.now()}.md`), `# Steering Message (Forwarded)\n\nOriginal steering from human:\n\n${message}\n`);
+
+      // Append to live output so user sees confirmation in the dashboard
+      try {
+        const liveLogPath = path.join(AGENTS_DIR, info.agentId, 'live-output.log');
+        fs.appendFileSync(liveLogPath, `\n[steering] Message received but no session to resume. Killing agent — your message will be delivered on retry.\n`);
+      } catch { /* optional */ }
+
+      shared.killImmediate(info.proc);
+      info._steeringAt = Date.now();
+      info._steeringNoSession = true;
+      continue;
+    }
 
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
