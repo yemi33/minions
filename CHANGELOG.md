@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.676 (2026-04-09)
+
+### Fixes
+-  remove output log pill — raw stream-json not human-readable
+
 ## 0.1.675 (2026-04-09)
 
 ### Fixes
