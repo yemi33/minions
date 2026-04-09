@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.737 (2026-04-09)
+
+### Fixes
+-  pins not showing — invalidatePinsCache was clearing cache before async sync
+
 ## 0.1.736 (2026-04-09)
 
 ### Fixes
