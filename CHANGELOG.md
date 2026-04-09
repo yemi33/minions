@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.685 (2026-04-09)
+
+### Features
+-  collapsible doc-chat thread in modal
+
+### Fixes
+-  link work item artifacts to KB entries, not raw archive copies
+
 ## 0.1.683 (2026-04-09)
 
 ### Features
