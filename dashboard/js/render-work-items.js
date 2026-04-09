@@ -451,7 +451,7 @@ function openWorkItemDetail(id) {
   var arts = item._artifacts || {};
   var artPills = '';
   var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
-  if (arts.outputLog) artPills += '<span onclick="viewAgentOutput(\'' + escHtml(arts.outputLog) + '\')" style="' + pillStyle + '">📄 Output Log</span> ';
+  // Output log pill removed — raw stream-json output is not human-readable
   if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
   if (arts.plan) artPills += '<span onclick="planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
   if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
