@@ -352,10 +352,11 @@ async function ccSend() {
 function _renderQueueIndicator() {
   // Remove all existing queue indicators
   document.querySelectorAll('.cc-queue-item').forEach(function(el) { el.remove(); });
-  if (_ccQueue.length === 0) return;
+  var tab = _ccActiveTab();
+  var queue = (tab && tab._queue) || [];
+  if (queue.length === 0) return;
   var msgs = document.getElementById('cc-messages');
-  // Add each queued message as its own bubble at the bottom
-  _ccQueue.forEach(function(m) {
+  queue.forEach(function(m) {
     var el = document.createElement('div');
     el.className = 'cc-queue-item';
     el.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;align-self:flex-end;background:var(--blue);color:#fff;opacity:0.5;order:9999';
@@ -452,7 +453,7 @@ async function _ccDoSend(message, skipUserMsg) {
       html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '">' + _getThinkingHtml() + '</div>';
       streamDiv.innerHTML = html;
       // Re-append queue indicators so they stay below the streaming content
-      if (_ccQueue.length > 0) _renderQueueIndicator();
+      if (activeTab._queue && activeTab._queue.length > 0) _renderQueueIndicator();
       if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
     }
     // Start phase timer immediately so thinking text updates while waiting for SSE
@@ -604,8 +605,9 @@ function ccRetryLast() {
   tab.messages = tab.messages.slice(0, -1); // remove error from history
   // Resend, then drain queue
   _ccDoSend(text.trim()).then(async function() {
-    while (_ccQueue.length > 0) {
-      var next = _ccQueue.shift();
+    var retryTab = _ccActiveTab();
+    while (retryTab && retryTab._queue && retryTab._queue.length > 0) {
+      var next = retryTab._queue.shift();
       _renderQueueIndicator();
       await _ccDoSend(next);
     }
