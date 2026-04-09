@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.741 (2026-04-09)
+
+### Features
+- add prNumber field to pull-requests.json records (#711)
+
+### Fixes
+-  handle NUL pseudo-file in Windows worktree cleanup (#731)
+
 ## 0.1.739 (2026-04-09)
 
 ### Fixes
