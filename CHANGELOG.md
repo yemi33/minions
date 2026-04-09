@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.643 (2026-04-09)
+
+### Features
+-  track notes, plans, and PRDs as work item artifacts
+
 ## 0.1.642 (2026-04-09)
 
 ### Features
