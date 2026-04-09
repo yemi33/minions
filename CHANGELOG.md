@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.703 (2026-04-09)
+
+### Other
+- refactor: move buildFixGracePeriod to ENGINE_DEFAULTS (no magic numbers)
+
 ## 0.1.702 (2026-04-09)
 
 ### Fixes
