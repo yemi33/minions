@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./shared');
-const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
+const { safeJson, safeWrite, safeRead, safeReadDir, uid, log, ts, dateStamp, mutateJsonFileLocked, mutateWorkItems, slugify, formatTranscriptEntry, WI_STATUS, WORK_TYPE, PLAN_STATUS, PR_STATUS, PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, ENGINE_DEFAULTS } = shared;
 const http = require('http');
 const { parseCronExpr, shouldRunNow } = require('./scheduler');
 
@@ -304,7 +304,7 @@ function _findExistingPlanForMeeting(meetingIds, plansDir) {
     const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
     if (mtg?.title) {
       // Dashboard convention: "Meeting follow-up: {title}" → slug
-      const dashSlug = ('meeting-follow-up-' + mtg.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      const dashSlug = slugify('meeting-follow-up-' + mtg.title);
       slugPrefixes.push(dashSlug);
     }
   }
@@ -324,7 +324,7 @@ async function executePlanStage(stage, stageState, run, config) {
   const plansDir = path.join(__dirname, '..', 'plans');
   if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
 
-  const slug = (stage.title || 'pipeline-plan').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
+  const slug = slugify(stage.title || 'pipeline-plan');
   const wiPath = path.join(__dirname, '..', 'work-items.json');
   const wiId = `PL-${run.runId.slice(4, 12)}-${stage.id}-prd`;
 
@@ -364,9 +364,7 @@ async function executePlanStage(stage, stageState, run, config) {
     try {
       const mtg = safeJson(path.join(__dirname, '..', 'meetings', mid + '.json'));
       if (mtg) {
-        const transcript = (mtg.transcript || []).map(t =>
-          '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '')
-        ).join('\n\n---\n\n');
+        const transcript = (mtg.transcript || []).map(formatTranscriptEntry).join('\n\n---\n\n');
         meetingContext += '# Meeting: ' + (mtg.title || mid) + '\n\n**Agenda:** ' + (mtg.agenda || '') + '\n\n' + transcript + '\n\n';
       }
     } catch (e) { log('warn', `Pipeline plan: failed to read meeting ${mid}: ${e.message}`); }
@@ -600,29 +598,32 @@ function isStageComplete(stage, stageState, run, config) {
       });
       if (!prdDone) return false;
 
-      // Discover PRDs and their work items
+      // Discover PRDs and their work items — collect into local arrays, then merge into artifacts
       const prdDir = path.join(__dirname, '..', 'prd');
       const plans = artifacts.plans || [];
+      const discoveredPrds = [];
+      const discoveredWiIds = [];
       for (const planFile of plans) {
         const prdFiles = fs.existsSync(prdDir) ? safeReadDir(prdDir).filter(f => f.endsWith('.json')) : [];
         for (const pf of prdFiles) {
           const prd = safeJson(path.join(prdDir, pf));
-          if (prd?.source_plan === planFile && !(artifacts.prds || []).includes(pf)) {
-            artifacts.prds = artifacts.prds || [];
-            artifacts.prds.push(pf);
+          if (prd?.source_plan === planFile && !(artifacts.prds || []).includes(pf) && !discoveredPrds.includes(pf)) {
+            discoveredPrds.push(pf);
           }
         }
-        // Find materialized work items for discovered PRDs
-        for (const prdFile of (artifacts.prds || [])) {
+        const allPrds = [...(artifacts.prds || []), ...discoveredPrds];
+        for (const prdFile of allPrds) {
           const prdItems = all.filter(w => w.sourcePlan === prdFile && w.type !== WORK_TYPE.PLAN_TO_PRD);
           for (const wi of prdItems) {
-            if (!(artifacts.workItems || []).includes(wi.id)) {
-              artifacts.workItems = artifacts.workItems || [];
-              artifacts.workItems.push(wi.id);
+            if (!(artifacts.workItems || []).includes(wi.id) && !discoveredWiIds.includes(wi.id)) {
+              discoveredWiIds.push(wi.id);
             }
           }
         }
       }
+      // Merge discovered artifacts (caller persists via updateRunStage)
+      if (discoveredPrds.length > 0) { artifacts.prds = [...(artifacts.prds || []), ...discoveredPrds]; }
+      if (discoveredWiIds.length > 0) { artifacts.workItems = [...(artifacts.workItems || []), ...discoveredWiIds]; }
 
       // Auto-approve if configured
       if (stage.autoApprove && artifacts.prds?.length > 0) {
@@ -792,7 +793,18 @@ async function discoverPipelineWork(config) {
           const result = await executeStage(stage, activeRun, pipeline, config);
           updateRunStage(pipeline.id, activeRun.runId, stage.id, { ...result, startedAt: ts() });
           Object.assign(stageState, result, { startedAt: ts() });
-          if (result.status === PIPELINE_STATUS.RUNNING) anyRunning = true;
+          if (result.status === PIPELINE_STATUS.RUNNING) {
+            // Check if stage is already complete (e.g. reconciled plan with done WI)
+            if (isStageComplete(stage, stageState, activeRun, config)) {
+              updateRunStage(pipeline.id, activeRun.runId, stage.id, {
+                status: PIPELINE_STATUS.COMPLETED, completedAt: ts(), artifacts: stageState.artifacts,
+              });
+              stageState.status = PIPELINE_STATUS.COMPLETED;
+              log('info', `Pipeline ${pipeline.id}: stage ${stage.id} completed immediately after start`);
+            } else {
+              anyRunning = true;
+            }
+          }
           // Condition stage signaled pipeline stop — complete the run immediately
           if (result._stopPipeline) {
             completeRun(pipeline.id, activeRun.runId, PIPELINE_STATUS.STOPPED);

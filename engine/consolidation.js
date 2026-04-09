@@ -140,7 +140,7 @@ function consolidateWithLLM(items, existingNotes, files, config) {
     const agentMatch = item.name.match(/^(\w+)-/);
     const agent = agentMatch ? agentMatch[1] : 'unknown';
     const titleMatch = (item.content || '').match(/^#\s+(.+)/m);
-    const titleSlug = titleMatch ? titleMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50) : item.name.replace(/\.md$/, '');
+    const titleSlug = titleMatch ? shared.slugify(titleMatch[1]) : item.name.replace(/\.md$/, '');
     return { file: item.name, category: cat, kbPath: path.join('knowledge', cat, `${dateStamp()}-${agent}-${titleSlug}.md`) };
   });
 
@@ -415,7 +415,7 @@ function classifyToKnowledgeBase(items) {
     const agent = agentMatch ? agentMatch[1] : 'unknown';
     const titleMatch = content.match(/^#\s+(.+)/m);
     const titleSlug = titleMatch
-      ? titleMatch[1].toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50)
+      ? shared.slugify(titleMatch[1])
       : item.name.replace(/\.md$/, '');
     const kbFilename = `${dateStamp()}-${agent}-${titleSlug}.md`;
     const kbPath = shared.uniquePath(path.join(categoryDirs[category], kbFilename));

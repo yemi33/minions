@@ -1266,7 +1266,7 @@ const server = http.createServer(async (req, res) => {
       fs.mkdirSync(inboxDir, { recursive: true });
       const today = new Date().toISOString().slice(0, 10);
       const author = body.author || os.userInfo().username;
-      const slug = (body.title || 'note').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+      const slug = shared.slugify(body.title || 'note', 40);
       const filename = `${author}-${slug}-${today}-${shared.uid().slice(-4)}.md`;
       const content = `# ${body.title}\n\n**By:** ${author}\n**Date:** ${today}\n\n${body.what}\n${body.why ? '\n**Why:** ' + body.why + '\n' : ''}`;
       safeWrite(shared.uniquePath(path.join(inboxDir, filename)), content);
@@ -3362,7 +3362,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Auto-generate ID from title if not provided
     if (!id) {
-      id = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+      id = shared.slugify(title, 40);
       if (!id) id = 'schedule';
     }
 
@@ -3888,7 +3888,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       const plansDir = path.join(MINIONS_DIR, 'plans');
       if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
+      const slug = shared.slugify(title);
       const date = new Date().toISOString().slice(0, 10);
       const filename = `${slug}-${date}.md`;
       const filePath = shared.uniquePath(path.join(plansDir, filename));
@@ -3954,7 +3954,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!category || !title || !content) return jsonReply(res, 400, { error: 'category, title, and content required' });
       const validCategories = ['architecture', 'conventions', 'project-notes', 'build-reports', 'reviews'];
       if (!validCategories.includes(category)) return jsonReply(res, 400, { error: 'Invalid category. Must be: ' + validCategories.join(', ') });
-      const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+      const slug = shared.slugify(title, 60);
       const filePath = path.join(MINIONS_DIR, 'knowledge', category, slug + '.md');
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
