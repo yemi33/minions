@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.696 (2026-04-09)
+
+### Fixes
+-  ADO build error log fetches all failing pipelines, not just first
+-  verify/implement playbooks must include PR URL in final message
+-  ADO build error log fallback when targetUrl lacks buildId
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
 ## 0.1.692 (2026-04-09)
 
 ### Fixes
