@@ -142,6 +142,7 @@ const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handleP
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
 const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt }
+const realActivityMap = new Map(); // dispatchId → timestamp of last REAL agent output (not engine heartbeat)
 // tempAgents imported from engine/routing.js
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
 
@@ -597,6 +598,7 @@ async function spawnAgent(dispatchItem, config) {
   proc.stdout.on('data', (data) => {
     const chunk = data.toString();
     lastOutputAt = Date.now();
+    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
     if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
     try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
 
@@ -641,6 +643,7 @@ async function spawnAgent(dispatchItem, config) {
   proc.stderr.on('data', (data) => {
     const chunk = data.toString();
     lastOutputAt = Date.now();
+    realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
     if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
     try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
   });
@@ -737,12 +740,14 @@ async function spawnAgent(dispatchItem, config) {
       resumeProc.stdout.on('data', (data) => {
         const chunk = data.toString();
         lastOutputAt = Date.now();
+        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
         if (stdout.length < MAX_OUTPUT) stdout += chunk.slice(0, MAX_OUTPUT - stdout.length);
         try { fs.appendFileSync(liveOutputPath, chunk); } catch { /* optional */ }
       });
       resumeProc.stderr.on('data', (data) => {
         const chunk = data.toString();
         lastOutputAt = Date.now();
+        realActivityMap.set(id, Date.now()); // Track real agent output separately from heartbeat
         if (stderr.length < MAX_OUTPUT) stderr += chunk.slice(0, MAX_OUTPUT - stderr.length);
         try { fs.appendFileSync(liveOutputPath, '[stderr] ' + chunk); } catch { /* optional */ }
       });
@@ -773,6 +778,7 @@ async function spawnAgent(dispatchItem, config) {
     }
 
     activeProcesses.delete(id);
+    realActivityMap.delete(id); // Clean up real activity tracking
 
     // If timeout checker already finalized this dispatch, don't overwrite work-item status again.
     // This avoids races where close-handler marks an auto-retried item as failed.
@@ -880,6 +886,7 @@ async function spawnAgent(dispatchItem, config) {
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
     log('error', `Failed to spawn agent ${agentId}: ${err.message}`);
     activeProcesses.delete(id);
+    realActivityMap.delete(id); // Clean up real activity tracking
     completeDispatch(id, DISPATCH_RESULT.ERROR, `Spawn error: ${err.message}`);
   });
 
@@ -892,6 +899,7 @@ async function spawnAgent(dispatchItem, config) {
 
   // Track process — even if PID isn't available yet (async on Windows)
   activeProcesses.set(id, { proc, agentId, startedAt, sessionId: cachedSessionId });
+  realActivityMap.set(id, Date.now()); // Initialize real activity at spawn time
 
   updateAgentStatus(id, AGENT_STATUS.RUNNING, `Process spawned for ${agentId}`);
 
@@ -2957,7 +2965,7 @@ module.exports = {
 
   // Dispatch management (re-exported from engine/dispatch.js)
   mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert, updateAgentStatus,
-  activeProcesses, get engineRestartGraceUntil() { return engineRestartGraceUntil; },
+  activeProcesses, realActivityMap, get engineRestartGraceUntil() { return engineRestartGraceUntil; },
   set engineRestartGraceUntil(v) { engineRestartGraceUntil = v; },
 
   // Agent lifecycle

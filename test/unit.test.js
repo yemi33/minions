@@ -4003,6 +4003,35 @@ async function testCheckTimeouts() {
     assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
+  await test('Heartbeat feedback loop fix: uses realActivityMap for tracked processes (#724)', () => {
+    // The timeout check must use realActivityMap (in-memory, tracks real agent output only)
+    // instead of file mtime for tracked processes. File mtime is polluted by engine heartbeat writes.
+    assert.ok(src.includes('realActivityMap'), 'timeout.js should reference realActivityMap');
+    assert.ok(src.includes('realActivityMap?.has(item.id)') || src.includes("realActivityMap.has(item.id)"),
+      'Should check realActivityMap for dispatch item');
+    assert.ok(src.includes('realActivityMap.get(item.id)') || src.includes("realActivityMap?.get(item.id)"),
+      'Should read lastRealActivity from realActivityMap');
+  });
+
+  await test('Heartbeat feedback loop fix: falls back to file mtime only for orphans (#724)', () => {
+    // For orphan detection (no tracked process), file mtime is still valid because
+    // no heartbeat timer is running. The fix only uses realActivityMap when hasProcess is true.
+    assert.ok(src.includes('hasProcess && realActivityMap'),
+      'Should only use realActivityMap when process is tracked (hasProcess)');
+    assert.ok(src.includes('Orphan case') || src.includes('orphan'),
+      'Should document the orphan fallback path');
+  });
+
+  await test('Heartbeat feedback loop fix: engine.js tracks real output in realActivityMap (#724)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('realActivityMap.set(id, Date.now())'),
+      'engine.js should update realActivityMap on real stdout/stderr');
+    assert.ok(engineSrc.includes('realActivityMap.delete(id)'),
+      'engine.js should clean up realActivityMap on agent close/error');
+    assert.ok(engineSrc.includes('realActivityMap,'),
+      'engine.js should export realActivityMap');
+  });
+
   await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
     // The Bash tool default timeout in Claude Code is 120s, not 600s.
     // Grace = max(heartbeatTimeout, bashTimeout + 60000) = max(300000, 120000+60000) = 300000 (5min)

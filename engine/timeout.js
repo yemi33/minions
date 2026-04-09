@@ -159,11 +159,20 @@ function checkTimeouts(config) {
     const liveLogPath = path.join(AGENTS_DIR, item.agent, 'live-output.log');
     let lastActivity = item.started_at ? new Date(item.started_at).getTime() : 0;
 
-    // Check live-output.log mtime as heartbeat
-    try {
-      const stat = fs.statSync(liveLogPath);
-      lastActivity = Math.max(lastActivity, stat.mtimeMs);
-    } catch { /* optional */ }
+    // For tracked processes, use realActivityMap (tracks actual agent stdout/stderr only,
+    // NOT engine heartbeat writes). This prevents the feedback loop where engine heartbeat
+    // writes to live-output.log reset the mtime that the timeout check reads (#724).
+    const realActivityMap = engine().realActivityMap;
+    if (hasProcess && realActivityMap?.has(item.id)) {
+      lastActivity = Math.max(lastActivity, realActivityMap.get(item.id));
+    } else {
+      // Orphan case (no tracked process): use live-output.log mtime as fallback.
+      // No heartbeat timer is running for orphans, so mtime is accurate.
+      try {
+        const stat = fs.statSync(liveLogPath);
+        lastActivity = Math.max(lastActivity, stat.mtimeMs);
+      } catch { /* optional */ }
+    }
 
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
