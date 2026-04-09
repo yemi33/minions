@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.652 (2026-04-09)
+
+### Fixes
+-  stop retrying locked worktree removal after 3 failures
+
 ## 0.1.651 (2026-04-09)
 
 ### Fixes
