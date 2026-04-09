@@ -500,9 +500,9 @@ async function _ccDoSend(message, skipUserMsg) {
             var ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered = renderMd(evt.text || streamedText || '');
             ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
-            if (evt.sessionId) {
+            if (evt.sessionId !== undefined) {
               var currentTab = _ccActiveTab();
-              if (currentTab) { currentTab.sessionId = evt.sessionId; }
+              if (currentTab) { currentTab.sessionId = evt.sessionId || null; }
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (evt.actions && evt.actions.length > 0) {
@@ -530,9 +530,9 @@ async function _ccDoSend(message, skipUserMsg) {
             var ccElapsed2 = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered2 = renderMd(revt.text || streamedText || '');
             ccAddMessage('assistant', rendered2 + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed2 + 's</div>');
-            if (revt.sessionId) {
+            if (revt.sessionId !== undefined) {
               var currentTab2 = _ccActiveTab();
-              if (currentTab2) { currentTab2.sessionId = revt.sessionId; }
+              if (currentTab2) { currentTab2.sessionId = revt.sessionId || null; }
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (revt.actions && revt.actions.length > 0) {
