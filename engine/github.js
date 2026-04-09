@@ -511,6 +511,16 @@ async function reconcilePrs(config) {
     // Skip projects in backoff (inaccessible repo)
     if (isSlugInBackoff(slug)) continue;
 
+    // Skip projects with no tracked PRs and no work items — nothing to reconcile
+    const existingPrs = getPrs(project);
+    if (existingPrs.length === 0) {
+      try {
+        const wiPath = projectWorkItemsPath(project);
+        const wis = safeJson(wiPath) || [];
+        if (wis.length === 0) continue;
+      } catch { continue; }
+    }
+
     // Fetch open PRs
     const prsData = await ghApi('/pulls?state=open&per_page=100', slug);
     if (!prsData || !Array.isArray(prsData)) {
