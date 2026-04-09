@@ -9472,6 +9472,68 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('date:'), 'Playbook frontmatter should include date field');
   });
 
+  // ── Functional: _artifacts populated by getWorkItems ──
+
+  await test('getWorkItems populates _artifacts from queries.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('_artifacts'), 'queries.js should populate _artifacts');
+    assert.ok(src.includes('dispatchByWiId'), 'Should build dispatch ID lookup for output log matching');
+    assert.ok(src.includes('_agentDirCache'), 'Should cache agent dir listings');
+    assert.ok(src.includes('_inboxFiles'), 'Should cache inbox dir listing');
+  });
+
+  await test('_artifacts output log matches by dispatch ID not work item ID', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const artSection = src.slice(src.indexOf('Populate _artifacts'));
+    assert.ok(artSection.includes('dispatchByWiId[item.id]'), 'Should look up dispatch ID by work item ID');
+    assert.ok(artSection.includes('f.includes(dispatchId)'), 'Should match output filename by dispatch ID');
+    assert.ok(!artSection.includes('slice(-8)'), 'Should NOT use ID suffix matching (broken pattern)');
+  });
+
+  await test('_artifacts includes featureBranch fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('item.branch || item.featureBranch'),
+      'Should fall back to featureBranch when branch is missing');
+  });
+
+  await test('_artifacts functional: populated on real work items', () => {
+    const restore = createTestMinionsDir();
+    const testDir = process.env.MINIONS_TEST_DIR;
+    // Create agent dir with output log
+    const agentDir = path.join(testDir, 'agents', 'testbot');
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.writeFileSync(path.join(agentDir, 'output-testbot-fix-abc123.log'), 'test output');
+    // Create inbox note
+    const inboxDir = path.join(testDir, 'notes', 'inbox');
+    fs.writeFileSync(path.join(inboxDir, 'testbot-W-test1-2026-04-08.md'), '# Findings');
+    // Create work item + dispatch
+    fs.writeFileSync(path.join(testDir, 'work-items.json'), JSON.stringify([
+      { id: 'W-test1', status: 'done', dispatched_to: 'testbot', branch: 'feat/test' }
+    ]));
+    fs.writeFileSync(path.join(testDir, 'engine', 'dispatch.json'), JSON.stringify({
+      pending: [], active: [],
+      completed: [{ id: 'testbot-fix-abc123', agent: 'testbot', meta: { item: { id: 'W-test1' } } }]
+    }));
+    fs.writeFileSync(path.join(testDir, 'config.json'), JSON.stringify({ projects: [], agents: {} }));
+    const freshQueries = require('../engine/queries');
+    const items = freshQueries.getWorkItems();
+    const wi = items.find(i => i.id === 'W-test1');
+    assert.ok(wi, 'Work item should exist');
+    assert.ok(wi._artifacts, 'Work item should have _artifacts');
+    assert.ok(wi._artifacts.outputLog === 'testbot/output-testbot-fix-abc123.log', 'Should link output log: ' + wi._artifacts.outputLog);
+    assert.ok(wi._artifacts.branch === 'feat/test', 'Should have branch');
+    assert.ok(wi._artifacts.notes && wi._artifacts.notes.length === 1, 'Should have 1 inbox note');
+    assert.ok(wi._artifacts.notes[0].includes('testbot-W-test1'), 'Note should match by work item ID');
+    restore();
+  });
+
+  await test('openInboxNote function exists in render-work-items.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('function openInboxNote'), 'Should have openInboxNote function');
+    assert.ok(src.includes('openModal(idx)'), 'Should open the modal when note found in inboxData');
+    assert.ok(src.includes("switchPage('inbox')"), 'Should fall back to inbox page when not found');
+  });
+
   // ── Perf: Prompt building before worktree, direct spawn, parallel dep fetch ─
 
   await test('spawnAgent builds prompt before worktree setup', () => {
