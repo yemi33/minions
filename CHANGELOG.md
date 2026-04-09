@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.695 (2026-04-09)
+
+### Fixes
+-  verify/implement playbooks must include PR URL in final message
+-  ADO build error log fallback when targetUrl lacks buildId
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
 ## 0.1.692 (2026-04-09)
 
 ### Fixes
