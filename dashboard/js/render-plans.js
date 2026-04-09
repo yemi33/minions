@@ -437,22 +437,6 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const isActive = planStatus === 'approved' || planStatus === 'active';
   const isPaused = planStatus === 'awaiting-approval' || planStatus === 'paused';
   const wi = window._lastWorkItems || [];
-  const linkedPrdFile = isMdPlan ? (window._lastStatus?.plans || []).find(p => p.sourcePlan === normalizedFile && p.format === 'prd')?.file : null;
-  const hasActiveWork = wi.some(w =>
-    (w.status === 'pending' || w.status === 'dispatched') &&
-    (w.planFile === normalizedFile || w.sourcePlan === normalizedFile ||
-      (linkedPrdFile && w.sourcePlan === linkedPrdFile))
-  );
-  const prdConversion = wi.find(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === normalizedFile);
-  const linkedPrd = (window._lastStatus?.plans || []).find(p => p.sourcePlan === normalizedFile && p.format === 'prd');
-  const hasPrd = !!linkedPrd;
-  // Plan-to-prd conversion done is not "completed" — the PRD still needs approval and execution
-  const prdCompleted = prdConversion && linkedPrd && linkedPrd.status === 'completed';
-  const linkedPrdAwaiting = linkedPrd && (linkedPrd.status === 'awaiting-approval' || linkedPrd.status === 'paused');
-  const modalShowResume = isPaused || linkedPrdAwaiting;
-  const canExecute = isMdPlan && !hasActiveWork && !prdCompleted;
-  const modalExecuteBtn = canExecute && !hasPrd ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
-    'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button>' : '';
   // Modal buttons mirror card logic — derive effectiveStatus the same way
   const allPlans = window._lastStatus?.plans || [];
   const cardPlan = allPlans.find(p => p.file === normalizedFile || p.sourcePlan === normalizedFile || (p.file?.endsWith('.json') && p.file === normalizedFile));
@@ -472,8 +456,8 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
     const target = prdFile || normalizedFile;
     const label = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
     modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="planApprove(\'' + escHtml(target) + '\',this)">' + label + '</button> ';
-    // Re-execute: re-generate PRD from updated plan (only for .md drafts with existing PRD)
-    if (effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile && canExecute) {
+    // Re-execute: re-generate PRD from updated plan (only for .md plans with existing awaiting PRD)
+    if (effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile) {
       modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);opacity:0.7" onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Re-execute</button> ';
     }
     modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planReject(\'' + escHtml(target) + '\')">Reject</button> ';
