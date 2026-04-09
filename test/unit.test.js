@@ -522,7 +522,7 @@ async function testEngineDefaults() {
 
   await test('ENGINE_DEFAULTS has all required keys', () => {
     const required = ['tickInterval', 'maxConcurrent', 'inboxConsolidateThreshold',
-      'agentTimeout', 'heartbeatTimeout', 'maxTurns', 'worktreeRoot',
+      'agentTimeout', 'heartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
       'idleAlertMinutes', 'restartGracePeriod', 'worktreeCreateTimeout', 'worktreeCreateRetries'];
     for (const key of required) {
       assert.ok(shared.ENGINE_DEFAULTS[key] !== undefined, `Missing default: ${key}`);
@@ -3970,6 +3970,40 @@ async function testCheckTimeouts() {
   await test('checkTimeouts detects completion via output scan', () => {
     assert.ok(src.includes('"type":"result"') || src.includes('"type": "result"'),
       'Should scan live output for completion markers');
+  });
+
+  await test('Per-type heartbeat timeouts: DEFAULT_HEARTBEAT_TIMEOUTS defines explore/ask/review', () => {
+    assert.ok(src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'), 'Should define DEFAULT_HEARTBEAT_TIMEOUTS map');
+    assert.ok(src.includes('[WORK_TYPE.EXPLORE]'), 'Should have EXPLORE entry in per-type heartbeat map');
+    assert.ok(src.includes('[WORK_TYPE.ASK]'), 'Should have ASK entry in per-type heartbeat map');
+    assert.ok(src.includes('[WORK_TYPE.REVIEW]'), 'Should have REVIEW entry in per-type heartbeat map');
+    assert.ok(src.includes('600000'), 'EXPLORE/ASK should use 600000ms (10min)');
+    assert.ok(src.includes('480000'), 'REVIEW should use 480000ms (8min)');
+  });
+
+  await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
+    // Verify per-type resolution happens inside the dispatch loop
+    assert.ok(src.includes('perTypeTimeouts[item.type]') || src.includes("perTypeTimeouts[item.type] || heartbeatTimeout"),
+      'Should resolve per-type timeout from item.type with heartbeatTimeout fallback');
+  });
+
+  await test('Per-type heartbeat timeouts: config.engine.heartbeatTimeouts overrides defaults', () => {
+    assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
+      'Should read heartbeatTimeouts from config.engine for user overrides');
+    // Verify merge order: defaults ← ENGINE_DEFAULTS ← config
+    assert.ok(src.includes('...DEFAULT_HEARTBEAT_TIMEOUTS') && src.includes('...DEFAULTS.heartbeatTimeouts'),
+      'Should merge default, ENGINE_DEFAULTS, and config heartbeatTimeouts in correct precedence');
+  });
+
+  await test('Per-type heartbeat timeouts: blocking tool uses Math.max(itemHeartbeat, blockingTimeout)', () => {
+    // The blocking tool extension should respect per-type timeout as minimum floor
+    assert.ok(src.includes('Math.max(itemHeartbeat,'),
+      'Blocking tool timeout should use Math.max(itemHeartbeat, ...) so per-type floor is respected');
+  });
+
+  await test('Per-type heartbeat timeouts: WORK_TYPE imported in timeout.js', () => {
+    assert.ok(src.includes('WORK_TYPE') && src.includes("require('./shared')"),
+      'Should import WORK_TYPE from shared.js');
   });
 
   await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
