@@ -11,7 +11,7 @@ const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
-  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS } = shared;
+  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -69,7 +69,12 @@ function addToDispatch(item) {
 
 // ─── Retryable Failure Classification ────────────────────────────────────────
 
-function isRetryableFailureReason(reason = '') {
+function isRetryableFailureReason(reason = '', failureClass = '') {
+  // FAILURE_CLASS-based classification takes precedence when available
+  if (failureClass) {
+    const neverRetry = new Set([FAILURE_CLASS.CONFIG_ERROR, FAILURE_CLASS.PERMISSION_BLOCKED]);
+    if (neverRetry.has(failureClass)) return false;
+  }
   const r = String(reason || '').toLowerCase();
   if (!r) return true; // unknown error from tool exit — keep retryable
   const nonRetryable = [
@@ -89,7 +94,7 @@ function isRetryableFailureReason(reason = '') {
 // ─── Complete Dispatch ───────────────────────────────────────────────────────
 
 function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
-  const { processWorkItemFailure = true } = opts;
+  const { processWorkItemFailure = true, failureClass } = opts;
   let item = null;
 
   mutateDispatch((dispatch) => {
@@ -108,6 +113,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     item.result = result;
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
+    if (failureClass && result === DISPATCH_RESULT.ERROR) item.failureClass = failureClass;
     delete item.prompt;
     if (dispatch.completed.length >= 100) {
       dispatch.completed = dispatch.completed.slice(-100);
@@ -120,7 +126,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     log('info', `Completed dispatch: ${id} (${result}${reason ? ': ' + reason : ''})`);
 
     // Update source work item status on failure + auto-retry with backoff
-    const retryableFailure = isRetryableFailureReason(reason);
+    const retryableFailure = isRetryableFailureReason(reason, failureClass);
     if (result === DISPATCH_RESULT.ERROR && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
 
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {

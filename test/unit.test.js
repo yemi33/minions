@@ -6322,6 +6322,9 @@ async function main() {
     // P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking
     await testAgentStatusEnum();
 
+    // P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure()
+    await testFailureClassEnum();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -10366,6 +10369,151 @@ async function testAgentStatusEnum() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('dispatch: getDispatchQueue()'),
       'Dashboard status should include dispatch queue as passthrough');
+  });
+}
+
+// ─── P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure() ──────────────────
+
+async function testFailureClassEnum() {
+  console.log('\n── FAILURE_CLASS enum and classifyFailure() ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('FAILURE_CLASS enum has all 10 required values', () => {
+    const { FAILURE_CLASS } = shared;
+    assert.ok(FAILURE_CLASS, 'FAILURE_CLASS should be exported from shared.js');
+    assert.strictEqual(FAILURE_CLASS.CONFIG_ERROR, 'config-error');
+    assert.strictEqual(FAILURE_CLASS.PERMISSION_BLOCKED, 'permission-blocked');
+    assert.strictEqual(FAILURE_CLASS.MERGE_CONFLICT, 'merge-conflict');
+    assert.strictEqual(FAILURE_CLASS.BUILD_FAILURE, 'build-failure');
+    assert.strictEqual(FAILURE_CLASS.TIMEOUT, 'timeout');
+    assert.strictEqual(FAILURE_CLASS.EMPTY_OUTPUT, 'empty-output');
+    assert.strictEqual(FAILURE_CLASS.SPAWN_ERROR, 'spawn-error');
+    assert.strictEqual(FAILURE_CLASS.NETWORK_ERROR, 'network-error');
+    assert.strictEqual(FAILURE_CLASS.OUT_OF_CONTEXT, 'out-of-context');
+    assert.strictEqual(FAILURE_CLASS.UNKNOWN, 'unknown');
+    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 10, 'FAILURE_CLASS should have exactly 10 values');
+  });
+
+  await test('ESCALATION_POLICY enum has all 5 values', () => {
+    const { ESCALATION_POLICY } = shared;
+    assert.ok(ESCALATION_POLICY, 'ESCALATION_POLICY should be exported from shared.js');
+    assert.strictEqual(ESCALATION_POLICY.NO_RETRY, 'no-retry');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_SAME, 'retry-same');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_FRESH, 'retry-fresh');
+    assert.strictEqual(ESCALATION_POLICY.HUMAN_REVIEW, 'human-review');
+    assert.strictEqual(ESCALATION_POLICY.AUTO, 'auto');
+    assert.strictEqual(Object.keys(ESCALATION_POLICY).length, 5, 'ESCALATION_POLICY should have exactly 5 values');
+  });
+
+  await test('classifyFailure exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.classifyFailure === 'function',
+      'classifyFailure should be a function exported from lifecycle.js');
+  });
+
+  await test('classifyFailure: exit code 78 → CONFIG_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(78, '', ''),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(78, 'some output', 'claude-code not found'),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+  });
+
+  await test('classifyFailure: permission denied → PERMISSION_BLOCKED', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: permission denied'),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'access denied for resource', ''),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+  });
+
+  await test('classifyFailure: merge conflict → MERGE_CONFLICT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'CONFLICT (content): Merge conflict in file.js\nAutomatic merge failed'),
+      shared.FAILURE_CLASS.MERGE_CONFLICT);
+  });
+
+  await test('classifyFailure: build/test failure → BUILD_FAILURE', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'npm ERR! Test failed', ''),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'error TS2304: Cannot find name'),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+  });
+
+  await test('classifyFailure: network/rate limit → NETWORK_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: rate limit exceeded (429)', ''),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: ECONNREFUSED 127.0.0.1:443'),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+  });
+
+  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: max turns reached', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'context window exceeded', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+  });
+
+  await test('classifyFailure: empty output → EMPTY_OUTPUT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'short', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+  });
+
+  await test('classifyFailure: spawn error → SPAWN_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: spawn ENOENT'),
+      shared.FAILURE_CLASS.SPAWN_ERROR);
+  });
+
+  await test('classifyFailure: unknown failure → UNKNOWN', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'some long agent output that is more than fifty characters of normal text without any error patterns', ''),
+      shared.FAILURE_CLASS.UNKNOWN);
+  });
+
+  await test('completeDispatch stores failureClass on error entries', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes('failureClass') && src.includes('item.failureClass'),
+      'completeDispatch should store failureClass on completed dispatch entry');
+    // Only stored on errors
+    assert.ok(src.includes("result === DISPATCH_RESULT.ERROR) item.failureClass"),
+      'failureClass should only be stored when result is error');
+  });
+
+  await test('isRetryableFailureReason rejects CONFIG_ERROR and PERMISSION_BLOCKED', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.CONFIG_ERROR), false,
+      'CONFIG_ERROR should never be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.PERMISSION_BLOCKED), false,
+      'PERMISSION_BLOCKED should never be retryable');
+    // Other classes remain retryable (unless reason matches non-retryable strings)
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.BUILD_FAILURE), true,
+      'BUILD_FAILURE should be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.UNKNOWN), true,
+      'UNKNOWN should be retryable');
+  });
+
+  await test('onAgentClose calls classifyFailure and passes failureClass to completeDispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('classifyFailure(code, stdout, stderr)'),
+      'onAgentClose should call classifyFailure with code, stdout, stderr');
+    assert.ok(src.includes('{ failureClass }'),
+      'onAgentClose should pass failureClass to completeDispatch opts');
+  });
+
+  await test('exit code 78 uses classifyFailure result (CONFIG_ERROR)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // The code=78 handler should pass failureClass to completeDispatch
+    const section78 = src.slice(src.indexOf('code === 78'), src.indexOf('code === 78') + 500);
+    assert.ok(section78.includes('failureClass'),
+      'Exit code 78 handler should use failureClass from classifyFailure');
+  });
+
+  await test('existing reason-based non-retryable strings still work', () => {
+    const dispatch = require('../engine/dispatch');
+    // Without failureClass, reason-based classification still works
+    assert.strictEqual(dispatch.isRetryableFailureReason('no playbook rendered'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('validation failed'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('missing required vars'), false);
+    // Retryable reasons
+    assert.strictEqual(dispatch.isRetryableFailureReason('agent timed out'), true);
+    assert.strictEqual(dispatch.isRetryableFailureReason(''), true);
   });
 }
 

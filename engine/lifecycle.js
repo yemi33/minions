@@ -9,7 +9,7 @@ const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS } = shared;
+  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -1463,6 +1463,67 @@ function syncPrdFromPrs(config) {
   }
 }
 
+// ─── Failure Classification ─────────────────────────────────────────────────
+
+/**
+ * Classify an agent failure into a FAILURE_CLASS value based on exit code and output.
+ * @param {number} code — process exit code
+ * @param {string} stdout — agent stdout
+ * @param {string} stderr — agent stderr
+ * @returns {string} — one of FAILURE_CLASS values
+ */
+function classifyFailure(code, stdout = '', stderr = '') {
+  const out = String(stdout || '').toLowerCase();
+  const err = String(stderr || '').toLowerCase();
+  const combined = out + '\n' + err;
+
+  // Exit code 78 — configuration error (Claude CLI not found, bad setup)
+  if (code === 78) return FAILURE_CLASS.CONFIG_ERROR;
+
+  // Permission / trust / auth failures
+  if (/permission denied|access denied|unauthorized|403 forbidden|trust.*blocked|auth.*fail/i.test(combined)) {
+    return FAILURE_CLASS.PERMISSION_BLOCKED;
+  }
+
+  // Merge conflicts
+  if (/merge conflict|conflict.*merge|automatic merge failed|fix conflicts/i.test(combined)) {
+    return FAILURE_CLASS.MERGE_CONFLICT;
+  }
+
+  // Context window / max turns exhausted
+  if (/context window|max.*turns.*reached|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+    return FAILURE_CLASS.OUT_OF_CONTEXT;
+  }
+
+  // Network / API errors
+  if (/rate limit|429|econnrefused|enotfound|etimedout|dns.*resolution|api.*error.*5\d\d|overloaded/i.test(combined)) {
+    return FAILURE_CLASS.NETWORK_ERROR;
+  }
+
+  // Build / test / lint failures
+  if (/build failed|compilation error|test.*fail|lint.*error|type.*error|error ts\d+|syntax error|npm err/i.test(combined)) {
+    return FAILURE_CLASS.BUILD_FAILURE;
+  }
+
+  // Spawn errors — process crashed immediately or couldn't start
+  if (/spawn.*error|enoent|cannot find module|cannot find.*binary/i.test(combined)) {
+    return FAILURE_CLASS.SPAWN_ERROR;
+  }
+
+  // Empty output — agent produced nothing useful
+  if (!stdout || stdout.trim().length < 50) {
+    return FAILURE_CLASS.EMPTY_OUTPUT;
+  }
+
+  // Timeout is classified by the caller (timeout.js), not by output pattern
+  // but check for timeout markers in output as fallback
+  if (/timed.?out|timeout|heartbeat.*expired/i.test(combined)) {
+    return FAILURE_CLASS.TIMEOUT;
+  }
+
+  return FAILURE_CLASS.UNKNOWN;
+}
+
 module.exports = {
   checkPlanCompletion,
   archivePlan,
@@ -1483,5 +1544,6 @@ module.exports = {
   syncPrdFromPrs,
   resolveWorkItemPath,
   isItemCompleted,
+  classifyFailure,
 };
 
