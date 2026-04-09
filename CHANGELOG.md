@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.713 (2026-04-09)
+
+### Fixes
+-  trigger-verify handles already-completed PRDs and existing verify WIs
+-  move re-execute action card out of doc-chat thread
+-  modal derivePlanStatus was called with wrong args, plans not cached
+
 ## 0.1.710 (2026-04-09)
 
 ### Fixes
