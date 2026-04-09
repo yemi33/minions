@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.670 (2026-04-09)
+
+### Fixes
+- surface blocking tool call state in dashboard (closes #619) (#634)
+- interrupt blocking tool calls immediately on steering (closes #627) (#632)
+- reduce Bash blocking grace and errored task dedup window (closes #593) (#630)
+
 ## 0.1.667 (2026-04-09)
 
 ### Features
