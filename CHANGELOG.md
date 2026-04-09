@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.654 (2026-04-09)
+
+### Fixes
+-  kill process tree (not just parent) before worktree removal
+
+### Other
+- refactor: extract slugify/formatTranscriptEntry, fix pipeline completion
+
 ## 0.1.652 (2026-04-09)
 
 ### Fixes
