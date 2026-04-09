@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.734 (2026-04-09)
+
+### Fixes
+-  prevent sync from overwriting pins during in-flight write
+-  merge localStorage pins to server on migration, always sync cache
+
 ## 0.1.732 (2026-04-09)
 
 ### Fixes
