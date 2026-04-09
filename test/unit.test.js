@@ -2709,10 +2709,12 @@ async function testPreflightModule() {
       `Expected string or null, got ${typeof result}`);
   });
 
-  await test('findClaudeBinary result ends with cli.js if non-null', () => {
+  await test('findClaudeBinary result ends with cli.js or is a native binary path', () => {
     const result = preflight.findClaudeBinary();
     if (result !== null) {
-      assert.ok(result.endsWith('cli.js'), `Expected path ending in cli.js, got: ${result}`);
+      const isCliJs = result.endsWith('cli.js');
+      const isNativeBin = result.includes('claude');
+      assert.ok(isCliJs || isNativeBin, `Expected cli.js path or native binary, got: ${result}`);
     }
   });
 
@@ -9643,18 +9645,19 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
   });
 
-  await test('ccCall default maxTurns is 25 (not 50)', () => {
+  await test('ccCall maxTurns defaults from ENGINE_DEFAULTS.ccMaxTurns', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const ccCallSig = src.match(/async function ccCall\(message,\s*\{[^}]+\}/);
-    assert.ok(ccCallSig, 'ccCall signature should exist');
-    assert.ok(ccCallSig[0].includes('maxTurns = 25'), 'ccCall default maxTurns should be 25');
+    assert.ok(src.includes('ENGINE_DEFAULTS.ccMaxTurns'), 'ccCall should reference ENGINE_DEFAULTS.ccMaxTurns');
   });
 
-  await test('CC streaming handler uses maxTurns 25', () => {
+  await test('CC streaming handler uses configurable ccMaxTurns', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const streamHandler = src.slice(src.indexOf('handleCommandCenterStream'));
-    const maxTurnsMatch = streamHandler.match(/maxTurns:\s*(\d+)/);
-    assert.ok(maxTurnsMatch && maxTurnsMatch[1] === '25', 'Streaming CC maxTurns should be 25');
+    assert.ok(streamHandler.includes('ccMaxTurns'), 'Streaming CC should use ccMaxTurns variable');
+  });
+
+  await test('ENGINE_DEFAULTS.ccMaxTurns is 50', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccMaxTurns, 50, 'ccMaxTurns default should be 50');
   });
 
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {

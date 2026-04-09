@@ -108,7 +108,7 @@ if (isResume) {
 }
 
 if (!claudeBin) {
-  const msg = 'FATAL: Cannot find claude-code cli.js — install with: npm install -g @anthropic-ai/claude-code';
+  const msg = 'FATAL: Cannot find Claude Code CLI — install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code';
   fs.appendFileSync(debugPath, msg + '\n');
   console.error(msg);
   process.exit(78); // 78 = configuration error (distinct from runtime failures)
