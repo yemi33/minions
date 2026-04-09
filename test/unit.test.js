@@ -4765,6 +4765,68 @@ async function testVerifyWorkflow() {
       'Should normalize branch names via sanitizeBranch');
   });
 
+  // ── Verify badge: E2E PR + Testing Guide display logic ──
+
+  await test('verify badge shows checkmark and "Verified" when done', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('\\u2714 Verified'), 'Should show checkmark + Verified for done status');
+  });
+
+  await test('verify badge matches E2E PR by sourcePlan + branch slug', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('pr.prdItems'), 'Should check prdItems for direct match');
+    assert.ok(fn.includes('pr.branch') && fn.includes('planSlug'), 'Should fallback to branch slug match');
+    assert.ok(fn.includes('[E2E]'), 'Should verify title starts with [E2E] for branch fallback');
+  });
+
+  await test('verify badge includes Testing Guide link', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('verifyGuides'), 'Should look up verify guides from status');
+    assert.ok(fn.includes('openVerifyGuide'), 'Should link to openVerifyGuide for the guide');
+    assert.ok(fn.includes('Testing Guide'), 'Should label the link as Testing Guide');
+  });
+
+  await test('PRD view renderE2eSection shows E2E PRs and guides for active PRDs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    assert.ok(src.includes('function renderE2eSection'), 'Should have renderE2eSection function');
+    assert.ok(src.includes('e2eByPlan[planFile]'), 'Should look up PRs by planFile key');
+    assert.ok(src.includes('guideByPlan[planFile]'), 'Should look up guide by planFile key');
+    assert.ok(src.includes('E2E Aggregate PRs'), 'Should show E2E Aggregate PRs header');
+    assert.ok(src.includes('Manual Testing Guide'), 'Should show Manual Testing Guide link');
+  });
+
+  await test('PRD view calls renderE2eSection for both active and archived groups', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // Active groups
+    assert.ok(src.includes('renderE2eSection(g.file)'), 'Should call renderE2eSection for active groups');
+    // Archived groups
+    assert.ok(src.includes('_archivedPrdRenderE2eSection'), 'Should save renderE2eSection for archived groups');
+  });
+
+  await test('PRD re-renders when pullRequests change (E2E PR added)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+    assert.ok(src.includes('prdPrs') && src.includes('pullRequests'),
+      'Should trigger PRD re-render when pullRequests count changes');
+  });
+
+  await test('syncPrsFromOutput scans assistant text blocks for PR URLs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function syncPrsFromOutput'));
+    assert.ok(fn.includes("block.type === 'text'"), 'Should scan text blocks, not just tool_result');
+    assert.ok(fn.includes('PR created') && fn.includes('E2E PR'), 'Should match PR created and E2E PR patterns');
+    assert.ok(fn.includes('textCreatedPattern'), 'Should have textCreatedPattern regex');
+  });
+
+  await test('verify playbook requires PR URL in final message', () => {
+    const pb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
+    assert.ok(pb.includes('final message MUST include'), 'Should require PR URL in final message');
+    assert.ok(pb.includes('E2E PR created'), 'Should give example format with E2E PR');
+    assert.ok(pb.includes('prd/guides/verify'), 'Should mention testing guide path in example');
+  });
+
   cleanup();
   restore();
 }
