@@ -367,7 +367,7 @@ const commands = {
     function watchForWorkChanges() {
       const filesToWatch = [
         path.join(MINIONS_DIR, 'work-items.json'),
-        path.join(ENGINE_DIR, 'dispatch.json'),
+        // dispatch.json excluded — it changes every tick, causing a feedback loop
       ];
       // Watch project-specific work-items.json
       const { getProjects } = require('./shared');
@@ -393,7 +393,7 @@ const commands = {
               _globalDebounce = null;
               e.log('info', `File change detected — triggering tick`);
               e.tick();
-            }, 1000);
+            }, 5000);
           });
         } catch { /* optional */ }
       }
