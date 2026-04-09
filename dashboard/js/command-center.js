@@ -135,6 +135,15 @@ function ccSwitchTab(id) {
   for (var i = 0; i < tab.messages.length; i++) {
     ccAddMessage(tab.messages[i].role, tab.messages[i].html, true);
   }
+  // If this tab is still processing, show a thinking indicator
+  if (tab._sending) {
+    var thinking = document.createElement('div');
+    thinking.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:11px;color:var(--muted);align-self:flex-start;display:flex;align-items:center;gap:8px';
+    thinking.innerHTML = '<span class="dot-pulse" style="display:inline-flex;gap:3px"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span> Processing in background...' +
+      ' <button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>';
+    el.appendChild(thinking);
+    el.scrollTop = el.scrollHeight;
+  }
   ccRenderTabBar();
   ccUpdateSessionIndicator();
   ccSaveState();
