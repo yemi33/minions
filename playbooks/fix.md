@@ -66,3 +66,18 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, and (3) commented on the PR. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
 
+## Completion
+
+After finishing, output a structured completion block so the engine can parse your results:
+
+```completion
+status: done | partial | failed
+files_changed: <comma-separated list of key files changed>
+tests: pass | fail | skipped | N/A
+pr: PR-<number> or N/A
+failure_class: N/A
+pending: <any remaining work, or none>
+```
+
+Replace the values with your actual results. This block MUST appear in your final output.
+
