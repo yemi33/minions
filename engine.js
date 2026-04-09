@@ -125,7 +125,8 @@ const { getRouting, parseRoutingTable, getRoutingTableCached, getMonthlySpend,
 
 // ─── Playbook, system prompt, agent context (extracted to engine/playbook.js) ─
 
-const { renderPlaybook, buildSystemPrompt, buildAgentContext, selectPlaybook,
+const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
+  buildSystemPrompt, buildAgentContext, selectPlaybook,
   buildBaseVars, buildPrDispatch, resolveTaskContext,
   getRepoHostLabel, getRepoHostToolRule } = require('./engine/playbook');
 
@@ -2934,7 +2935,7 @@ module.exports = {
   reconcileItemsWithPrs, detectDependencyCycles,
 
   // Playbooks
-  renderPlaybook, buildWorkItemDispatchVars,
+  renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
 
   // Timeout / Steering / Idle (re-exported from engine/timeout.js)
   checkTimeouts, checkSteering, checkIdleThreshold,
