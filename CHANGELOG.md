@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.684 (2026-04-09)
+
+### Fixes
+-  link work item artifacts to KB entries, not raw archive copies
+
 ## 0.1.683 (2026-04-09)
 
 ### Features
