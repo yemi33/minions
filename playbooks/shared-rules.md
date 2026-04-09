@@ -12,5 +12,17 @@
   - Work item descriptions and `resultSummary` for prior completed work on the same topic
   - `pinned.md` — critical context flagged by the human teammate
   This avoids duplicating research another agent already completed.
-- If you discover a repeatable workflow, output it as a ```skill block (the engine auto-extracts it).
+- If you discover a repeatable workflow, output it as a fenced skill block. The engine auto-extracts it to `~/.claude/skills/<name>/SKILL.md`. Required format:
+  ````
+  ```skill
+  ---
+  name: skill-name-here
+  description: One-line description of when to trigger this skill
+  scope: minions
+  ---
+
+  Instructions for the skill go here.
+  ```
+  ````
+  The `name` and `description` fields are required. `scope` defaults to `minions` (global). Use `scope: project` + `project: ProjectName` for project-specific skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
