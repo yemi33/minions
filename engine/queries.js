@@ -864,6 +864,7 @@ function getPrdInfo(config) {
               ...f, _source: pf, _planStatus: plan.status || 'active',
               _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
               _archived: archived, _sourcePlan: plan.source_plan || '',
+              _branchStrategy: plan.branch_strategy || 'parallel',
               _planStale: planStale || plan.planStale || false, _lastSyncedFromPlan: plan.lastSyncedFromPlan || null,
               _prdUpdatedAt: new Date(stat.mtimeMs).toISOString(),
               _prdCompletedAt: plan.completedAt || '',

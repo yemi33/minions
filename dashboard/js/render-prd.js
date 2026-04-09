@@ -140,7 +140,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', branchStrategy: i.branchStrategy || 'parallel', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
     // Collect all unique projects across items in this group
     for (const p of (i.projects || [])) { if (p && !grouped[key]._projects.includes(p)) grouped[key]._projects.push(p); }
@@ -277,6 +277,7 @@ function renderPrdProgress(prog) {
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       (g._projects.length > 0 ? g._projects.map(function(p) { return '<span class="prd-project-badge">' + escHtml(p) + '</span>'; }).join(' ') : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
+      (g.branchStrategy === 'shared-branch' ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(210,153,34,0.15);color:var(--yellow);font-weight:400">shared branch</span>' : '') +
       pausedLabel +
       staleLabel +
       '<span style="font-weight:700;font-size:11px;color:' + (done === g.items.length && g.items.length > 0 ? 'var(--green)' : 'var(--text)') + '">' + (g.items.length > 0 ? Math.round((done / g.items.length) * 100) : 0) + '%</span>' +
