@@ -287,20 +287,25 @@ function ccUpdateSessionIndicator() {
   }
 }
 
-function ccAddMessage(role, html, skipSave) {
-  var el = document.getElementById('cc-messages');
+function ccAddMessage(role, html, skipSave, targetTabId) {
   var isUser = role === 'user';
-  var div = document.createElement('div');
   var isAssistant = !isUser;
-  div.className = isAssistant ? 'cc-msg-assistant' : '';
-  div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
-    (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
-  div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
-  var wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
-  el.appendChild(div);
-  if (wasNearBottom || isUser) requestAnimationFrame(function() { el.scrollTop = el.scrollHeight; });
+  var targetTab = targetTabId ? _ccTabs.find(function(t) { return t.id === targetTabId; }) : _ccActiveTab();
+  // Only render to DOM if this message is for the currently visible tab
+  var isVisible = !targetTabId || targetTabId === _ccActiveTabId;
+  if (isVisible) {
+    var el = document.getElementById('cc-messages');
+    var div = document.createElement('div');
+    div.className = isAssistant ? 'cc-msg-assistant' : '';
+    div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
+      (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
+    div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
+    var wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    el.appendChild(div);
+    if (wasNearBottom || isUser) requestAnimationFrame(function() { el.scrollTop = el.scrollHeight; });
+  }
   if (!skipSave) {
-    var tab = _ccActiveTab();
+    var tab = targetTab;
     if (tab) {
       tab.messages.push({ role: role, html: html });
       // Auto-title from first user message
@@ -396,7 +401,10 @@ async function _ccDoSend(message, skipUserMsg) {
   var _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
-  if (!skipUserMsg) ccAddMessage('user', escHtml(message));
+  // Scoped helper — always targets the originating tab, even if user switches tabs
+  function addMsg(role, html, skipSave) { ccAddMessage(role, html, skipSave, activeTabId); }
+
+  if (!skipUserMsg) addMsg('user', escHtml(message));
 
   // Remove queue indicator before processing (it'll be re-added if more queued)
   var existingQueueEl = document.getElementById('cc-queue-indicator');
@@ -424,7 +432,7 @@ async function _ccDoSend(message, skipUserMsg) {
   var activeTabId = _ccActiveTabId;
 
   // Show thinking immediately — before fetch starts
-  ccAddMessage('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
+  addMsg('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
   var msgs = document.getElementById('cc-messages');
   var streamDiv = msgs.lastElementChild;
     var dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
@@ -471,7 +479,7 @@ async function _ccDoSend(message, skipUserMsg) {
     if (!res.ok) {
       clearInterval(phaseTimer); streamDiv.remove();
       var errText = await res.text();
-      ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
+      addMsg('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
         (errText.includes('busy') ? ' <button onclick="ccNewTab()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
       return;
     }
@@ -504,7 +512,7 @@ async function _ccDoSend(message, skipUserMsg) {
             // placeholder was added with skipSave=true — nothing to pop
             var ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered = renderMd(evt.text || streamedText || '');
-            ccAddMessage('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
+            addMsg('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
             if (evt.sessionId !== undefined) {
               var currentTab = _ccActiveTab();
               if (currentTab) { currentTab.sessionId = evt.sessionId || null; }
@@ -516,7 +524,7 @@ async function _ccDoSend(message, skipUserMsg) {
           } else if (evt.type === 'error') {
             clearInterval(phaseTimer); streamDiv.remove();
             // placeholder was skipSave — no pop needed
-            ccAddMessage('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
+            addMsg('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
           }
         } catch { /* incomplete JSON */ }
       }
@@ -534,7 +542,7 @@ async function _ccDoSend(message, skipUserMsg) {
             // placeholder was skipSave — no pop needed
             var ccElapsed2 = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered2 = renderMd(revt.text || streamedText || '');
-            ccAddMessage('assistant', rendered2 + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed2 + 's</div>');
+            addMsg('assistant', rendered2 + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed2 + 's</div>');
             if (revt.sessionId !== undefined) {
               var currentTab2 = _ccActiveTab();
               if (currentTab2) { currentTab2.sessionId = revt.sessionId || null; }
@@ -555,7 +563,7 @@ async function _ccDoSend(message, skipUserMsg) {
       clearInterval(phaseTimer); streamDiv.remove();
       if (streamedText) {
         var ccElapsed3 = Math.round((Date.now() - ccStartTime) / 1000);
-        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed3 + 's</div>');
+        addMsg('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed3 + 's</div>');
       }
     }
   } catch (e) {
@@ -564,14 +572,14 @@ async function _ccDoSend(message, skipUserMsg) {
       _wasAborted = true;
       if (streamedText) {
         var ccElapsed4 = Math.round((Date.now() - ccStartTime) / 1000);
-        ccAddMessage('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">Stopped after ' + ccElapsed4 + 's</div>');
+        addMsg('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">Stopped after ' + ccElapsed4 + 's</div>');
       } else {
-        ccAddMessage('assistant', '<span style="color:var(--red);font-size:11px">Stopped</span>');
+        addMsg('assistant', '<span style="color:var(--red);font-size:11px">Stopped</span>');
       }
     } else {
       var retryId = 'cc-retry-' + Date.now();
       var isNetworkError = e.message === 'Failed to fetch' || e.message.includes('NetworkError');
-      ccAddMessage('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
+      addMsg('assistant', '<span style="color:var(--red)">Error: ' + escHtml(e.message) + '</span>' +
         (isNetworkError ? '<div style="font-size:10px;color:var(--muted);margin-top:4px">Dashboard connection lost. Reload the page to reconnect.</div>' : '') +
         '<button id="' + retryId + '" onclick="ccRetryLast()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:11px">Retry</button>' +
         (isNetworkError ? ' <button onclick="location.reload()" style="margin-top:6px;padding:4px 12px;background:var(--orange);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px">Reload Page</button>' : '') +
