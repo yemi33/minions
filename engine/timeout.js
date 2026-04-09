@@ -177,27 +177,40 @@ function checkTimeouts(config) {
     const silentMs = Date.now() - lastActivity;
     const silentSec = Math.round(silentMs / 1000);
 
-    // Check if the agent actually completed (result event in live output)
-    // Optimization: only read file if recent activity (avoids reading stale 1MB logs)
+    // Check if the agent actually completed (result event in live output).
+    // Read the tail of the log (last 64KB) for efficiency — result JSON is always near the end.
+    // No time cap: a stuck dispatch that produced a result must always be detected (#716).
     let completedViaOutput = false;
-    if (silentMs <= 600000) try {
-      const liveLog = safeRead(liveLogPath);
-      if (liveLog && liveLog.includes('"type":"result"')) {
+    try {
+      let liveLog;
+      try {
+        const fd = fs.openSync(liveLogPath, 'r');
+        const stat = fs.fstatSync(fd);
+        const TAIL_SIZE = 65536; // 64KB
+        const tailSize = Math.min(stat.size, TAIL_SIZE);
+        const buf = Buffer.alloc(tailSize);
+        fs.readSync(fd, buf, 0, tailSize, Math.max(0, stat.size - tailSize));
+        fs.closeSync(fd);
+        liveLog = buf.toString('utf8');
+      } catch { /* ENOENT or read failure — liveLog stays undefined */ }
+      if (liveLog && (liveLog.includes('"type":"result"') || liveLog.includes('[process-exit]'))) {
         completedViaOutput = true;
         const isSuccess = liveLog.includes('"subtype":"success"');
         log('info', `Agent ${item.agent} (${item.id}) completed via output detection (${isSuccess ? 'success' : 'error'})`);
 
-        // Extract output text for the output.log
+        // Extract output text for the output.log — read full file for complete parsing
         const outputLogPath = path.join(AGENTS_DIR, item.agent, 'output.log');
         try {
-          const { text } = shared.parseStreamJsonOutput(liveLog);
+          const fullLog = safeRead(liveLogPath) || liveLog;
+          const { text } = shared.parseStreamJsonOutput(fullLog);
           safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
         completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, 'Completed (detected from output)');
 
         // Run post-completion hooks via shared helper (async — fire and forget in timeout context)
-        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, liveLog, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
+        const fullLogForHooks = safeRead(liveLogPath) || liveLog;
+        runPostCompletionHooks(item, item.agent, isSuccess ? 0 : 1, fullLogForHooks, config).catch(e => log('warn', 'post-completion hooks: ' + e.message));
 
         if (hasProcess) {
           shared.killImmediate(activeProcesses.get(item.id)?.proc);
@@ -213,6 +226,8 @@ function checkTimeouts(config) {
     // Check if agent is in a blocking tool call (TaskOutput block:true, Bash with long timeout, etc.)
     // These tools produce no stdout for extended periods — don't kill them prematurely
     // Check for BOTH tracked and untracked processes (orphan case after engine restart)
+    // Skip if agent already completed — blocking tool detection on stale tool calls
+    // would extend the timeout indefinitely for dead agents (#716).
     let isBlocking = false;
     let blockingTimeout = itemHeartbeat;
     let blockingTool = '';
@@ -220,6 +235,12 @@ function checkTimeouts(config) {
       try {
         const liveLog = safeRead(liveLogPath);
         if (liveLog) {
+          // If the output contains a result event or process-exit sentinel, the agent is done.
+          // Don't extend timeout for stale blocking tool calls from before the result (#716).
+          if (liveLog.includes('"type":"result"') || liveLog.includes('[process-exit]')) {
+            // Agent completed but close event didn't fire — let orphan/hung detection handle it.
+            // Don't set isBlocking — use base heartbeat timeout.
+          } else {
           // Find the last tool_use call in the output — check if it's a known blocking tool
           const lines = liveLog.split('\n');
           for (let i = lines.length - 1; i >= Math.max(0, lines.length - 30); i--) {
@@ -266,7 +287,8 @@ function checkTimeouts(config) {
               remainingMs: Math.max(0, blockingTimeout - silentMs),
             });
           }
-        }
+          } // close else
+        } // close if (liveLog)
       } catch (e) { log('warn', 'blocking tool detection: ' + e.message); }
     }
     // Agent recovered from blocking state — clear annotation

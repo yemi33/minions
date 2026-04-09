@@ -176,6 +176,10 @@ proc.stdout.once('data', () => { gotFirstOutput = true; clearTimeout(startupTime
 
 proc.on('close', (code) => {
   clearTimeout(startupTimer);
+  // Write process-exit sentinel to stdout so the engine can detect completion (#716).
+  // This is a backup for cases where Claude CLI crashes without writing a result line.
+  // process.stdout.write is synchronous for pipes, so it will be captured by the parent.
+  try { process.stdout.write(`\n[process-exit] code=${code}\n`); } catch { /* stdout may be closed */ }
   fs.appendFileSync(debugPath, `EXIT: code=${code}\nSTDERR: ${stderrBuf.slice(0, 500)}\n`);
   process.exit(code || 0);
 });

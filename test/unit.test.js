@@ -6752,6 +6752,9 @@ async function main() {
     await testMetricsEnrichment();
     await testDashboardButtonConsistency();
 
+    // #716: Heartbeat feedback loop + max_turns lifecycle cleanup
+    await testIssue716HeartbeatFeedbackLoop();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -11891,6 +11894,105 @@ async function testDashboardButtonConsistency() {
     const lines = src.split('\n').filter(l => l.includes("t.agent") && l.includes("t.type") && l.includes("t.round"));
     for (const line of lines) {
       assert.ok(line.includes("|| 'agent'"), 'Should guard agent: ' + line.trim().slice(0, 60));
+    }
+  });
+}
+
+// ─── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ────────────
+
+async function testIssue716HeartbeatFeedbackLoop() {
+  console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  // 1. classifyFailure with exact Claude CLI error_max_turns output
+  await test('classifyFailure: exact error_max_turns JSON → OUT_OF_CONTEXT', () => {
+    // Exact format from Claude CLI when agent exhausts turn limit
+    const exactOutput = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
+    assert.strictEqual(lifecycle.classifyFailure(1, exactOutput, ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT,
+      'Exact error_max_turns JSON from Claude CLI should classify as OUT_OF_CONTEXT');
+  });
+
+  await test('classifyFailure: terminal_reason max_turns in stderr → OUT_OF_CONTEXT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'terminal_reason: max_turns'),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+  });
+
+  // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
+  await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('realActivityMap'),
+      'engine.js should use realActivityMap for timeout detection');
+    // Must be updated on stdout data handler
+    const marker = 'proc.stdout.on';
+    const idx = src.indexOf(marker);
+    const stdoutSection = src.slice(idx, idx + 500);
+    assert.ok(stdoutSection.includes('realActivityMap.set(id, Date.now())'),
+      'stdout data handler should update realActivityMap');
+    // Must be initialized at spawn time
+    assert.ok(src.includes('realActivityMap.set(id, Date.now())'),
+      'realActivityMap should be initialized at spawn time');
+  });
+
+  // 3. timeout.js uses realActivityMap instead of file mtime for tracked processes
+  await test('timeout.js uses realActivityMap for tracked processes (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('realActivityMap'),
+      'timeout.js should check realActivityMap for tracked process');
+    assert.ok(src.includes('feedback loop'),
+      'timeout.js should comment about avoiding heartbeat feedback loop');
+  });
+
+  // 4. Output completion detection scans for result and process-exit
+  await test('timeout.js detects completed agents from output (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
+      'timeout.js should scan for result events and process-exit sentinel');
+    assert.ok(src.includes('completedViaOutput'),
+      'Should track completion via output detection');
+    assert.ok(src.includes('completeDispatch(item.id'),
+      'Should finalize dispatch for completed agents detected via output');
+  });
+
+  // 5. spawn-agent.js writes [process-exit] sentinel to stdout
+  await test('spawn-agent.js writes [process-exit] sentinel on close (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    assert.ok(src.includes('[process-exit]'),
+      'spawn-agent.js should write [process-exit] sentinel to stdout on close');
+    assert.ok(src.includes("process.stdout.write"),
+      'Sentinel should be written to stdout (not stderr or file)');
+  });
+
+  // 6. Blocking tool detection guard: don't extend timeout after agent completed
+  await test('timeout.js guards blocking tool detection against completed agents (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The blocking tool detection section should check for result/process-exit before extending
+    const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
+    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
+      'Blocking tool detection should check for completed agent before extending timeout');
+  });
+
+  // 7. Output completion detection is NOT gated by time cap
+  await test('timeout.js output detection runs unconditionally, not time-gated (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The old code had: if (silentMs <= 600000) try { ... check for result ... }
+    // The new code should NOT have this time cap
+    assert.ok(!src.includes('silentMs <= 600000'),
+      'Output completion detection should NOT be gated by 600s time cap');
+    // Should use tail reading for efficiency (64KB)
+    assert.ok(src.includes('TAIL_SIZE') || src.includes('65536'),
+      'Should use tail reading for efficiency');
+  });
+
+  // 8. Heartbeat timer does NOT update realActivityMap
+  await test('engine.js heartbeat timer does NOT update realActivityMap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the heartbeat interval — it should NOT contain realActivityMap
+    const heartbeatMatches = src.match(/heartbeatTimer\s*=\s*setInterval\(\s*\(\)\s*=>\s*\{[^}]+\}/g);
+    assert.ok(heartbeatMatches, 'Should have heartbeat timer');
+    for (const match of heartbeatMatches) {
+      assert.ok(!match.includes('realActivityMap'),
+        'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
     }
   });
 }

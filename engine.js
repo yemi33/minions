@@ -723,7 +723,7 @@ async function spawnAgent(dispatchItem, config) {
       }
 
       // Re-attach to existing tracking
-      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, _steeringAt: Date.now() });
+      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, _steeringAt: Date.now(), lastRealOutputAt: Date.now() });
 
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
