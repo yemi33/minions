@@ -1556,6 +1556,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
+    let fixDispatched = false;
     if (reviewStatus === 'changes-requested' && !awaitingReReview) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1566,13 +1567,13 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
     }
 
-    // PRs with pending human feedback (or coalesced comments from while agent was fixing)
+    // PRs with pending human feedback (skip if review-fix already dispatched above)
     const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview) {
+    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
       const key = humanFixKey;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch
