@@ -706,6 +706,29 @@ function getWorkItems(config) {
     }
   }
 
+  // Populate _artifacts for the work item detail modal
+  for (const item of allItems) {
+    const arts = {};
+    const agentId = item.dispatched_to || item.agent;
+    if (agentId) {
+      // Output log — find most recent matching dispatch output
+      const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+      try {
+        const files = safeReadDir(agentDir).filter(f => f.startsWith('output-') && f.includes(item.id?.slice(-8) || '___') && f.endsWith('.log'));
+        if (files.length > 0) arts.outputLog = agentId + '/' + files[files.length - 1];
+      } catch {}
+      // Inbox notes created by this agent for this task
+      try {
+        const inboxFiles = safeReadDir(INBOX_DIR).filter(f => f.includes(agentId) && (f.includes(item.id || '___') || f.includes(item.id?.slice(-8) || '___')));
+        if (inboxFiles.length > 0) arts.notes = inboxFiles;
+      } catch {}
+    }
+    if (item.branch) arts.branch = item.branch;
+    if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
+    if (item._pr) arts.pr = item._pr;
+    if (Object.keys(arts).length > 0) item._artifacts = arts;
+  }
+
   const statusOrder = {
     pending: 0,
     queued: 0,
