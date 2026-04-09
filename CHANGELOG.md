@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.710 (2026-04-09)
+
+### Fixes
+-  modal shows Execute for completed plans, missing status labels
+
 ## 0.1.709 (2026-04-09)
 
 ### Fixes
