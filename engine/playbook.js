@@ -206,6 +206,51 @@ function resolveTaskContext(item, config) {
   return resolved;
 }
 
+// ─── Required Template Variables ────────────────────────────────────────────
+// Defines which caller-provided variables are mandatory per playbook type.
+// Base vars (from buildBaseVars) and project vars (injected by renderPlaybook)
+// are always present and excluded. Variables in conditional blocks ({{#key}})
+// are optional by design. Only variables that make the playbook non-functional
+// when absent are listed here.
+
+const PLAYBOOK_REQUIRED_VARS = {
+  'implement':            ['item_id', 'item_name', 'branch_name', 'project_path'],
+  'implement-shared':     ['item_id', 'item_name', 'branch_name', 'worktree_path'],
+  'fix':                  ['pr_id', 'pr_branch'],
+  'review':               ['pr_id', 'pr_branch'],
+  'build-and-test':       ['pr_id', 'pr_branch', 'project_path'],
+  'explore':              ['task_description'],
+  'ask':                  ['question'],
+  'plan':                 ['task_description', 'project_path'],
+  'plan-to-prd':          ['plan_content', 'plan_file', 'prd_filename', 'project_path'],
+  'decompose':            ['item_id', 'item_description', 'project_path'],
+  'verify':               ['task_description'],
+  'test':                 ['item_name'],
+  'work-item':            ['item_id', 'item_name'],
+  'meeting-investigate':  ['meeting_title', 'agenda'],
+  'meeting-debate':       ['meeting_title', 'agenda'],
+  'meeting-conclude':     ['meeting_title', 'agenda'],
+};
+
+/**
+ * Validate that all required template variables for a playbook type are present
+ * and non-empty in the provided vars object.
+ * @param {string} playbookName - The playbook type name
+ * @param {object} vars - The template variables object
+ * @returns {{ valid: boolean, missing: string[] }}
+ */
+function validatePlaybookVars(playbookName, vars) {
+  const required = PLAYBOOK_REQUIRED_VARS[playbookName];
+  if (!required) return { valid: true, missing: [] };
+
+  const missing = required.filter(key => {
+    const val = vars[key];
+    return val === undefined || val === null || String(val).trim() === '';
+  });
+
+  return { valid: missing.length === 0, missing };
+}
+
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
@@ -288,6 +333,13 @@ function renderPlaybook(type, vars) {
     repo_host_label: getRepoHostLabel(dispatchProject),
   };
   const allVars = { ...projectVars, ...vars };
+
+  // Validate required template variables before substitution
+  const validation = validatePlaybookVars(type, allVars);
+  if (!validation.valid) {
+    log('error', `Playbook "${type}": missing required template variables: ${validation.missing.join(', ')} — skipping render`);
+    return null;
+  }
 
   // Process conditional blocks: {{#key}}...{{/key}} — include block only if key is truthy
   content = content.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key, block) => {
@@ -493,6 +545,8 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 
 module.exports = {
   renderPlaybook,
+  validatePlaybookVars,
+  PLAYBOOK_REQUIRED_VARS,
   buildSystemPrompt,
   buildAgentContext,
   selectPlaybook,

@@ -3405,7 +3405,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(typeof result === 'string' && result.length > 0,
@@ -3416,7 +3417,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'UNIQUE_AGENT_SENTINEL', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(result && result.includes('UNIQUE_AGENT_SENTINEL'),
@@ -3433,6 +3435,107 @@ async function testRenderPlaybook() {
   await test('renderPlaybook injects skill extraction instructions', () => {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
+  });
+}
+
+// ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
+
+async function testValidatePlaybookVars() {
+  console.log('\n── engine/playbook.js — validatePlaybookVars ──');
+
+  let validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, renderPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    validatePlaybookVars = pb.validatePlaybookVars;
+    PLAYBOOK_REQUIRED_VARS = pb.PLAYBOOK_REQUIRED_VARS;
+    renderPlaybook = pb.renderPlaybook;
+  } catch {}
+
+  if (!validatePlaybookVars) {
+    skip('validatePlaybookVars', 'engine/playbook.validatePlaybookVars not available');
+    return;
+  }
+
+  await test('validatePlaybookVars returns valid for unknown playbook type', () => {
+    const result = validatePlaybookVars('nonexistent-playbook', {});
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars returns missing vars for implement with empty vars', () => {
+    const result = validatePlaybookVars('implement', {});
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('item_id'), 'Should flag item_id as missing');
+    assert.ok(result.missing.includes('item_name'), 'Should flag item_name as missing');
+    assert.ok(result.missing.includes('branch_name'), 'Should flag branch_name as missing');
+    assert.ok(result.missing.includes('project_path'), 'Should flag project_path as missing');
+  });
+
+  await test('validatePlaybookVars passes when all required vars are provided', () => {
+    const result = validatePlaybookVars('implement', {
+      item_id: 'W-001', item_name: 'Test feature',
+      branch_name: 'work/W-001', project_path: '/tmp/repo',
+    });
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars treats empty strings as missing', () => {
+    const result = validatePlaybookVars('fix', { pr_id: '', pr_branch: 'some-branch' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'Empty string should count as missing');
+    assert.ok(!result.missing.includes('pr_branch'), 'Non-empty string should not be flagged');
+  });
+
+  await test('validatePlaybookVars treats whitespace-only strings as missing', () => {
+    const result = validatePlaybookVars('ask', { question: '   ' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('question'), 'Whitespace-only should count as missing');
+  });
+
+  await test('validatePlaybookVars treats null/undefined as missing', () => {
+    const result = validatePlaybookVars('review', { pr_id: null, pr_branch: undefined });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'null should count as missing');
+    assert.ok(result.missing.includes('pr_branch'), 'undefined should count as missing');
+  });
+
+  await test('PLAYBOOK_REQUIRED_VARS covers all dispatched playbook types', () => {
+    const expectedTypes = [
+      'implement', 'implement-shared', 'fix', 'review', 'build-and-test',
+      'explore', 'ask', 'plan', 'plan-to-prd', 'decompose', 'verify',
+      'test', 'work-item', 'meeting-investigate', 'meeting-debate', 'meeting-conclude',
+    ];
+    for (const t of expectedTypes) {
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t], `Should define required vars for "${t}"`);
+      assert.ok(Array.isArray(PLAYBOOK_REQUIRED_VARS[t]), `Required vars for "${t}" should be an array`);
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t].length > 0, `Required vars for "${t}" should not be empty`);
+    }
+  });
+
+  await test('validatePlaybookVars works for all meeting playbook types', () => {
+    for (const type of ['meeting-investigate', 'meeting-debate', 'meeting-conclude']) {
+      const result = validatePlaybookVars(type, { meeting_title: 'Daily Standup', agenda: 'Review progress' });
+      assert.strictEqual(result.valid, true, `${type} should pass with title and agenda`);
+    }
+  });
+
+  await test('renderPlaybook returns null when required vars are missing', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation', 'renderPlaybook not available'); return; }
+    // implement requires item_id, item_name, branch_name, project_path — provide none
+    const result = renderPlaybook('implement', { agent_id: 'test', agent_name: 'Test' });
+    assert.strictEqual(result, null, 'Should return null when required vars are missing');
+  });
+
+  await test('renderPlaybook succeeds when all required vars are provided', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation-pass', 'renderPlaybook not available'); return; }
+    const result = renderPlaybook('implement', {
+      agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+      item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+      project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return rendered playbook when all required vars are provided');
   });
 }
 
@@ -6113,6 +6216,7 @@ async function main() {
     await testCooldownSystem();
     await testResolveAgent();
     await testRenderPlaybook();
+    await testValidatePlaybookVars();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
