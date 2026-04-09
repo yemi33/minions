@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.746 (2026-04-09)
+
+### Features
+-  CC multi-tab conversations with session resume
+
+### Fixes
+-  CC tabs use per-tab sessions, not shared global session
+
 ## 0.1.744 (2026-04-09)
 
 ### Features
