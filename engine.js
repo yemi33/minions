@@ -795,7 +795,7 @@ async function spawnAgent(dispatchItem, config) {
           const _artToday = shared.dateStamp();
           const _artInboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
           let _artNotes = [];
-          try { _artNotes = shared.safeReadDir(_artInboxDir).filter(f => f.includes(agentId) && f.includes(_artToday)); } catch {}
+          try { _artNotes = shared.safeReadDir(_artInboxDir).filter(f => f.startsWith(agentId + '-') && f.includes(_artToday)); } catch {}
 
           mutateJsonFileLocked(artWiPath, data => {
             if (!Array.isArray(data)) return data;
