@@ -9311,6 +9311,64 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('totalRuntimeMs'), 'Should reference totalRuntimeMs from metrics');
   });
 
+  // ── PRD Retry Button + View Toggle + Dependency Auto-Trigger ───────────────
+
+  await test('PRD list view shows retry button for failed items (canRequeue logic)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const renderItem = src.slice(src.indexOf('const renderItem'));
+    assert.ok(renderItem.includes("wi.status === 'failed' || i.status === 'failed'"),
+      'canRequeue should check both work item and PRD item failed status');
+    assert.ok(renderItem.includes('prdItemRequeue'),
+      'Retry button should call prdItemRequeue');
+  });
+
+  await test('PRD graph view also shows retry button for failed items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'));
+    assert.ok(graphFn.includes("'failed'") && graphFn.includes('prdItemRequeue'),
+      'Graph view should check failed status and have prdItemRequeue click handler');
+  });
+
+  await test('PRD view toggle uses rerenderPrdFromCache (not refresh)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    assert.ok(src.includes("_prdViewMode=\\'graph\\';rerenderPrdFromCache()") || src.includes("_prdViewMode='graph';rerenderPrdFromCache()"),
+      'Graph toggle must call rerenderPrdFromCache, not refresh');
+    assert.ok(src.includes("_prdViewMode=\\'list\\';rerenderPrdFromCache()") || src.includes("_prdViewMode='list';rerenderPrdFromCache()"),
+      'List toggle must call rerenderPrdFromCache, not refresh');
+    assert.ok(!src.includes("_prdViewMode=\\'list\\';refresh()") && !src.includes("_prdViewMode='list';refresh()"),
+      'View toggle must NOT call refresh() — change detection skips re-render when only view mode changes');
+  });
+
+  await test('PRD progress items include agent and failReason fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const prdFn = src.slice(src.indexOf('function getPrdInfo'));
+    assert.ok(prdFn.includes('agent: i._agent') || prdFn.includes("agent: i._agent || ''"),
+      'PRD progress items mapping must include agent field');
+    assert.ok(prdFn.includes('failReason: i._failReason') || prdFn.includes("failReason: i._failReason || ''"),
+      'PRD progress items mapping must include failReason field');
+  });
+
+  await test('areDependenciesMet returns failed when dep item is failed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function areDependenciesMet'));
+    assert.ok(fn.includes("depItem.status === WI_STATUS.FAILED") && fn.includes("return 'failed'"),
+      'areDependenciesMet must detect failed dependencies and return failed');
+  });
+
+  await test('dependency failure propagation resets to pending when deps recover', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function discoverFromWorkItems'));
+    assert.ok(fn.includes("failReason === 'Dependency failed") && fn.includes('WI_STATUS.PENDING'),
+      'Items failed due to dependency should reset to pending when deps recover');
+  });
+
+  await test('areDependenciesMet returns true when dep is done (enables auto-dispatch)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function areDependenciesMet'));
+    assert.ok(fn.includes('DONE_STATUSES'),
+      'areDependenciesMet should use DONE_STATUSES to check if deps are met');
+  });
+
   // ── Work Item Artifacts ────────────────────────────────────────────────────
 
   await test('spawnAgent tracks _artifacts on work items after completion', () => {
