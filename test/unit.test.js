@@ -8723,19 +8723,19 @@ async function testEngineAuditCritical() {
       'openPipelineDetail must render per-stage monitoredResources');
   });
 
-  await test('pipeline abort button shows Aborting then becomes Run Now', () => {
+  await test('pipeline abort button shows Aborting then refreshes detail', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
     assert.ok(abortFn.includes("'Aborting...'"), 'Should show Aborting... immediately');
-    assert.ok(abortFn.includes("'Run Now'"), 'Should transform to Run Now on success');
-    assert.ok(abortFn.includes('_triggerPipeline'), 'Run Now button should call _triggerPipeline');
+    assert.ok(abortFn.includes('_refreshPipelineDetail'), 'Should refresh detail modal after abort');
   });
 
-  await test('pipeline abort removes Retrigger button after success', () => {
+  await test('pipeline abort refreshes modal via _refreshPipelineDetail (not manual swap)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
-    const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
-    assert.ok(abortFn.includes("'Retrigger'") && abortFn.includes('.remove()'),
-      'Should find and remove the Retrigger button next to Abort');
+    assert.ok(src.includes('async function _refreshPipelineDetail'),
+      'Should define _refreshPipelineDetail for immediate modal refresh');
+    const refreshFn = src.slice(src.indexOf('async function _refreshPipelineDetail'));
+    assert.ok(refreshFn.includes('openPipelineDetail(id)'), 'Should re-render detail modal');
   });
 
   await test('pipeline abort cancels work items and dispatches on server', () => {
@@ -8907,6 +8907,67 @@ async function testEngineAuditCritical() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     assert.ok(src.includes("'stopped'"), 'must handle stopped status in run display');
     assert.ok(src.includes('AUTO-STOPPED'), 'must show AUTO-STOPPED label for pipelines stopped by condition');
+  });
+
+  // ── Pipeline auto-detect: skip wait/plan stages when artifacts exist (W-mnr3kiuojipk) ──
+
+  await test('isStageComplete TASK checks all project work items (not just root)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const isStageCompleteFn = src.slice(src.indexOf('function isStageComplete'));
+    const taskCase = isStageCompleteFn.slice(isStageCompleteFn.indexOf("case STAGE_TYPE.TASK:"), isStageCompleteFn.indexOf("case STAGE_TYPE.MEETING:"));
+    assert.ok(taskCase.includes('getProjects(config)'), 'TASK completion should check project work items');
+    assert.ok(taskCase.includes('projectWorkItemsPath'), 'TASK completion should use projectWorkItemsPath');
+  });
+
+  await test('task stage output collection checks all project work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const discoverFn = src.slice(src.indexOf('async function discoverPipelineWork'));
+    const taskOutputSection = discoverFn.slice(discoverFn.indexOf('STAGE_TYPE.TASK'), discoverFn.indexOf('STAGE_TYPE.MEETING'));
+    assert.ok(taskOutputSection.includes('getProjects'), 'Task output collection should check project work items');
+  });
+
+  await test('wait stage auto-complete detects existing plan from meeting', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const waitSection = src.slice(src.indexOf('PIPELINE_STATUS.WAITING_HUMAN'), src.indexOf('Check if pending stage'));
+    assert.ok(waitSection.includes('STAGE_TYPE.WAIT'), 'Should check if waiting stage is a wait stage');
+    assert.ok(waitSection.includes('STAGE_TYPE.PLAN'), 'Should look for a dependent plan stage');
+    assert.ok(waitSection.includes('_findExistingPlanForMeeting'), 'Should use _findExistingPlanForMeeting');
+    assert.ok(waitSection.includes('Auto-completed'), 'Should auto-complete with descriptive output');
+  });
+
+  await test('plan stage detects existing PRD and skips plan-to-prd dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const planFn = src.slice(src.indexOf('async function executePlanStage'), src.indexOf('function executeApiStage'));
+    assert.ok(planFn.includes('_findExistingPrdForPlan'), 'Should check for existing PRD');
+    assert.ok(planFn.includes('skipping plan-to-prd'), 'Should log skip message');
+  });
+
+  await test('_refreshPipelineDetail defined and used by all action handlers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('async function _refreshPipelineDetail'), 'Should define _refreshPipelineDetail');
+    // Check it's used by all action handlers
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes('_refreshPipelineDetail'), 'Trigger handler should use _refreshPipelineDetail');
+    const abortFn = src.slice(src.indexOf('async function _abortPipeline'), src.indexOf('async function _retriggerPipeline'));
+    assert.ok(abortFn.includes('_refreshPipelineDetail'), 'Abort handler should use _refreshPipelineDetail');
+    const retriggerFn = src.slice(src.indexOf('async function _retriggerPipeline'), src.indexOf('async function _togglePipelineEnabled'));
+    assert.ok(retriggerFn.includes('_refreshPipelineDetail'), 'Retrigger handler should use _refreshPipelineDetail');
+    const continueFn = src.slice(src.indexOf('async function _continuePipeline'), src.indexOf('async function _deletePipelineConfirm'));
+    assert.ok(continueFn.includes('_refreshPipelineDetail'), 'Continue handler should use _refreshPipelineDetail');
+  });
+
+  await test('pipeline detail modal always polls (not just when active run)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const detailFn = src.slice(src.indexOf('function openPipelineDetail'), src.indexOf('var _pipelinePollHash'));
+    // Old: if (activeRun) { _pipelinePollId = id; ... } — only polled active runs
+    // New: always sets _pipelinePollId and starts polling
+    assert.ok(!detailFn.includes('if (activeRun) {\n    _pipelinePollId'), 'Should not gate polling on activeRun');
+    assert.ok(detailFn.includes('_pipelinePollId = id'), 'Should always set poll ID');
+  });
+
+  await test('_findExistingPrdForPlan exported for testing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('_findExistingPrdForPlan'), 'Should export _findExistingPrdForPlan');
   });
 
   await test('handlePostMerge guards against null project', () => {
