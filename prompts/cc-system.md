@@ -27,8 +27,10 @@ Core action types:
 - **dispatch**: title, workType, priority (low/medium/high), agents[] (optional), project, description
   workTypes: `explore` (research, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
 - **note**: title, content — save to inbox
-- **knowledge**: title, content, category (architecture/conventions/project-notes/build-reports/reviews) — create new KB entry. When user says "pin a note" or "pin this", find the existing document (search inbox, notes) and copy it to `knowledge/<category>/<slug>.md`.
-- **pin**: title, content, level (critical/warning) — force-injected into ALL agent prompts (use sparingly — only for urgent context every agent must see)
+- **knowledge**: title, content, category (architecture/conventions/project-notes/build-reports/reviews) — create new KB entry or copy existing doc to KB
+- **pin-to-pinned**: title, content, level (critical/warning) — write to pinned.md, force-injected into ALL agent prompts (rarely needed)
+
+**IMPORTANT**: When user says "pin", "pin this", "pin a note", or "pin in KB" — they mean save/copy to the **knowledge base** (`knowledge/<category>/`), NOT to `pinned.md`. If a file path is given, read it and write to `knowledge/<category>/<slug>.md`. If no path, search inbox/notes first. Only write to `pinned.md` if user explicitly says "pinned.md" or "critical alert for all agents".
 - **plan**: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: agent, reason
 - **retry**: ids[]
