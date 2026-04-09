@@ -707,22 +707,33 @@ function getWorkItems(config) {
   }
 
   // Populate _artifacts for the work item detail modal
-  // Cache directory listings to avoid N × readdirSync
+  // Build dispatch ID → work item ID lookup from completed dispatches
+  const dispatchByWiId = {};
+  for (const d of (dispatch.completed || [])) {
+    const wiId = d.meta?.item?.id;
+    if (wiId) dispatchByWiId[wiId] = d.id; // last completed dispatch wins
+  }
+  for (const d of (dispatch.active || [])) {
+    const wiId = d.meta?.item?.id;
+    if (wiId) dispatchByWiId[wiId] = d.id;
+  }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
     if (agentId) {
-      const idSuffix = item.id?.slice(-8) || '___';
-      // Output log
-      if (!_agentDirCache[agentId]) {
-        _agentDirCache[agentId] = safeReadDir(path.join(MINIONS_DIR, 'agents', agentId)).filter(f => f.startsWith('output-') && f.endsWith('.log'));
+      // Output log — match by dispatch ID (output-{dispatchId}.log)
+      const dispatchId = dispatchByWiId[item.id];
+      if (dispatchId) {
+        if (!_agentDirCache[agentId]) {
+          _agentDirCache[agentId] = safeReadDir(path.join(MINIONS_DIR, 'agents', agentId)).filter(f => f.startsWith('output-') && f.endsWith('.log'));
+        }
+        const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
+        if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      const matchLog = _agentDirCache[agentId].filter(f => f.includes(idSuffix));
-      if (matchLog.length > 0) arts.outputLog = agentId + '/' + matchLog[matchLog.length - 1];
-      // Inbox notes
-      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && (f.includes(item.id || '___') || f.includes(idSuffix)));
+      // Inbox notes — match by agent ID + work item ID in filename
+      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(item.id || '___'));
       if (matchNotes.length > 0) arts.notes = matchNotes;
     }
     if (item.branch) arts.branch = item.branch;
