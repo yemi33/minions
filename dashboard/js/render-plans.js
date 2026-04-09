@@ -208,11 +208,20 @@ function renderPlans(plans) {
     let actions = '';
     if (needsAction) {
       const actionTarget = prdFile || p.file;
-      const actionLabel = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
-      actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
-        '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">' + actionLabel + '</button>' +
-        '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
-      '</div>';
+      // For awaiting-approval: show Execute (re-generate PRD from updated plan) + Approve (use current PRD as-is)
+      if (effectiveStatus === 'awaiting-approval' && isDraft && prdFile) {
+        actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
+          '<button class="plan-btn approve" onclick="planExecute(\'' + escHtml(p.file) + '\',\'' + escHtml(p.project || '') + '\',this)">Re-execute</button>' +
+          '<button class="plan-btn approve" style="opacity:0.7" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">Approve as-is</button>' +
+          '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
+        '</div>';
+      } else {
+        const actionLabel = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
+        actions = '<div class="plan-card-actions" onclick="event.stopPropagation()">' +
+          '<button class="plan-btn approve" onclick="planApprove(\'' + escHtml(actionTarget) + '\')">' + actionLabel + '</button>' +
+          '<button class="plan-btn reject" onclick="planReject(\'' + escHtml(actionTarget) + '\')">Reject</button>' +
+        '</div>';
+      }
     } else if (isRevision) {
       actions = '<div class="plan-card-meta" style="margin-top:6px;color:var(--purple,#a855f7)">Revision in progress: ' + escHtml((p.revisionFeedback || '').slice(0, 100)) + '</div>';
     }
@@ -441,8 +450,11 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const prdCompleted = prdConversion && linkedPrd && linkedPrd.status === 'completed';
   const linkedPrdAwaiting = linkedPrd && (linkedPrd.status === 'awaiting-approval' || linkedPrd.status === 'paused');
   const modalShowResume = isPaused || linkedPrdAwaiting;
-  const modalExecuteBtn = isMdPlan && !modalShowResume && !hasActiveWork && !prdCompleted && !hasPrd ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
+  const canExecute = isMdPlan && !hasActiveWork && !prdCompleted;
+  const modalExecuteBtn = canExecute && !hasPrd ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
     'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button>' : '';
+  const modalReExecuteBtn = canExecute && linkedPrdAwaiting ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
+    'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Re-execute</button>' : '';
   const modalCompletedLabel = prdCompleted && !hasActiveWork ? '<span style="font-size:10px;color:var(--green);font-weight:600">Completed</span>' : '';
   const modalAwaitingLabel = linkedPrdAwaiting && !hasActiveWork && !prdCompleted ? '<span style="font-size:10px;color:var(--yellow);font-weight:600">Awaiting Approval</span>' : '';
   const modalInProgressLabel = hasActiveWork ? '<span style="font-size:10px;color:var(--blue)">In Progress</span>' : '';
@@ -465,7 +477,7 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
     'onclick="planArchive(\'' + escHtml(normalizedFile) + '\')">Archive</button>';
   const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
   const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
-    (modalCompletedLabel || '') + (modalAwaitingLabel || '') + (modalInProgressLabel || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') + (modalVerifyInfo || '') +
+    (modalCompletedLabel || '') + (modalAwaitingLabel || '') + (modalInProgressLabel || '') + (modalReExecuteBtn || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalResumeBtn || '') + (modalVerifyBtn || '') + (modalVerifyInfo || '') +
     ' ' + modalArchiveBtn +
     ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
     'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
