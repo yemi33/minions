@@ -419,6 +419,7 @@ async function _submitCreateWorkItem(e) {
 }
 
 function openWorkItemDetail(id) {
+  if (window.getSelection && window.getSelection().toString().length > 0) return;
   const item = allWorkItems.find(i => i.id === id);
   if (!item) return;
 
