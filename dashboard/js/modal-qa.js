@@ -99,11 +99,17 @@ function _initQaSession() {
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
     _showThreadWrap();
+    requestAnimationFrame(function() {
+      var thread = document.getElementById('modal-qa-thread');
+      if (thread) thread.scrollTop = thread.scrollHeight;
+    });
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
     _hideThreadWrap();
   }
+  var actionSlot = document.getElementById('qa-action-slot');
+  if (actionSlot) actionSlot.innerHTML = '';
 }
 
 function clearQaConversation() {
@@ -112,6 +118,8 @@ function clearQaConversation() {
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
   _hideThreadWrap();
+  var actionSlot = document.getElementById('qa-action-slot');
+  if (actionSlot) actionSlot.innerHTML = '';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -266,7 +274,8 @@ async function _processQaMessage(message, selection) {
           '<button onclick="planExecute(\'' + esc + '\', \'\', null)" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Re-execute plan</button>' +
           '<button onclick="this.closest(\'div\').innerHTML=\'<span style=color:var(--muted);font-size:11px>Paused. No work dispatched.</span>\'" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Keep paused</button>' +
           '<span style="color:var(--muted);font-size:10px;width:100%">Re-execute creates a new PRD from the updated plan.</span>';
-        thread.appendChild(actionDiv);
+        var slot = document.getElementById('qa-action-slot');
+        if (slot) { slot.innerHTML = ''; slot.appendChild(actionDiv); }
       }
     } else {
       const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
