@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.657 (2026-04-09)
+
+### Fixes
+-  bust require cache for package.json in engine start
+-  PRD discovery loop, github.js duplicate const, transcript null guards
+
 ## 0.1.655 (2026-04-09)
 
 ### Fixes
