@@ -112,6 +112,7 @@ function checkTimeouts(config) {
   //    Uses live-output.log mtime as heartbeat. If no output for heartbeatTimeout, agent is dead.
   const dispatchData = getDispatch();
   const deadItems = [];
+  const blockingAnnotations = new Map(); // id → { tool, silentMs, remainingMs } or null (clear)
 
   for (const item of (dispatchData.active || [])) {
     if (!item.agent) continue;
@@ -164,6 +165,7 @@ function checkTimeouts(config) {
     // Check for BOTH tracked and untracked processes (orphan case after engine restart)
     let isBlocking = false;
     let blockingTimeout = heartbeatTimeout;
+    let blockingTool = '';
     if (silentMs > heartbeatTimeout) {
       try {
         const liveLog = safeRead(liveLogPath);
@@ -184,6 +186,7 @@ function checkTimeouts(config) {
                 const taskTimeout = input.timeout || 600000; // default 10min
                 blockingTimeout = Math.max(heartbeatTimeout, taskTimeout + 60000); // task timeout + 1min grace
                 isBlocking = true;
+                blockingTool = 'TaskOutput';
               }
               // Bash tool call — may be running a long build/install with no stdout
               if (name === 'Bash') {
@@ -191,20 +194,34 @@ function checkTimeouts(config) {
                 const bashTimeout = input.timeout || 600000;
                 blockingTimeout = Math.max(heartbeatTimeout, bashTimeout + 60000);
                 isBlocking = true;
+                blockingTool = 'Bash';
               }
               // Agent (subagent) tool call — parent waits silently for child to complete
               if (name === 'Agent') {
                 blockingTimeout = Math.max(heartbeatTimeout, 1800000); // 30min for subagents
                 isBlocking = true;
+                blockingTool = 'Agent';
               }
               break; // only check the most recent tool_use
             } catch { /* JSON parse — line may not be valid JSON */ }
           }
           if (isBlocking) {
-            log('info', `Agent ${item.agent} (${item.id}) is in a blocking tool call — extended timeout to ${Math.round(blockingTimeout / 1000)}s (silent for ${silentSec}s)`);
+            // Only log on transition — avoid spamming every tick while blocking persists
+            if (!item._blockingToolCall) {
+              log('info', `Agent ${item.agent} (${item.id}) is in a blocking tool call (${blockingTool}) — extended timeout to ${Math.round(blockingTimeout / 1000)}s (silent for ${silentSec}s)`, { event: 'blocking_tool_call_detected' });
+            }
+            blockingAnnotations.set(item.id, {
+              tool: blockingTool,
+              silentMs,
+              remainingMs: Math.max(0, blockingTimeout - silentMs),
+            });
           }
         }
       } catch (e) { log('warn', 'blocking tool detection: ' + e.message); }
+    }
+    // Agent recovered from blocking state — clear annotation
+    if (!isBlocking && item._blockingToolCall) {
+      blockingAnnotations.set(item.id, null);
     }
 
     const effectiveTimeout = isBlocking ? blockingTimeout : heartbeatTimeout;
@@ -237,6 +254,23 @@ function checkTimeouts(config) {
   // Clean up dead items
   for (const { item, reason } of deadItems) {
     completeDispatch(item.id, DISPATCH_RESULT.ERROR, reason);
+  }
+
+  // Batch-write blocking tool call annotations to dispatch entries.
+  // This surfaces blocking state via GET /api/status → dashboard badges.
+  if (blockingAnnotations.size > 0) {
+    const { mutateDispatch: mutateDispatchFn } = dispatch();
+    mutateDispatchFn((dp) => {
+      for (const activeItem of dp.active) {
+        if (!blockingAnnotations.has(activeItem.id)) continue;
+        const ann = blockingAnnotations.get(activeItem.id);
+        if (ann) {
+          activeItem._blockingToolCall = ann;
+        } else {
+          delete activeItem._blockingToolCall;
+        }
+      }
+    });
   }
 
   // Agent status is now derived from dispatch.json at read time (getAgentStatus).
