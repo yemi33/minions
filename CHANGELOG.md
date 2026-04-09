@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.706 (2026-04-09)
+
+### Other
+- simplify: remove dead modal button variables, fix canExecute reference
+
 ## 0.1.705 (2026-04-09)
 
 ### Fixes
