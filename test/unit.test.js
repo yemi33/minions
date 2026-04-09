@@ -6406,6 +6406,13 @@ async function main() {
 
     // spawnEngine state preservation (#564)
     await testSpawnEngineStatePreservation();
+
+    // Session 2026-04-08: slugify, formatTranscriptEntry, pipeline reconciliation, metrics, UX
+    await testSlugifyAndTranscript();
+    await testPipelineReconciliation();
+    await testMetricsEnrichment();
+    await testDashboardButtonConsistency();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -8498,6 +8505,35 @@ async function testEngineAuditCritical() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     assert.ok(src.includes('s.monitoredResources'),
       'openPipelineDetail must render per-stage monitoredResources');
+  });
+
+  await test('pipeline abort button shows Aborting then becomes Run Now', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
+    assert.ok(abortFn.includes("'Aborting...'"), 'Should show Aborting... immediately');
+    assert.ok(abortFn.includes("'Run Now'"), 'Should transform to Run Now on success');
+    assert.ok(abortFn.includes('_triggerPipeline'), 'Run Now button should call _triggerPipeline');
+  });
+
+  await test('pipeline abort removes Retrigger button after success', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
+    assert.ok(abortFn.includes("'Retrigger'") && abortFn.includes('.remove()'),
+      'Should find and remove the Retrigger button next to Abort');
+  });
+
+  await test('pipeline abort cancels work items and dispatches on server', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const abortHandler = src.slice(src.indexOf("'/api/pipelines/abort'"));
+    assert.ok(abortHandler.includes('_pipelineRun'), 'Should cancel work items by _pipelineRun');
+    assert.ok(abortHandler.includes('cleanDispatchEntries'), 'Should clean dispatch entries for the run');
+    assert.ok(abortHandler.includes('cancelledWorkItems'), 'Should return count of cancelled items');
+  });
+
+  await test('pipeline detail shows Run Now when no active run, Abort when running', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes("activeRun") && src.includes("'Abort'") && src.includes("'Run Now'"),
+      'Should conditionally show Abort (running) or Run Now (idle)');
   });
 
   await test('dashboard.js pipeline create/update API supports monitoredResources', () => {
