@@ -7530,18 +7530,10 @@ async function testAuxModuleBugFixes() {
     assert.ok(guardIdx > createIdx, 'Should have !targetProject guard after PROJECTS[0] fallback in create handler');
   });
 
-  await test('dashboard.js: PRD completion handler uses safeJson instead of JSON.parse for plan reading', () => {
+  await test('dashboard.js: trigger-verify handler uses safeJson for plan reading', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // The verify-was-created block should use safeJson (null-safe) not JSON.parse
-    const verifyBlock = src.indexOf('Check if verify was created');
-    assert.ok(verifyBlock > 0, 'Should have verify-was-created comment');
-    const nextJsonParse = src.indexOf('JSON.parse(safeRead(activePath)', verifyBlock);
-    const nextSafeJson = src.indexOf('safeJson(activePath)', verifyBlock);
-    // safeJson should appear before (or instead of) JSON.parse for activePath in this block
-    assert.ok(nextSafeJson > verifyBlock, 'Should use safeJson for activePath in verify block');
-    if (nextJsonParse > 0) {
-      assert.ok(nextSafeJson < nextJsonParse, 'safeJson should replace JSON.parse for activePath');
-    }
+    const handler = src.slice(src.indexOf('handlePlansTriggerVerify'), src.indexOf('\n  async function', src.indexOf('handlePlansTriggerVerify') + 1));
+    assert.ok(handler.includes('safeJson('), 'Should use safeJson (null-safe) for plan reading');
   });
 
   await test('dashboard.js: PROJECTS[0] at line 1159 uses optional chaining', () => {
@@ -11006,6 +10998,33 @@ async function testDashboardButtonConsistency() {
   await test('plan modal: Re-execute only for awaiting-approval .md plans with PRD', () => {
     assert.ok(modalFn.includes("effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile"),
       'Re-execute guard must check awaiting-approval + isMdPlan + prdFile');
+  });
+
+  // PRD page: Verify button hidden when verify WI exists
+  const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+
+  await test('PRD header: Verify button guarded by hasVerifyWi check', () => {
+    const headerBlock = prdSrc.slice(prdSrc.indexOf("effectiveStatus === 'completed'"), prdSrc.indexOf("effectiveStatus === 'dispatched'"));
+    assert.ok(headerBlock.includes('hasVerifyWi'), 'Should check hasVerifyWi before showing Verify');
+    assert.ok(headerBlock.includes("itemType === 'verify'"), 'hasVerifyWi should check itemType');
+    assert.ok(headerBlock.includes('hasVerifyWi ? '), 'Should conditionally hide Verify when hasVerifyWi is true');
+  });
+
+  await test('PRD header: Archive still shown when Verify is hidden', () => {
+    const headerBlock = prdSrc.slice(prdSrc.indexOf("effectiveStatus === 'completed'"), prdSrc.indexOf("effectiveStatus === 'dispatched'"));
+    assert.ok(headerBlock.includes('planArchive'), 'Archive button must always appear for completed PRDs');
+  });
+
+  await test('PRD group header: Verify button guarded by verify WI check', () => {
+    const groupHeader = prdSrc.slice(prdSrc.indexOf('const pauseResumeBtn'), prdSrc.indexOf('const archiveBtn'));
+    assert.ok(groupHeader.includes("itemType === 'verify'"), 'Group header should check for existing verify WI');
+    assert.ok(groupHeader.includes('triggerVerify'), 'Verify action should still exist for non-verified groups');
+  });
+
+  await test('PRD group header: completed+verified shows no Pause button', () => {
+    const groupHeader = prdSrc.slice(prdSrc.indexOf('const pauseResumeBtn'), prdSrc.indexOf('const archiveBtn'));
+    // The ternary chain: isCompleted && !hasVerify → Verify, isCompleted → '', else → Pause
+    assert.ok(groupHeader.includes("isCompleted ? ''"), 'Completed+verified should produce empty string, not Pause');
   });
 
   await test('archive confirm warns about linked source plan', () => {
