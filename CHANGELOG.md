@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.714 (2026-04-09)
+
+### Other
+- docs: update README with session features
+
 ## 0.1.713 (2026-04-09)
 
 ### Fixes
