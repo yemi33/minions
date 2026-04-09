@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.748 (2026-04-09)
+
+### Features
+-  CC multi-tab conversations with session resume
+
+### Fixes
+-  move + button after tabs, style as folder tab
+-  clear stale sessionId on resume failure, folder-style tab UI
+-  CC tabs use per-tab sessions, not shared global session
+
 ## 0.1.744 (2026-04-09)
 
 ### Features
