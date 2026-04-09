@@ -27,7 +27,10 @@ Core action types:
 - **dispatch**: title, workType, priority (low/medium/high), agents[] (optional), project, description
   workTypes: `explore` (research, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)
 - **note**: title, content — save to inbox
-- **pin**: title, content, level (critical/warning) — visible to ALL agents
+- **knowledge**: title, content, category (architecture/conventions/project-notes/build-reports/reviews) — create new KB entry
+- **pin**: title, content, level (critical/warning) — force-injected into ALL agent prompts
+
+When user says "pin a note" or "pin this" — they mean take an existing inbox/notes document and **pin it in the KB** (move/copy it to the knowledge base under the right category). Find the document first (search inbox, notes, or KB), then write it to `knowledge/<category>/<slug>.md`. This is analogous to the dashboard's manual pin feature — it preserves the note permanently in the organized KB.
 - **plan**: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: agent, reason
 - **retry**: ids[]
