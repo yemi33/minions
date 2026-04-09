@@ -99,17 +99,12 @@ function _initQaSession() {
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
     _showThreadWrap();
-    requestAnimationFrame(function() {
-      var thread = document.getElementById('modal-qa-thread');
-      if (thread) thread.scrollTop = thread.scrollHeight;
-    });
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
-    _hideThreadWrap();
+    var wrap = document.getElementById('modal-qa-thread-wrap');
+    if (wrap) wrap.style.display = 'none';
   }
-  var actionSlot = document.getElementById('qa-action-slot');
-  if (actionSlot) actionSlot.innerHTML = '';
 }
 
 function clearQaConversation() {
@@ -117,9 +112,8 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
-  _hideThreadWrap();
-  var actionSlot = document.getElementById('qa-action-slot');
-  if (actionSlot) actionSlot.innerHTML = '';
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  if (wrap) wrap.style.display = 'none';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -274,8 +268,7 @@ async function _processQaMessage(message, selection) {
           '<button onclick="planExecute(\'' + esc + '\', \'\', null)" style="background:var(--green);color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer">Re-execute plan</button>' +
           '<button onclick="this.closest(\'div\').innerHTML=\'<span style=color:var(--muted);font-size:11px>Paused. No work dispatched.</span>\'" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 12px;font-size:11px;cursor:pointer">Keep paused</button>' +
           '<span style="color:var(--muted);font-size:10px;width:100%">Re-execute creates a new PRD from the updated plan.</span>';
-        var slot = document.getElementById('qa-action-slot');
-        if (slot) { slot.innerHTML = ''; slot.appendChild(actionDiv); }
+        thread.appendChild(actionDiv);
       }
     } else {
       const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
@@ -346,25 +339,20 @@ function qaAbort() {
 
 function toggleDocChat() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
-  var isVisible = wrap.style.display !== 'none';
-  wrap.style.display = isVisible ? 'none' : '';
-  if (expandBar) expandBar.style.display = isVisible ? '' : 'none';
+  var visible = wrap.style.display !== 'none';
+  wrap.style.display = visible ? 'none' : '';
+  var btn = document.getElementById('qa-toggle-btn');
+  if (btn) btn.innerHTML = visible ? '&#x25B2; Expand' : '&#x25BC; Collapse';
 }
 
 function _showThreadWrap() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = '';
-  if (expandBar) expandBar.style.display = 'none';
+  if (wrap && wrap.style.display === 'none') {
+    wrap.style.display = '';
+    var btn = document.getElementById('qa-toggle-btn');
+    if (btn) btn.innerHTML = '&#x25BC; Collapse';
+  }
 }
 
-function _hideThreadWrap() {
-  var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = 'none';
-  if (expandBar) expandBar.style.display = 'none';
-}
-
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat };
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat, _showThreadWrap };

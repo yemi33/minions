@@ -620,6 +620,12 @@
   .notif-badge.processing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes notifPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+  /* Command Center tab bar */
+  .cc-tab { padding: 2px 8px; font-size: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface2); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 120px; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  .cc-tab.active { color: var(--blue); border-color: var(--blue); background: rgba(56,139,253,0.1); }
+  .cc-tab-close { margin-left: 4px; opacity: 0.5; cursor: pointer; font-size: 12px; line-height: 1; }
+  .cc-tab-close:hover { opacity: 1; color: var(--red); }
+
   /* Command Center resize handle */
   .cc-resize-handle { position: absolute; top: 0; left: -3px; bottom: 0; width: 6px; cursor: col-resize; z-index: 301; }
   .cc-resize-handle::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 2px; height: 32px; background: var(--border); border-radius: 2px; opacity: 0; transition: opacity 0.15s; }

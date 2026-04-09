@@ -577,6 +577,7 @@ function parseCCActions(text) {
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk
+const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
@@ -3254,6 +3255,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     return jsonReply(res, 200, { ok: true });
   }
 
+  async function handleCCSessionsList(req, res) {
+    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    return jsonReply(res, 200, { sessions });
+  }
+
+  async function handleCCSessionDelete(req, res, match) {
+    const id = match?.[1];
+    if (!id) return jsonReply(res, 400, { error: 'id required' });
+    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    const filtered = sessions.filter(s => s.id !== id);
+    safeWrite(CC_SESSIONS_PATH, filtered);
+    return jsonReply(res, 200, { ok: true });
+  }
+
   async function handleCommandCenter(req, res) {
     if (checkRateLimit('command-center', 10)) return jsonReply(res, 429, { error: 'Rate limited — max 10 requests/minute' });
     try {
@@ -3372,6 +3387,25 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (result.sessionId) {
           ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1, _promptHash: _ccPromptHash };
           safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+        }
+
+        // Persist tab→session mapping if tabId provided
+        const tabId = body.tabId;
+        if (tabId && ccSession.sessionId) {
+          try {
+            const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+            const existing = sessions.find(s => s.id === tabId);
+            const preview = (body.message || '').slice(0, 80);
+            if (existing) {
+              existing.sessionId = ccSession.sessionId;
+              existing.lastActiveAt = new Date(now).toISOString();
+              existing.turnCount = ccSession.turnCount;
+              existing.preview = preview;
+            } else {
+              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: ccSession.sessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: ccSession.turnCount, preview });
+            }
+            safeWrite(CC_SESSIONS_PATH, sessions);
+          } catch { /* non-critical */ }
         }
 
         // Send final result with actions
@@ -4060,7 +4094,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
-    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message', handler: handleCommandCenterStream },
+    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?', handler: handleCommandCenterStream },
+    { method: 'GET', path: '/api/cc-sessions', desc: 'List CC session metadata for all tabs', handler: handleCCSessionsList },
+    { method: 'DELETE', path: /^\/api\/cc-sessions\/([\w-]+)$/, desc: 'Delete a CC session by tab ID', handler: handleCCSessionDelete },
 
     // Schedules
     { method: 'POST', path: '/api/schedules/parse-natural', desc: 'Parse natural language schedule text into cron expression', params: 'text', handler: handleSchedulesParseNatural },

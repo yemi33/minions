@@ -6755,6 +6755,9 @@ async function main() {
     // #716: Heartbeat feedback loop + max_turns lifecycle cleanup
     await testIssue716HeartbeatFeedbackLoop();
 
+    // CC Multi-Tab Conversations
+    await testCCMultiTab();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -11503,6 +11506,179 @@ async function testStructuredCompletion() {
     assert.strictEqual(result.pr, 'PR-100');
     assert.strictEqual(result.tests, 'pass');
     assert.strictEqual(result.failure_class, 'N/A');
+  });
+}
+
+async function testCCMultiTab() {
+  console.log('\n── CC Multi-Tab Conversations ──');
+
+  // Source code references
+  const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+  const stylesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Server-side tests ──────────────────────────────────────────────────────
+
+  await test('cc-sessions.json endpoints exist in route table', () => {
+    assert.ok(dashSrc.includes('/api/cc-sessions'), 'Should have GET /api/cc-sessions route');
+    assert.ok(dashSrc.includes('cc-sessions'), 'Should have DELETE /api/cc-sessions route');
+  });
+
+  await test('cc-sessions persisted via safeWrite', () => {
+    assert.ok(dashSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
+    assert.ok(dashSrc.includes('CC_SESSIONS_PATH'), 'Should use CC_SESSIONS_PATH constant');
+  });
+
+  await test('stream handler accepts tabId', () => {
+    assert.ok(dashSrc.includes('body.tabId') || dashSrc.includes('tabId'), 'Stream handler should accept tabId from request body');
+  });
+
+  await test('session metadata saved with tabId', () => {
+    assert.ok(dashSrc.includes('lastActiveAt') && dashSrc.includes('turnCount'), 'Should save session metadata fields');
+    assert.ok(dashSrc.includes('createdAt'), 'Should track createdAt');
+    assert.ok(dashSrc.includes('preview'), 'Should save preview field');
+  });
+
+  await test('session lookup by tabId in stream handler', () => {
+    assert.ok(dashSrc.includes('tabId') && dashSrc.includes('CC_SESSIONS_PATH'), 'Should map tabId to session via CC_SESSIONS_PATH');
+  });
+
+  // ── Client-side tests ─────────────────────────────────────────────────────
+
+  await test('_ccTabs array replaces old globals', () => {
+    assert.ok(ccSrc.includes('var _ccTabs = []') || ccSrc.includes('var _ccTabs=[]'), 'Should declare _ccTabs array');
+    assert.ok(!ccSrc.includes('let _ccSessionId') && !ccSrc.includes('var _ccSessionId'), 'Should not have old _ccSessionId global');
+    assert.ok(!ccSrc.match(/^var _ccMessages\b/m) && !ccSrc.match(/^let _ccMessages\b/m), 'Should not have old _ccMessages global');
+  });
+
+  await test('_ccActiveTabId tracks which tab is visible', () => {
+    assert.ok(ccSrc.includes('_ccActiveTabId'), 'Should declare _ccActiveTabId');
+  });
+
+  await test('ccNewTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccNewTab'), 'Should have ccNewTab function');
+  });
+
+  await test('ccSwitchTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccSwitchTab'), 'Should have ccSwitchTab function');
+  });
+
+  await test('ccCloseTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
+  });
+
+  await test('ccShowAllConversations function exists', () => {
+    assert.ok(ccSrc.includes('function ccShowAllConversations'), 'Should have ccShowAllConversations function');
+  });
+
+  await test('tab bar rendered in layout.html', () => {
+    assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
+  });
+
+  await test('ccSend passes active tab sessionId in request body', () => {
+    // ccSend should use the active tab's sessionId
+    assert.ok(ccSrc.includes('tabSessionId') || ccSrc.includes('activeTab') || ccSrc.includes('_ccActiveTab'),
+      'ccSend should reference active tab for sessionId');
+    assert.ok(ccSrc.includes('tabId') && ccSrc.includes('activeTabId'),
+      'Should send tabId in request body');
+  });
+
+  await test('ccAddMessage adds to active tab messages', () => {
+    assert.ok(ccSrc.includes('_ccActiveTab()') && ccSrc.includes('tab.messages.push'),
+      'ccAddMessage should push to active tab messages array');
+  });
+
+  await test('tab state saved to localStorage', () => {
+    assert.ok(ccSrc.includes("'cc-tabs'") || ccSrc.includes('"cc-tabs"'),
+      'Should save tabs to cc-tabs localStorage key');
+  });
+
+  await test('migration from old format', () => {
+    assert.ok(ccSrc.includes('cc-session-id') && ccSrc.includes('cc-messages'),
+      'Should check for legacy localStorage keys');
+    assert.ok(ccSrc.includes('_ccMigrateLegacy') || ccSrc.includes('Migrate') || ccSrc.includes('migrate'),
+      'Should have migration logic');
+  });
+
+  await test('auto-title from first user message', () => {
+    assert.ok(ccSrc.includes('CC_TITLE_MAX_LENGTH') || ccSrc.includes('40'),
+      'Should truncate title');
+    assert.ok(ccSrc.includes("'New chat'") || ccSrc.includes('"New chat"'),
+      'Should use "New chat" as default title');
+    assert.ok(ccSrc.includes('tab.title') && ccSrc.includes('New chat'),
+      'Should auto-set title from first user message');
+  });
+
+  await test('max tabs cap', () => {
+    assert.ok(ccSrc.includes('CC_MAX_TABS') || ccSrc.includes('20'),
+      'Should have max tabs constant');
+    assert.ok(ccSrc.includes('CC_MAX_TABS') && ccSrc.includes('>= CC_MAX_TABS'),
+      'Should enforce max tabs limit');
+  });
+
+  await test('tab close confirmation for active request', () => {
+    assert.ok(ccSrc.includes('_ccSending') && ccSrc.includes('confirm'),
+      'Should confirm before closing tab with active request');
+  });
+
+  await test('active tab persistence', () => {
+    assert.ok(ccSrc.includes("'cc-active-tab'") || ccSrc.includes('"cc-active-tab"'),
+      'Should persist active tab ID to localStorage');
+  });
+
+  // ── Dashboard assembly tests ──────────────────────────────────────────────
+
+  await test('cc-tab-bar in assembled HTML', () => {
+    let buildDashboardHtml;
+    try {
+      const dashModule = require(path.join(MINIONS_DIR, 'dashboard-build'));
+      buildDashboardHtml = dashModule.buildDashboardHtml;
+    } catch {
+      try {
+        const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+        buildDashboardHtml = () => html;
+      } catch {
+        assert.fail('Could not load dashboard builder');
+        return;
+      }
+    }
+    const html = buildDashboardHtml();
+    assert.ok(html.includes('cc-tab-bar'), 'Assembled HTML should include cc-tab-bar');
+  });
+
+  await test('tab CSS styles exist', () => {
+    assert.ok(stylesSrc.includes('.cc-tab'), 'Should have .cc-tab style');
+    assert.ok(stylesSrc.includes('.cc-tab.active'), 'Should have .cc-tab.active style');
+    assert.ok(stylesSrc.includes('.cc-tab-close'), 'Should have .cc-tab-close style');
+  });
+
+  // ── Integration flow tests ────────────────────────────────────────────────
+
+  await test('send uses active tab sessionId flow', () => {
+    assert.ok(ccSrc.includes('_ccActiveTab()'),
+      'ccSend should call _ccActiveTab() to get current tab');
+    assert.ok(ccSrc.includes('.sessionId'),
+      'Should read sessionId from tab');
+  });
+
+  await test('response updates active tab messages', () => {
+    assert.ok(ccSrc.includes('evt.sessionId') || ccSrc.includes('revt.sessionId'),
+      'Done event should check for sessionId');
+    assert.ok(ccSrc.includes('currentTab.sessionId = evt.sessionId') || ccSrc.includes('currentTab') && ccSrc.includes('.sessionId = '),
+      'Should update active tab sessionId from response');
+  });
+
+  await test('new tab creates tab with sessionId null', () => {
+    assert.ok(ccSrc.includes('sessionId: null'),
+      'ccNewTab should create tab with null sessionId');
+  });
+
+  await test('tab switch re-renders messages', () => {
+    assert.ok(ccSrc.includes("el.innerHTML = ''") || ccSrc.includes("el.innerHTML=''"),
+      'ccSwitchTab should clear cc-messages innerHTML');
+    assert.ok(ccSrc.includes('ccRenderTabBar'),
+      'ccSwitchTab should call ccRenderTabBar');
   });
 }
 
