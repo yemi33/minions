@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.752 (2026-04-09)
+
+### Fixes
+-  CC messages go to originating tab, not whichever tab is visible
+-  tab title no longer covers close button
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
 ## 0.1.749 (2026-04-09)
 
 ### Features
