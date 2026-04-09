@@ -562,9 +562,13 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
+        const existing = currentPrs.find(p => p.id === prId);
+        // Backfill prNumber for existing records missing it
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = ghPr.number;
+        }
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = currentPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -580,6 +584,7 @@ async function reconcilePrs(config) {
 
       currentPrs.push({
         id: prId,
+        prNumber: ghPr.number,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
         branch,
@@ -594,6 +599,14 @@ async function reconcilePrs(config) {
       projectAdded++;
 
       log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
+    }
+
+    // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
+    for (const pr of currentPrs) {
+      if (pr.prNumber == null) {
+        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        if (derived) pr.prNumber = derived;
+      }
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
