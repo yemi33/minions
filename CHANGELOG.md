@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.720 (2026-04-09)
+
+### Fixes
+-  CC "pin" always routes to KB, not pinned.md
+-  CC "pin a note" means move existing doc to KB, not create new
+
 ## 0.1.717 (2026-04-09)
 
 ### Features
