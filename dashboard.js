@@ -1055,12 +1055,12 @@ const server = http.createServer(async (req, res) => {
         const item = items.find(i => i.id === id);
         if (!item) return items;
         // Don't reset completed items unless explicitly forced
-        if ((item.status === 'done' || item.completedAt) && !body.force) {
+        if ((DONE_STATUSES.has(item.status) || item.completedAt) && !body.force) {
           found = 'already_done';
           return items;
         }
         found = true;
-        item.status = 'pending';
+        item.status = WI_STATUS.PENDING;
         item._retryCount = 0; // Reset retry counter on manual retry
         delete item.dispatched_at;
         delete item.dispatched_to;
@@ -1224,7 +1224,7 @@ const server = http.createServer(async (req, res) => {
       let wiPath;
       if (body.project) {
         // Write to project-specific queue
-        const targetProject = PROJECTS.find(p => p.name === body.project) || PROJECTS[0];
+        const targetProject = PROJECTS.find(p => p.name === body.project) || (PROJECTS.length > 0 ? PROJECTS[0] : null);
         if (!targetProject) return jsonReply(res, 400, { error: 'No projects configured' });
         wiPath = shared.projectWorkItemsPath(targetProject);
       } else {
@@ -1324,7 +1324,7 @@ const server = http.createServer(async (req, res) => {
       const item = {
         id, title: body.title, type: 'plan',
         priority: body.priority || 'high', description: body.description || '',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+        status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
         branchStrategy: body.branch_strategy || 'parallel',
       };
       if (body.project) item.project = body.project;
@@ -1402,7 +1402,7 @@ const server = http.createServer(async (req, res) => {
         try {
           mutateWorkItems(wiPath, items => {
             const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-            if (wi && wi.status === 'pending') {
+            if (wi && wi.status === WI_STATUS.PENDING) {
               if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
               if (body.description !== undefined) wi.description = body.description;
               if (body.priority !== undefined) wi.priority = body.priority;
@@ -1910,7 +1910,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     // Load work items to check for completed plan-to-prd conversions
     const centralWi = safeJsonArr(path.join(MINIONS_DIR, 'work-items.json'));
     const completedPrdFiles = new Set(
-      centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
+      centralWi.filter(w => w.type === 'plan-to-prd' && DONE_STATUSES.has(w.status) && w.planFile)
         .map(w => w.planFile)
     );
     const plans = [];
@@ -2237,14 +2237,14 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       mutateWorkItems(wiPath, items => {
         // Dedup: check if already queued
         const alreadyQueued = items.find(w =>
-          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
         );
         if (alreadyQueued) { alreadyQueuedId = alreadyQueued.id; return; }
         items.push({
           id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
           type: 'plan-to-prd', priority: 'high',
           description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
           project: plan.project || '', planFile: plan.source_plan,
           _targetPrdFile: body.file,
         });
@@ -2271,13 +2271,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       mutateJsonFileLocked(centralPath, (items) => {
         if (!Array.isArray(items)) items = [];
         // Only block if actively pending/dispatched — allow re-execute after completion
-        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
+        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED));
         if (existing) { existingId = existing.id; return items; }
         items.push({
           id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
           type: 'plan-to-prd', priority: 'high',
           description: 'Plan file: plans/' + body.file,
-          status: 'pending', created: new Date().toISOString(),
+          status: WI_STATUS.PENDING, created: new Date().toISOString(),
           createdBy: 'dashboard:execute', project: body.project || '',
           planFile: body.file,
         });
@@ -2332,7 +2332,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             for (const w of items) {
               if (w.sourcePlan === body.source) {
                 materializedPlanItemIds.add(w.id);
-                if (w.status === 'pending' || w.status === 'failed') {
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
                   // Delete — will re-materialize on next tick with updated plan data
                   reset++;
                   deletedItemIds.push(w.id);
@@ -2417,8 +2417,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           const centralPath = path.join(MINIONS_DIR, 'work-items.json');
           mutateWorkItems(centralPath, items => {
             for (const w of items) {
-              if (w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === prdSourcePlan) {
-                w.status = 'cancelled';
+              if (w.type === 'plan-to-prd' && DONE_STATUSES.has(w.status) && w.planFile === prdSourcePlan) {
+                w.status = WI_STATUS.CANCELLED;
                 w._cancelledBy = 'prd-deleted';
               }
             }
@@ -2530,7 +2530,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
           type: 'plan-to-prd', priority: 'high',
           description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
-          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:revision',
           project: plan.project || '',
           planFile: body.file,
         });
@@ -2629,7 +2629,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             const filtered = [];
             for (const w of items) {
               if (w.sourcePlan === body.source) {
-                if (w.status === 'pending' || w.status === 'failed') {
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
                   reset++;
                   deletedItemIds.push(w.id);
                 } else {
@@ -2660,7 +2660,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           type: 'plan-to-prd',
           priority: 'high',
           description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
-          status: 'pending',
+          status: WI_STATUS.PENDING,
           created: new Date().toISOString(),
           createdBy: 'dashboard:revise-and-regenerate',
           project: prd.project || '',
