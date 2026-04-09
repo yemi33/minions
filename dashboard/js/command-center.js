@@ -113,10 +113,7 @@ function ccNewTab(skipServerReset) {
   var tab = { id: tabId, title: 'New chat', sessionId: null, messages: [] };
   _ccTabs.push(tab);
   _ccActiveTabId = tabId;
-  // Reset server session for new tab
-  if (!skipServerReset) {
-    fetch('/api/command-center/new-session', { method: 'POST' }).catch(function() {});
-  }
+  // New tab starts with null sessionId — server creates fresh session on first message
   // Abort any in-flight request
   ccAbort();
   _ccSending = false;
@@ -462,7 +459,7 @@ async function _ccDoSend(message, skipUserMsg) {
     // Stream response via SSE — shows text as it arrives
     var res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message, tabId: activeTabId }),
+      body: JSON.stringify({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }),
       signal: _ccAbortController ? _ccAbortController.signal : AbortSignal.timeout(960000)
     });
 

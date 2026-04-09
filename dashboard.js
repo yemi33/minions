@@ -3333,12 +3333,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; if (_ccStreamAbort) _ccStreamAbort(); });
 
       try {
-        // Session management — same as non-streaming path
-        if (body.sessionId && body.sessionId !== ccSession.sessionId) {
+        // Session management — per-tab: use sessionId from request if provided
+        const tabSessionId = body.sessionId || null;
+        if (tabSessionId) {
+          // Resume the tab's specific session
+          ccSession = { sessionId: tabSessionId, createdAt: ccSession.createdAt, lastActiveAt: Date.now(), turnCount: ccSession.turnCount || 0, _promptHash: _ccPromptHash };
+        } else if (!ccSessionValid()) {
           ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
         }
-        const wasResume = !!(ccSessionValid() && ccSession.sessionId);
-        const sessionId = wasResume ? ccSession.sessionId : null;
+        const wasResume = !!tabSessionId || !!(ccSessionValid() && ccSession.sessionId);
+        const sessionId = tabSessionId || (wasResume ? ccSession.sessionId : null);
         const preamble = wasResume ? '' : buildCCStatePreamble();
         const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
 
