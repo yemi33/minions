@@ -997,17 +997,27 @@ const server = http.createServer(async (req, res) => {
       const { id, source } = body;
       if (!id) return jsonReply(res, 400, { error: 'id required' });
 
-      // Find the right file
+      // Find the right file — check source first, then search all project files
       let wiPath;
-      if (!source || source === 'central') {
-        wiPath = path.join(MINIONS_DIR, 'work-items.json');
-      } else {
+      if (source && source !== 'central') {
         const proj = PROJECTS.find(p => p.name === source);
-        if (proj) {
-          wiPath = shared.projectWorkItemsPath(proj);
+        if (proj) wiPath = shared.projectWorkItemsPath(proj);
+      }
+      if (!wiPath) {
+        // Search central first, then all projects
+        const centralPath = path.join(MINIONS_DIR, 'work-items.json');
+        const centralItems = shared.safeJson(centralPath) || [];
+        if (centralItems.some(i => i.id === id)) {
+          wiPath = centralPath;
+        } else {
+          for (const proj of PROJECTS) {
+            const projPath = shared.projectWorkItemsPath(proj);
+            const projItems = shared.safeJson(projPath) || [];
+            if (projItems.some(i => i.id === id)) { wiPath = projPath; break; }
+          }
         }
       }
-      if (!wiPath) return jsonReply(res, 404, { error: 'source not found' });
+      if (!wiPath) return jsonReply(res, 404, { error: 'work item not found in any source' });
 
       let found = false;
       mutateJsonFileLocked(wiPath, (items) => {

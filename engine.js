@@ -1400,6 +1400,7 @@ function materializePlansAsWorkItems(config) {
             branchStrategy: plan.branch_strategy || 'parallel',
             featureBranch: plan.feature_branch || null,
             project: item.project || plan.project || null,
+            _source: projName,
           };
           existingItems.push(newItem);
           newlyCreatedIds.add(id);
