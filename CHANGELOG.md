@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.707 (2026-04-09)
+
+### Other
+- simplify: remove unused isActive, isPaused variables from plan modal
+
 ## 0.1.706 (2026-04-09)
 
 ### Other
