@@ -363,7 +363,7 @@ const commands = {
     // and wakeup signals every 3s (control.json read)
     const { checkSteering } = require('./timeout');
     const fastPollTimer = setInterval(() => {
-      try { checkSteering(getConfig()); } catch {}
+      try { checkSteering(); } catch {}
       const ctrl = getControl();
       if (ctrl._wakeupAt && Date.now() - ctrl._wakeupAt < 5000) {
         delete ctrl._wakeupAt;
@@ -421,7 +421,7 @@ const commands = {
       shuttingDown = true;
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
-      clearInterval(wakeupTimer);
+      clearInterval(fastPollTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);
