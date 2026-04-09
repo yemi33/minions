@@ -969,21 +969,51 @@ const server = http.createServer(async (req, res) => {
         safeWrite(activePath, plan);
       }
 
-      // Trigger completion check
-      const lifecycle = require('./engine/lifecycle');
       const config = queries.getConfig();
-      lifecycle.checkPlanCompletion({ item: { sourcePlan: body.file, id: 'manual' } }, config);
-
-      // Check if verify was created
       const project = PROJECTS.find(p => {
         const plan = safeJson(activePath) || safeJson(prdPath);
         return plan && p.name?.toLowerCase() === (plan.project || '').toLowerCase();
       }) || PROJECTS[0] || null;
+
+      // Check for existing verify WI — reset to pending if already done (re-verify)
+      if (project) {
+        const wiPath = shared.projectWorkItemsPath(project);
+        let existingVerify = null;
+        mutateWorkItems(wiPath, items => {
+          const v = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
+          if (v && (v.status === 'done' || v.status === 'failed')) {
+            v.status = 'pending';
+            delete v.completedAt;
+            delete v.dispatched_to;
+            delete v.dispatched_at;
+            v._retryCount = 0;
+            existingVerify = v;
+          } else if (v) {
+            existingVerify = v;
+          }
+        });
+        if (existingVerify) {
+          invalidateStatusCache();
+          return jsonReply(res, 200, { ok: true, verifyId: existingVerify.id });
+        }
+      }
+
+      // No existing verify — clear completion flag and trigger fresh creation
+      const planData = safeJson(activePath);
+      if (planData?._completionNotified) {
+        planData._completionNotified = false;
+        safeWrite(activePath, planData);
+      }
+
+      const lifecycle = require('./engine/lifecycle');
+      lifecycle.checkPlanCompletion({ item: { sourcePlan: body.file, id: 'manual' } }, config);
+
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
         const items = safeJsonArr(wiPath);
         const verify = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
         if (verify) {
+          invalidateStatusCache();
           return jsonReply(res, 200, { ok: true, verifyId: verify.id });
         }
       }
