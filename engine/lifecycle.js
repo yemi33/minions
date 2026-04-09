@@ -1245,18 +1245,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Plan chaining removed — user must explicitly execute plan-to-prd after reviewing the plan
   if (effectiveSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 
-  // After verify completes, archive the plan
-  if (effectiveSuccess && meta?.item?.itemType === 'verify' && meta?.item?.sourcePlan) {
-    try {
-      const vPlanFile = meta.item.sourcePlan;
-      const vPlanPath = path.join(PRD_DIR, vPlanFile);
-      const vPlan = safeJson(vPlanPath);
-      if (vPlan) {
-        const vProjects = shared.getProjects(config);
-        archivePlan(vPlanFile, vPlan, vProjects, config);
-      }
-    } catch (err) { log('warn', `Verify archive: ${err.message}`); }
-  }
+  // Archive is manual — user archives plans from the dashboard when ready
 
   // Clean up worktree for non-shared-branch tasks after completion
   if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {
