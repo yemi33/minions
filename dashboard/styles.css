@@ -621,9 +621,10 @@
   @keyframes notifPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   /* Command Center tab bar */
-  .cc-tab { padding: 4px 10px; font-size: 10px; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--surface2); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; margin-bottom: -1px; position: relative; }
+  .cc-tab { padding: 4px 10px; font-size: 10px; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--surface2); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 140px; display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; margin-bottom: -1px; position: relative; }
+  .cc-tab-text { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .cc-tab.active { color: var(--text); background: var(--bg); border-color: var(--border); z-index: 1; font-weight: 600; }
-  .cc-tab-close { margin-left: 4px; opacity: 0; cursor: pointer; font-size: 12px; line-height: 1; }
+  .cc-tab-close { flex-shrink: 0; margin-left: 4px; opacity: 0; cursor: pointer; font-size: 12px; line-height: 1; }
   .cc-tab:hover .cc-tab-close { opacity: 0.5; }
   .cc-tab-close:hover { opacity: 1; color: var(--red); }
 

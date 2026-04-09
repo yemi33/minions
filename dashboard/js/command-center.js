@@ -210,7 +210,7 @@ function ccRenderTabBar() {
     var t = _ccTabs[i];
     var isActive = t.id === _ccActiveTabId;
     html += '<div class="cc-tab' + (isActive ? ' active' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
-    html += escHtml(t.title);
+    html += '<span class="cc-tab-text">' + escHtml(t.title) + '</span>';
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
   }
