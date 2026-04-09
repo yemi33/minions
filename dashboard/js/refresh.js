@@ -57,7 +57,7 @@ function _processStatusUpdate(data) {
 
   // Render only changed sections
   if (_changed('agents', data.agents)) { renderAgents(data.agents); cmdUpdateAgentList(data.agents); }
-  if (_changed('prdProgress', data.prdProgress)) { renderPrdProgress(data.prdProgress); _cachePrdItems(data.prdProgress); }
+  if (_changed('prdProgress', data.prdProgress) || _changed('prdPrs', data.pullRequests?.length)) { renderPrdProgress(data.prdProgress); _cachePrdItems(data.prdProgress); }
   if (_changed('inbox', data.inbox)) renderInbox(data.inbox || []);
   if (_changed('projects', data.projects)) { cmdUpdateProjectList(data.projects || []); renderProjects(data.projects || []); }
   if (_changed('notes', data.notes)) renderNotes(data.notes);
