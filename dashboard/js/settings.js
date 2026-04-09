@@ -254,10 +254,16 @@ async function saveSettings() {
     });
     if (!rRes.ok) { const d = await rRes.json(); throw new Error(d.error); }
 
-    status.textContent = 'Saved. Engine picks up changes on next tick.';
-    status.style.color = 'var(--green)';
+    if (result.clamped && result.clamped.length > 0) {
+      status.textContent = 'Saved — some values adjusted: ' + result.clamped.join(', ');
+      status.style.color = 'var(--yellow)';
+      showToast('cmd-toast', 'Settings saved (some values clamped to allowed range)', false);
+    } else {
+      status.textContent = 'Saved. Engine picks up changes on next tick.';
+      status.style.color = 'var(--green)';
+      showToast('cmd-toast', 'Settings saved', true);
+    }
     if (saveBtn) { saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Saved'; saveBtn.style.color = 'var(--green)'; saveBtn.style.borderColor = 'var(--green)'; }
-    showToast('cmd-toast', 'Settings saved', true);
     setTimeout(function() {
       if (saveBtn) { saveBtn.disabled = false; saveBtn.style.opacity = ''; saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save'; }
     }, 2000);

@@ -3528,11 +3528,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
         };
+        const clamped = [];
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
             let val = Number(e[key]) || D[key];
+            const raw = val;
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
+            if (val !== raw) clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
             config.engine[key] = val;
           }
         }
@@ -3593,7 +3596,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
-      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Engine picks up changes on next tick.' });
+      const msg = clamped.length > 0
+        ? 'Settings saved. Some values were adjusted: ' + clamped.join('; ')
+        : 'Settings saved. Engine picks up changes on next tick.';
+      return jsonReply(res, 200, { ok: true, message: msg, clamped });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
