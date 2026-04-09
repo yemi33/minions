@@ -137,7 +137,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -793,11 +793,14 @@ async function spawnAgent(dispatchItem, config) {
     safeWrite(archivePath, outputContent);
     safeWrite(latestPath, outputContent); // overwrite latest for dashboard compat
 
+    // Classify failure for non-zero exits
+    const failureClass = code !== 0 ? classifyFailure(code, stdout, stderr) : undefined;
+
     // Detect configuration errors (e.g. Claude CLI not found) — fail immediately with clear message
     if (code === 78) {
       const errMsg = stderr.includes('claude-code') ? stderr.trim() : 'Configuration error — Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code';
-      log('error', `Agent ${agentId} (${id}) failed: ${errMsg}`);
-      completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '');
+      log('error', `Agent ${agentId} (${id}) failed: ${errMsg} [${failureClass}]`);
+      completeDispatch(id, DISPATCH_RESULT.ERROR, errMsg, '', { failureClass });
       try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
       try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
@@ -810,7 +813,8 @@ async function spawnAgent(dispatchItem, config) {
     // Move from active to completed in dispatch (single source of truth for agent status)
     // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
     const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
-    completeDispatch(id, effectiveResult, '', resultSummary);
+    const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
+    completeDispatch(id, effectiveResult, '', resultSummary, completeOpts);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
