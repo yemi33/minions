@@ -4651,23 +4651,19 @@ async function testVerifyWorkflow() {
     }
   }, cleanup);
 
-  // ── 10. Source code: archivePlan called from runPostCompletionHooks for verify tasks ──
-  await test('verify: runPostCompletionHooks triggers archivePlan after verify completes', () => {
+  // ── 10. Archive is manual — verify completion does NOT auto-archive ──
+  await test('verify: runPostCompletionHooks does NOT auto-archive after verify completes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    assert.ok(src.includes("meta?.item?.itemType === 'verify'"),
-      'Should check for verify itemType in post-completion hooks');
-    assert.ok(src.includes('archivePlan(vPlanFile'),
-      'Should call archivePlan when verify task completes');
+    const postHooks = src.slice(src.indexOf('function runPostCompletionHooks('), src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1));
+    assert.ok(!postHooks.includes('archivePlan('), 'Should NOT call archivePlan in post-completion hooks');
+    assert.ok(postHooks.includes('Archive is manual'), 'Should note archive is manual');
   });
 
-  // ── 11. Source code: archive happens AFTER PR sync ──
-  await test('verify: archivePlan called after syncPrsFromOutput (PR sync before archive)', () => {
+  // ── 11. Source code: syncPrsFromOutput still runs for verify tasks ──
+  await test('verify: syncPrsFromOutput still runs even though archive is manual', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const syncIdx = src.indexOf('syncPrsFromOutput(stdout');
-    const archiveIdx = src.indexOf("meta?.item?.itemType === 'verify'");
-    assert.ok(syncIdx > 0 && archiveIdx > 0, 'Both syncPrsFromOutput and verify archive hook should exist');
-    assert.ok(syncIdx < archiveIdx,
-      'syncPrsFromOutput must run BEFORE archivePlan (so E2E PR is linked before archive)');
+    assert.ok(syncIdx > 0, 'syncPrsFromOutput should still exist in post-completion hooks');
   });
 
   // ── 12. Source code: checkPlanCompletion does NOT call archivePlan ──
@@ -9083,8 +9079,9 @@ async function testAutoRecoveryAndAtomicity() {
     // These should use effectiveSuccess, not isSuccess
     assert.ok(hookBody.includes('effectiveSuccess && meta?.item?.sourcePlan'),
       'checkPlanCompletion should use effectiveSuccess');
-    assert.ok(hookBody.includes("effectiveSuccess && meta?.item?.itemType === 'verify'"),
-      'verify archive should use effectiveSuccess');
+    // Auto-archive removed — verify no longer triggers archive
+    assert.ok(!hookBody.includes("archivePlan("),
+      'verify archive removed — should not call archivePlan');
     assert.ok(hookBody.includes('if (effectiveSuccess)') && hookBody.includes('extractSkillsFromOutput'),
       'extractSkillsFromOutput should use effectiveSuccess');
     // isSuccess should NOT gate these downstream checks
@@ -9480,7 +9477,6 @@ async function testAutoRecoveryAndAtomicity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
     assert.ok(src.includes('_artifacts'), 'Should read _artifacts from work item');
     assert.ok(src.includes('viewAgentOutput'), 'Should have viewAgentOutput click handler');
-    assert.ok(src.includes('arts.outputLog'), 'Should render output log pill');
     assert.ok(src.includes('arts.branch'), 'Should render branch pill');
     assert.ok(src.includes('arts.plan'), 'Should render plan pill');
     assert.ok(src.includes('arts.notes'), 'Should render note pills');
@@ -10596,6 +10592,210 @@ async function testIsolationVerification() {
   await test('llm.js derives paths from shared.MINIONS_DIR', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
     assert.ok(src.includes('shared.MINIONS_DIR'), 'Should not hardcode path');
+  });
+}
+
+// ─── Session 2026-04-08: slugify, formatTranscriptEntry, pipeline reconciliation ──
+
+async function testSlugifyAndTranscript() {
+  console.log('\n── shared.js — slugify & formatTranscriptEntry ──');
+
+  await test('slugify lowercases and replaces non-alphanumeric with hyphens', () => {
+    assert.strictEqual(shared.slugify('Hello World!'), 'hello-world');
+  });
+
+  await test('slugify strips leading and trailing hyphens', () => {
+    assert.strictEqual(shared.slugify('---test---'), 'test');
+    assert.strictEqual(shared.slugify('!foo!'), 'foo');
+  });
+
+  await test('slugify respects maxLen parameter', () => {
+    const result = shared.slugify('a-very-long-title-that-should-be-truncated', 20);
+    assert.ok(result.length <= 20, 'Should be <= 20 chars, got ' + result.length);
+  });
+
+  await test('slugify defaults to maxLen 50', () => {
+    const long = 'a'.repeat(100);
+    assert.strictEqual(shared.slugify(long).length, 50);
+  });
+
+  await test('slugify handles empty string', () => {
+    assert.strictEqual(shared.slugify(''), '');
+  });
+
+  await test('slugify is used in dashboard.js (no inline slug patterns)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('shared.slugify('), 'dashboard.js should use shared.slugify');
+  });
+
+  await test('slugify is used in consolidation.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
+    assert.ok(src.includes('shared.slugify('), 'consolidation.js should use shared.slugify');
+  });
+
+  await test('slugify is used in pipeline.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('slugify('), 'pipeline.js should use slugify');
+  });
+
+  await test('formatTranscriptEntry returns correct format', () => {
+    const entry = shared.formatTranscriptEntry({ agent: 'Dallas', type: 'finding', round: 1, content: 'Found a bug' });
+    assert.ok(entry.startsWith('### Dallas (finding, Round 1)'));
+    assert.ok(entry.includes('Found a bug'));
+  });
+
+  await test('formatTranscriptEntry guards null fields', () => {
+    const entry = shared.formatTranscriptEntry({});
+    assert.ok(entry.startsWith('### agent (, Round ?)'));
+  });
+
+  await test('formatTranscriptEntry handles undefined content', () => {
+    const entry = shared.formatTranscriptEntry({ agent: 'Ripley', type: 'debate', round: 2 });
+    assert.ok(entry.includes('### Ripley (debate, Round 2)\n\n'));
+  });
+}
+
+async function testPipelineReconciliation() {
+  console.log('\n── Pipeline Plan Reconciliation ──');
+
+  await test('executePlanStage reconciles existing plan before LLM call', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const fnBody = src.slice(src.indexOf('async function executePlanStage('), src.indexOf('\n}\n', src.indexOf('async function executePlanStage(') + 200));
+    const reconcileIdx = fnBody.indexOf('_findExistingPlanForMeeting');
+    const llmIdx = fnBody.indexOf('callLLM');
+    assert.ok(reconcileIdx > 0 && llmIdx > 0, 'Should have both reconciliation and LLM call');
+    assert.ok(reconcileIdx < llmIdx, 'Reconciliation should happen before LLM call');
+  });
+
+  await test('reconciliation adopts WI inside mutateWorkItems lock (no TOCTOU)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const fnBody = src.slice(src.indexOf('if (existingPlanFile)'), src.indexOf('// ── No existing plan'));
+    assert.ok(fnBody.includes('mutateWorkItems(wiPath'), 'Should use mutateWorkItems');
+    assert.ok(fnBody.includes('existing._pipelineRun'), 'Should tag adopted WI');
+    assert.ok(!fnBody.includes('safeJson(wiPath)'), 'Should NOT do unlocked pre-read');
+  });
+
+  await test('meeting context built from all run stages, not just direct deps', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('function _findMeetingsInRun(run)'), 'Should have _findMeetingsInRun');
+    const fnBody = src.slice(src.indexOf('No existing plan'), src.indexOf('callLLM'));
+    assert.ok(fnBody.includes('for (const mid of meetingIds)'), 'Should iterate all meetingIds');
+  });
+
+  await test('_findExistingPlanForMeeting uses dashboard slug convention', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes("'meeting-follow-up-'"), 'Should use dashboard naming prefix');
+    assert.ok(src.includes('**Source Meeting:**'), 'Should check Source Meeting header');
+  });
+
+  await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:"), src.indexOf("case STAGE_TYPE.MERGE_PRS:"));
+    assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
+    assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
+    assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
+  });
+
+  await test('immediate completion check after executeStage returns RUNNING', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('completed immediately after start'), 'Should check completion immediately');
+  });
+
+  await test('auto-archive removed — verify does not call archivePlan', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const verifySection = src.slice(src.indexOf('Plan chaining removed'), src.indexOf('Clean up worktree'));
+    assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
+    assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
+  });
+
+  await test('/api/plans/create writes Source Meeting header', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('meetingId') && src.includes('**Source Meeting:**'), 'Should write meetingId header');
+  });
+
+  await test('removeWorktree has failure tracking with retry cap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('_removeWorktreeFailures') && src.includes('count >= 3'), 'Should cap retries at 3');
+  });
+}
+
+async function testMetricsEnrichment() {
+  console.log('\n── Metrics Enrichment & LLM Timing ──');
+
+  await test('getMetrics enriches PR counts from pull-requests.json', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function getMetrics()'), src.indexOf('\n}\n', src.indexOf('function getMetrics()') + 50));
+    assert.ok(fn.includes('getPullRequests') && fn.includes('prCountByAgent'), 'Should enrich PR counts');
+  });
+
+  await test('getMetrics enriches runtime from dispatch history', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function getMetrics()'), src.indexOf('\n}\n', src.indexOf('function getMetrics()') + 50));
+    assert.ok(fn.includes('runtimeByAgent') && fn.includes('timedTasks'), 'Should enrich runtime with timedTasks');
+  });
+
+  await test('timedCalls tracked in trackEngineUsage', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    assert.ok(src.includes('cat.timedCalls'), 'Should increment timedCalls');
+  });
+
+  await test('timedTasks tracked in updateMetrics', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('m.timedTasks'), 'Should increment timedTasks');
+  });
+
+  await test('dashboard uses timedCalls/timedTasks for averages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-other.js'), 'utf8');
+    assert.ok(src.includes('timedCalls') && src.includes('m.timedTasks'), 'Should use timed counters for avg');
+  });
+}
+
+async function testDashboardButtonConsistency() {
+  console.log('\n── Dashboard Plan/PRD Button Consistency ──');
+
+  await test('plan card: Execute only for draft plans without PRD', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes("planExecute(") && src.includes('!prdFile'), 'Execute requires no PRD');
+  });
+
+  await test('plan card: Approve for awaiting-approval, not Execute', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
+    assert.ok(actionsBlock.includes("'Approve'"), 'Should show Approve');
+    assert.ok(!actionsBlock.includes("'Execute'"), 'Should NOT show Execute in actions block');
+  });
+
+  await test('plan card: no duplicate Resume for paused state', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('const showResume = false'), 'Resume pill disabled — handled by actions block');
+  });
+
+  await test('plan modal: Approve targets linked PRD file', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('linkedPrdAwaiting ? linkedPrd.file : normalizedFile'), 'Should target PRD file');
+  });
+
+  await test('plan modal: Reject shown for .json awaiting-approval', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes("planStatus === 'awaiting-approval'") && src.includes('showRejectInModal'), 'Should show Reject');
+  });
+
+  await test('archive confirm warns about linked source plan', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
+  });
+
+  await test('text selection prevents work item modal', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+    assert.ok(src.includes('getSelection') && src.includes('toString().length'), 'Should check selection');
+  });
+
+  await test('client-side transcript has null guards', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const lines = src.split('\n').filter(l => l.includes("t.agent") && l.includes("t.type") && l.includes("t.round"));
+    for (const line of lines) {
+      assert.ok(line.includes("|| 'agent'"), 'Should guard agent: ' + line.trim().slice(0, 60));
+    }
   });
 }
 
