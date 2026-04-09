@@ -126,6 +126,7 @@ async function refresh() {
 }
 
 refresh();
+_syncPinsFromServer(); // Load server-side pins on startup
 
 // Poll for status updates (SSE caused HTTP/1.1 connection exhaustion — CC fetch would fail)
 setInterval(refresh, 4000);

@@ -3784,6 +3784,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true });
     }},
 
+    // KB pin state (server-side so CC can pin items)
+    { method: 'GET', path: '/api/kb-pins', desc: 'Get pinned KB item keys', handler: async (req, res) => {
+      const pins = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'kb-pins.json')) || [];
+      return jsonReply(res, 200, { pins });
+    }},
+    { method: 'POST', path: '/api/kb-pins', desc: 'Set pinned KB item keys', params: 'pins[]', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!Array.isArray(body.pins)) return jsonReply(res, 400, { error: 'pins array required' });
+      safeWrite(path.join(MINIONS_DIR, 'engine', 'kb-pins.json'), body.pins);
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/kb-pins/toggle', desc: 'Toggle a single KB pin', params: 'key', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.key) return jsonReply(res, 400, { error: 'key required' });
+      const pinsPath = path.join(MINIONS_DIR, 'engine', 'kb-pins.json');
+      const pins = shared.safeJson(pinsPath) || [];
+      const idx = pins.indexOf(body.key);
+      if (idx >= 0) pins.splice(idx, 1); else pins.unshift(body.key);
+      safeWrite(pinsPath, pins);
+      return jsonReply(res, 200, { ok: true, pinned: idx < 0 });
+    }},
+
     // Notes
     { method: 'POST', path: '/api/notes', desc: 'Write a note to inbox for consolidation', params: 'title, what, why?, author?', handler: handleNotesCreate },
     { method: 'GET', path: '/api/notes-full', desc: 'Return full notes.md content', handler: handleNotesFull },

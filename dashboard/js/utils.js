@@ -8,13 +8,13 @@ const _deletedIds = new Map(); // key → expiry timestamp
 function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppress for 10s
 function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
 
-// Temporary pin-to-top — UI-only, stored in localStorage, does not affect agents
-const PINS_KEY = 'minions-pinned-items';
+// Pin-to-top — persisted server-side so CC and agents can also pin items
 let _pinsCache = null;
 function invalidatePinsCache() { _pinsCache = null; }
 function getPinnedItems() {
   if (_pinsCache) return _pinsCache;
-  try { _pinsCache = JSON.parse(localStorage.getItem(PINS_KEY) || '[]'); } catch { _pinsCache = []; }
+  // Migrate from localStorage if server hasn't been seeded yet
+  try { _pinsCache = JSON.parse(localStorage.getItem('minions-pinned-items') || '[]'); } catch { _pinsCache = []; }
   return _pinsCache;
 }
 function isPinned(key) { return getPinnedItems().includes(key); }
@@ -22,9 +22,19 @@ function togglePin(key) {
   const pins = getPinnedItems();
   const idx = pins.indexOf(key);
   if (idx >= 0) pins.splice(idx, 1); else pins.unshift(key);
-  localStorage.setItem(PINS_KEY, JSON.stringify(pins));
-  invalidatePinsCache();
+  _pinsCache = pins;
+  // Persist to server (fire-and-forget)
+  fetch('/api/kb-pins', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pins }) }).catch(function() {});
   return idx < 0; // true if now pinned
+}
+function _syncPinsFromServer() {
+  fetch('/api/kb-pins').then(function(r) { return r.json(); }).then(function(d) {
+    if (Array.isArray(d.pins) && d.pins.length > 0) {
+      _pinsCache = d.pins;
+      // Clear legacy localStorage
+      localStorage.removeItem('minions-pinned-items');
+    }
+  }).catch(function() {});
 }
 function inboxPinKey(name) { return 'notes/inbox/' + name; }
 function kbPinKey(cat, file) { return 'knowledge/' + cat + '/' + file; }

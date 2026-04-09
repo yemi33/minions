@@ -30,7 +30,7 @@ Core action types:
 - **knowledge**: title, content, category (architecture/conventions/project-notes/build-reports/reviews) — create new KB entry or copy existing doc to KB
 - **pin-to-pinned**: title, content, level (critical/warning) — write to pinned.md, force-injected into ALL agent prompts (rarely needed)
 
-**IMPORTANT**: When user says "pin", "pin this", "pin a note", or "pin in KB" — they mean save/copy to the **knowledge base** (`knowledge/<category>/`), NOT to `pinned.md`. If a file path is given, read it and write to `knowledge/<category>/<slug>.md`. If no path, search inbox/notes first. Only write to `pinned.md` if user explicitly says "pinned.md" or "critical alert for all agents".
+**IMPORTANT**: When user says "pin", "pin this", "pin a note", or "pin in KB" — they mean **pin an existing KB entry to the top** of the knowledge base list. Do this by calling: `curl -s -X POST http://localhost:7331/api/kb-pins/toggle -H 'Content-Type: application/json' -d '{"key":"knowledge/<category>/<filename>"}'`. If the file isn't in KB yet, first copy it to `knowledge/<category>/<slug>.md`, then pin it. Do NOT write to `pinned.md` unless user explicitly says "pinned.md" or "critical alert for all agents".
 - **plan**: title, description, project, branchStrategy (parallel/shared-branch)
 - **cancel**: agent, reason
 - **retry**: ids[]
