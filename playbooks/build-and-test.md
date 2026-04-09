@@ -143,9 +143,9 @@ Replace `<SHORT DESCRIPTION OF FAILURE>` and `<PASTE THE BUILD/TEST ERROR OUTPUT
 - Use the worktree path, NOT the main project path, for all commands
 - The worktree will persist after your process ends so the user can inspect it
 
-## IMPORTANT: Do NOT clean up the worktree
+## Do not clean up the worktree
 
-Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up after the PR is merged or closed.
+Leave the worktree in place at `{{project_path}}/../worktrees/bt-{{pr_number}}` — the user needs it to review the running app. The engine will clean it up automatically after the PR is merged or closed.
 
 
 ## When to Stop
