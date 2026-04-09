@@ -10907,73 +10907,60 @@ async function testDashboardButtonConsistency() {
     assert.ok(src.includes('const showResume = false'), 'Resume pill disabled — handled by actions block');
   });
 
+  // Shared slices for card and modal button tests
+  const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+  const cardActionsBlock = plansSrc.slice(plansSrc.indexOf('if (needsAction)'), plansSrc.indexOf('} else if (isRevision)'));
+  const modalFn = plansSrc.slice(plansSrc.indexOf('function _renderPlanModal'), plansSrc.indexOf('\nasync function planView'));
+
   await test('plan modal: Approve targets linked PRD file', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    assert.ok(src.includes('linkedPrdAwaiting ? linkedPrd.file : normalizedFile'), 'Should target PRD file');
+    assert.ok(modalFn.includes('prdFile || normalizedFile') && modalFn.includes('planApprove'), 'Should target PRD file');
   });
 
-  await test('plan modal: Reject shown for .json awaiting-approval', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    assert.ok(src.includes("planStatus === 'awaiting-approval'") && src.includes('showRejectInModal'), 'Should show Reject');
+  await test('plan modal: Reject shown for awaiting-approval or paused', () => {
+    assert.ok(modalFn.includes('isNeedsAction') && modalFn.includes('planReject'), 'Should show Reject when needs action');
   });
 
   // Plan card button ordering: Approve before Re-execute for awaiting-approval with PRD
   await test('plan card: Approve is first button, Re-execute second for awaiting-approval with PRD', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
-    const approveIdx = actionsBlock.indexOf("planApprove(");
-    const reExecIdx = actionsBlock.indexOf("planExecute(");
-    const rejectIdx = actionsBlock.indexOf("planReject(");
+    const approveIdx = cardActionsBlock.indexOf("planApprove(");
+    const reExecIdx = cardActionsBlock.indexOf("planExecute(");
+    const rejectIdx = cardActionsBlock.indexOf("planReject(");
     assert.ok(approveIdx < reExecIdx, 'Approve button must come before Re-execute');
     assert.ok(reExecIdx < rejectIdx, 'Re-execute button must come before Reject');
   });
 
   await test('plan card: Re-execute has reduced opacity (secondary action)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
-    // Re-execute line should have opacity:0.7, Approve line should not
-    const approveLineMatch = actionsBlock.match(/planApprove\([^)]+\)[^<]*>Approve</);
-    const reExecLineMatch = actionsBlock.match(/opacity:0\.7[^>]*planExecute/);
+    const approveLineMatch = cardActionsBlock.match(/planApprove\([^)]+\)[^<]*>Approve</);
+    const reExecLineMatch = cardActionsBlock.match(/opacity:0\.7[^>]*planExecute/);
     assert.ok(approveLineMatch, 'Approve button should exist without opacity');
     assert.ok(reExecLineMatch, 'Re-execute button should have opacity:0.7');
   });
 
   await test('plan card: Approve label is "Approve" not "Approve as-is"', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
-    assert.ok(!actionsBlock.includes('Approve as-is'), 'Should not say "Approve as-is"');
-    assert.ok(actionsBlock.includes('>Approve</button>'), 'Should say "Approve"');
+    assert.ok(!cardActionsBlock.includes('Approve as-is'), 'Should not say "Approve as-is"');
+    assert.ok(cardActionsBlock.includes('>Approve</button>'), 'Should say "Approve"');
   });
 
   // Plan modal button ordering: matches card (Approve before Re-execute, Reject after)
-  await test('plan modal: separate modalApproveBtn and modalRejectBtn variables', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    assert.ok(src.includes('const modalApproveBtn'), 'Should have separate modalApproveBtn');
-    assert.ok(src.includes('const modalRejectBtn'), 'Should have separate modalRejectBtn');
-    assert.ok(!src.includes('const modalResumeBtn'), 'Should NOT have combined modalResumeBtn');
+  await test('plan modal: Approve before Re-execute before Reject in modal actions', () => {
+    const needsActionBlock = modalFn.slice(modalFn.indexOf('if (isNeedsAction)'), modalFn.indexOf('// Execute (draft'));
+    const approveIdx = needsActionBlock.indexOf('planApprove(');
+    const reExecIdx = needsActionBlock.indexOf('planExecute(');
+    const rejectIdx = needsActionBlock.indexOf('planReject(');
+    assert.ok(approveIdx > -1, 'Approve must exist in modal needsAction block');
+    assert.ok(reExecIdx > -1, 'Re-execute must exist in modal needsAction block');
+    assert.ok(rejectIdx > -1, 'Reject must exist in modal needsAction block');
+    assert.ok(approveIdx < reExecIdx, 'Approve must come before Re-execute in modal');
+    assert.ok(reExecIdx < rejectIdx, 'Re-execute must come before Reject in modal');
   });
 
-  await test('plan modal: Approve before Re-execute in button assembly', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const assemblyLine = src.match(/const actionBtns = [\s\S]*?<\/div>/);
-    assert.ok(assemblyLine, 'actionBtns assembly must exist');
-    const assembly = assemblyLine[0];
-    const approveIdx = assembly.indexOf('modalApproveBtn');
-    const reExecIdx = assembly.indexOf('modalReExecuteBtn');
-    const rejectIdx = assembly.indexOf('modalRejectBtn');
-    assert.ok(approveIdx < reExecIdx, 'modalApproveBtn must come before modalReExecuteBtn');
-    assert.ok(reExecIdx < rejectIdx, 'modalReExecuteBtn must come before modalRejectBtn');
+  await test('plan modal: Re-execute has reduced opacity in modal', () => {
+    assert.ok(modalFn.match(/opacity:0\.7[^>]*planExecute/), 'Re-execute should have opacity:0.7 in modal');
   });
 
-  await test('plan modal: Reject button guard is logically safe (subset of Approve guard)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    // showRejectInModal = linkedPrdAwaiting || planStatus === 'awaiting-approval'
-    // modalShowResume = isPaused || linkedPrdAwaiting (where isPaused includes awaiting-approval)
-    // So showRejectInModal=true always implies modalShowResume=true
-    assert.ok(src.includes("const showRejectInModal = linkedPrdAwaiting || planStatus === 'awaiting-approval'"),
-      'showRejectInModal condition must be subset of modalShowResume');
-    assert.ok(src.includes("const modalShowResume = isPaused || linkedPrdAwaiting"),
-      'modalShowResume must cover all showRejectInModal cases');
+  await test('plan modal: Re-execute only for awaiting-approval .md plans with PRD', () => {
+    assert.ok(modalFn.includes("effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile"),
+      'Re-execute guard must check awaiting-approval + isMdPlan + prdFile');
   });
 
   await test('archive confirm warns about linked source plan', () => {

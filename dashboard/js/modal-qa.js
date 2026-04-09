@@ -99,6 +99,11 @@ function _initQaSession() {
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
     _showThreadWrap();
+    // Defer scroll — container just transitioned from display:none, layout not yet computed
+    requestAnimationFrame(function() {
+      var thread = document.getElementById('modal-qa-thread');
+      if (thread) thread.scrollTop = thread.scrollHeight;
+    });
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
