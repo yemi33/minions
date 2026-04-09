@@ -825,7 +825,9 @@ function mutatePullRequests(filePath, mutator) {
 /**
  * Remove a git worktree, falling back to fs.rmSync if git fails (e.g., locked on Windows).
  * Only removes directories under worktreeRoot to prevent accidental deletion.
+ * Tracks persistent failures to avoid retrying locked paths every cleanup cycle.
  */
+const _removeWorktreeFailures = new Map(); // path → { count, lastAttempt }
 function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   const resolved = path.resolve(wtPath);
   const resolvedRoot = path.resolve(worktreeRoot) + path.sep;
@@ -833,13 +835,19 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
     log('warn', `removeWorktree: refusing to remove ${wtPath} — not under ${worktreeRoot}`);
     return false;
   }
+  // Skip paths that failed 3+ times — retry after 1 hour cooldown
+  const prior = _removeWorktreeFailures.get(resolved);
+  if (prior && prior.count >= 3 && Date.now() - prior.lastAttempt < 3600000) return false;
+
   try {
     exec(`git worktree remove "${wtPath}" --force`, { cwd: gitRoot, stdio: 'pipe', timeout: 15000, windowsHide: true });
+    _removeWorktreeFailures.delete(resolved);
     return true;
   } catch (gitErr) {
     try {
       fs.rmSync(resolved, { recursive: true, force: true });
       try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
+      _removeWorktreeFailures.delete(resolved);
       return true;
     } catch (rmErr) {
       // Windows EPERM: a process may hold file handles — try rd /s /q as fallback
@@ -847,13 +855,26 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
         try {
           exec(`rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
           try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
+          _removeWorktreeFailures.delete(resolved);
           return true;
         } catch {}
       }
-      log('warn', `removeWorktree: failed for ${wtPath}: ${rmErr.message}`);
+      const fail = _removeWorktreeFailures.get(resolved) || { count: 0, lastAttempt: 0 };
+      fail.count++;
+      fail.lastAttempt = Date.now();
+      _removeWorktreeFailures.set(resolved, fail);
+      if (fail.count <= 3) log('warn', `removeWorktree: failed for ${wtPath} (attempt ${fail.count}/3): ${rmErr.message}`);
       return false;
     }
   }
+}
+
+function slugify(text, maxLen = 50) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, maxLen);
+}
+
+function formatTranscriptEntry(t) {
+  return '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '');
 }
 
 module.exports = {
@@ -912,6 +933,8 @@ module.exports = {
   removeWorktree,
   LOCK_STALE_MS,
   flushLogs,
+  slugify,
+  formatTranscriptEntry,
   _logBuffer, // exported for testing
 };
 
