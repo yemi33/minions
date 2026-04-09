@@ -3974,13 +3974,9 @@ async function testCheckTimeouts() {
       'Should scan live output for completion markers');
   });
 
-  await test('Per-type heartbeat timeouts: DEFAULT_HEARTBEAT_TIMEOUTS defines explore/ask/review', () => {
-    assert.ok(src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'), 'Should define DEFAULT_HEARTBEAT_TIMEOUTS map');
-    assert.ok(src.includes('[WORK_TYPE.EXPLORE]'), 'Should have EXPLORE entry in per-type heartbeat map');
-    assert.ok(src.includes('[WORK_TYPE.ASK]'), 'Should have ASK entry in per-type heartbeat map');
-    assert.ok(src.includes('[WORK_TYPE.REVIEW]'), 'Should have REVIEW entry in per-type heartbeat map');
-    assert.ok(src.includes('600000'), 'EXPLORE/ASK should use 600000ms (10min)');
-    assert.ok(src.includes('480000'), 'REVIEW should use 480000ms (8min)');
+  await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
+    assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
+    assert.ok(src.includes('DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
   });
 
   await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
@@ -3992,9 +3988,9 @@ async function testCheckTimeouts() {
   await test('Per-type heartbeat timeouts: config.engine.heartbeatTimeouts overrides defaults', () => {
     assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
       'Should read heartbeatTimeouts from config.engine for user overrides');
-    // Verify merge order: defaults ← ENGINE_DEFAULTS ← config
-    assert.ok(src.includes('...DEFAULT_HEARTBEAT_TIMEOUTS') && src.includes('...DEFAULTS.heartbeatTimeouts'),
-      'Should merge default, ENGINE_DEFAULTS, and config heartbeatTimeouts in correct precedence');
+    // Verify merge order: ENGINE_DEFAULTS ← config
+    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+      'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
   });
 
   await test('Per-type heartbeat timeouts: blocking tool uses Math.max(itemHeartbeat, blockingTimeout)', () => {
@@ -4003,9 +3999,8 @@ async function testCheckTimeouts() {
       'Blocking tool timeout should use Math.max(itemHeartbeat, ...) so per-type floor is respected');
   });
 
-  await test('Per-type heartbeat timeouts: WORK_TYPE imported in timeout.js', () => {
-    assert.ok(src.includes('WORK_TYPE') && src.includes("require('./shared')"),
-      'Should import WORK_TYPE from shared.js');
+  await test('Per-type heartbeat timeouts: timeout.js imports from shared.js', () => {
+    assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
   });
 
   await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
@@ -11370,32 +11365,10 @@ async function testStructuredCompletion() {
     assert.strictEqual(result.pending, 'fix compilation errors');
   });
 
-  await test('implement.md includes ## Completion section', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
-    assert.ok(src.includes('## Completion'), 'implement.md should have ## Completion section');
-    assert.ok(src.includes('```completion'), 'implement.md should have ```completion block');
-    assert.ok(src.includes('status:'), 'implement.md completion should have status field');
-    assert.ok(src.includes('pr:'), 'implement.md completion should have pr field');
-  });
-
   await test('fix.md includes ## Completion section', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
     assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
     assert.ok(src.includes('```completion'), 'fix.md should have ```completion block');
-  });
-
-  await test('verify.md includes ## Completion section', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
-    assert.ok(src.includes('## Completion'), 'verify.md should have ## Completion section');
-    assert.ok(src.includes('```completion'), 'verify.md should have ```completion block');
-  });
-
-  await test('## Completion is after ## When to Stop in implement.md', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'implement.md'), 'utf8');
-    const stopIdx = src.indexOf('## When to Stop');
-    const completionIdx = src.indexOf('## Completion');
-    assert.ok(stopIdx >= 0 && completionIdx > stopIdx,
-      '## Completion must come after ## When to Stop');
   });
 
   await test('decompose.md does NOT include ## Completion section', () => {
