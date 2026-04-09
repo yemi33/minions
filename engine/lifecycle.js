@@ -567,6 +567,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   const prMatches = new Set();
   const urlPattern = /(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+)/g;
+  const textCreatedPattern = /(?:PR created|created PR|E2E PR)[:\s#-]*(\d{1,})/gi;
   let match;
 
   try {
@@ -586,7 +587,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
           // Also scan assistant text blocks for PR URLs and "PR created" patterns
           if (block.type === 'text' && block.text) {
             while ((match = urlPattern.exec(block.text)) !== null) prMatches.add(match[1] || match[2]);
-            const textCreatedPattern = /(?:PR created|created PR|E2E PR)[:\s#-]*(\d{1,})/gi;
+            textCreatedPattern.lastIndex = 0;
             let m2;
             while ((m2 = textCreatedPattern.exec(block.text)) !== null) prMatches.add(m2[1]);
           }
