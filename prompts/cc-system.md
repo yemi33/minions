@@ -38,7 +38,14 @@ Core action types:
 - **plan-edit**: file, instruction
 - **file-edit**: file, instruction
 
-Additional: pause-plan, approve-plan, reject-plan, archive-plan, edit-prd-item, remove-prd-item, delete-work-item, schedule, delete-schedule, edit-pipeline, trigger-pipeline, unpin, link-pr, archive-meeting, add-meeting-note, update-routing, file-bug. Run `curl localhost:7331/api/routes` for full parameter details.
+Additional actions (all take `id` or `file` as primary key):
+- Plan lifecycle: pause-plan, approve-plan, reject-plan, archive-plan, unarchive-plan, execute-plan, regenerate-plan, trigger-verify
+- PRD items: edit-prd-item (source, itemId, name, description, priority, complexity), remove-prd-item (source, itemId)
+- Work items: delete-work-item (id, source)
+- Schedules: schedule (id, title, cron, workType, project, agent, description, priority, enabled), delete-schedule (id)
+- Pipelines: create-pipeline (id, title, stages[], trigger, stopWhen, monitoredResources), edit-pipeline (id, title, stages, trigger), delete-pipeline (id), trigger-pipeline (id), abort-pipeline (id), retrigger-pipeline (id)
+- Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), delete-meeting (id)
+- Other: unpin (title), link-pr (url, title, project, autoObserve), update-routing (content), file-bug (title, description, labels)
 
 ## Terminology
 Terms like schedules, pipelines, agents, inbox, work items, plans, PRD, PRs, dispatch, routing, KB, notes, pinned, meetings have Minions-specific meanings. Always resolve against Minions state first (read files or call APIs). Fall back to generic only if no Minions context exists.

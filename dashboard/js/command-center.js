@@ -696,6 +696,76 @@ async function ccExecuteAction(action) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'create-pipeline': {
+        await _ccFetch('/api/pipelines', { id: action.id, title: action.title, stages: action.stages || [], trigger: action.trigger || null, stopWhen: action.stopWhen || null, monitoredResources: action.monitoredResources || null });
+        status.innerHTML = '&#10003; Pipeline created: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'delete-pipeline': {
+        await _ccFetch('/api/pipelines/delete', { id: action.id });
+        status.innerHTML = '&#10003; Pipeline deleted: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'abort-pipeline': {
+        await _ccFetch('/api/pipelines/abort', { id: action.id });
+        status.innerHTML = '&#10003; Pipeline aborted: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'retrigger-pipeline': {
+        await _ccFetch('/api/pipelines/retrigger', { id: action.id });
+        status.innerHTML = '&#10003; Pipeline retriggered: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'advance-meeting': {
+        await _ccFetch('/api/meetings/advance', { id: action.id });
+        status.innerHTML = '&#10003; Meeting advanced: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'end-meeting': {
+        await _ccFetch('/api/meetings/end', { id: action.id });
+        status.innerHTML = '&#10003; Meeting ended: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'delete-meeting': {
+        await _ccFetch('/api/meetings/delete', { id: action.id });
+        status.innerHTML = '&#10003; Meeting deleted: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'trigger-verify': {
+        await _ccFetch('/api/plans/trigger-verify', { file: action.file });
+        status.innerHTML = '&#10003; Verification triggered for: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'regenerate-plan': {
+        await _ccFetch('/api/plans/regenerate', { file: action.file });
+        status.innerHTML = '&#10003; Plan regenerated: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'unarchive-plan': {
+        await _ccFetch('/api/plans/unarchive', { file: action.file });
+        status.innerHTML = '&#10003; Plan unarchived: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';
