@@ -1148,7 +1148,7 @@ function handleDecompositionResult(stdout, meta, config) {
       // Create child work items
       for (const sub of subItems) {
         if (data.some(i => i.id === sub.id)) continue; // dedupe
-        data.push({
+        const childItem = {
           id: sub.id,
           title: sub.name || sub.title || `Sub-task of ${parentId}`,
           type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
@@ -1163,7 +1163,15 @@ function handleDecompositionResult(stdout, meta, config) {
           featureBranch: p.featureBranch,
           created: ts(),
           createdBy: 'decomposition',
-        });
+        };
+        // Persist structured fields from decompose output (additive — safe if absent)
+        if (Array.isArray(sub.acceptance_criteria) && sub.acceptance_criteria.length > 0) {
+          childItem.acceptance_criteria = sub.acceptance_criteria;
+        }
+        if (Array.isArray(sub.scope_boundaries) && sub.scope_boundaries.length > 0) {
+          childItem.scope_boundaries = sub.scope_boundaries;
+        }
+        data.push(childItem);
       }
       return data;
     });
