@@ -74,14 +74,14 @@ function _killProcessInWorktree(dir, activeProcesses, activeIds) {
             const taskInfo = exec(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8', timeout: 3000, windowsHide: true });
             const taskLower = taskInfo.toLowerCase();
             if (!taskLower.includes('node') && !taskLower.includes('claude')) continue;
-            exec(`taskkill /F /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
+            exec(`taskkill /F /T /PID ${pid}`, { stdio: 'pipe', timeout: 5000, windowsHide: true });
           } else {
             // Verify it's a node process before killing (prevent recycled PID kill)
             try {
               const psOut = exec(`ps -p ${pid} -o comm=`, { encoding: 'utf8', timeout: 3000 }).trim();
               if (!psOut.includes('node') && !psOut.includes('claude')) continue;
             } catch { continue; } // process dead or ps failed
-            process.kill(pid, 'SIGKILL');
+            try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); }
           }
           log('info', `Killed orphaned PID ${pid} (${f}) before worktree removal`);
         } catch {} // process may already be dead
