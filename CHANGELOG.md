@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.736 (2026-04-09)
+
+### Fixes
+-  remove undefined DEFAULT_HEARTBEAT_TIMEOUTS, fix 5 stale tests
+
 ## 0.1.735 (2026-04-09)
 
 ### Features
