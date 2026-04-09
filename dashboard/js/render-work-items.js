@@ -451,6 +451,10 @@ function openWorkItemDetail(id) {
   var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
   if (arts.outputLog) artPills += '<span onclick="viewAgentOutput(\'' + escHtml(arts.outputLog) + '\')" style="' + pillStyle + '">📄 Output Log</span> ';
   if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
+  if (arts.plan) artPills += '<span onclick="planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
+  if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
+  if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
+  if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) { artPills += '<span onclick="closeModal();switchPage(\'inbox\')" style="' + pillStyle + '">📝 ' + escHtml(n.replace(/\.md$/, '').slice(0, 30)) + '</span> '; });
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 

@@ -791,6 +791,12 @@ async function spawnAgent(dispatchItem, config) {
       try {
         const artWiPath = resolveWorkItemPath(dispatchItem.meta);
         if (artWiPath) {
+          // Collect inbox notes written by this agent today
+          const _artToday = shared.dateStamp();
+          const _artInboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+          let _artNotes = [];
+          try { _artNotes = shared.safeReadDir(_artInboxDir).filter(f => f.includes(agentId) && f.includes(_artToday)); } catch {}
+
           mutateJsonFileLocked(artWiPath, data => {
             if (!Array.isArray(data)) return data;
             const wi = data.find(i => i.id === dispatchItem.meta.item.id);
@@ -800,6 +806,11 @@ async function spawnAgent(dispatchItem, config) {
             if (dispatchItem.meta.branch) arts.branch = dispatchItem.meta.branch;
             if (wi._pr) arts.pr = wi._pr;
             if (wi._prUrl) arts.prUrl = wi._prUrl;
+            if (_artNotes.length > 0) arts.notes = _artNotes;
+            // Track plan/PRD artifacts from dispatch metadata
+            if (dispatchItem.meta.item?.planFile) arts.plan = dispatchItem.meta.item.planFile;
+            if (dispatchItem.meta.item?._prdFilename) arts.prd = dispatchItem.meta.item._prdFilename;
+            if (dispatchItem.meta.item?.sourcePlan) arts.sourcePlan = dispatchItem.meta.item.sourcePlan;
             wi._artifacts = arts;
             return data;
           });
