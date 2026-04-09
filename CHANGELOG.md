@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.691 (2026-04-09)
+
+### Features
+-  Re-execute button for plans with existing awaiting-approval PRD
+-  PR review/fix cycle pipeline, fix node rendering for never-run pipelines
+-  modal back button for artifact navigation
+-  collapsible doc-chat thread in modal
+
+### Fixes
+-  show E2E PR + testing guide in verify badge, improve PR matching
+-  add archive fallback for artifact notes when KB entry was swept
+-  link work item artifacts to KB entries, not raw archive copies
+
+### Other
+- simplify: deduplicate backFn — reuse artBackFn for note pills
+- refactor: remove dead stageFlow code from pipeline card rendering
+
 ## 0.1.683 (2026-04-09)
 
 ### Features
