@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.722 (2026-04-09)
+
+### Features
+-  server-side KB pin state so CC can pin items
+
+### Fixes
+- remove 200-char truncation from PRD item descriptions in plan viewer (closes #670) (#700)
+
 ## 0.1.720 (2026-04-09)
 
 ### Fixes
