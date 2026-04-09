@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.740 (2026-04-09)
+
+### Features
+- add prNumber field to pull-requests.json records (#711)
+
 ## 0.1.739 (2026-04-09)
 
 ### Fixes
