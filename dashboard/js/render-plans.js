@@ -442,7 +442,8 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const effectiveStatus = cardPlan ? derivePlanStatus(cardPlan) : (linkedPrd ? derivePlanStatus(linkedPrd) : (planStatus || 'active'));
   const prdFile = cardPlan?.file?.endsWith('.json') ? cardPlan.file : (linkedPrd?.file || '');
   const isArchived = !!(cardPlan?.archived || linkedPrd?.archived);
-  const isDraft = isMdPlan && !prdFile;
+  const isCompleted = effectiveStatus === 'completed';
+  const isDraft = isMdPlan && !prdFile && !isCompleted;
   const isNeedsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
 
   const bs = 'font-size:10px;padding:2px 10px'; // button style
@@ -466,6 +467,14 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   // Pause (active PRD, not completed)
   if (effectiveStatus === 'dispatched' && prdFile && !isArchived) {
     modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--yellow)" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button> ';
+  }
+  // Completed label
+  if (isCompleted && !isArchived) {
+    modalActions += '<span style="' + bs + ';color:var(--green);font-weight:600">Completed</span> ';
+  }
+  // In progress label
+  if (effectiveStatus === 'dispatched') {
+    modalActions += '<span style="' + bs + ';color:var(--blue)">In Progress</span> ';
   }
   // Verify / Verified badge
   const modalVerifyWi = (window._lastWorkItems || []).find(w => w.itemType === 'verify' && w.sourcePlan === (prdFile || normalizedFile));
