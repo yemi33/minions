@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.677 (2026-04-09)
+
+### Fixes
+-  abort button shows 'Aborting...' then becomes 'Run Now'
+
 ## 0.1.676 (2026-04-09)
 
 ### Fixes
