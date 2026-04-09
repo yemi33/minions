@@ -187,8 +187,8 @@ function checkTimeouts(config) {
               }
               // Bash tool call — may be running a long build/install with no stdout
               if (name === 'Bash') {
-                // Use explicit timeout if set, otherwise default to 10min for any Bash call
-                const bashTimeout = input.timeout || 600000;
+                // Use explicit timeout if set, otherwise match Claude Code's actual Bash default (120s)
+                const bashTimeout = input.timeout || 120000;
                 blockingTimeout = Math.max(heartbeatTimeout, bashTimeout + 60000);
                 isBlocking = true;
               }

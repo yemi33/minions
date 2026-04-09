@@ -95,11 +95,13 @@ function isAlreadyDispatched(key) {
   // Check pending and active
   const inFlight = [...dispatch.pending, ...(dispatch.active || [])];
   if (inFlight.some(d => d.meta?.dispatchKey === key)) return true;
-  // Also check recently completed (last hour) to prevent re-dispatch
-  const oneHourAgo = Date.now() - 3600000;
-  const recentCompleted = (dispatch.completed || []).filter(d =>
-    d.completed_at && new Date(d.completed_at).getTime() > oneHourAgo
-  );
+  // Also check recently completed — shorter window for errors (15min) vs success (1hr)
+  const now = Date.now();
+  const recentCompleted = (dispatch.completed || []).filter(d => {
+    if (!d.completed_at) return false;
+    const windowMs = d.result === 'error' ? 900000 : 3600000; // 15 min for errors, 1 hr for success
+    return now - new Date(d.completed_at).getTime() < windowMs;
+  });
   return recentCompleted.some(d => d.meta?.dispatchKey === key);
 }
 
