@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.688 (2026-04-09)
+
+### Features
+-  PR review/fix cycle pipeline, fix node rendering for never-run pipelines
+-  modal back button for artifact navigation
+-  collapsible doc-chat thread in modal
+
+### Fixes
+-  add archive fallback for artifact notes when KB entry was swept
+-  link work item artifacts to KB entries, not raw archive copies
+
+### Other
+- refactor: remove dead stageFlow code from pipeline card rendering
+
 ## 0.1.683 (2026-04-09)
 
 ### Features
