@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.692 (2026-04-09)
+
+### Fixes
+-  fetch actual build error logs instead of just annotations
+
 ## 0.1.691 (2026-04-09)
 
 ### Features
