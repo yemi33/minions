@@ -896,6 +896,7 @@ function getPrdInfo(config) {
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null, prdCompletedAt: i._prdCompletedAt || '',
+      agent: i._agent || '', failReason: i._failReason || '',
     })),
   };
 
