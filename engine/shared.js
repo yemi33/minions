@@ -562,6 +562,9 @@ const WI_STATUS = {
 // Read-side: accept legacy aliases for backward compat with old data/clients.
 // Write-side: only WI_STATUS.DONE is written (cleanup.js migrates old values on each run).
 const DONE_STATUSES = new Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete']);
+// Terminal statuses for plan completion — item won't progress further (done, failed, cancelled).
+// Used by checkPlanCompletion to unblock the gate when items are in an unrecoverable state.
+const PLAN_TERMINAL_STATUSES = new Set([...DONE_STATUSES, WI_STATUS.FAILED, WI_STATUS.CANCELLED]);
 const WORK_TYPE = {
   IMPLEMENT: 'implement', IMPLEMENT_LARGE: 'implement:large', FIX: 'fix', REVIEW: 'review',
   VERIFY: 'verify', PLAN: 'plan', PLAN_TO_PRD: 'plan-to-prd', DECOMPOSE: 'decompose',
@@ -940,7 +943,7 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,

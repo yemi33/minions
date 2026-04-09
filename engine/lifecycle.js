@@ -8,7 +8,7 @@ const path = require('path');
 const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
@@ -34,7 +34,7 @@ function checkPlanCompletion(meta, config) {
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
-  // Hard completion gate: every PRD feature ID must have a corresponding work item in done status.
+  // Hard completion gate: every PRD feature ID must have a corresponding work item in a terminal state.
   const planFeatureIds = new Set((plan.missing_features || []).map(f => f.id).filter(Boolean));
   const workItemById = {};
   for (const w of planItems) { if (w.id) workItemById[w.id] = w; }
@@ -51,20 +51,36 @@ function checkPlanCompletion(meta, config) {
     return;
   }
 
-  // Check 2: every feature's work item must be done (or PRD item marked done externally)
-  const notDone = [...planFeatureIds].filter(id => {
+  // Check 2: every feature must be in a terminal state (done, failed, or cancelled).
+  // Failed/cancelled items are unrecoverable — waiting on them blocks the plan indefinitely.
+  const notTerminal = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && DONE_STATUSES.has(w.status)) return false;
+    if (w && PLAN_TERMINAL_STATUSES.has(w.status)) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && DONE_STATUSES.has(prdItem.status));
+    return !(prdItem && PLAN_TERMINAL_STATUSES.has(prdItem.status));
   });
-  if (notDone.length > 0) {
-    log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
+  if (notTerminal.length > 0) {
+    log('info', `Plan ${planFile}: waiting for ${notTerminal.length}/${planFeatureIds.size} item(s) to reach terminal state: ${notTerminal.join(', ')}`);
     return;
   }
 
   const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
-  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED);
+  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED || w.status === WI_STATUS.CANCELLED);
+
+  // Escalate failed/cancelled items to human — write inbox alert (deduped by slug)
+  if (failedItems.length > 0) {
+    const alertSlug = `plan-failure-escalation-${planFile.replace('.json', '')}`;
+    const failDetails = failedItems.map(w =>
+      `- \`${w.id}\`: ${w.title || 'Unknown'} — ${w.failReason || w.status}`
+    ).join('\n');
+    shared.writeToInbox('engine', alertSlug,
+      `# Plan Items Failed: ${plan.plan_summary || planFile}\n\n` +
+      `**${failedItems.length}** of ${planFeatureIds.size} item(s) failed or were cancelled:\n\n${failDetails}\n\n` +
+      `The plan is completing with partial results (${doneItems.length} done, ${failedItems.length} failed).\n` +
+      `Review failed items and re-dispatch manually if needed.\n`
+    );
+    log('warn', `Plan ${planFile}: ${failedItems.length} item(s) failed/cancelled — escalating to human: ${failedItems.map(w => w.id).join(', ')}`);
+  }
 
   // 1. Mark plan as completed
   plan.status = PLAN_STATUS.COMPLETED;

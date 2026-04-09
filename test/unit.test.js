@@ -1723,8 +1723,8 @@ async function testPrdStaleInvalidation() {
       'Plan completion should enforce strict per-ID gate');
     assert.ok(src.includes('unmaterialized.length > 0'),
       'Plan completion should block when any feature lacks a work item');
-    assert.ok(src.includes('notDone.length > 0'),
-      'Plan completion should block when any feature work item is not done');
+    assert.ok(src.includes('notTerminal.length > 0'),
+      'Plan completion should block when any feature work item is not in a terminal state');
   });
 
   await test('Plan completion cleans all worktrees, not just shared-branch', () => {
@@ -4289,6 +4289,15 @@ async function testRunPostCompletionHooks() {
       'Should set _completionNotified = true in the mutation');
   });
 
+  await test('checkPlanCompletion uses PLAN_TERMINAL_STATUSES for completion gate', () => {
+    assert.ok(lifecycleSrc.includes('PLAN_TERMINAL_STATUSES'),
+      'Should use PLAN_TERMINAL_STATUSES constant for terminal state check');
+    assert.ok(lifecycleSrc.includes('notTerminal'),
+      'Should use notTerminal variable name (not notDone) for terminal state filter');
+    assert.ok(lifecycleSrc.includes('plan-failure-escalation'),
+      'Should write failure escalation alert to inbox for failed items');
+  });
+
   await test('checkPlanCompletion does not use uniquePath for inbox summary', () => {
     // uniquePath at the inbox summary line was replaced with slug+date dedup (via writeToInbox helper or inline)
     const inboxSummarySection = lifecycleSrc.split('Write summary to notes/inbox')[1]?.split('Resolve the primary project')[0] || '';
@@ -4663,23 +4672,58 @@ async function testVerifyWorkflow() {
     assert.ok(v.description.includes(testPlanFile), 'Description should reference plan file');
   }, cleanup);
 
-  // ── 3. No verify WI created when all items failed (no done items) ──
-  await test('verify: no verify WI when no done items', () => {
+  // ── 3a. Plan completes with partial results when some items fail (escalation) ──
+  await test('verify: plan completes with failed items — verify WI created for done items, escalation alert sent', () => {
     cleanup();
     shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
     shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
       { id: 'VF-001', title: 'Impl A', type: 'implement', status: 'done',
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
       { id: 'VF-002', title: 'Impl B', type: 'implement', status: 'failed',
+        failReason: 'permission-blocked',
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
     ]);
 
-    // VF-002 is failed so plan shouldn't complete at all
+    // Failed items are terminal — plan should complete with partial results
     lifecycle.checkPlanCompletion(meta, config);
 
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
-    assert.strictEqual(verifyItems.length, 0, 'No verify WI when not all items are done');
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI created for done items even when some failed');
+
+    // Escalation alert should be in inbox
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
+    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written to inbox for failed items');
+
+    // Plan should be marked completed
+    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+    assert.strictEqual(completedPlan.status, 'completed', 'Plan status should be completed');
+  }, cleanup);
+
+  // ── 3b. No verify WI when ALL items failed (nothing to verify) ──
+  await test('verify: no verify WI when all items failed', () => {
+    cleanup();
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+      { id: 'VF-001', title: 'Impl A', type: 'implement', status: 'failed',
+        failReason: 'max_turns', sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
+      { id: 'VF-002', title: 'Impl B', type: 'implement', status: 'failed',
+        failReason: 'permission-blocked', sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
+    ]);
+
+    lifecycle.checkPlanCompletion(meta, config);
+
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify');
+    assert.strictEqual(verifyItems.length, 0, 'No verify WI when all items failed');
+
+    // Plan should still be completed (not stuck waiting)
+    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+    assert.strictEqual(completedPlan.status, 'completed', 'Plan completes even when all items failed');
+
+    // Escalation alert should exist
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
+    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written for all-failed plan');
   }, cleanup);
 
   // ── 4. Duplicate verify WI prevented ──
