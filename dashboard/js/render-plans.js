@@ -434,9 +434,6 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const isMdPlan = normalizedFile.endsWith('.md');
   let planStatus = '';
   try { if (normalizedFile.endsWith('.json')) planStatus = JSON.parse(raw).status || ''; } catch {}
-  const isActive = planStatus === 'approved' || planStatus === 'active';
-  const isPaused = planStatus === 'awaiting-approval' || planStatus === 'paused';
-  const wi = window._lastWorkItems || [];
   // Modal buttons mirror card logic — derive effectiveStatus the same way
   const allPlans = window._lastStatus?.plans || [];
   const cardPlan = allPlans.find(p => p.file === normalizedFile || p.sourcePlan === normalizedFile || (p.file?.endsWith('.json') && p.file === normalizedFile));
