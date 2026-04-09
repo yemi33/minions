@@ -135,30 +135,28 @@ function ccSwitchTab(id) {
   for (var i = 0; i < tab.messages.length; i++) {
     ccAddMessage(tab.messages[i].role, tab.messages[i].html, true);
   }
-  // If this tab is still processing, show the same thinking UX as during send
+  // If this tab is still processing, restore the same thinking UX via addMessage (identical to original)
   if (tab._sending) {
     var dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
-    var elapsed = tab._sendStartedAt ? Math.floor((Date.now() - tab._sendStartedAt) / 1000) : 0;
-    var phases = [[0,'Thinking...'],[3000,'Reading minions context...'],[8000,'Analyzing...'],[15000,'Using tools to dig deeper...'],[30000,'Still working (multi-turn)...'],[60000,'Deep research in progress...']];
-    var elapsedMs = elapsed * 1000;
-    var phaseText = 'Thinking...';
-    for (var pi = phases.length - 1; pi >= 0; pi--) { if (elapsedMs >= phases[pi][0]) { phaseText = phases[pi][1]; break; } }
-    var thinking = document.createElement('div');
-    thinking.id = 'cc-restore-thinking';
-    thinking.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:11px;color:var(--muted);align-self:flex-start;background:var(--surface2);border:1px solid var(--border);position:relative;max-width:95%';
-    thinking.innerHTML = '<div>' + dotPulse + ' <span id="cc-restore-phase">' + phaseText + '</span> <span id="cc-restore-time" style="font-size:10px;color:var(--border)">' + elapsed + 's</span>' +
-      ' <button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:6px">Stop</button></div>';
-    el.appendChild(thinking);
-    el.scrollTop = el.scrollHeight;
-    // Live update timer and phase
     var restoreStart = tab._sendStartedAt || Date.now();
-    var restoreInterval = setInterval(function() {
-      var phaseEl = document.getElementById('cc-restore-phase');
-      var timeEl = document.getElementById('cc-restore-time');
-      if (!phaseEl || !timeEl || !tab._sending) { clearInterval(restoreInterval); var re = document.getElementById('cc-restore-thinking'); if (re) re.remove(); return; }
+    var phases = [[0,'Thinking...'],[3000,'Reading minions context...'],[8000,'Analyzing...'],[15000,'Using tools to dig deeper...'],[30000,'Still working (multi-turn)...'],[60000,'Deep research in progress...']];
+    function _restoreThinkingHtml() {
       var ms = Date.now() - restoreStart;
-      timeEl.textContent = Math.floor(ms / 1000) + 's';
-      for (var p = phases.length - 1; p >= 0; p--) { if (ms >= phases[p][0]) { phaseEl.textContent = phases[p][1]; break; } }
+      var label = 'Thinking...';
+      for (var pi = phases.length - 1; pi >= 0; pi--) { if (ms >= phases[pi][0]) { label = phases[pi][1]; break; } }
+      var secs = Math.floor(ms / 1000);
+      return '<div style="display:flex;align-items:center;gap:6px"><span style="color:var(--muted);font-size:11px">' + label + '</span>' + dotPulse + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">' + secs + 's</span>' +
+        '<button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:4px">Stop</button></div>';
+    }
+    // Create as assistant message bubble (same as original)
+    ccAddMessage('assistant', _restoreThinkingHtml(), true);
+    var restoreDiv = el.lastElementChild;
+    restoreDiv.id = 'cc-restore-thinking';
+    el.scrollTop = el.scrollHeight;
+    var restoreInterval = setInterval(function() {
+      var re = document.getElementById('cc-restore-thinking');
+      if (!re || !tab._sending) { clearInterval(restoreInterval); if (re) re.remove(); return; }
+      re.innerHTML = (typeof llmCopyBtn === 'function' ? '' : '') + _restoreThinkingHtml();
     }, 1000);
   }
   ccRenderTabBar();
