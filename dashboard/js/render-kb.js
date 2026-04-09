@@ -28,6 +28,7 @@ async function refreshKnowledgeBase() {
 }
 
 function renderKnowledgeBase() {
+  _syncPinsFromServer();
   const tabsEl = document.getElementById('kb-tabs');
   const listEl = document.getElementById('kb-list');
   const countEl = document.getElementById('kb-count');
