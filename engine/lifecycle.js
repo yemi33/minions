@@ -9,7 +9,7 @@ const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS } = shared;
+  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
@@ -1094,6 +1094,49 @@ function parseAgentOutput(stdout) {
 }
 
 /**
+ * Parse structured completion block from agent output.
+ * Agents produce a ```completion fenced block with key: value pairs.
+ * Returns parsed object or null if not found / malformed.
+ * If multiple blocks exist, the last one wins (agent may retry).
+ */
+function parseStructuredCompletion(stdout) {
+  if (!stdout || typeof stdout !== 'string') return null;
+
+  // Extract text from stream-json output if needed
+  let text = stdout;
+  if (stdout.includes('"type":')) {
+    try {
+      const parsed = shared.parseStreamJsonOutput(stdout);
+      if (parsed.text) text = parsed.text;
+    } catch {}
+  }
+
+  // Find all ```completion blocks, take the last one
+  const blockPattern = /```completion\s*\n([\s\S]*?)```/g;
+  let lastMatch = null;
+  let m;
+  while ((m = blockPattern.exec(text)) !== null) {
+    lastMatch = m[1];
+  }
+  if (!lastMatch) return null;
+
+  // Parse key: value pairs
+  const result = {};
+  const lines = lastMatch.trim().split('\n');
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 1) continue;
+    const key = line.slice(0, colonIdx).trim().toLowerCase();
+    const value = line.slice(colonIdx + 1).trim();
+    if (key && value) result[key] = value;
+  }
+
+  // Must have at least the status field to be valid
+  if (!result.status) return null;
+  return result;
+}
+
+/**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
  */
@@ -1183,6 +1226,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
+  // Try structured completion protocol first (```completion block from agent output)
+  const structuredCompletion = parseStructuredCompletion(stdout);
+  if (structuredCompletion) {
+    log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}`);
+  }
+
   // Save session for potential resume on next dispatch
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
@@ -1198,6 +1247,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   try {
     prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
   } catch (err) { log('warn', `PR sync from output: ${err.message}`); }
+
+  // Structured completion may report PR even when regex didn't find it
+  const scHasPr = structuredCompletion && structuredCompletion.pr && structuredCompletion.pr !== 'N/A';
+  if (scHasPr && prsCreatedCount === 0) {
+    log('info', `Structured completion reports PR (${structuredCompletion.pr}) but regex sync found none — PR may already be tracked`);
+  }
 
   // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
   const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
@@ -1417,7 +1472,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
-  return { resultSummary, taskUsage, autoRecovered };
+  return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
@@ -1463,6 +1518,67 @@ function syncPrdFromPrs(config) {
   }
 }
 
+// ─── Failure Classification ─────────────────────────────────────────────────
+
+/**
+ * Classify an agent failure into a FAILURE_CLASS value based on exit code and output.
+ * @param {number} code — process exit code
+ * @param {string} stdout — agent stdout
+ * @param {string} stderr — agent stderr
+ * @returns {string} — one of FAILURE_CLASS values
+ */
+function classifyFailure(code, stdout = '', stderr = '') {
+  const out = String(stdout || '').toLowerCase();
+  const err = String(stderr || '').toLowerCase();
+  const combined = out + '\n' + err;
+
+  // Exit code 78 — configuration error (Claude CLI not found, bad setup)
+  if (code === 78) return FAILURE_CLASS.CONFIG_ERROR;
+
+  // Permission / trust / auth failures
+  if (/permission denied|access denied|unauthorized|403 forbidden|trust.*blocked|auth.*fail/i.test(combined)) {
+    return FAILURE_CLASS.PERMISSION_BLOCKED;
+  }
+
+  // Merge conflicts
+  if (/merge conflict|conflict.*merge|automatic merge failed|fix conflicts/i.test(combined)) {
+    return FAILURE_CLASS.MERGE_CONFLICT;
+  }
+
+  // Context window / max turns exhausted
+  if (/context window|max.*turns.*reached|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+    return FAILURE_CLASS.OUT_OF_CONTEXT;
+  }
+
+  // Network / API errors
+  if (/rate limit|429|econnrefused|enotfound|etimedout|dns.*resolution|api.*error.*5\d\d|overloaded/i.test(combined)) {
+    return FAILURE_CLASS.NETWORK_ERROR;
+  }
+
+  // Build / test / lint failures
+  if (/build failed|compilation error|test.*fail|lint.*error|type.*error|error ts\d+|syntax error|npm err/i.test(combined)) {
+    return FAILURE_CLASS.BUILD_FAILURE;
+  }
+
+  // Spawn errors — process crashed immediately or couldn't start
+  if (/spawn.*error|enoent|cannot find module|cannot find.*binary/i.test(combined)) {
+    return FAILURE_CLASS.SPAWN_ERROR;
+  }
+
+  // Empty output — agent produced nothing useful
+  if (!stdout || stdout.trim().length < 50) {
+    return FAILURE_CLASS.EMPTY_OUTPUT;
+  }
+
+  // Timeout is classified by the caller (timeout.js), not by output pattern
+  // but check for timeout markers in output as fallback
+  if (/timed.?out|timeout|heartbeat.*expired/i.test(combined)) {
+    return FAILURE_CLASS.TIMEOUT;
+  }
+
+  return FAILURE_CLASS.UNKNOWN;
+}
+
 module.exports = {
   checkPlanCompletion,
   archivePlan,
@@ -1479,9 +1595,11 @@ module.exports = {
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,
+  parseStructuredCompletion,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,
   isItemCompleted,
+  classifyFailure,
 };
 

@@ -82,3 +82,18 @@ Include build/test status and run instructions in the PR description. If the pro
 ## When to Stop
 
 Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately.
+
+## Completion
+
+After finishing, output a structured completion block so the engine can parse your results:
+
+```completion
+status: done | partial | failed
+files_changed: <comma-separated list of key files changed>
+tests: pass | fail | skipped | N/A
+pr: PR-<number> or N/A
+failure_class: N/A
+pending: <any remaining work, or none>
+```
+
+Replace the values with your actual results. This block MUST appear in your final output.
