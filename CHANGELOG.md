@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.745 (2026-04-09)
+
+### Features
+-  CC multi-tab conversations with session resume
+
 ## 0.1.744 (2026-04-09)
 
 ### Features
