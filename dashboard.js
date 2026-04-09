@@ -464,8 +464,7 @@ setInterval(() => {
 const CC_SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-let ccInFlight = false;
-let ccInFlightSince = 0; // timestamp — auto-release stuck guard
+const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 
 // _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
@@ -3250,7 +3249,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-    ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
+    ccInFlightTabs.clear(); // Reset all in-flight guards
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     return jsonReply(res, 200, { ok: true });
   }
@@ -3275,13 +3274,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
 
-      // Concurrency guard — only one CC call at a time, with auto-release for stuck requests
-      if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
-        return jsonReply(res, 429, { error: 'Command Center is busy — wait for the current request to finish, or click "New Session" to reset.' });
+      // Per-tab concurrency guard
+      const tabId = body.tabId || 'default';
+      if (ccInFlightTabs.has(tabId)) {
+        return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
       }
-      if (ccInFlight) console.log('[CC] Auto-releasing stuck in-flight guard after timeout');
-      ccInFlight = true;
-      ccInFlightSince = Date.now();
+      ccInFlightTabs.add(tabId);
 
       try {
         if (body.sessionId && body.sessionId !== ccSession.sessionId) {
@@ -3309,10 +3307,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume });
       } finally {
-        ccInFlight = false;
-        ccInFlightSince = 0;
+        ccInFlightTabs.delete(tabId);
       }
-    } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { ccInFlightTabs.delete(tabId); return jsonReply(res, 500, { error: e.message }); }
   }
 
   async function handleCommandCenterStream(req, res) {
@@ -3320,17 +3317,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
-      if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
-        res.statusCode = 429; res.end('CC busy'); return;
+      const tabId = body.tabId || 'default';
+      if (ccInFlightTabs.has(tabId)) {
+        res.statusCode = 429; res.end('This tab is already processing'); return;
       }
-      if (ccInFlight) console.log('[CC-stream] Auto-releasing stuck guard');
-      ccInFlight = true;
-      ccInFlightSince = Date.now();
+      ccInFlightTabs.add(tabId);
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;
       // Kill LLM process immediately if client disconnects mid-stream
-      req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; if (_ccStreamAbort) _ccStreamAbort(); });
+      req.on('close', () => { ccInFlightTabs.delete(tabId); if (_ccStreamAbort) _ccStreamAbort(); });
 
       try {
         // Session management — per-tab: use sessionId from request if provided
@@ -3417,12 +3413,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId, newSession: !wasResume }) + '\n\n');
         res.end();
       } finally {
-        ccInFlight = false;
-        ccInFlightSince = 0;
+        ccInFlightTabs.delete(tabId);
       }
     } catch (e) {
-      ccInFlight = false;
-      ccInFlightSince = 0;
+      ccInFlightTabs.delete(tabId);
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
       try { res.end(); } catch {}
     }

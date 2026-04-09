@@ -8,9 +8,9 @@ var CC_TITLE_MAX_LENGTH = 40;
 var _ccTabs = [];         // [{id, title, sessionId, messages: [{role, html}]}]
 var _ccActiveTabId = null;
 var _ccOpen = false;
-var _ccSending = false;
-var _ccQueue = [];
-var _ccAbortController = null;
+// Per-tab sending state stored on tab objects: tab._sending, tab._queue, tab._abortController
+// Legacy globals for backward compat (badge, drawer close check)
+var _ccSending = false; // true if active tab is sending (UI indicator only)
 // Clear stale sending state on page load — SSE streams don't survive refresh
 try { localStorage.removeItem('cc-sending'); } catch {}
 
@@ -72,9 +72,10 @@ function _ccFindPinTarget(query) {
 }
 
 function ccAbort() {
-  if (_ccAbortController) {
-    _ccAbortController.abort();
-    _ccAbortController = null;
+  var tab = _ccActiveTab();
+  if (tab && tab._abortController) {
+    tab._abortController.abort();
+    tab._abortController = null;
   }
 }
 
@@ -114,11 +115,6 @@ function ccNewTab(skipServerReset) {
   _ccTabs.push(tab);
   _ccActiveTabId = tabId;
   // New tab starts with null sessionId — server creates fresh session on first message
-  // Abort any in-flight request
-  ccAbort();
-  _ccSending = false;
-  _ccQueue = [];
-  try { localStorage.removeItem('cc-sending'); } catch {}
   document.getElementById('cc-messages').innerHTML = '';
   ccRenderTabBar();
   ccUpdateSessionIndicator();
@@ -149,13 +145,13 @@ function ccSwitchTab(id) {
 function ccCloseTab(id) {
   var idx = _ccTabs.findIndex(function(t) { return t.id === id; });
   if (idx === -1) return;
-  // If tab has active request, confirm before closing
-  if (_ccSending && _ccActiveTabId === id) {
+  var closingTab = _ccTabs.find(function(t) { return t.id === id; });
+  if (closingTab && closingTab._sending) {
     if (!confirm('This tab has an active request. Close anyway?')) return;
-    ccAbort();
-    _ccSending = false;
-    _ccQueue = [];
-    try { localStorage.removeItem('cc-sending'); } catch {}
+    if (closingTab._abortController) { closingTab._abortController.abort(); closingTab._abortController = null; }
+    closingTab._sending = false;
+    closingTab._queue = [];
+    _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
   }
   _ccTabs.splice(idx, 1);
   if (_ccActiveTabId === id) {
@@ -328,23 +324,26 @@ async function ccSend() {
   if (!message) return;
   input.value = '';
 
-  // If already processing, queue the message
-  if (_ccSending) {
-    _ccQueue.push(message);
+  var tab = _ccActiveTab();
+  if (!tab) return;
+  if (!tab._queue) tab._queue = [];
+
+  // If this tab is already processing, queue the message
+  if (tab._sending) {
+    tab._queue.push(message);
     _renderQueueIndicator();
     return;
   }
   var wasAborted = await _ccDoSend(message);
 
-  // Drain queue — send each queued message in order
-  while (_ccQueue.length > 0) {
-    // After abort, pause to let server release ccInFlight guard before next send
+  // Drain this tab's queue — send each queued message in order
+  while (tab._queue && tab._queue.length > 0) {
     if (wasAborted) {
-      _ccSending = true; // keep sending flag true so new messages queue instead of bypassing
+      tab._sending = true;
       await new Promise(function(r) { setTimeout(r, 500); });
-      _ccSending = false;
+      tab._sending = false;
     }
-    var next = _ccQueue.shift();
+    var next = tab._queue.shift();
     _renderQueueIndicator();
     wasAborted = await _ccDoSend(next);
   }
@@ -387,8 +386,12 @@ async function _ccDoSend(message, skipUserMsg) {
     return;
   }
 
-  _ccSending = true;
-  _ccAbortController = new AbortController();
+  var activeTab = _ccActiveTab();
+  var activeTabId = _ccActiveTabId;
+  if (!activeTab) return;
+  activeTab._sending = true;
+  activeTab._abortController = new AbortController();
+  _ccSending = true; // UI indicator
   var _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
@@ -461,7 +464,7 @@ async function _ccDoSend(message, skipUserMsg) {
     var res = await fetch('/api/command-center/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: message, tabId: activeTabId, sessionId: activeTab.sessionId || null }),
-      signal: _ccAbortController ? _ccAbortController.signal : AbortSignal.timeout(960000)
+      signal: activeTab._abortController ? activeTab._abortController.signal : AbortSignal.timeout(960000)
     });
 
     if (!res.ok) {
@@ -574,8 +577,8 @@ async function _ccDoSend(message, skipUserMsg) {
         ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
-    _ccSending = false;
-    _ccAbortController = null;
+    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; }
+    _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
     // Show notification badge on CC button if drawer is closed

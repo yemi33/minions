@@ -10251,28 +10251,20 @@ async function testDashboardResilience() {
 
   // ── CC New Session full reset ──
 
-  await test('ccNewSession aborts in-flight request', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('ccAbort()'),
-      'ccNewSession must call ccAbort() to abort in-flight requests');
+  await test('ccNewSession delegates to ccNewTab (multi-tab)', () => {
+    assert.ok(ccSrc.includes('function ccNewSession') && ccSrc.includes('ccNewTab'),
+      'ccNewSession should delegate to ccNewTab for multi-tab support');
   });
 
-  await test('ccNewSession resets _ccSending flag', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('_ccSending = false'),
-      'ccNewSession must reset _ccSending to prevent queuing');
+  await test('per-tab sending state: tab._sending and tab._abortController', () => {
+    assert.ok(ccSrc.includes('activeTab._sending = true') && ccSrc.includes('activeTab._abortController'),
+      'Sending state should be per-tab, not global');
   });
 
-  await test('ccNewSession clears queue', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('_ccQueue = []'),
-      'ccNewSession must clear the message queue');
-  });
-
-  await test('ccNewSession clears localStorage sending state', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes("localStorage.removeItem('cc-sending')"),
-      'ccNewSession must clear cc-sending from localStorage');
+  await test('ccCloseTab only aborts the closing tab, not all tabs', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccCloseTab'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('function ccCloseTab') + 1));
+    assert.ok(fn.includes('closingTab._sending') && fn.includes('closingTab._abortController'),
+      'Should check and abort only the closing tab');
   });
 
   await test('CC clears stale sending state on page load', () => {
@@ -10298,10 +10290,10 @@ async function testDashboardResilience() {
       'ccSend must pause after abort to let server release ccInFlight before sending queued message');
   });
 
-  await test('ccSend sets _ccSending during abort delay to prevent queue bypass', () => {
+  await test('ccSend uses per-tab queue for message queuing', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('_ccSending = true') && fn.includes('setTimeout') && fn.includes('_ccSending = false'),
-      'ccSend must hold _ccSending true during abort delay so new messages queue instead of bypassing');
+    assert.ok(fn.includes('tab._sending') && fn.includes('tab._queue'),
+      'ccSend must use per-tab sending state and queue');
   });
 
   await test('ccSend drain loop checks wasAborted on each iteration', () => {
@@ -10318,9 +10310,9 @@ async function testDashboardResilience() {
 
   // ── CC server-side reset on new session ──
 
-  await test('server-side handleCommandCenterNewSession resets ccInFlight', () => {
-    assert.ok(dashSrc.includes('ccInFlight = false') && dashSrc.includes('handleCommandCenterNewSession'),
-      'handleCommandCenterNewSession must reset ccInFlight guard');
+  await test('server-side per-tab concurrency guard', () => {
+    assert.ok(dashSrc.includes('ccInFlightTabs'),
+      'Should use per-tab in-flight tracking for parallel CC requests');
   });
 
   // ── Live stream steering resilience ──
