@@ -453,35 +453,53 @@ function _renderPlanModal(normalizedFile, raw, lastMod) {
   const canExecute = isMdPlan && !hasActiveWork && !prdCompleted;
   const modalExecuteBtn = canExecute && !hasPrd ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
     'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button>' : '';
-  const modalReExecuteBtn = canExecute && linkedPrdAwaiting ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green);font-weight:600" ' +
-    'onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Re-execute</button>' : '';
-  const modalCompletedLabel = prdCompleted && !hasActiveWork ? '<span style="font-size:10px;color:var(--green);font-weight:600">Completed</span>' : '';
-  const modalAwaitingLabel = linkedPrdAwaiting && !hasActiveWork && !prdCompleted ? '<span style="font-size:10px;color:var(--yellow);font-weight:600">Awaiting Approval</span>' : '';
-  const modalInProgressLabel = hasActiveWork ? '<span style="font-size:10px;color:var(--blue)">In Progress</span>' : '';
-  const isModalCompleted = planStatus === 'completed';
-  const modalPauseBtn = isActive && !isMdPlan && !isModalCompleted ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--yellow)" ' +
-    'onclick="planPause(\'' + escHtml(normalizedFile) + '\',this)">Pause</button>' : '';
-  const modalApproveTarget = linkedPrdAwaiting ? linkedPrd.file : normalizedFile;
-  const isActuallyPaused = planStatus === 'paused' || linkedPrd?.status === 'paused';
-  const modalApproveLabel = isActuallyPaused ? 'Resume' : 'Approve';
-  const showRejectInModal = linkedPrdAwaiting || planStatus === 'awaiting-approval';
-  const modalApproveBtn = modalShowResume ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
-    'onclick="planApprove(\'' + escHtml(modalApproveTarget) + '\',this)">' + modalApproveLabel + '</button>' : '';
-  const modalRejectBtn = showRejectInModal ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
-    'onclick="planReject(\'' + escHtml(modalApproveTarget) + '\')">Reject</button>' : '';
-  const modalVerifyWi = (window._lastWorkItems || []).find(w => w.itemType === 'verify' && w.sourcePlan === normalizedFile);
-  const modalVerifyBtn = isModalCompleted && !modalVerifyWi ? '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--green)" ' +
-    'onclick="triggerVerify(\'' + escHtml(normalizedFile) + '\',this)">Verify</button>' : '';
-  const modalVerifyInfo = modalVerifyWi ? _renderVerifyBadge(modalVerifyWi) : '';
-  const modalArchiveBtn = '<button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--muted)" ' +
-    'onclick="planArchive(\'' + escHtml(normalizedFile) + '\')">Archive</button>';
+  // Modal buttons mirror card logic — derive effectiveStatus the same way
+  const allPlans = window._lastStatus?.plans || [];
+  const cardPlan = allPlans.find(p => p.file === normalizedFile || p.sourcePlan === normalizedFile || (p.file?.endsWith('.json') && p.file === normalizedFile));
+  // Also check for linked PRD by searching all plans for a PRD whose source_plan matches this file
+  const linkedPrd = allPlans.find(p => p.sourcePlan === normalizedFile && p.format === 'prd');
+  const effectiveStatus = cardPlan ? derivePlanStatus(cardPlan) : (linkedPrd ? derivePlanStatus(linkedPrd) : (planStatus || 'active'));
+  const prdFile = cardPlan?.file?.endsWith('.json') ? cardPlan.file : (linkedPrd?.file || '');
+  const isArchived = !!(cardPlan?.archived || linkedPrd?.archived);
+  const isDraft = isMdPlan && !prdFile;
+  const isNeedsAction = (effectiveStatus === 'awaiting-approval' || effectiveStatus === 'paused') && !isArchived;
+
+  const bs = 'font-size:10px;padding:2px 10px'; // button style
+  let modalActions = '';
+
+  // Approve/Reject for awaiting-approval or paused
+  if (isNeedsAction) {
+    const target = prdFile || normalizedFile;
+    const label = effectiveStatus === 'paused' ? 'Resume' : 'Approve';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="planApprove(\'' + escHtml(target) + '\',this)">' + label + '</button> ';
+    // Re-execute: re-generate PRD from updated plan (only for .md drafts with existing PRD)
+    if (effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile && canExecute) {
+      modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);opacity:0.7" onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Re-execute</button> ';
+    }
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planReject(\'' + escHtml(target) + '\')">Reject</button> ';
+  }
+  // Execute (draft .md without PRD)
+  if (isDraft && (effectiveStatus === 'active' || effectiveStatus === 'draft') && !isArchived) {
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green);font-weight:600" onclick="planExecute(\'' + escHtml(normalizedFile) + '\',\'\',this)">Execute</button> ';
+  }
+  // Pause (active PRD, not completed)
+  if (effectiveStatus === 'dispatched' && prdFile && !isArchived) {
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--yellow)" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button> ';
+  }
+  // Verify / Verified badge
+  const modalVerifyWi = (window._lastWorkItems || []).find(w => w.itemType === 'verify' && w.sourcePlan === (prdFile || normalizedFile));
+  if (effectiveStatus === 'completed' && prdFile && !isArchived && !modalVerifyWi) {
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--green)" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button> ';
+  }
+  if (modalVerifyWi) modalActions += _renderVerifyBadge(modalVerifyWi);
+  // Archive + Delete (always, unless archived)
+  if (!isArchived) {
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--muted)" onclick="planArchive(\'' + escHtml(prdFile || normalizedFile) + '\')">Archive</button> ';
+    modalActions += '<button class="pr-pager-btn" style="' + bs + ';color:var(--red)" onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>';
+  }
+
   const lastModLabel = lastMod ? '<div style="font-size:10px;color:var(--muted);font-weight:400;margin-top:2px">Last updated: ' + new Date(lastMod).toLocaleString() + '</div>' : '';
-  const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
-    (modalCompletedLabel || '') + (modalAwaitingLabel || '') + (modalInProgressLabel || '') + (modalApproveBtn || '') + (modalReExecuteBtn || '') + (modalExecuteBtn || '') + (modalPauseBtn || '') + (modalRejectBtn || '') + (modalVerifyBtn || '') + (modalVerifyInfo || '') +
-    ' ' + modalArchiveBtn +
-    ' <button class="pr-pager-btn" style="font-size:10px;padding:2px 10px;color:var(--red)" ' +
-    'onclick="planDelete(\'' + escHtml(normalizedFile) + '\')">Delete</button>' +
-  '</div>';
+  const actionBtns = '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' + modalActions + '</div>';
 
   document.getElementById('modal-title').innerHTML = escHtml(title) + (versionLabel ? ' <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:3px;background:rgba(56,139,253,0.15);color:var(--blue)">' + escHtml(versionLabel) + '</span>' : '') + lastModLabel + actionBtns;
   const modalBody = document.getElementById('modal-body');
