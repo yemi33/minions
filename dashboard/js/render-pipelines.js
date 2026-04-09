@@ -274,15 +274,7 @@ function renderPipelines(pipelines) {
     const statusLabel = activeRun ? 'Running' : lastRun ? (lastRun.status === 'completed' ? 'Completed' : lastRun.status === 'failed' ? 'Failed' : lastRun.status === 'stopped' ? 'Stopped' : lastRun.status) : 'Never run';
     const trigger = p.trigger?.cron ? _cronToHuman(p.trigger.cron) : 'Manual';
 
-    // Stage flow visualization
-    var stageFlow = (p.stages || []).map(function(s) {
-      var icon = { task: '\u2699', meeting: '\uD83D\uDCAC', plan: '\uD83D\uDCCB', 'merge-prs': '\uD83D\uDD00', api: '\uD83C\uDF10', wait: '\u23F8', parallel: '\u2693', schedule: '\u23F0', condition: '\u2753' }[s.type] || '\u2022';
-      var stageStatus = activeRun?.stages?.[s.id]?.status || 'pending';
-      var color = stageStatus === 'completed' ? 'var(--green)' : stageStatus === 'running' ? 'var(--blue)' : stageStatus === 'failed' ? 'var(--red)' : stageStatus === 'waiting-human' ? 'var(--yellow)' : 'var(--muted)';
-      return '<span style="color:' + color + ';font-size:11px" title="' + escHtml(s.id) + ': ' + escHtml(s.title || s.type) + ' (' + stageStatus + ')">' + icon + ' ' + escHtml(s.id) + '</span>';
-    }).join(' <span style="color:var(--border)">\u2192</span> ');
-
-    // Build step-progress indicator for pipelines with a run
+    // Build node chain (renders for all pipelines, even never-run)
     var progressHtml = '';
     var displayRun = activeRun || lastRun;
     if ((p.stages || []).length > 0) {
