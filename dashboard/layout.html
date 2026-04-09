@@ -108,9 +108,15 @@
     </div>
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-qa" id="modal-qa" style="display:none">
-      <div style="display:flex;align-items:center;justify-content:space-between;min-height:0">
-        <div class="modal-qa-thread" id="modal-qa-thread" style="flex:1"></div>
-        <button id="qa-clear-btn" style="display:none;background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px;white-space:nowrap;align-self:flex-start" onclick="clearQaConversation()" title="Clear conversation">Clear chat</button>
+      <div id="modal-qa-thread-wrap" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <button id="qa-clear-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="clearQaConversation()" title="Clear conversation">Clear</button>
+          <button id="qa-toggle-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()" title="Collapse thread">&#x25BC; Collapse</button>
+        </div>
+        <div class="modal-qa-thread" id="modal-qa-thread"></div>
+      </div>
+      <div id="qa-expand-bar" style="display:none;margin-bottom:4px">
+        <button style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()">&#x25B2; Show thread</button>
       </div>
       <div class="modal-qa-selection-pill" id="modal-qa-pill" style="display:none">
         <span class="pill-label">Selection:</span>
@@ -118,7 +124,7 @@
         <button class="pill-clear" onclick="clearQaSelection()" title="Clear selection">&times;</button>
       </div>
       <div class="modal-qa-input-wrap">
-        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document..." onkeydown="if(event.key==='Enter')modalSend()">
+        <input type="text" class="modal-qa-input" id="modal-qa-input" placeholder="Ask about this document (or select text first)..." onkeydown="if(event.key==='Enter')modalSend()">
         <button class="modal-qa-btn" id="modal-send-btn" onclick="modalSend()">Send</button>
       </div>
     </div>
