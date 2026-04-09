@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.645 (2026-04-09)
+
+### Features
+-  pipeline plan stage reconciliation and UX fixes
+-  track notes, plans, and PRDs as work item artifacts
+
+### Fixes
+-  use startsWith for inbox note matching to prevent false matches
+
 ## 0.1.642 (2026-04-09)
 
 ### Features
