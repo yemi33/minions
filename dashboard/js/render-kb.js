@@ -33,8 +33,6 @@ function renderKnowledgeBase() {
   const listEl = document.getElementById('kb-list');
   const countEl = document.getElementById('kb-count');
 
-  invalidatePinsCache();
-
   // Single pass: flatten all KB items and count pinned
   const allItems = [];
   let pinnedCount = 0;

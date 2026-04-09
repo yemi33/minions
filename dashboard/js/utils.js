@@ -9,12 +9,9 @@ function markDeleted(key) { _deletedIds.set(key, Date.now() + 10000); } // suppr
 function isDeleted(key) { const exp = _deletedIds.get(key); if (!exp) return false; if (Date.now() > exp) { _deletedIds.delete(key); return false; } return true; }
 
 // Pin-to-top — persisted server-side so CC and agents can also pin items
-let _pinsCache = null;
-function invalidatePinsCache() { _pinsCache = null; }
+let _pinsCache = [];
+function invalidatePinsCache() { /* no-op — cache updated by sync and togglePin only */ }
 function getPinnedItems() {
-  if (_pinsCache) return _pinsCache;
-  // Migrate from localStorage if server hasn't been seeded yet
-  try { _pinsCache = JSON.parse(localStorage.getItem('minions-pinned-items') || '[]'); } catch { _pinsCache = []; }
   return _pinsCache;
 }
 function isPinned(key) { return getPinnedItems().includes(key); }
