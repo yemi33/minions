@@ -18,6 +18,9 @@ function engine() {
   return _engine;
 }
 
+let _dispatchModule = null;
+function dispatchModule() { if (!_dispatchModule) _dispatchModule = require('./dispatch'); return _dispatchModule; }
+
 function handleCommand(cmd, args) {
   if (!cmd) {
     commands.start();
@@ -932,8 +935,9 @@ const commands = {
 
       console.log(`Killed dispatch: ${item.id} (${item.agent}) — work item reset to pending`);
     }
-    dispatch.active = [];
-    safeWrite(DISPATCH_PATH, dispatch);
+    // Clear active dispatches atomically under file lock (avoids race with engine tick writes)
+    const { mutateDispatch } = dispatchModule();
+    mutateDispatch(d => { d.active = []; return d; });
 
     // Agent status derived from dispatch.json — clearing dispatch.active is sufficient.
     console.log('All agents reset to idle (dispatch cleared)');
