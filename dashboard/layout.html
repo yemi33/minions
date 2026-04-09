@@ -98,6 +98,7 @@
     <div class="modal-header">
       <h3 id="modal-title">—</h3>
       <div class="modal-header-actions">
+        <button class="modal-copy" id="modal-back-btn" onclick="modalGoBack()" title="Back" style="display:none">&larr; Back</button>
         <button class="modal-copy" id="modal-edit-btn" onclick="modalToggleEdit()" title="Edit" style="display:none"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zM12.9 2.97L4.288 11.58l-.537 1.878 1.878-.537L14.242 4.31 12.9 2.97z"/></svg> Edit</button>
         <button class="modal-copy" id="modal-save-btn" onclick="modalSaveEdit()" title="Save" style="display:none;color:var(--green);border-color:var(--green)"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save</button>
         <button class="modal-copy" id="modal-cancel-edit-btn" onclick="modalCancelEdit()" title="Cancel edit" style="display:none">Cancel</button>

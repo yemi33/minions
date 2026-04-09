@@ -35,6 +35,25 @@ function _togglePinAndRefresh(key, source) {
   else if (source === 'kb') renderKnowledgeBase();
 }
 
+// Modal navigation stack — enables back button when opening a modal from another modal
+var _modalBackStack = [];
+function pushModalBack(reopenFn) {
+  _modalBackStack.push(reopenFn);
+  var btn = document.getElementById('modal-back-btn');
+  if (btn) btn.style.display = '';
+}
+function modalGoBack() {
+  var fn = _modalBackStack.pop();
+  var btn = document.getElementById('modal-back-btn');
+  if (btn && _modalBackStack.length === 0) btn.style.display = 'none';
+  if (fn) fn();
+}
+function clearModalBackStack() {
+  _modalBackStack = [];
+  var btn = document.getElementById('modal-back-btn');
+  if (btn) btn.style.display = 'none';
+}
+
 function updateModalPinBtn() {
   var btn = document.getElementById('modal-pin-btn');
   if (!btn) return;
