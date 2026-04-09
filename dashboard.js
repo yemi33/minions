@@ -3883,7 +3883,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     { method: 'POST', path: '/api/plans/create', desc: 'Create a plan from user-provided content', params: 'title, content, project?', handler: async (req, res) => {
       const body = await readBody(req);
-      const { title, content, project: projectName } = body;
+      const { title, content, project: projectName, meetingId } = body;
       if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
 
       const plansDir = path.join(MINIONS_DIR, 'plans');
@@ -3895,6 +3895,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       const header = `# ${title}\n\n` +
         (projectName ? `**Project:** ${projectName}\n` : '') +
+        (meetingId ? `**Source Meeting:** ${meetingId}\n` : '') +
         `**Created:** ${date}\n**By:** human teammate\n\n---\n\n`;
       safeWrite(filePath, header + content);
 
@@ -3935,6 +3936,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)$/, desc: 'Get detailed agent info', handler: handleAgentDetail },
+    { method: 'GET', path: '/api/agent-output', desc: 'Read agent output log file', params: 'file', handler: async (req, res) => {
+      const file = new URL(req.url, 'http://localhost').searchParams.get('file');
+      if (!file || file.includes('..') || file.includes('\0') || !file.startsWith('agents/')) return jsonReply(res, 400, { error: 'invalid file' });
+      const content = safeRead(path.join(MINIONS_DIR, file));
+      if (content === null) return jsonReply(res, 404, { error: 'not found' });
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.end(content);
+    } },
 
     // Knowledge base
     { method: 'GET', path: '/api/knowledge', desc: 'List all knowledge base entries grouped by category', handler: handleKnowledgeList },
@@ -4062,8 +4072,25 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const run = getActiveRun(body.id);
       if (!run) return jsonReply(res, 404, { error: 'No active run to abort' });
       completeRun(body.id, run.runId, 'failed');
+      // Cancel pending/active work items and dispatches spawned by this run
+      let cancelled = 0;
+      const wiPaths = [path.join(MINIONS_DIR, 'work-items.json'), ...PROJECTS.map(p => shared.projectWorkItemsPath(p))];
+      for (const wiPath of wiPaths) {
+        try {
+          mutateWorkItems(wiPath, items => {
+            for (const w of items) {
+              if (w._pipelineRun === run.runId && w.status !== shared.WI_STATUS.DONE && w.status !== shared.WI_STATUS.CANCELLED) {
+                w.status = shared.WI_STATUS.CANCELLED;
+                w._cancelledBy = 'pipeline-abort';
+                cancelled++;
+              }
+            }
+          });
+        } catch {}
+      }
+      const dispatchCleaned = cleanDispatchEntries(d => d.meta?.item?._pipelineRun === run.runId);
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, runId: run.runId });
+      return jsonReply(res, 200, { ok: true, runId: run.runId, cancelledWorkItems: cancelled, cancelledDispatches: dispatchCleaned });
     }},
     { method: 'POST', path: '/api/pipelines/retrigger', desc: 'Abort active run (if any) and start a new one', params: 'id', handler: async (req, res) => {
       const body = await readBody(req);

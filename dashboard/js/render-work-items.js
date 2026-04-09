@@ -444,6 +444,16 @@ function openWorkItemDetail(id) {
   if (item.references?.length) html += field('References', item.references.map(r => '<a href="' + escHtml(r.url) + '" target="_blank" style="color:var(--blue)">' + escHtml(r.title || r.url) + '</a>' + (r.type ? ' <span style="color:var(--muted);font-size:10px">(' + escHtml(r.type) + ')</span>' : '')).join('<br>'));
   if (item._humanFeedback) html += field('Human Feedback', (item._humanFeedback.rating === 'up' ? '👍' : '👎') + (item._humanFeedback.comment ? ' — ' + escHtml(item._humanFeedback.comment) : ''));
   if (item._pr) html += field('Pull Request', '<a href="' + escHtml(item._prUrl || '#') + '" target="_blank" style="color:var(--blue)">' + escHtml(item._pr) + '</a>');
+
+  // Artifacts — output log, branch, skills, etc.
+  var arts = item._artifacts || {};
+  var artPills = '';
+  var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
+  if (arts.outputLog) artPills += '<span onclick="viewAgentOutput(\'' + escHtml(arts.outputLog) + '\')" style="' + pillStyle + '">📄 Output Log</span> ';
+  if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
+  if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
+  if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
+
   if (item._totalCostUsd != null) html += field('Cumulative Cost', '$' + Number(item._totalCostUsd).toFixed(4));
   if (item._totalInputTokens) html += field('Total Input Tokens', Number(item._totalInputTokens).toLocaleString());
   if (item._totalOutputTokens) html += field('Total Output Tokens', Number(item._totalOutputTokens).toLocaleString());
@@ -466,4 +476,20 @@ function openAllWorkItems() {
   document.getElementById('modal').classList.add('open');
 }
 
-window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems };
+function viewAgentOutput(logPath) {
+  document.getElementById('modal-title').textContent = 'Agent Output';
+  document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
+  document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
+  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal').classList.add('open');
+  fetch('/api/agent-output?file=' + encodeURIComponent(logPath))
+    .then(function(r) { return r.text(); })
+    .then(function(content) {
+      document.getElementById('modal-body').textContent = content;
+    })
+    .catch(function() {
+      document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to load output.</p>';
+    });
+}
+
+window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput };

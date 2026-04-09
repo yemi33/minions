@@ -786,6 +786,27 @@ async function spawnAgent(dispatchItem, config) {
 
     log('info', `Agent ${agentId} completed. Output saved to ${archivePath}`);
 
+    // Track artifacts on the work item for dashboard display
+    if (dispatchItem.meta?.item?.id) {
+      try {
+        const artWiPath = resolveWorkItemPath(dispatchItem.meta);
+        if (artWiPath) {
+          mutateJsonFileLocked(artWiPath, data => {
+            if (!Array.isArray(data)) return data;
+            const wi = data.find(i => i.id === dispatchItem.meta.item.id);
+            if (!wi) return data;
+            const arts = wi._artifacts || {};
+            arts.outputLog = `agents/${agentId}/output-${id}.log`;
+            if (dispatchItem.meta.branch) arts.branch = dispatchItem.meta.branch;
+            if (wi._pr) arts.pr = wi._pr;
+            if (wi._prUrl) arts.prUrl = wi._prUrl;
+            wi._artifacts = arts;
+            return data;
+          });
+        }
+      } catch (err) { log('warn', `Artifact tracking: ${err.message}`); }
+    }
+
     // Clean up temp agent directory
     if (tempAgents.has(agentId)) {
       tempAgents.delete(agentId);
