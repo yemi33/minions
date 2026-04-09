@@ -372,9 +372,11 @@ async function _abortPipeline(id, btn) {
   try {
     var res = await fetch('/api/pipelines/abort', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
     if (res.ok) {
-      showToast('cmd-toast', 'Pipeline run aborted', true);
+      var d = await res.json().catch(function() { return {}; });
+      showToast('cmd-toast', 'Pipeline aborted — ' + (d.cancelledWorkItems || 0) + ' work items cancelled', true);
       if (btn) { btn.textContent = '\u2713 Aborted'; btn.style.color = 'var(--red)'; }
-      setTimeout(function() { openPipelineDetail(id); }, 1500);
+      refresh();
+      openPipelineDetail(id);
     } else { var d = await res.json().catch(function() { return {}; }); alert('Abort failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
   } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
