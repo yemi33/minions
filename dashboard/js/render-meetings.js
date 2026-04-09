@@ -197,7 +197,7 @@ function _renderMeetingDetail(m) {
 
       // Wire up doc-chat Q&A panel for the meeting transcript
       const transcript = (m.transcript || []).map(t =>
-        '### ' + t.agent + ' (' + t.type + ', Round ' + t.round + ')\n\n' + (t.content || '')
+        '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '')
       ).join('\n\n---\n\n');
       const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
       _modalDocContext = { title: 'Meeting: ' + m.title, content: meetingDoc, selection: '' };
@@ -418,7 +418,7 @@ async function _createPlanFromMeeting(id, btn) {
 
     // Use doc-chat to generate a structured plan from the meeting
     const transcript = (m.transcript || []).map(function(t) {
-      return '### ' + t.agent + ' (' + t.type + ', Round ' + t.round + ')\n\n' + (t.content || '');
+      return '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '');
     }).join('\n\n---\n\n');
     const meetingDoc = '# Meeting: ' + m.title + '\n\n**Agenda:** ' + m.agenda + '\n\n' + transcript;
 

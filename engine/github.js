@@ -537,8 +537,8 @@ async function reconcilePrs(config) {
     if (ghPrs.length === 0) continue;
 
     const prPath = projectPrPath(project);
-    const existingPrs = safeJson(prPath) || [];
-    const existingIds = new Set(existingPrs.map(p => p.id));
+    const currentPrs = safeJson(prPath) || [];
+    const existingIds = new Set(currentPrs.map(p => p.id));
     let projectAdded = 0;
 
     // Load work items to match branches
@@ -559,7 +559,7 @@ async function reconcilePrs(config) {
       if (existingIds.has(prId)) {
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = existingPrs.find(p => p.id === prId);
+          const existing = currentPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -573,7 +573,7 @@ async function reconcilePrs(config) {
 
       const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
 
-      existingPrs.push({
+      currentPrs.push({
         id: prId,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
@@ -594,7 +594,7 @@ async function reconcilePrs(config) {
     // Backfill prdItems from pr-links for any PR with empty array
     const prLinks = getPrLinks();
     let backfilled = 0;
-    for (const pr of existingPrs) {
+    for (const pr of currentPrs) {
       const linked = prLinks[pr.id];
       if (linked && !(pr.prdItems || []).includes(linked)) {
         pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
@@ -604,13 +604,13 @@ async function reconcilePrs(config) {
     }
 
     if (projectAdded > 0 || backfilled > 0) {
-      mutateJsonFileLocked(prPath, (currentPrs) => {
-        for (const pr of existingPrs) {
-          const idx = currentPrs.findIndex(p => p.id === pr.id);
-          if (idx >= 0) currentPrs[idx] = pr;
-          else currentPrs.push(pr);
+      mutateJsonFileLocked(prPath, (lockedPrs) => {
+        for (const pr of currentPrs) {
+          const idx = lockedPrs.findIndex(p => p.id === pr.id);
+          if (idx >= 0) lockedPrs[idx] = pr;
+          else lockedPrs.push(pr);
         }
-        return currentPrs;
+        return lockedPrs;
       }, { defaultValue: [] });
       totalAdded += projectAdded;
     }

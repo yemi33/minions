@@ -603,21 +603,21 @@ function isStageComplete(stage, stageState, run, config) {
       const plans = artifacts.plans || [];
       const discoveredPrds = [];
       const discoveredWiIds = [];
+      const prdFiles = fs.existsSync(prdDir) ? safeReadDir(prdDir).filter(f => f.endsWith('.json')) : [];
       for (const planFile of plans) {
-        const prdFiles = fs.existsSync(prdDir) ? safeReadDir(prdDir).filter(f => f.endsWith('.json')) : [];
         for (const pf of prdFiles) {
           const prd = safeJson(path.join(prdDir, pf));
           if (prd?.source_plan === planFile && !(artifacts.prds || []).includes(pf) && !discoveredPrds.includes(pf)) {
             discoveredPrds.push(pf);
           }
         }
-        const allPrds = [...(artifacts.prds || []), ...discoveredPrds];
-        for (const prdFile of allPrds) {
-          const prdItems = all.filter(w => w.sourcePlan === prdFile && w.type !== WORK_TYPE.PLAN_TO_PRD);
-          for (const wi of prdItems) {
-            if (!(artifacts.workItems || []).includes(wi.id) && !discoveredWiIds.includes(wi.id)) {
-              discoveredWiIds.push(wi.id);
-            }
+      }
+      const allPrds = [...(artifacts.prds || []), ...discoveredPrds];
+      for (const prdFile of allPrds) {
+        const prdItems = all.filter(w => w.sourcePlan === prdFile && w.type !== WORK_TYPE.PLAN_TO_PRD);
+        for (const wi of prdItems) {
+          if (!(artifacts.workItems || []).includes(wi.id) && !discoveredWiIds.includes(wi.id)) {
+            discoveredWiIds.push(wi.id);
           }
         }
       }
