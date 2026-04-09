@@ -1,0 +1,42 @@
+{
+  "id": "pr-review-fix-cycle",
+  "title": "PR Review & Fix Cycle",
+  "description": "Visualizes the default engine flow: review a PR, fix issues if rejected, re-review until approved and build passes.",
+  "trigger": { "manual": true },
+  "stages": [
+    {
+      "id": "review-pr",
+      "type": "task",
+      "taskType": "review",
+      "title": "Review PR",
+      "description": "Review the target PR for correctness, quality, and completeness. Provide actionable feedback if changes are needed."
+    },
+    {
+      "id": "check-review-status",
+      "type": "condition",
+      "title": "Approved?",
+      "check": "allBuildsGreen",
+      "action": "stop",
+      "onMet": "Merge",
+      "onUnmet": "Fix",
+      "dependsOn": ["review-pr"]
+    },
+    {
+      "id": "fix-feedback",
+      "type": "task",
+      "taskType": "fix",
+      "title": "Fix review feedback",
+      "description": "Address all review comments and push fixes to the PR branch.",
+      "dependsOn": ["check-review-status"]
+    },
+    {
+      "id": "re-review",
+      "type": "task",
+      "taskType": "review",
+      "title": "Re-review after fix",
+      "description": "Re-review the PR after fixes have been applied. Verify all prior feedback was addressed.",
+      "dependsOn": ["fix-feedback"]
+    }
+  ],
+  "stopWhen": "allBuildsGreen"
+}
