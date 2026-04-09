@@ -305,7 +305,7 @@ function _findExistingPlanForMeeting(meetingIds, plansDir) {
     if (mtg?.title) {
       // Dashboard convention: "Meeting follow-up: {title}" → slug
       const dashSlug = ('meeting-follow-up-' + mtg.title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
-      slugPrefixes.push(dashSlug.slice(0, 30));
+      slugPrefixes.push(dashSlug);
     }
   }
   let slugMatch = null;
