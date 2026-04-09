@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.744 (2026-04-09)
+
+### Features
+- add prNumber field to pull-requests.json records (#711)
+
+### Fixes
+- handle max_turns exit in dispatch lifecycle cleanup (closes #716) (#735)
+-  link plan files as artifacts on plan/plan-to-prd work items
+-  escalate failed plan items instead of blocking indefinitely (closes #722) (#733)
+-  handle NUL pseudo-file in Windows worktree cleanup (#731)
+
 ## 0.1.739 (2026-04-09)
 
 ### Fixes
