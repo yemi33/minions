@@ -736,7 +736,7 @@ function getWorkItems(config) {
       const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(item.id || '___'));
       if (matchNotes.length > 0) arts.notes = matchNotes;
     }
-    if (item.branch) arts.branch = item.branch;
+    if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
     if (item._pr) arts.pr = item._pr;
     if (Object.keys(arts).length > 0) item._artifacts = arts;
