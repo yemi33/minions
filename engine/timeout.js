@@ -9,7 +9,15 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { safeRead, safeWrite, safeJson, mutateJsonFileLocked, getProjects, projectWorkItemsPath, log, ts,
-  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, DISPATCH_RESULT } = shared;
+  ENGINE_DEFAULTS: DEFAULTS, WI_STATUS, WORK_TYPE, DISPATCH_RESULT } = shared;
+
+// Default per-type heartbeat timeouts for work types that legitimately run longer without output.
+// These are merged with config.engine.heartbeatTimeouts at runtime — config values take precedence.
+const DEFAULT_HEARTBEAT_TIMEOUTS = {
+  [WORK_TYPE.EXPLORE]: 600000,  // 10 min — explores read extensively before producing output
+  [WORK_TYPE.ASK]:     600000,  // 10 min — Q&A tasks often involve deep codebase reading
+  [WORK_TYPE.REVIEW]:  480000,  // 8 min  — reviews read large diffs/files before commenting
+};
 const { getDispatch, getAgentStatus } = queries;
 const AGENTS_DIR = queries.AGENTS_DIR;
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -132,6 +140,9 @@ function checkTimeouts(config) {
   const timeout = config.engine?.agentTimeout || DEFAULTS.agentTimeout;
   const heartbeatTimeout = config.engine?.heartbeatTimeout || DEFAULTS.heartbeatTimeout;
 
+  // Per-type heartbeat timeouts: merge defaults ← ENGINE_DEFAULTS ← config overrides
+  const perTypeTimeouts = { ...DEFAULT_HEARTBEAT_TIMEOUTS, ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+
   // 1. Check tracked processes for hard timeout (supports per-item deadline from fan-out)
   for (const [id, info] of activeProcesses.entries()) {
     const itemTimeout = info.meta?.deadline ? Math.max(0, info.meta.deadline - new Date(info.startedAt).getTime()) : timeout;
@@ -194,13 +205,16 @@ function checkTimeouts(config) {
       }
     } catch (e) { log('warn', 'output completion detection: ' + e.message); }
 
+    // Resolve per-type heartbeat timeout: per-type map → base heartbeatTimeout fallback
+    const itemHeartbeat = perTypeTimeouts[item.type] || heartbeatTimeout;
+
     // Check if agent is in a blocking tool call (TaskOutput block:true, Bash with long timeout, etc.)
     // These tools produce no stdout for extended periods — don't kill them prematurely
     // Check for BOTH tracked and untracked processes (orphan case after engine restart)
     let isBlocking = false;
-    let blockingTimeout = heartbeatTimeout;
+    let blockingTimeout = itemHeartbeat;
     let blockingTool = '';
-    if (silentMs > heartbeatTimeout) {
+    if (silentMs > itemHeartbeat) {
       try {
         const liveLog = safeRead(liveLogPath);
         if (liveLog) {
@@ -218,7 +232,7 @@ function checkTimeouts(config) {
               // TaskOutput with block:true — waiting for a background task
               if (name === 'TaskOutput' && input.block === true) {
                 const taskTimeout = input.timeout || 600000; // default 10min
-                blockingTimeout = Math.max(heartbeatTimeout, taskTimeout + 60000); // task timeout + 1min grace
+                blockingTimeout = Math.max(itemHeartbeat, taskTimeout + 60000); // task timeout + 1min grace
                 isBlocking = true;
                 blockingTool = 'TaskOutput';
               }
@@ -226,13 +240,13 @@ function checkTimeouts(config) {
               if (name === 'Bash') {
                 // Use explicit timeout if set, otherwise match Claude Code's actual Bash default (120s)
                 const bashTimeout = input.timeout || 120000;
-                blockingTimeout = Math.max(heartbeatTimeout, bashTimeout + 60000);
+                blockingTimeout = Math.max(itemHeartbeat, bashTimeout + 60000);
                 isBlocking = true;
                 blockingTool = 'Bash';
               }
               // Agent (subagent) tool call — parent waits silently for child to complete
               if (name === 'Agent') {
-                blockingTimeout = Math.max(heartbeatTimeout, 1800000); // 30min for subagents
+                blockingTimeout = Math.max(itemHeartbeat, 1800000); // 30min for subagents
                 isBlocking = true;
                 blockingTool = 'Agent';
               }
@@ -258,7 +272,7 @@ function checkTimeouts(config) {
       blockingAnnotations.set(item.id, null);
     }
 
-    const effectiveTimeout = isBlocking ? blockingTimeout : heartbeatTimeout;
+    const effectiveTimeout = isBlocking ? blockingTimeout : itemHeartbeat;
 
     // Skip recently-steered agents — they're being killed and re-spawned
     const procInfo = activeProcesses.get(item.id);
