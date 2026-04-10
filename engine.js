@@ -1659,7 +1659,7 @@ async function discoverFromPrs(config, project) {
     // PRs with pending human feedback (skip if review-fix already dispatched above)
     const humanFixKey = `human-fix-${project?.name || 'default'}-${pr.id}`;
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
-    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
+    if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched && reviewStatus !== 'approved') {
       const key = humanFixKey;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch

@@ -788,7 +788,8 @@ function updatePrAfterFix(pr, project, source) {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = 'waiting';
+    // Never downgrade from approved — fix was dispatched but PR is already approved
+    if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
     // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
