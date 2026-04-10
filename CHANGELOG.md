@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.760 (2026-04-10)
+
+### Features
+-  show branch strategy badge on PRD group header
+
+### Fixes
+-  prevent completed SSE stream from aborting other tab's LLM process
+-  eliminate global ccSession corruption, clean up streaming state
+-  restore full streaming state (tools + partial text) on tab switch
+-  restored thinking UX matches original exactly (same bubble, layout)
+-  skip merged dependency branches instead of failing worktree setup
+-  restore same thinking UX when switching back to processing tab
+-  show thinking indicator when switching back to a processing tab
+-  CC messages go to originating tab, not whichever tab is visible
+-  tab title no longer covers close button
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
 ## 0.1.749 (2026-04-09)
 
 ### Features
