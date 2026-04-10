@@ -379,10 +379,10 @@ async function ccSend() {
   var wasAborted = await _ccDoSend(message);
 
   // Flush queued messages — combine into single request
-  if (tab._queue && tab._queue.length > 0 && !wasAborted) {
+  if (tab._queue && tab._queue.length > 0) {
     var combined = tab._queue.splice(0).join('\n\n');
     _renderQueueIndicator();
-    wasAborted = await _ccDoSend(combined);
+    await _ccDoSend(combined);
   }
 }
 

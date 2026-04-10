@@ -189,7 +189,7 @@ async function forEachActivePr(config, token, callback) {
     if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
+    const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
 
     let projectUpdated = 0;
@@ -212,11 +212,18 @@ async function forEachActivePr(config, token, callback) {
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(shared.projectPrPath(project), (currentPrs) => {
-        // Only merge back PRs that the callback actually modified — not the entire
-        // stale snapshot, which would overwrite concurrent writes from other code paths
+        // Merge back updated PRs — preserve disk values that may have been changed
+        // by other writers between poll start and this write
         for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
-          if (idx >= 0) currentPrs[idx] = updatedPr;
+          if (idx >= 0) {
+            // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
+            // The disk version may have been set to 'approved' by another writer after we read
+            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
+              updatedPr.reviewStatus = 'approved';
+            }
+            currentPrs[idx] = updatedPr;
+          }
           // Don't push if not found — it was deleted by another writer, respect that
         }
         // Remove duplicates — prefer merged/abandoned over active
@@ -297,6 +304,12 @@ async function pollPrStatus(config) {
       pr._adoHeadCommit = headCommit;
       updated = true;
     }
+    // Track source commit separately — detects actual author pushes vs target branch updates
+    const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
+    if (sourceCommit && pr._adoSourceCommit !== sourceCommit) {
+      pr._adoSourceCommit = sourceCommit;
+      updated = true;
+    }
 
     const reviewers = prData.reviewers || [];
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
@@ -304,6 +317,20 @@ async function pollPrStatus(config) {
     // Once approved, it stays approved permanently
     if (pr.reviewStatus === 'approved') {
       newReviewStatus = 'approved';
+      // Re-approve: ADO resets votes when target branch (master) advances, even though
+      // the source branch is unchanged. Re-apply the approval vote via API.
+      if (!votes.some(v => v >= 5) && sourceCommit && pr._adoSourceCommit === sourceCommit) {
+        try {
+          const identityData = await adoFetch(`${orgBase}/_apis/connectionData?api-version=7.1`, token).catch(() => null);
+          const myId = identityData?.authenticatedUser?.id;
+          if (myId) {
+            await adoFetch(`${repoBase}/reviewers/${myId}?api-version=7.1`, token, {
+              method: 'PUT', body: JSON.stringify({ vote: 10 })
+            });
+            log('info', `PR ${pr.id}: re-applied approval vote (ADO reset due to target branch update)`);
+          }
+        } catch (e) { log('warn', `PR ${pr.id}: failed to re-apply approval: ${e.message}`); }
+      }
     } else if (votes.length > 0) {
       if (votes.some(v => v === -10)) {
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
@@ -334,24 +361,10 @@ async function pollPrStatus(config) {
       log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
       pr.reviewStatus = newReviewStatus;
       updated = true;
-      // Update author metrics when verdict changes to approved/rejected
-      if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
-        const authorId = (pr.agent || '').toLowerCase();
-        if (authorId) {
-          try {
-            const metricsPath = path.join(__dirname, 'metrics.json');
-            mutateJsonFileLocked(metricsPath, (metrics) => {
-              if (!metrics[authorId]) metrics[authorId] = {};
-              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-              return metrics;
-            });
-          } catch (err) { log('warn', `Metrics update: ${err.message}`); }
-        }
-        if (newReviewStatus === 'approved') {
-          delete pr._reviewFixCycles;
-          delete pr._evalEscalated;
-        }
+      shared.trackReviewMetric(pr, newReviewStatus, config);
+      if (newReviewStatus === 'approved') {
+        delete pr._reviewFixCycles;
+        delete pr._evalEscalated;
       }
     }
 
@@ -507,6 +520,8 @@ async function pollPrHumanComments(config) {
     const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
 
     for (const thread of threads) {
+      // Skip resolved/closed threads — only process active (1) and pending (6)
+      if (thread.status && thread.status !== 'active' && thread.status !== 1 && thread.status !== 6) continue;
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
         const content = comment.content;

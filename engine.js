@@ -1576,7 +1576,7 @@ async function discoverFromPrs(config, project) {
 
   const knownAgents = new Set(Object.keys(config.agents || {}));
   for (const pr of prs) {
-    if (pr.status !== 'active') continue;
+    if (pr.status !== PR_STATUS.ACTIVE || pr._contextOnly) continue;
     if (activePrIds.has(pr.id)) continue; // Skip PRs with active dispatch (prevent race)
     // Branch mutex: skip if PR branch is locked by any active dispatch (cross-type collision)
     if (pr.branch && isBranchActive(pr.branch)) {
@@ -1629,13 +1629,14 @@ async function discoverFromPrs(config, project) {
         const liveStatus = await checkFn(pr, project);
         if (liveStatus && liveStatus !== 'pending') {
           log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was pending) — skipping review`);
-          pr.reviewStatus = liveStatus;
+          // Never downgrade from approved
+          if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
           // Persist so next tick doesn't re-check
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
               const target = data.find(p => p.id === pr.id);
-              if (target) target.reviewStatus = liveStatus;
+              if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
               return data;
             });
           } catch {}

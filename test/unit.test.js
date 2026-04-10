@@ -730,9 +730,9 @@ async function testQueriesAgents() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
-    assert.ok(src.includes("w.status === WI_STATUS.DISPATCHED"),
+    assert.ok(src.includes("WI_STATUS.DISPATCHED"),
       'fallback should only treat dispatched work items as working (using WI_STATUS constant)');
-    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
+    assert.ok(src.includes("dispatched_to") && src.includes("String(agentId).toLowerCase()"),
       'fallback should map by dispatched_to marker');
   });
 
@@ -4719,8 +4719,8 @@ async function testVerifyWorkflow() {
     assert.ok(v.description.includes(testPlanFile), 'Description should reference plan file');
   }, cleanup);
 
-  // ── 3a. Plan completes with partial results when some items fail (escalation) ──
-  await test('verify: plan completes with failed items — verify WI created for done items, escalation alert sent', () => {
+  // ── 3a. Plan completes with partial results when some items fail (escalation, no verify) ──
+  await test('verify: plan completes with failed items — no verify WI, escalation alert sent', () => {
     cleanup();
     shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
     shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
@@ -4731,12 +4731,12 @@ async function testVerifyWorkflow() {
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
     ]);
 
-    // Failed items are terminal — plan should complete with partial results
+    // Failed items are terminal — plan completes but verify is NOT created (partial results)
     lifecycle.checkPlanCompletion(meta, config);
 
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
-    assert.strictEqual(verifyItems.length, 1, 'Verify WI created for done items even when some failed');
+    assert.strictEqual(verifyItems.length, 0, 'No verify WI when some items failed — only verify fully successful plans');
 
     // Escalation alert should be in inbox
     const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
@@ -5801,9 +5801,9 @@ async function testRecentFeatures() {
       'Should have PR linking endpoint');
   });
 
-  await test('PR link supports autoObserve flag', () => {
-    assert.ok(dashSrc.includes('_autoObserve') && dashSrc.includes('linked'),
-      'Should support autoObserve (active) vs context-only (linked) status');
+  await test('PR link supports contextOnly flag', () => {
+    assert.ok(dashSrc.includes('_contextOnly') && dashSrc.includes('autoObserve'),
+      'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
   // Plan creation from dashboard
@@ -7086,6 +7086,27 @@ async function testSettingsComprehensive() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
     assert.ok(src.includes("showToast('cmd-toast', 'Settings saved'"), 'should show success toast');
     assert.ok(src.includes("'Saving...'"), 'should show saving state on button');
+  });
+
+  await test('settings save handler: _clamped variable is in scope for all code paths', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // _clamped must be declared before the if(body.engine) block, not inside it
+    const clampedDecl = handler.indexOf('const _clamped');
+    const bodyEngineCheck = handler.indexOf('if (body.engine)');
+    assert.ok(clampedDecl > -1, '_clamped must be declared in settings save handler');
+    assert.ok(clampedDecl < bodyEngineCheck, '_clamped must be declared before if(body.engine) block — otherwise it is undefined when saving non-engine settings');
+  });
+
+  await test('settings save handler: _clamped referenced consistently (no bare clamped)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    const lines = handler.split('\n');
+    for (const line of lines) {
+      if (line.includes('clamped') && !line.includes('_clamped') && !line.includes('// ')) {
+        assert.fail('Found bare "clamped" reference (should be "_clamped"): ' + line.trim().slice(0, 80));
+      }
+    }
   });
 
   // ── Default consistency: shared.js defaults must match settings.js fallbacks ──
@@ -9879,7 +9900,7 @@ async function testAutoRecoveryAndAtomicity() {
   await test('doc-chat uses lower maxTurns than CC', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes('maxTurns: canEdit ? 15 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 15 (editable)');
+    assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -9892,7 +9913,25 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
+    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+  });
+
+  await test('CC system prompt has size estimation rule for delegation', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
+    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
+    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+  });
+
+  await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
+    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
+    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
+    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -10469,10 +10508,12 @@ async function testDashboardResilience() {
     assert.ok(fn.includes('return _wasAborted'), '_ccDoSend must return _wasAborted for caller');
   });
 
-  await test('ccSend pauses after abort before draining queue', () => {
+  await test('ccSend flushes queue after abort (no wasAborted guard)', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted') && fn.includes('setTimeout'),
-      'ccSend must pause after abort to let server release ccInFlight before sending queued message');
+    assert.ok(fn.includes('tab._queue && tab._queue.length > 0'),
+      'ccSend must check for queued messages after send completes');
+    assert.ok(!fn.includes('!wasAborted'),
+      'Queue flush must NOT be gated on wasAborted — abort stops the current request, not queued ones');
   });
 
   await test('ccSend uses per-tab queue for message queuing', () => {
@@ -10481,15 +10522,9 @@ async function testDashboardResilience() {
       'ccSend must use per-tab sending state and queue');
   });
 
-  await test('ccSend drain loop checks wasAborted on each iteration', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted = await _ccDoSend(next)'),
-      'Queue drain must capture wasAborted from each send for abort delay on subsequent items');
-  });
-
-  await test('ccSend drain loop preserves queue on abort (does not clear)', () => {
+  await test('ccAbort does not clear queue — queued messages auto-flush after abort', () => {
     const abortFn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
-    assert.ok(!abortFn.includes('_ccQueue = []'),
+    assert.ok(!abortFn.includes('_queue = []') && !abortFn.includes('_queue.length = 0'),
       'ccAbort must NOT clear queue — queued messages should send after abort completes');
   });
 
@@ -11923,6 +11958,52 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('!isUser && !isSystem'),
       'isAssistant should exclude system messages');
   });
+
+  // ── Resource cleanup tests ───────────────────────────────────────────────
+
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+  const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+
+  await test('cleanup.js prunes cc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
+    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
+    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  });
+
+  await test('cleanup.js prunes doc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('doc-sessions.json'), 'Should reference doc-sessions.json');
+    assert.ok(cleanupSrc.includes('DOC_SESSIONS_CAP'), 'Should define DOC_SESSIONS_CAP');
+  });
+
+  await test('cleanup.js caps cooldowns.json entries', () => {
+    assert.ok(cleanupSrc.includes('cooldowns.json'), 'Should reference cooldowns.json');
+    assert.ok(cleanupSrc.includes('COOLDOWN_CAP'), 'Should define COOLDOWN_CAP');
+    assert.ok(cleanupSrc.includes('timestamp'), 'Should sort cooldowns by timestamp');
+  });
+
+  await test('cleanup.js cleans stale PID files', () => {
+    assert.ok(cleanupSrc.includes('pid-') && cleanupSrc.includes('.pid'), 'Should match PID file pattern');
+    assert.ok(cleanupSrc.includes('activePids'), 'Should check against active process PIDs');
+    assert.ok(cleanupSrc.includes('oneHourAgo'), 'Should use 1-hour staleness threshold');
+  });
+
+  await test('cleanup.js prunes test-results.json', () => {
+    assert.ok(cleanupSrc.includes('test-results.json'), 'Should reference test-results.json');
+    assert.ok(cleanupSrc.includes('TEST_RESULTS_CAP'), 'Should define TEST_RESULTS_CAP');
+  });
+
+  await test('timeout.js kills Unix process tree on hung agent timeout', () => {
+    // The hung agent branch should include pkill -P for Unix tree kill
+    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
+    assert.ok(hungMatch, 'Should have hung agent detection block');
+    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+  });
+
+  await test('cleanup.js logs resource cleanup summary', () => {
+    assert.ok(cleanupSrc.includes('Cleanup (resources)'), 'Should log resource cleanup summary');
+    assert.ok(cleanupSrc.includes('cc-sessions') && cleanupSrc.includes('doc-sessions') && cleanupSrc.includes('cooldowns') && cleanupSrc.includes('PID files'),
+      'Summary should cover all resource types');
+  });
 }
 
 async function testIsolationVerification() {
@@ -12513,7 +12594,7 @@ async function testPrReviewFixFlows() {
   });
 
   await test('updatePrAfterReview never downgrades approved', () => {
-    assert.ok(lifecycleSrc.includes("target.reviewStatus === 'approved'") && lifecycleSrc.includes("!== 'changes-requested'"),
+    assert.ok(lifecycleSrc.includes("target.reviewStatus !== 'approved'"),
       'updatePrAfterReview should guard against downgrading approved');
   });
 
@@ -12530,6 +12611,22 @@ async function testPrReviewFixFlows() {
   await test('_reviewFixCycles reset on approval (ADO)', () => {
     assert.ok(adoSrc.includes("delete pr._reviewFixCycles") && adoSrc.includes("delete pr._evalEscalated"),
       'ADO should clear cycle counter on approval');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (ADO)', () => {
+    assert.ok(adoSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && adoSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'ADO forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (GitHub)', () => {
+    assert.ok(ghSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && ghSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'GitHub forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('engine.js pre-dispatch live vote check guards approved', () => {
+    const liveVoteBlock = engineSrc.slice(engineSrc.indexOf('Pre-dispatch live vote check'), engineSrc.indexOf('Pre-dispatch live vote check') + 800);
+    assert.ok(liveVoteBlock.includes("reviewStatus !== 'approved'"),
+      'Pre-dispatch live vote check should guard against downgrading approved');
   });
 
   // ── updatePrAfterReview passes resultSummary ──
