@@ -1459,6 +1459,70 @@ const server = http.createServer(async (req, res) => {
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  async function handleAgentKill(req, res, match) {
+    try {
+      const agentId = match[1].replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!agentId) return jsonReply(res, 400, { error: 'agent id required' });
+
+      const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+      if (!fs.existsSync(agentDir)) return jsonReply(res, 404, { error: 'Agent not found' });
+
+      // 1. Kill process via pid file
+      const pidPath = path.join(agentDir, 'pid');
+      try {
+        const pid = parseInt(shared.safeRead(pidPath) || '', 10);
+        if (pid) {
+          const safePid = shared.validatePid(pid);
+          if (process.platform === 'win32') {
+            require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+          } else {
+            process.kill(safePid, 'SIGTERM');
+          }
+        }
+      } catch { /* process already dead or no pid file */ }
+      try { fs.unlinkSync(pidPath); } catch { /* optional */ }
+
+      // 2. Clear session.json so retry starts fresh
+      try { fs.unlinkSync(path.join(agentDir, 'session.json')); } catch { /* optional */ }
+
+      // 3. Remove all active dispatch entries for this agent
+      const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+      const removedIds = [];
+      mutateJsonFileLocked(dispatchPath, (dp) => {
+        const before = (dp.active || []).length;
+        const removed = (dp.active || []).filter(d => d.agent === agentId);
+        removed.forEach(d => removedIds.push(d.id));
+        dp.active = (dp.active || []).filter(d => d.agent !== agentId);
+        return dp;
+      }, { defaultValue: { pending: [], active: [], completed: [] } });
+
+      // 4. Reset work items from dispatched → pending so they can be retried
+      const allWiPaths = [];
+      for (const proj of PROJECTS) allWiPaths.push(shared.projectWorkItemsPath(proj));
+      let resetCount = 0;
+      for (const wiPath of allWiPaths) {
+        try {
+          mutateWorkItems(wiPath, items => {
+            for (const item of items) {
+              if (item.dispatched_to === agentId && item.status === WI_STATUS.DISPATCHED) {
+                item.status = WI_STATUS.PENDING;
+                item._retryCount = (item._retryCount || 0) + 1;
+                delete item.dispatched_at;
+                delete item.dispatched_to;
+                delete item._pendingReason;
+                resetCount++;
+              }
+            }
+            return items;
+          });
+        } catch { /* optional */ }
+      }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, agent: agentId, dispatchCleared: removedIds.length, workItemsReset: resetCount });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
   async function handleAgentsCancel(req, res) {
     try {
       const body = await readBody(req);
@@ -4027,6 +4091,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, message: 'Steering message sent' });
     }},
     { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
+    { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
