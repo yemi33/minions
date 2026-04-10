@@ -344,6 +344,34 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
   }
 }
 
+// ── Plan Lifecycle Notifications ───────────────────────────────────────────
+
+/**
+ * Notify Teams about a plan lifecycle event (completed, approved, rejected, verify-created).
+ * @param {object} planInfo — { name, file, project, doneCount, totalCount } or similar
+ * @param {string} event — 'plan-completed', 'plan-approved', 'plan-rejected', 'verify-created'
+ */
+async function teamsNotifyPlanEvent(planInfo, event) {
+  if (!isTeamsEnabled()) return;
+  const cfg = getTeamsConfig();
+  if (!cfg.notifyEvents || !cfg.notifyEvents.includes(event)) return;
+
+  const planName = planInfo.name || planInfo.file || 'Unknown plan';
+  const counts = planInfo.doneCount != null ? ` (${planInfo.doneCount}/${planInfo.totalCount} items)` : '';
+  const text = `**${event}** — ${planName}${counts} | [dashboard](http://localhost:7331)`;
+
+  const state = safeJson(TEAMS_STATE_PATH) || {};
+  const convKeys = Object.keys(state.conversations || {});
+  if (convKeys.length === 0) return;
+
+  try {
+    await teamsPost(convKeys[0], text);
+    log('info', `Teams plan notification sent: ${event} for ${planName}`);
+  } catch (err) {
+    log('warn', `Teams plan notification failed: ${err.message}`);
+  }
+}
+
 // Reset cached adapter (for testing)
 function _resetAdapter() { _adapter = null; _botbuilder = null; _lastCCMirrorPost = 0; }
 
@@ -359,6 +387,7 @@ module.exports = {
   teamsPostCCResponse,
   teamsNotifyCompletion,
   teamsNotifyPrEvent,
+  teamsNotifyPlanEvent,
   CC_MIRROR_RATE_LIMIT_MS,
   TEAMS_STATE_PATH,
   TEAMS_INBOX_PATH,

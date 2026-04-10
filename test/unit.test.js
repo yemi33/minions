@@ -10078,6 +10078,48 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("'build-failed'"), 'github.js should notify on build-failed');
   });
 
+  await test('teamsNotifyPlanEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPlanEvent, 'function', 'teamsNotifyPlanEvent should be a function');
+  });
+
+  await test('teamsNotifyPlanEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPlanEvent({ name: 'test plan' }, 'plan-completed');
+  });
+
+  await test('teamsNotifyPlanEvent filters by notifyEvents and formats message', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPlanEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('planInfo.name'), 'should use plan name');
+    assert.ok(fn.includes('doneCount'), 'should include item counts');
+    assert.ok(fn.includes('dashboard'), 'should include dashboard link');
+  });
+
+  await test('checkPlanCompletion hooks Teams for plan-completed and verify-created', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function checkPlanCompletion'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-completed'"), 'should notify plan-completed');
+    assert.ok(fn.includes("'verify-created'"), 'should notify verify-created');
+  });
+
+  await test('handlePlansApprove hooks Teams for plan-approved', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansApprove'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-approved'"), 'should notify plan-approved');
+  });
+
+  await test('handlePlansReject hooks Teams for plan-rejected', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansReject'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-rejected'"), 'should notify plan-rejected');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

@@ -276,9 +276,24 @@ function checkPlanCompletion(meta, config) {
       });
     });
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+
+    // Teams notification for verify creation — non-blocking
+    try {
+      const teams = require('./teams');
+      teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
+    } catch {}
   }
 
   // Archive deferred until verify completes
+
+  // Teams notification for plan completion — non-blocking
+  try {
+    const teams = require('./teams');
+    teams.teamsNotifyPlanEvent({
+      name: plan.plan_summary || planFile, file: planFile, project: plan.project,
+      doneCount: doneItems.length, totalCount: planFeatureIds.size,
+    }, 'plan-completed').catch(() => {});
+  } catch {}
 
   log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
   return true;

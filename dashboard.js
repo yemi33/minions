@@ -2095,6 +2095,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
+      // Teams notification for plan approval — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-approved').catch(() => {}); } catch {}
+
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2303,6 +2306,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.rejectedBy = body.rejectedBy || os.userInfo().username;
       if (body.reason) plan.rejectionReason = body.reason;
       safeWrite(planPath, plan);
+
+      // Teams notification for plan rejection — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-rejected').catch(() => {}); } catch {}
+
       return jsonReply(res, 200, { ok: true, status: 'rejected' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
