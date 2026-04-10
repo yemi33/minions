@@ -550,6 +550,15 @@ const ENGINE_DEFAULTS = {
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
+  // Teams integration — config.teams shape: { enabled, appId, appPassword, notifyEvents, ccMirror, inboxPollInterval }
+  teams: {
+    enabled: false,
+    appId: '',
+    appPassword: '',
+    notifyEvents: ['pr-merged', 'agent-completed', 'plan-completed', 'agent-failed'],
+    ccMirror: true,
+    inboxPollInterval: 15000,
+  },
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────

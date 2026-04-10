@@ -9750,6 +9750,29 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(shared.ENGINE_DEFAULTS.ccMaxTurns, 50, 'ccMaxTurns default should be 50');
   });
 
+  await test('ENGINE_DEFAULTS.teams has all required fields', () => {
+    const teams = shared.ENGINE_DEFAULTS.teams;
+    assert.ok(teams, 'ENGINE_DEFAULTS should have a teams section');
+    assert.strictEqual(teams.enabled, false, 'teams.enabled default should be false');
+    assert.strictEqual(teams.appId, '', 'teams.appId default should be empty string');
+    assert.strictEqual(teams.appPassword, '', 'teams.appPassword default should be empty string');
+    assert.ok(Array.isArray(teams.notifyEvents), 'teams.notifyEvents should be an array');
+    assert.ok(teams.notifyEvents.includes('pr-merged'), 'notifyEvents should include pr-merged');
+    assert.ok(teams.notifyEvents.includes('agent-completed'), 'notifyEvents should include agent-completed');
+    assert.ok(teams.notifyEvents.includes('plan-completed'), 'notifyEvents should include plan-completed');
+    assert.ok(teams.notifyEvents.includes('agent-failed'), 'notifyEvents should include agent-failed');
+    assert.strictEqual(teams.ccMirror, true, 'teams.ccMirror default should be true');
+    assert.strictEqual(teams.inboxPollInterval, 15000, 'teams.inboxPollInterval default should be 15000');
+  });
+
+  await test('doctor Teams check: warns when enabled but missing credentials', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('Teams integration'), 'doctor should check Teams integration');
+    assert.ok(src.includes('teams.appId'), 'doctor should validate appId');
+    assert.ok(src.includes('teams.appPassword'), 'doctor should validate appPassword');
+    assert.ok(src.includes('docs/teams-setup.md'), 'doctor should reference setup guide when disabled');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
