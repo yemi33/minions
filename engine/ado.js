@@ -366,10 +366,12 @@ async function pollPrStatus(config) {
 
     if (mergeCommitId) {
       try {
-        // Find builds where sourceVersion matches the PR's merge commit
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10&api-version=7.1`;
+        // Find builds for this PR — filter by source branch to avoid scanning all org builds
+        const sourceBranch = prData.sourceRefName || '';
+        const branchFilter = sourceBranch ? `&branchName=${encodeURIComponent(sourceBranch)}` : '';
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10${branchFilter}&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        // Only match builds against the current merge commit — sourceBranch match catches stale builds
+        // Match by exact merge commit — only current builds, not stale
         const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
