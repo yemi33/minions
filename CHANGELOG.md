@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.808 (2026-04-10)
+
+### Features
+-  configurable ignored comment authors — auto-filtered, never trigger fixes
+-  add open-source community sources to agentic research pipeline
+-  broaden daily pipeline research from Anthropic-only to full agentic space
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
+### Fixes
+-  don't URL-encode ADO branchName filter (refs/heads/ format expected raw)
+-  ADO build query filters by source branch (not all org builds)
+-  adoFetch supports method/body for PATCH requests (auto-complete)
+-  prevent false [process-exit] detection from tool result content
+- allow PRD item retry when work item is missing (closes #781) (#807)
+-  handle force-pushed dep branches on retry (closes #738) (#806)
+-  project-scoped skill work items instruct wrong file path format (closes #790) (#804)
+-  move ignoredAuthors construction outside inner comment loop (ADO)
+-  approved is permanent — no path can ever downgrade it
+-  allow fix dispatch on approved PRs (only guard is in updatePrAfterFix)
+-  bot comment on approved PR can no longer reset vote
+-  remove redundant 'PR' prefix from dispatch labels (id already has it)
+-  include PR title in all dispatch labels and escalation alerts
+-  never downgrade reviewStatus from 'approved' unless explicitly rejected
+-  warn on invalid pipeline JSON instead of silently dropping + add test
+-  repair invalid JSON in daily-arch-improvement pipeline
+-  flush queued CC messages as single combined request
+-  human feedback fixes are never capped (only minion review→fix loop is)
+-  5 bugs from comprehensive audit
+-  stale ADO build detection + merge conflict auto-fix for both platforms
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
