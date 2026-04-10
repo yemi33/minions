@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.783 (2026-04-10)
+
+### Features
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
