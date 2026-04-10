@@ -1582,7 +1582,7 @@ async function discoverFromPrs(config, project) {
     const evalEscalated = evalCycles >= evalMax;
     if (evalEscalated && !pr._evalEscalated) {
       writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
-        `# Review Loop Escalation\n\n**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
+        `# Review Loop Escalation\n\n**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
         `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
         `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
       try {
@@ -1643,7 +1643,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix PR ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment review→fix cycle counter
@@ -1682,7 +1682,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      }, `Fix PR ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
     }
 
@@ -1701,7 +1701,7 @@ async function discoverFromPrs(config, project) {
         if (!pr.buildFixEscalated) {
           writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
             `# Build Fix Escalation\n\n` +
-            `**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
+            `**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
             `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
             `Auto-fix dispatch has been suspended. Please investigate manually.\n`
           );
@@ -1730,7 +1730,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: reviewNote,
-      }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix build failure on PR ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key);
         // Increment build fix attempts counter
@@ -1749,7 +1749,7 @@ async function discoverFromPrs(config, project) {
       // Notify the author agent about the build failure
       if (pr.agent && !pr._buildFailNotified) {
         let alertBody = `# Build Failure Notification\n\n` +
-          `**Your PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
+          `**Your PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
           `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n`;
         if (pr.buildErrorLog) {
           // Include first 30 lines of error log in notification (full log in fix agent prompt)
@@ -1780,7 +1780,7 @@ async function discoverFromPrs(config, project) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
             pr_id: pr.id, pr_branch: pr.branch || '',
             review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
-          }, `Fix merge conflicts on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+          }, `Fix merge conflicts on PR ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
           if (item) { newWork.push(item); setCooldown(key); }
         }
       }
