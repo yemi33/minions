@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.779 (2026-04-10)
+
+### Features
+-  auto-complete PRs when builds green + review approved
+
 ## 0.1.778 (2026-04-10)
 
 ### Fixes
