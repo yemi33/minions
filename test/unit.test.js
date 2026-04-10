@@ -8878,6 +8878,21 @@ async function testEngineAuditCritical() {
       'Should conditionally show Abort (running) or Run Now (idle)');
   });
 
+  // ── Pipeline file JSON validity ──
+
+  await test('all pipeline JSON files are valid JSON', () => {
+    const pipelinesDir = path.join(MINIONS_DIR, 'pipelines');
+    if (!fs.existsSync(pipelinesDir)) return; // no pipelines dir is fine
+    const files = fs.readdirSync(pipelinesDir).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        JSON.parse(fs.readFileSync(path.join(pipelinesDir, f), 'utf8'));
+      } catch (e) {
+        assert.fail(`pipelines/${f} is invalid JSON: ${e.message}`);
+      }
+    }
+  });
+
   // ── Pipeline Node Chain Visualization (TDD) ──
 
   await test('_buildNodeChain function exists and replaces _buildProgressBar', () => {
@@ -11747,11 +11762,11 @@ async function testCCMultiTab() {
       'Should read sessionId from tab');
   });
 
-  await test('response updates active tab messages', () => {
+  await test('response updates originating tab sessionId (not active tab)', () => {
     assert.ok(ccSrc.includes('evt.sessionId') || ccSrc.includes('revt.sessionId'),
       'Done event should check for sessionId');
-    assert.ok(ccSrc.includes('currentTab.sessionId = evt.sessionId') || ccSrc.includes('currentTab') && ccSrc.includes('.sessionId = '),
-      'Should update active tab sessionId from response');
+    assert.ok(ccSrc.includes('originTab.sessionId = evt.sessionId') || ccSrc.includes('originTab2.sessionId = revt.sessionId'),
+      'Should update originating tab sessionId, not _ccActiveTab()');
   });
 
   await test('new tab creates tab with sessionId null', () => {
@@ -11764,6 +11779,72 @@ async function testCCMultiTab() {
       'ccSwitchTab should clear cc-messages innerHTML');
     assert.ok(ccSrc.includes('ccRenderTabBar'),
       'ccSwitchTab should call ccRenderTabBar');
+  });
+
+  // ── Session never-expire tests ─────────────────────────────────────────────
+
+  await test('sessions never expire by time — CC_SESSION_EXPIRY_MS removed', () => {
+    assert.ok(!dashSrc.includes('CC_SESSION_EXPIRY_MS'), 'CC_SESSION_EXPIRY_MS constant should be removed');
+    assert.ok(!dashSrc.includes('2 * 60 * 60 * 1000'), 'Hardcoded 2-hour expiry should be removed');
+  });
+
+  await test('ccSessionValid does not check age', () => {
+    // Extract ccSessionValid function body
+    const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(match, 'ccSessionValid should exist');
+    const body = match[0];
+    assert.ok(!body.includes('age'), 'ccSessionValid should not reference age');
+    assert.ok(!body.includes('Date.now()'), 'ccSessionValid should not check Date.now()');
+    assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
+    assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
+  });
+
+  await test('resolveSession does not check age for doc sessions', () => {
+    const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
+    assert.ok(match, 'resolveSession should exist');
+    const body = match[0];
+    assert.ok(!body.includes('age'), 'resolveSession should not reference age');
+    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference expiry constant');
+  });
+
+  await test('CC session restored on startup without age check', () => {
+    // The startup block should load session without age filtering
+    const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
+    assert.ok(startupMatch, 'Should have CC session startup loader');
+    assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
+  });
+
+  await test('doc sessions restored on startup without age check', () => {
+    const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
+    assert.ok(docLoadMatch, 'Should have doc session startup loader');
+    assert.ok(!docLoadMatch[0].includes('age'), 'Doc session loader should not check age');
+  });
+
+  await test('prompt hash stored with tab session for invalidation', () => {
+    assert.ok(dashSrc.includes('_promptHash: _ccPromptHash'), 'Should store _promptHash when persisting tab sessions');
+    assert.ok(dashSrc.includes("tabEntry._promptHash") || dashSrc.includes("tabEntry && tabEntry._promptHash"),
+      'Stream handler should check tab entry prompt hash');
+  });
+
+  await test('sessionReset flag sent to frontend on prompt hash mismatch', () => {
+    assert.ok(dashSrc.includes('sessionReset = true'), 'Should set sessionReset flag');
+    assert.ok(dashSrc.includes('sessionReset') && dashSrc.includes('donePayload'),
+      'Stream handler should include sessionReset in done payload');
+  });
+
+  await test('frontend shows system message on sessionReset', () => {
+    assert.ok(ccSrc.includes('evt.sessionReset'), 'Frontend should check sessionReset in done event');
+    assert.ok(ccSrc.includes('Minions was updated'), 'Should show update notice to user');
+    assert.ok(ccSrc.includes("'system'") && ccSrc.includes('sessionReset'),
+      'Should use system role for reset notice');
+  });
+
+  await test('ccAddMessage handles system role distinctly', () => {
+    assert.ok(ccSrc.includes("role === 'system'") || ccSrc.includes("=== 'system'"),
+      'Should detect system role');
+    assert.ok(ccSrc.includes('isSystem'), 'Should have isSystem variable');
+    assert.ok(ccSrc.includes('!isUser && !isSystem'),
+      'isAssistant should exclude system messages');
   });
 }
 
