@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.767 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  align Agent Usage and Engine Usage table columns
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
 ## 0.1.764 (2026-04-10)
 
 ### Features
