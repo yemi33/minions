@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.772 (2026-04-10)
+
+### Fixes
+-  filter CI bot noise from PR human comment detection
+
 ## 0.1.771 (2026-04-10)
 
 ### Fixes
