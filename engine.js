@@ -137,7 +137,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, processPendingRebases } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -1664,11 +1664,11 @@ async function discoverFromPrs(config, project) {
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
@@ -2694,6 +2694,7 @@ async function tickInner() {
   if (tickCount % 6 === 0 || needsAdoPollRetry()) {
     try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await processPendingRebases(config); } catch (err) { log('warn', `Pending rebase processing error: ${err?.message || err}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
     // Check if any plans can be marked completed (all features done/in-pr)
