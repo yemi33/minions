@@ -62,9 +62,17 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 - content: Explain what was fixed, reference each review finding, include build/test status
 - Sign: `Fixed by Minions ({{agent_name}} — {{agent_role}})`
 
+## Resolve Review Comments
+
+After pushing, resolve each review comment/thread that you've addressed:
+- **GitHub**: Reply to each review comment confirming the fix, then resolve the conversation if possible
+- **ADO**: Reply to each thread with what was fixed, then set the thread status to `fixed` or `closed`
+
+Do NOT leave review threads open if you've addressed the finding — unresolved threads block auto-merge on some repos and create noise for human reviewers.
+
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, and (3) commented on the PR. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
+Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, (3) commented on the PR, and (4) resolved addressed review threads. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
 
 ## Completion
 

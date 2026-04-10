@@ -7,11 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks, addPrLink,
   log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
+const { isBranchActive } = require('./cooldown');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
@@ -185,7 +186,7 @@ function checkPlanCompletion(meta, config) {
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (!existingVerify && doneItems.length > 0) {
+  if (!existingVerify && doneItems.length > 0 && failedItems.length === 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -734,7 +735,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-async function updatePrAfterReview(agentId, pr, project, config) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
 
   if (!pr?.id) return;
 
@@ -744,7 +745,9 @@ async function updatePrAfterReview(agentId, pr, project, config) {
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
-  let postReviewStatus = 'waiting';
+  // If platform hasn't propagated the vote yet (returns 'pending'), keep current status unchanged.
+  // The poller will pick up the real status on the next cycle (~3 min).
+  let postReviewStatus = null; // null = don't change
   try {
     const projectObj = project || shared.getProjects(config)[0];
     if (projectObj) {
@@ -753,7 +756,6 @@ async function updatePrAfterReview(agentId, pr, project, config) {
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
       const liveStatus = await checkFn(pr, projectObj);
-      // Use live status only if it's a decisive verdict (not 'pending' — review may not have propagated yet)
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
@@ -764,12 +766,12 @@ async function updatePrAfterReview(agentId, pr, project, config) {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = postReviewStatus;
+    if (postReviewStatus) target.reviewStatus = postReviewStatus; // only update if live check returned decisive result
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: completedEntry?.task || ''
+      note: resultSummary || completedEntry?.task || ''
     };
     updatedTarget = { ...pr, ...target };
     return prs;
@@ -810,6 +812,119 @@ function updatePrAfterFix(pr, project, source) {
     }
     return prs;
   }, { defaultValue: [] });
+}
+
+// ─── Post-Merge Rebase ──────────────────────────────────────────────────────
+
+/**
+ * Find active PRs whose work items depend on the just-merged item.
+ * Excludes shared-branch items (those use git pull instead).
+ */
+function findDependentActivePrs(mergedItemId, config) {
+  const results = [];
+  const allWi = queries.getWorkItems(config);
+  const dependentWis = allWi.filter(wi =>
+    wi.depends_on?.includes(mergedItemId) &&
+    !DONE_STATUSES.has(wi.status) &&
+    wi.branchStrategy !== 'shared-branch'
+  );
+  if (dependentWis.length === 0) return results;
+
+  const projects = shared.getProjects(config);
+  for (const p of projects) {
+    const prs = safeJson(projectPrPath(p)) || [];
+    for (const pr of prs) {
+      if (!pr.branch || pr.status !== 'active') continue;
+      const linked = (pr.prdItems || []).some(id => dependentWis.some(wi => wi.id === id));
+      if (linked && !results.some(r => r.pr.id === pr.id)) {
+        const wi = dependentWis.find(w => (pr.prdItems || []).includes(w.id));
+        results.push({ pr, project: p, workItem: wi });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Rebase a PR branch onto main in a temporary worktree.
+ * Returns { success: true } or { success: false, error: string }.
+ */
+async function rebaseBranchOntoMain(pr, project, config) {
+  const root = path.resolve(project.localPath);
+  const mainBranch = shared.resolveMainBranch(root, project.mainBranch);
+  const branch = pr.branch;
+  const wtRoot = path.resolve(root, config.engine?.worktreeRoot || ENGINE_DEFAULTS.worktreeRoot);
+  const tmpWt = path.join(wtRoot, `rebase-${shared.sanitizeBranch(branch)}-${Date.now()}`).replace(/\\/g, '/');
+  const _gitOpts = { cwd: root, timeout: 30000, windowsHide: true };
+
+  try {
+    await execAsync(`git fetch origin "${mainBranch}" "${branch}"`, _gitOpts);
+    try {
+      await execAsync(`git worktree add "${tmpWt}" "${branch}"`, { ..._gitOpts, timeout: 60000 });
+    } catch (wtErr) {
+      // Branch may already be checked out in a stale worktree — prune and retry once
+      if (String(wtErr.message || wtErr).includes('already checked out')) {
+        await execAsync(`git worktree prune`, _gitOpts);
+        await execAsync(`git worktree add "${tmpWt}" "${branch}"`, { ..._gitOpts, timeout: 60000 });
+      } else { throw wtErr; }
+    }
+  } catch (err) {
+    log('warn', `Post-merge rebase: setup failed for ${branch}: ${err.message}`);
+    try { await execAsync(`git worktree remove "${tmpWt}" --force`, _gitOpts); } catch {}
+    return { success: false, error: err.message };
+  }
+
+  try {
+    await execAsync(`git rebase "origin/${mainBranch}"`, { cwd: tmpWt, timeout: 120000, windowsHide: true });
+    await execAsync(`git push --force-with-lease origin "${branch}"`, { cwd: tmpWt, timeout: 30000, windowsHide: true });
+    log('info', `Post-merge rebase: rebased ${branch} onto ${mainBranch} and force-pushed`);
+    return { success: true };
+  } catch (err) {
+    try { await execAsync(`git rebase --abort`, { cwd: tmpWt, timeout: 10000, windowsHide: true }); } catch {}
+    log('warn', `Post-merge rebase failed for ${branch}: ${err.message}`);
+    return { success: false, error: err.message };
+  } finally {
+    try { shared.removeWorktree(tmpWt, root, wtRoot); } catch {}
+    try { await execAsync(`git worktree prune`, _gitOpts); } catch {}
+  }
+}
+
+const PENDING_REBASES_PATH = path.join(ENGINE_DIR, 'pending-rebases.json');
+
+function queuePendingRebase(pr, project, mergedItemId) {
+  const pending = safeJson(PENDING_REBASES_PATH) || [];
+  if (pending.some(e => e.prId === pr.id)) return; // already queued
+  pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
+  safeWrite(PENDING_REBASES_PATH, pending);
+}
+
+async function processPendingRebases(config) {
+  const pending = safeJson(PENDING_REBASES_PATH) || [];
+  if (pending.length === 0) return;
+
+  const remaining = [];
+  for (const entry of pending) {
+    if (isBranchActive(entry.branch)) { remaining.push(entry); continue; }
+
+    const project = shared.getProjects(config).find(p => p.name === entry.projectName);
+    if (!project) continue;
+
+    const prs = safeJson(projectPrPath(project)) || [];
+    const pr = prs.find(p => p.id === entry.prId && p.status === 'active');
+    if (!pr) continue; // PR closed/merged since queuing
+
+    const result = await rebaseBranchOntoMain(pr, project, config);
+    if (!result.success) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts < 3) {
+        remaining.push(entry);
+      } else {
+        shared.writeToInbox('engine', `rebase-fail-${pr.id}`,
+          `# Rebase Failed: ${pr.id}\n\nBranch \`${pr.branch}\` could not be rebased onto main after dependency ${entry.mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+      }
+    }
+  }
+  safeWrite(PENDING_REBASES_PATH, remaining);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -886,6 +1001,23 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (found) break;
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
+
+    // Rebase dependent PRs onto main now that this dependency is merged
+    try {
+      const dependentPrs = findDependentActivePrs(mergedItemId, config);
+      for (const { pr: depPr, project: depProject } of dependentPrs) {
+        if (isBranchActive(depPr.branch)) {
+          queuePendingRebase(depPr, depProject, mergedItemId);
+          log('info', `Post-merge rebase deferred: ${depPr.branch} locked by active agent`);
+          continue;
+        }
+        const result = await rebaseBranchOntoMain(depPr, depProject, config);
+        if (!result.success) {
+          shared.writeToInbox('engine', `rebase-fail-${depPr.id}`,
+            `# Rebase Failed: ${depPr.id}\n\nBranch \`${depPr.branch}\` could not be rebased onto main after dependency ${mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+        }
+      }
+    } catch (err) { log('warn', `Post-merge rebase phase error: ${err.message}`); }
   }
 
   const agentId = (pr.agent || '').toLowerCase();
@@ -1473,7 +1605,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
+  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {
@@ -1633,5 +1765,7 @@ module.exports = {
   resolveWorkItemPath,
   isItemCompleted,
   classifyFailure,
+  processPendingRebases,
+  findDependentActivePrs,
 };
 

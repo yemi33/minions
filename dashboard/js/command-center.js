@@ -135,6 +135,41 @@ function ccSwitchTab(id) {
   for (var i = 0; i < tab.messages.length; i++) {
     ccAddMessage(tab.messages[i].role, tab.messages[i].html, true);
   }
+  // If this tab is still processing, restore the full streaming UX (tools, partial text, thinking)
+  if (tab._sending) {
+    var dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
+    var restoreStart = tab._sendStartedAt || Date.now();
+    var phases = [[0,'Thinking...'],[3000,'Reading minions context...'],[8000,'Analyzing...'],[15000,'Using tools to dig deeper...'],[30000,'Still working (multi-turn)...'],[60000,'Deep research in progress...']];
+    function _restoreStreamHtml() {
+      var html = '';
+      var tools = tab._toolsUsed || [];
+      if (tools.length > 0) {
+        html += '<div style="margin-bottom:6px">';
+        tools.forEach(function(t) { html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + '</div>'; });
+        html += '</div>';
+      }
+      var text = tab._streamedText || '';
+      if (text) html += renderMd(text);
+      var ms = Date.now() - restoreStart;
+      var label = 'Thinking...';
+      for (var pi = phases.length - 1; pi >= 0; pi--) { if (ms >= phases[pi][0]) { label = phases[pi][1]; break; } }
+      var secs = Math.floor(ms / 1000);
+      html += '<div style="margin-top:' + (text ? '6px' : '0') + ';display:flex;align-items:center;gap:6px"><span style="color:var(--muted);font-size:11px">' + label + '</span>' + dotPulse + '<span style="margin-left:auto;font-size:10px;color:var(--muted)">' + secs + 's</span>' +
+        '<button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:4px">Stop</button></div>';
+      return html;
+    }
+    ccAddMessage('assistant', _restoreStreamHtml(), true);
+    var restoreDiv = el.lastElementChild;
+    restoreDiv.id = 'cc-restore-thinking';
+    el.scrollTop = el.scrollHeight;
+    // Live update — stops when tab switches away or request completes
+    var restoreInterval = setInterval(function() {
+      var re = document.getElementById('cc-restore-thinking');
+      if (!re || !tab._sending || _ccActiveTabId !== tab.id) { clearInterval(restoreInterval); return; }
+      re.innerHTML = _restoreStreamHtml();
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) el.scrollTop = el.scrollHeight;
+    }, 1000);
+  }
   ccRenderTabBar();
   ccUpdateSessionIndicator();
   ccSaveState();
@@ -209,7 +244,7 @@ function ccRenderTabBar() {
   for (var i = 0; i < _ccTabs.length; i++) {
     var t = _ccTabs[i];
     var isActive = t.id === _ccActiveTabId;
-    html += '<div class="cc-tab' + (isActive ? ' active' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
+    html += '<div class="cc-tab' + (isActive ? ' active' : '') + (t._sending ? ' working' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
     html += '<span class="cc-tab-text">' + escHtml(t.title) + '</span>';
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
@@ -396,8 +431,10 @@ async function _ccDoSend(message, skipUserMsg) {
   var activeTabId = _ccActiveTabId;
   if (!activeTab) return;
   activeTab._sending = true;
+  activeTab._sendStartedAt = Date.now();
   activeTab._abortController = new AbortController();
-  _ccSending = true; // UI indicator
+  _ccSending = true;
+  ccRenderTabBar();
   var _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
@@ -423,8 +460,10 @@ async function _ccDoSend(message, skipUserMsg) {
   ];
 
   // Streaming state — declared before try so updateStreamDiv works during fetch
+  // Also saved on tab for restore when switching back
   var streamedText = '';
   var toolsUsed = [];
+  if (activeTab) { activeTab._streamedText = ''; activeTab._toolsUsed = []; }
 
   // Get active tab's sessionId to send with request
   var activeTab = _ccActiveTab();
@@ -447,6 +486,13 @@ async function _ccDoSend(message, skipUserMsg) {
         '<button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:4px">Stop</button></div>';
     }
     function updateStreamDiv() {
+      // Skip DOM updates if user switched to a different tab (restore interval handles that tab)
+      if (_ccActiveTabId !== activeTabId) return;
+      // Re-acquire streamDiv if it was detached (tab switch and back)
+      if (!streamDiv.parentNode) {
+        var re = document.getElementById('cc-restore-thinking');
+        if (re) { streamDiv = re; re.removeAttribute('id'); } else return;
+      }
       var html = '';
       if (toolsUsed.length > 0) {
         html += '<div style="margin-bottom:6px">';
@@ -501,9 +547,11 @@ async function _ccDoSend(message, skipUserMsg) {
           var evt = JSON.parse(line.slice(6));
           if (evt.type === 'chunk') {
             streamedText = evt.text;
+            if (activeTab) activeTab._streamedText = streamedText;
             updateStreamDiv();
           } else if (evt.type === 'tool') {
             toolsUsed.push(evt.name);
+            if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
             updateStreamDiv();
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
@@ -586,11 +634,11 @@ async function _ccDoSend(message, skipUserMsg) {
         ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
-    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; }
+    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
+    ccRenderTabBar();
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
-    // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
   return _wasAborted;
@@ -635,9 +683,15 @@ async function ccExecuteAction(action) {
 
   try {
     switch (action.type) {
-      case 'dispatch': {
+      case 'dispatch':
+      case 'fix':
+      case 'implement':
+      case 'explore':
+      case 'review':
+      case 'test': {
+        var workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
         var res = await _ccFetch('/api/work-items', {
-            title: action.title, type: action.workType || 'implement',
+            title: action.title, type: workType,
             priority: action.priority || 'medium', description: action.description || '',
             project: action.project || '', agents: action.agents || [],
         });

@@ -66,6 +66,13 @@ function renderPrd(prd, prog) {
   section.innerHTML = '';
 }
 
+function _renderPrLink(pr, opts) {
+  var size = (opts && opts.size) || '10px';
+  var statusColor = pr.status === 'merged' ? 'var(--green)' : pr.status === 'abandoned' ? 'var(--red)' : 'var(--blue)';
+  var statusIcon = pr.status === 'merged' ? '✓' : pr.status === 'abandoned' ? '✗' : '○';
+  return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:' + size + ';color:' + statusColor + ';text-decoration:underline;cursor:pointer;margin-left:4px" title="' + escHtml((pr.title || '') + ' (' + (pr.status || 'active') + ')') + '">' + statusIcon + ' ' + escHtml(pr.id) + '</a>';
+}
+
 function renderPrdProgress(prog) {
   const el = document.getElementById('prd-progress-content');
   const countEl = document.getElementById('prd-progress-count');
@@ -140,7 +147,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', branchStrategy: i.branchStrategy || 'parallel', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
     // Collect all unique projects across items in this group
     for (const p of (i.projects || [])) { if (p && !grouped[key]._projects.includes(p)) grouped[key]._projects.push(p); }
@@ -149,9 +156,7 @@ function renderPrdProgress(prog) {
   }
 
   const renderItem = (i) => {
-    const prLinks = (i.prs || []).map(pr =>
-      '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>'
-    ).join(' ');
+    const prLinks = (i.prs || []).map(function(pr) { return _renderPrLink(pr); }).join(' ');
     const projBadges = (i.projects || []).map(p =>
       '<span class="prd-project-badge">' + escHtml(p) + '</span>'
     ).join(' ');
@@ -277,6 +282,7 @@ function renderPrdProgress(prog) {
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       (g._projects.length > 0 ? g._projects.map(function(p) { return '<span class="prd-project-badge">' + escHtml(p) + '</span>'; }).join(' ') : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
+      (g.branchStrategy === 'shared-branch' ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(210,153,34,0.15);color:var(--yellow);font-weight:400">shared branch</span>' : '') +
       pausedLabel +
       staleLabel +
       '<span style="font-weight:700;font-size:11px;color:' + (done === g.items.length && g.items.length > 0 ? 'var(--green)' : 'var(--text)') + '">' + (g.items.length > 0 ? Math.round((done / g.items.length) * 100) : 0) + '%</span>' +
@@ -391,9 +397,7 @@ function renderPrdProgress(prog) {
             })() +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
           '</div>' +
-          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
-            return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:underline;cursor:pointer" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>';
-          }).join(' ') + '</div>' : '') +
+          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) { return _renderPrLink(pr, { size: '9px' }); }).join(' ') + '</div>' : '') +
           (i.status === 'decomposed' ? (function() {
             var children = (window._lastWorkItems || []).filter(function(w) { return w.parent_id === i.id; });
             if (!children.length) return '';

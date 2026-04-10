@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.1.782 (2026-04-10)
+
+### Features
+-  fix agents resolve review threads after addressing findings
+
+### Fixes
+-  restore cc-tab-bar element + add critical UX regression tests
+
+## 0.1.780 (2026-04-10)
+
+### Features
+-  auto-complete PRs when builds green + review approved
+
+## 0.1.778 (2026-04-10)
+
+### Fixes
+-  agent comments included in context but don't trigger fix dispatch
+
+## 0.1.777 (2026-04-10)
+
+### Fixes
+-  pass reviewer's actual output to fix agent, not just task label
+
+## 0.1.776 (2026-04-10)
+
+### Features
+-  auto-rebase dependent PRs after dependency merge
+-  show PR merged/active status on PRD item links
+
+### Fixes
+-  better agent comment filtering — detect by patterns, not just signature
+-  filter CI bot noise from PR human comment detection
+
+### Other
+- refactor: shared _renderPrLink for list and graph PR status display
+
+## 0.1.771 (2026-04-10)
+
+### Fixes
+-  clarify timeout.js error reason — "Exited with error" vs "Completed"
+
+## 0.1.770 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  increase ADO pipeline/task caps from 3 to 10, update docs
+-  ADO build detection uses builds API, not unreliable status checks
+-  handle work type names as action aliases for dispatch
+-  align Agent Usage and Engine Usage table columns
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
+## 0.1.764 (2026-04-10)
+
+### Features
+-  pulsing blue dot on CC tabs with active requests
+
+### Fixes
+-  prevent stale dispatched work items from showing agent as working indefinitely
+-  only trigger verify when all PRD items succeed, not on partial failure
+-  clean handoff between restore and original stream intervals
+-  prevent competing thinking intervals on tab switch
+
+## 0.1.760 (2026-04-10)
+
+### Features
+-  show branch strategy badge on PRD group header
+
+### Fixes
+-  prevent completed SSE stream from aborting other tab's LLM process
+-  eliminate global ccSession corruption, clean up streaming state
+-  restore full streaming state (tools + partial text) on tab switch
+-  restored thinking UX matches original exactly (same bubble, layout)
+-  skip merged dependency branches instead of failing worktree setup
+-  restore same thinking UX when switching back to processing tab
+-  show thinking indicator when switching back to a processing tab
+-  CC messages go to originating tab, not whichever tab is visible
+-  tab title no longer covers close button
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
 ## 0.1.749 (2026-04-09)
 
 ### Features

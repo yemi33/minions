@@ -206,7 +206,7 @@ function checkTimeouts(config) {
           safeWrite(outputLogPath, `# Output for dispatch ${item.id}\n# Exit code: ${isSuccess ? 0 : 1}\n# Completed: ${ts()}\n# Detected via output scan\n\n## Result\n${text || '(no text)'}\n`);
         } catch (e) { log('warn', 'parse output result: ' + e.message); }
 
-        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, 'Completed (detected from output)');
+        completeDispatch(item.id, isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR, isSuccess ? 'Completed (detected from output)' : 'Exited with error (detected from output)');
 
         // Run post-completion hooks via shared helper (async — fire and forget in timeout context)
         const fullLogForHooks = safeRead(liveLogPath) || liveLog;

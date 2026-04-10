@@ -137,7 +137,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, processPendingRebases } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -454,7 +454,13 @@ async function spawnAgent(dispatchItem, config) {
           // Fetch all dependency branches in parallel (git fetches are independent)
           const fetchable = depBranches.filter(d => !_failedRefCache.has(d.branch));
           const unfetchable = depBranches.filter(d => _failedRefCache.has(d.branch));
-          for (const { branch: depBranch } of unfetchable) {
+          const allPrsForDeps = unfetchable.length > 0 ? shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectPrPath(p)) || []), []) : [];
+          for (const { branch: depBranch, prId } of unfetchable) {
+            const pr = allPrsForDeps.find(p => p.id === prId);
+            if (pr && (pr.status === 'merged' || pr.status === 'closed')) {
+              log('info', `Dependency ${depBranch} (${prId}) already merged — skipping, changes already in main`);
+              continue;
+            }
             log('warn', `Skipping dependency ${depBranch} — already failed to fetch this tick`);
             depMergeFailed = true;
           }
@@ -463,17 +469,26 @@ async function spawnAgent(dispatchItem, config) {
               execAsync(`git fetch origin "${depBranch}"`, { ..._gitOpts, cwd: rootDir }).then(() => depBranch)
             )
           );
+          const hasFetchFailures = fetchResults.some(r => r.status === 'rejected');
+          const allPrsForFetch = hasFetchFailures ? shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectPrPath(p)) || []), []) : [];
           for (let i = 0; i < fetchResults.length; i++) {
             if (fetchResults[i].status === 'rejected') {
               const failedBranch = fetchable[i].branch;
+              const failedPrId = fetchable[i].prId;
+              const pr = allPrsForFetch.find(p => p.id === failedPrId);
+              if (pr && (pr.status === 'merged' || pr.status === 'closed')) {
+                log('info', `Dependency ${failedBranch} (${failedPrId}) already merged — skipping, changes already in main`);
+                continue;
+              }
               _failedRefCache.add(failedBranch);
               log('warn', `Failed to fetch dependency ${failedBranch}: ${fetchResults[i].reason?.message}`);
               depMergeFailed = true;
             }
           }
-          // Merge fetched branches sequentially (merges modify the worktree)
+          // Merge successfully-fetched branches sequentially (merges modify the worktree)
+          const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled');
           if (!depMergeFailed) {
-            for (const { branch: depBranch, prId } of fetchable) {
+            for (const { branch: depBranch, prId } of fetched) {
               try {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                 log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
@@ -1561,9 +1576,26 @@ async function discoverFromPrs(config, project) {
     // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
+    // Review→fix cycle cap — stop after N iterations, alert human
+    const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
+    const evalCycles = pr._reviewFixCycles || 0;
+    if (evalCycles >= evalMax && !pr._evalEscalated) {
+      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+        `# Review Loop Escalation\n\n**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
+        `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
+        `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
+      try {
+        mutatePullRequests(projectPrPath(project), prs => {
+          const target = prs.find(p => p.id === pr.id);
+          if (target) target._evalEscalated = true;
+        });
+      } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
+      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
+      continue;
+    }
+
     // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
-    // Skip re-dispatch if already reviewed and no new commits pushed since last review
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
@@ -1612,7 +1644,16 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      if (item) {
+        newWork.push(item); setCooldown(key); fixDispatched = true;
+        // Increment review→fix cycle counter
+        try {
+          mutatePullRequests(projectPrPath(project), prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
+          });
+        } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
+      }
     }
 
     // PRs with pending human feedback (skip if review-fix already dispatched above)
@@ -1649,11 +1690,11 @@ async function discoverFromPrs(config, project) {
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
@@ -1727,6 +1768,21 @@ async function discoverFromPrs(config, project) {
             }
           });
         } catch (e) { log('warn', 'mark build fail notified: ' + e.message); }
+      }
+    }
+
+    // PRs with merge conflicts — dispatch fix to resolve
+    if (pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+      const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
+      if (!isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+        const agentId = resolveAgent('fix', config, pr.agent);
+        if (agentId) {
+          const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+            pr_id: pr.id, pr_branch: pr.branch || '',
+            review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
+          }, `Fix merge conflicts on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+          if (item) { newWork.push(item); setCooldown(key); }
+        }
       }
     }
 
@@ -2679,6 +2735,7 @@ async function tickInner() {
   if (tickCount % 6 === 0 || needsAdoPollRetry()) {
     try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await processPendingRebases(config); } catch (err) { log('warn', `Pending rebase processing error: ${err?.message || err}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
     // Check if any plans can be marked completed (all features done/in-pr)

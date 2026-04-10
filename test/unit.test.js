@@ -3770,9 +3770,9 @@ async function testBuildFixRetryCap() {
       'Should skip fix dispatch (continue) when cap is reached and escalated');
   });
 
-  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
+  await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
+    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
+      'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -9104,6 +9104,75 @@ async function testEngineAuditCritical() {
       'handlePostMerge must guard project before accessing project.localPath');
   });
 
+  // Post-merge rebase for dependent PRs
+  const lifecycleSrcForRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('findDependentActivePrs is exported from lifecycle.js', () => {
+    assert.ok(lifecycleSrcForRebase.includes('function findDependentActivePrs'),
+      'lifecycle.js must define findDependentActivePrs');
+    assert.ok(lifecycleSrcForRebase.includes('findDependentActivePrs,'),
+      'findDependentActivePrs must be exported');
+  });
+
+  await test('findDependentActivePrs excludes shared-branch items', () => {
+    assert.ok(lifecycleSrcForRebase.includes("branchStrategy !== 'shared-branch'"),
+      'findDependentActivePrs must exclude shared-branch work items');
+  });
+
+  await test('rebaseBranchOntoMain uses force-with-lease for safe push', () => {
+    assert.ok(lifecycleSrcForRebase.includes('--force-with-lease'),
+      'rebaseBranchOntoMain must use --force-with-lease');
+  });
+
+  await test('rebaseBranchOntoMain aborts rebase on conflict', () => {
+    assert.ok(lifecycleSrcForRebase.includes('rebase --abort'),
+      'rebaseBranchOntoMain must abort rebase on failure');
+  });
+
+  await test('rebaseBranchOntoMain cleans up temp worktree in finally block', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function rebaseBranchOntoMain'),
+      lifecycleSrcForRebase.indexOf('\nfunction queuePendingRebase')
+    );
+    assert.ok(fn.includes('finally'), 'rebaseBranchOntoMain must have a finally block for cleanup');
+    assert.ok(fn.includes('removeWorktree'), 'finally block must call removeWorktree');
+  });
+
+  await test('handlePostMerge calls findDependentActivePrs for rebase', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function handlePostMerge'),
+      lifecycleSrcForRebase.indexOf('\nfunction checkForLearnings')
+    );
+    assert.ok(fn.includes('findDependentActivePrs'), 'handlePostMerge must call findDependentActivePrs');
+    assert.ok(fn.includes('rebaseBranchOntoMain'), 'handlePostMerge must call rebaseBranchOntoMain');
+  });
+
+  await test('handlePostMerge defers rebase when branch is active', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function handlePostMerge'),
+      lifecycleSrcForRebase.indexOf('\nfunction checkForLearnings')
+    );
+    assert.ok(fn.includes('isBranchActive'), 'handlePostMerge must check isBranchActive before rebasing');
+    assert.ok(fn.includes('queuePendingRebase'), 'handlePostMerge must queue deferred rebase when branch active');
+  });
+
+  await test('processPendingRebases retries up to 3 attempts', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('attempts < 3'), 'processPendingRebases must cap retries at 3');
+    assert.ok(fn.includes('writeToInbox'), 'processPendingRebases must write inbox alert on give-up');
+  });
+
+  await test('engine.js calls processPendingRebases in tick cycle', () => {
+    const engineSrcRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrcRebase.includes('processPendingRebases(config)'),
+      'engine.js must call processPendingRebases during PR poll phase');
+    assert.ok(engineSrcRebase.includes('processPendingRebases }'),
+      'engine.js must import processPendingRebases from lifecycle');
+  });
+
   await test('scheduler enabled check uses truthy, not strict equality', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
     assert.ok(!src.includes('sched.enabled !== true'),
@@ -10670,6 +10739,30 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
   });
 
+  // ── Critical UX element regression checks ──
+  // These must run early (not in late test functions that may be skipped by earlier crashes)
+
+  await test('layout.html contains cc-tab-bar element', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    assert.ok(layout.includes('id="cc-tab-bar"'), 'layout.html must have cc-tab-bar element — CC tabs will not render without it');
+  });
+
+  await test('layout.html contains all critical CC elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['cc-tab-bar', 'cc-messages', 'cc-input', 'cc-session-info'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
+  });
+
+  await test('layout.html contains all critical modal elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['modal', 'modal-title', 'modal-body', 'modal-qa-thread'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
+  });
+
   await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
@@ -11088,9 +11181,9 @@ async function testBuildFixEscalation() {
       'CSS should have a .pr-badge.build-escalated style for visual escalation indicator');
   });
 
-  await test('escalation uses configurable limit from ENGINE_DEFAULTS', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
+  await test('escalation uses configurable limit from DEFAULTS', () => {
+    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
+      'engine.js should read maxBuildFixAttempts from DEFAULTS (not hardcoded)');
   });
 
   await test('escalation writes inbox alert for human visibility', () => {
