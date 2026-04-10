@@ -368,7 +368,7 @@ async function pollPrStatus(config) {
       try {
         // Find builds for this PR — filter by source branch to avoid scanning all org builds
         const sourceBranch = prData.sourceRefName || '';
-        const branchFilter = sourceBranch ? `&branchName=${encodeURIComponent(sourceBranch)}` : '';
+        const branchFilter = sourceBranch ? `&branchName=${sourceBranch}` : '';
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10${branchFilter}&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
         // Match by exact merge commit — only current builds, not stale
