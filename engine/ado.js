@@ -60,21 +60,26 @@ async function getAdoToken() {
   return null;
 }
 
-async function adoFetch(url, token, _retryCount = 0) {
+async function adoFetch(url, token, opts = {}) {
+  const _retryCount = typeof opts === 'number' ? opts : (opts._retryCount || 0); // backward compat
+  const method = (typeof opts === 'object' && opts.method) || 'GET';
+  const body = (typeof opts === 'object' && opts.body) || undefined;
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    method,
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30000),
+    body,
   });
-  if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
-    // Invalidate cached token — it's likely expired
     _adoTokenCache = { token: null, expiresAt: 0 };
     if (_retryCount < MAX_RETRIES) {
       const freshToken = await getAdoToken();
       if (freshToken) {
         log('info', 'ADO token expired mid-session — refreshed and retrying');
-        return adoFetch(url, freshToken, _retryCount + 1);
+        return adoFetch(url, freshToken, { ...opts, _retryCount: _retryCount + 1 });
       }
     }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
@@ -85,7 +90,8 @@ async function adoFetch(url, token, _retryCount = 0) {
 /** Fetch raw text from ADO API (for build logs which aren't JSON). */
 async function adoFetchText(url, token) {
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}` }
+    headers: { 'Authorization': `Bearer ${token}` },
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   return res.text();
@@ -295,12 +301,13 @@ async function pollPrStatus(config) {
     const reviewers = prData.reviewers || [];
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
     let newReviewStatus = pr.reviewStatus || 'pending';
-    if (votes.length > 0) {
+    // Once approved, it stays approved permanently
+    if (pr.reviewStatus === 'approved') {
+      newReviewStatus = 'approved';
+    } else if (votes.length > 0) {
       if (votes.some(v => v === -10)) {
-        // Don't re-trigger 'changes-requested' if fix agent already responded (waiting state).
-        // Only re-trigger if there's been a new push since the fix (reviewer re-reviewed).
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
-          newReviewStatus = 'waiting'; // fix was submitted, same vote still present — wait for re-review
+          newReviewStatus = 'waiting';
         } else {
           newReviewStatus = 'changes-requested';
         }
@@ -359,10 +366,12 @@ async function pollPrStatus(config) {
 
     if (mergeCommitId) {
       try {
-        // Find builds where sourceVersion matches the PR's merge commit
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10&api-version=7.1`;
+        // Find builds for this PR — filter by source branch to avoid scanning all org builds
+        const sourceBranch = prData.sourceRefName || '';
+        const branchFilter = sourceBranch ? `&branchName=${sourceBranch}` : '';
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10${branchFilter}&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        // Only match builds against the current merge commit — sourceBranch match catches stale builds
+        // Match by exact merge commit — only current builds, not stale
         const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
@@ -395,8 +404,9 @@ async function pollPrStatus(config) {
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
-      // Build transitioned — clear grace period so next failure can trigger immediately
+      // Build transitioned — clear grace period and auto-complete flag
       delete pr._buildFixPushedAt;
+      if (buildStatus === 'failing') delete pr._autoCompleted;
       if (buildStatus !== 'failing') {
         delete pr._buildFailNotified;
         delete pr.buildErrorLog;
@@ -501,13 +511,15 @@ async function pollPrHumanComments(config) {
     // Collect ALL human comments on the PR for full context
     const allHumanComments = [];
     const newHumanComments = [];
+    const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
 
     for (const thread of threads) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
         const content = comment.content;
-        // Skip bots and CI noise
+        // Skip bots, CI noise, and ignored authors
         const authorName = (comment.author?.displayName || '').toLowerCase();
+        if (ignoredAuthors.some(a => authorName.includes(a))) continue;
         if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
         if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
         // Detect agent comments (included in context, but don't trigger fix)

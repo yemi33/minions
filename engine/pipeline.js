@@ -20,7 +20,17 @@ function getPipelines() {
   if (!fs.existsSync(PIPELINES_DIR)) return [];
   return safeReadDir(PIPELINES_DIR)
     .filter(f => f.endsWith('.json'))
-    .map(f => safeJson(path.join(PIPELINES_DIR, f)))
+    .map(f => {
+      const filePath = path.join(PIPELINES_DIR, f);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!parsed) log('warn', `getPipelines: ${f} parsed to null — skipping`);
+        return parsed;
+      } catch (e) {
+        log('warn', `getPipelines: ${f} is invalid JSON — skipping (${e.message})`);
+        return null;
+      }
+    })
     .filter(Boolean);
 }
 

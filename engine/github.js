@@ -330,8 +330,10 @@ async function pollPrStatus(config) {
       }
 
       let newReviewStatus = pr.reviewStatus || 'pending';
-      if (states.some(s => s === 'CHANGES_REQUESTED')) {
-        // Don't re-trigger if fix agent already responded — wait for re-review
+      // Once approved, it stays approved permanently
+      if (pr.reviewStatus === 'approved') {
+        newReviewStatus = 'approved';
+      } else if (states.some(s => s === 'CHANGES_REQUESTED')) {
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
           newReviewStatus = 'waiting';
         } else {
@@ -340,8 +342,6 @@ async function pollPrStatus(config) {
       }
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
-      // If all reviews were COMMENTED (filtered out), states is empty but reviews exist.
-      // Set to 'waiting' instead of leaving as 'pending' to prevent infinite review re-dispatch.
       else if (states.length === 0 && reviews.length > 0 && newReviewStatus === 'pending') newReviewStatus = 'waiting';
 
       if (pr.reviewStatus !== newReviewStatus) {
@@ -400,8 +400,9 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
-          // Build transitioned — clear grace period so next failure can trigger immediately
+          // Build transitioned — clear grace period and auto-complete flag
           delete pr._buildFixPushedAt;
+          if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
             delete pr._buildFailNotified;
             delete pr.buildErrorLog;
@@ -483,9 +484,11 @@ async function pollPrHumanComments(config) {
 
     // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
     // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
     function _isBot(c) {
       if (c.user?.type === 'Bot') return true;
       const login = (c.user?.login || '').toLowerCase();
+      if (ignoredAuthors.has(login)) return true;
       if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
       const body = c.body || '';
       if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;

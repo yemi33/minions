@@ -766,7 +766,10 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    if (postReviewStatus) target.reviewStatus = postReviewStatus; // only update if live check returned decisive result
+    // Once approved, stays approved permanently — no path can downgrade
+    if (postReviewStatus && target.reviewStatus !== 'approved') {
+      target.reviewStatus = postReviewStatus;
+    }
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,
@@ -800,7 +803,8 @@ function updatePrAfterFix(pr, project, source) {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = 'waiting';
+    // Never downgrade from approved — fix was dispatched but PR is already approved
+    if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
     // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
@@ -1089,7 +1093,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     let enrichedBlock = block;
     if (!m('author')) enrichedBlock = enrichedBlock.replace('---\n', `---\nauthor: ${agentName}\n`);
     if (!m('created')) enrichedBlock = enrichedBlock.replace('---\n', `---\ncreated: ${dateStamp()}\n`);
-    const filename = name.replace(/[^a-z0-9-]/g, '-') + '.md';
+    const skillDirName = name.replace(/[^a-z0-9-]/g, '-');
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
@@ -1100,7 +1104,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
           if (data.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED)) return data;
           skillId = `SK${String(data.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           data.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
-            description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
+            description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${skillDirName}/SKILL.md\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           return data;
         });
