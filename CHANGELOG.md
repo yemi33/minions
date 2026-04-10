@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.766 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
 ## 0.1.764 (2026-04-10)
 
 ### Features
