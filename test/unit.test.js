@@ -9948,11 +9948,10 @@ async function testAutoRecoveryAndAtomicity() {
     await teams.teamsPostCCResponse('test', 'response');
   });
 
-  await test('teamsPostCCResponse truncates at 4000 chars', () => {
+  await test('teamsPostCCResponse uses buildCCResponseCard', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
     const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
-    assert.ok(fn.includes('maxLen = 4000'), 'should truncate at 4000 chars');
-    assert.ok(fn.includes('[see dashboard]'), 'should add dashboard link suffix');
+    assert.ok(fn.includes('cards.buildCCResponseCard'), 'should use card builder');
   });
 
   await test('teamsPostCCResponse has 5s rate limit', () => {
@@ -10006,14 +10005,13 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes("'agent-failed'"), 'should map failure to agent-failed');
   });
 
-  await test('teamsNotifyCompletion formats message with agent, title, result, and PR link', () => {
+  await test('teamsNotifyCompletion uses buildCompletionCard with agent, title, result', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
     const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
     assert.ok(fn.includes('agentId'), 'should include agent ID');
     assert.ok(fn.includes('title'), 'should include task title');
     assert.ok(fn.includes('result'), 'should include result status');
-    assert.ok(fn.includes('prLink') || fn.includes('pr'), 'should handle PR link');
-    assert.ok(fn.includes('dashboard'), 'should include dashboard link');
+    assert.ok(fn.includes('cards.buildCompletionCard'), 'should use card builder');
   });
 
   await test('Dead TEAMS_PLAN_FLOW_URL block is removed from lifecycle.js', () => {
@@ -10047,14 +10045,12 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
   });
 
-  await test('teamsNotifyPrEvent formats message with PR title, link, event, project, agent', () => {
+  await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
     const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
-    assert.ok(fn.includes('pr.title'), 'should include PR title');
-    assert.ok(fn.includes('pr.url'), 'should include PR link');
-    assert.ok(fn.includes('event'), 'should include event type');
-    assert.ok(fn.includes('project'), 'should include project');
-    assert.ok(fn.includes('pr.agent'), 'should include agent');
+    assert.ok(fn.includes('cards.buildPrCard'), 'should use card builder');
+    assert.ok(fn.includes('event'), 'should pass event');
+    assert.ok(fn.includes('project'), 'should pass project');
   });
 
   await test('handlePostMerge calls teamsNotifyPrEvent for merge and abandon', () => {
@@ -10089,13 +10085,12 @@ async function testAutoRecoveryAndAtomicity() {
     await teams.teamsNotifyPlanEvent({ name: 'test plan' }, 'plan-completed');
   });
 
-  await test('teamsNotifyPlanEvent filters by notifyEvents and formats message', () => {
+  await test('teamsNotifyPlanEvent filters by notifyEvents and uses buildPlanCard', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
     const fn = src.slice(src.indexOf('async function teamsNotifyPlanEvent'));
     assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
     assert.ok(fn.includes('planInfo.name'), 'should use plan name');
-    assert.ok(fn.includes('doneCount'), 'should include item counts');
-    assert.ok(fn.includes('dashboard'), 'should include dashboard link');
+    assert.ok(fn.includes('cards.buildPlanCard'), 'should use card builder for plan notifications');
   });
 
   await test('checkPlanCompletion hooks Teams for plan-completed and verify-created', () => {
@@ -10118,6 +10113,72 @@ async function testAutoRecoveryAndAtomicity() {
     const fn = src.slice(src.indexOf('async function handlePlansReject'));
     assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
     assert.ok(fn.includes("'plan-rejected'"), 'should notify plan-rejected');
+  });
+
+  await test('engine/teams-cards.js exports all 4 card builders', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    assert.strictEqual(typeof cards.buildCompletionCard, 'function');
+    assert.strictEqual(typeof cards.buildPrCard, 'function');
+    assert.strictEqual(typeof cards.buildPlanCard, 'function');
+    assert.strictEqual(typeof cards.buildCCResponseCard, 'function');
+  });
+
+  await test('Adaptive Cards use schema v1.4 and have fallback text', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'test' }, 'success');
+    assert.strictEqual(card.version, '1.4', 'should use schema v1.4');
+    assert.strictEqual(card.type, 'AdaptiveCard', 'should be AdaptiveCard type');
+    assert.ok(card.fallbackText, 'should have fallback text');
+    assert.ok(card.actions.some(a => a.type === 'Action.OpenUrl'), 'should have OpenUrl actions');
+  });
+
+  await test('buildCompletionCard includes agent, title, result badge, PR link', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'Fix bug' }, 'success', 'https://pr');
+    assert.ok(card.fallbackText.includes('dallas'), 'fallback should include agent');
+    assert.ok(card.fallbackText.includes('Fix bug'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link action');
+    assert.ok(card.actions.some(a => a.title === 'Open Dashboard'), 'should have dashboard link');
+  });
+
+  await test('buildPrCard includes PR title, event, author', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPrCard({ id: 'PR-1', title: 'My PR', agent: 'dallas', url: 'https://pr' }, 'pr-merged', { name: 'test' });
+    assert.ok(card.fallbackText.includes('pr-merged'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('My PR'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link');
+  });
+
+  await test('buildPlanCard includes plan name, event, item counts', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPlanCard({ name: 'My Plan', doneCount: 3, totalCount: 5 }, 'plan-completed');
+    assert.ok(card.fallbackText.includes('plan-completed'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('3/5'), 'fallback should include counts');
+    assert.ok(card.actions.some(a => a.url.includes('/prd')), 'should link to PRD page');
+  });
+
+  await test('buildCCResponseCard truncates long answers', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const longAnswer = 'x'.repeat(4000);
+    const card = cards.buildCCResponseCard('question', longAnswer);
+    const bodyText = card.body.find(b => b.text && b.text.includes('x'));
+    assert.ok(bodyText.text.length < 4000, 'should truncate long answers');
+    assert.ok(bodyText.text.endsWith('...'), 'should end with ellipsis');
+  });
+
+  await test('teamsPost/teamsReply accept Adaptive Card objects', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('function toActivity(content)'), 'should have toActivity helper');
+    assert.ok(src.includes('AdaptiveCard'), 'toActivity should handle AdaptiveCard type');
+    assert.ok(src.includes('application/vnd.microsoft.card.adaptive'), 'should use adaptive card content type');
+  });
+
+  await test('Notification functions use card builders', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('cards.buildCompletionCard'), 'teamsNotifyCompletion should use buildCompletionCard');
+    assert.ok(src.includes('cards.buildPrCard'), 'teamsNotifyPrEvent should use buildPrCard');
+    assert.ok(src.includes('cards.buildPlanCard'), 'teamsNotifyPlanEvent should use buildPlanCard');
+    assert.ok(src.includes('cards.buildCCResponseCard'), 'teamsPostCCResponse should use buildCCResponseCard');
   });
 
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {

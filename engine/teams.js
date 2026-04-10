@@ -10,6 +10,7 @@ const queries = require('./queries');
 
 const { log, safeJson, mutateJsonFileLocked, ENGINE_DEFAULTS } = shared;
 const { ENGINE_DIR, getConfig } = queries;
+const cards = require('./teams-cards');
 
 const TEAMS_STATE_PATH = path.join(ENGINE_DIR, 'teams-state.json');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
@@ -109,17 +110,38 @@ function getConversationRef(key) {
 }
 
 /**
+ * Build an activity object from text or Adaptive Card.
+ * @param {string|object} content — plain text string or Adaptive Card object (with type: 'AdaptiveCard')
+ * @returns {string|object} — activity-compatible value for sendActivity
+ */
+function toActivity(content) {
+  if (typeof content === 'string') return content;
+  if (content && content.type === 'AdaptiveCard') {
+    return {
+      type: 'message',
+      text: content.fallbackText || '',
+      attachments: [{
+        contentType: 'application/vnd.microsoft.card.adaptive',
+        content,
+      }],
+    };
+  }
+  return String(content);
+}
+
+/**
  * Reply to an existing Teams conversation turn.
  * No-op when adapter is null (Teams disabled or botbuilder missing).
  * @param {object} context — TurnContext from bot handler
- * @param {string} text — message text to send
+ * @param {string|object} content — message text or Adaptive Card object
  */
-async function teamsReply(context, text) {
+async function teamsReply(context, content) {
   const adapter = createAdapter();
   if (!adapter || !context) return;
   try {
-    await context.sendActivity(text);
-    log('info', `Teams reply sent (${text.length} chars)`);
+    await context.sendActivity(toActivity(content));
+    const len = typeof content === 'string' ? content.length : JSON.stringify(content).length;
+    log('info', `Teams reply sent (${len} chars)`);
   } catch (err) {
     log('warn', `Teams reply failed: ${err.message}`);
   }
@@ -129,9 +151,9 @@ async function teamsReply(context, text) {
  * Proactively post a message to a saved Teams conversation.
  * No-op when adapter is null or conversation ref is not found.
  * @param {string} key — conversation key used in saveConversationRef
- * @param {string} text — message text to send
+ * @param {string|object} content — message text or Adaptive Card object
  */
-async function teamsPost(key, text) {
+async function teamsPost(key, content) {
   const adapter = createAdapter();
   if (!adapter) return;
 
@@ -142,10 +164,12 @@ async function teamsPost(key, text) {
   }
 
   try {
+    const activity = toActivity(content);
     await adapter.continueConversationAsync(getTeamsConfig().appId, ref, async (context) => {
-      await context.sendActivity(text);
+      await context.sendActivity(activity);
     });
-    log('info', `Teams proactive message sent to ${key} (${text.length} chars)`);
+    const len = typeof content === 'string' ? content.length : JSON.stringify(content).length;
+    log('info', `Teams proactive message sent to ${key} (${len} chars)`);
   } catch (err) {
     log('warn', `Teams proactive post failed for ${key}: ${err.message}`);
   }
@@ -237,12 +261,7 @@ async function teamsPostCCResponse(userMessage, ccResponse) {
   if (now - _lastCCMirrorPost < CC_MIRROR_RATE_LIMIT_MS) return;
   _lastCCMirrorPost = now;
 
-  const maxLen = 4000;
-  const truncatedResponse = ccResponse.length > maxLen
-    ? ccResponse.slice(0, maxLen) + '... [see dashboard](http://localhost:7331)'
-    : ccResponse;
-
-  const formatted = `**CC** — _${userMessage.slice(0, 200)}_\n\n${truncatedResponse}`;
+  const card = cards.buildCCResponseCard(userMessage, ccResponse);
 
   // Find first available conversation ref
   const state = safeJson(TEAMS_STATE_PATH) || {};
@@ -252,8 +271,8 @@ async function teamsPostCCResponse(userMessage, ccResponse) {
     return;
   }
 
-  await teamsPost(convKeys[0], formatted);
-  log('info', `Teams CC mirror sent (${formatted.length} chars)`);
+  await teamsPost(convKeys[0], card);
+  log('info', `Teams CC mirror sent`);
 }
 
 // ── Post-Completion Notifications ──────────────────────────────────────────
@@ -271,12 +290,10 @@ async function teamsNotifyCompletion(dispatchItem, result, agentId) {
   const eventType = result === 'success' ? 'agent-completed' : 'agent-failed';
   if (!cfg.notifyEvents || !cfg.notifyEvents.includes(eventType)) return;
 
-  const emoji = result === 'success' ? 'Done' : 'Failed';
   const title = dispatchItem.task || dispatchItem.meta?.item?.title || dispatchItem.id;
-  const prLink = dispatchItem.meta?.pr?.url || dispatchItem.pr || '';
-  const prText = prLink ? ` | [PR](${prLink})` : '';
-
-  const text = `**${emoji}** — _${agentId}_ ${result}: ${title}${prText} | [dashboard](http://localhost:7331)`;
+  const prUrl = dispatchItem.meta?.pr?.url || dispatchItem.pr || '';
+  const item = { title, id: dispatchItem.meta?.item?.id || dispatchItem.id };
+  const card = cards.buildCompletionCard(agentId, item, result, prUrl || undefined);
 
   // Find first available conversation ref
   const state = safeJson(TEAMS_STATE_PATH) || {};
@@ -284,7 +301,7 @@ async function teamsNotifyCompletion(dispatchItem, result, agentId) {
   if (convKeys.length === 0) return;
 
   try {
-    await teamsPost(convKeys[0], text);
+    await teamsPost(convKeys[0], card);
     log('info', `Teams completion notification sent for ${dispatchItem.id} (${result})`);
   } catch (err) {
     log('warn', `Teams completion notification failed: ${err.message}`);
@@ -309,13 +326,7 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
   // Dedup check — don't re-notify the same event
   if (pr._teamsNotifiedEvents && pr._teamsNotifiedEvents.includes(event)) return;
 
-  const prLink = pr.url || '';
-  const linkText = prLink ? ` | [PR](${prLink})` : '';
-  const projectName = project?.name || 'unknown';
-  const agent = pr.agent || 'unknown';
-  const title = pr.title || pr.id || 'Untitled PR';
-
-  const text = `**${event}** — _${agent}_ | ${title} (${projectName})${linkText} | [dashboard](http://localhost:7331)`;
+  const card = cards.buildPrCard(pr, event, project);
 
   // Find first available conversation ref
   const state = safeJson(TEAMS_STATE_PATH) || {};
@@ -323,7 +334,7 @@ async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
   if (convKeys.length === 0) return;
 
   try {
-    await teamsPost(convKeys[0], text);
+    await teamsPost(convKeys[0], card);
     log('info', `Teams PR notification sent: ${event} for ${pr.id}`);
 
     // Record dedup — update _teamsNotifiedEvents on PR via lock
@@ -357,15 +368,14 @@ async function teamsNotifyPlanEvent(planInfo, event) {
   if (!cfg.notifyEvents || !cfg.notifyEvents.includes(event)) return;
 
   const planName = planInfo.name || planInfo.file || 'Unknown plan';
-  const counts = planInfo.doneCount != null ? ` (${planInfo.doneCount}/${planInfo.totalCount} items)` : '';
-  const text = `**${event}** — ${planName}${counts} | [dashboard](http://localhost:7331)`;
+  const card = cards.buildPlanCard(planInfo, event);
 
   const state = safeJson(TEAMS_STATE_PATH) || {};
   const convKeys = Object.keys(state.conversations || {});
   if (convKeys.length === 0) return;
 
   try {
-    await teamsPost(convKeys[0], text);
+    await teamsPost(convKeys[0], card);
     log('info', `Teams plan notification sent: ${event} for ${planName}`);
   } catch (err) {
     log('warn', `Teams plan notification failed: ${err.message}`);
