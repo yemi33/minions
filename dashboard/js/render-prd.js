@@ -149,9 +149,11 @@ function renderPrdProgress(prog) {
   }
 
   const renderItem = (i) => {
-    const prLinks = (i.prs || []).map(pr =>
-      '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>'
-    ).join(' ');
+    const prLinks = (i.prs || []).map(function(pr) {
+      var statusColor = pr.status === 'merged' ? 'var(--green)' : pr.status === 'abandoned' ? 'var(--red)' : 'var(--blue)';
+      var statusIcon = pr.status === 'merged' ? '✓' : pr.status === 'abandoned' ? '✗' : '○';
+      return '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px;color:' + statusColor + '" title="' + escHtml((pr.title || '') + ' (' + (pr.status || 'active') + ')') + '">' + statusIcon + ' ' + escHtml(pr.id) + '</a>';
+    }).join(' ');
     const projBadges = (i.projects || []).map(p =>
       '<span class="prd-project-badge">' + escHtml(p) + '</span>'
     ).join(' ');
