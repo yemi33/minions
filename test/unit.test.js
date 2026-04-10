@@ -4207,6 +4207,8 @@ async function testExtractSkills() {
     const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
     assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
     assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
+    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item path should use directory/SKILL.md format, not flat .md');
+    assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item path should NOT use flat .md format');
   });
 
   restore();
