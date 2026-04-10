@@ -6758,6 +6758,9 @@ async function main() {
     // CC Multi-Tab Conversations
     await testCCMultiTab();
 
+    // PR review→fix, poll→fix, merge conflict, auto-complete flows
+    await testPrReviewFixFlows();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -12336,6 +12339,248 @@ async function testIssue716HeartbeatFeedbackLoop() {
       assert.ok(!match.includes('realActivityMap'),
         'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
     }
+  });
+}
+
+// ─── PR Review→Fix, Poll→Fix, Merge Conflict, Auto-Complete Flows ──────────
+
+async function testPrReviewFixFlows() {
+  console.log('\n── PR Review→Fix Flow ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+
+  // ── Review dispatch ──
+
+  await test('review dispatch gated by evalEscalated', () => {
+    assert.ok(engineSrc.includes('!evalEscalated') && engineSrc.includes('needsReview'),
+      'needsReview should include !evalEscalated check');
+  });
+
+  await test('review dispatch includes PR title in label', () => {
+    assert.ok(engineSrc.includes('Review ${pr.id}: ${pr.title}'),
+      'Review label should include pr.title');
+  });
+
+  await test('review dispatch has pre-dispatch live vote check', () => {
+    assert.ok(engineSrc.includes('checkLiveReview') && engineSrc.includes('liveStatus'),
+      'Should check live review status before dispatching');
+  });
+
+  // ── Review-fix dispatch ──
+
+  await test('review-fix dispatch gated by evalEscalated', () => {
+    assert.ok(engineSrc.includes("changes-requested' && !awaitingReReview && !evalEscalated"),
+      'Review-fix should check !evalEscalated');
+  });
+
+  await test('review-fix increments _reviewFixCycles', () => {
+    assert.ok(engineSrc.includes('_reviewFixCycles') && engineSrc.includes('review-fix cycles'),
+      'Should increment _reviewFixCycles on review-fix dispatch');
+  });
+
+  await test('review-fix sets fixDispatched flag', () => {
+    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with pending human feedback'));
+    assert.ok(fixBlock.includes('fixDispatched = true'), 'Should set fixDispatched after review-fix');
+  });
+
+  // ── Human feedback fix ──
+
+  await test('human feedback fix NOT gated by evalEscalated', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('evalEscalated'), 'Human feedback should NOT be gated by evalEscalated');
+  });
+
+  await test('human feedback fix does NOT increment _reviewFixCycles', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('_reviewFixCycles'), 'Human feedback should NOT increment cycle counter');
+  });
+
+  await test('human feedback fix sets fixDispatched', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
+  });
+
+  // ── Eval escalation ──
+
+  await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
+    const startIdx = engineSrc.indexOf('cycle cap');
+    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const escalBlock = engineSrc.slice(startIdx, endIdx);
+    assert.ok(escalBlock.length > 10, 'Should find escalation block');
+    assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
+    assert.ok(escalBlock.includes('evalEscalated'), 'Should set evalEscalated flag');
+  });
+
+  await test('eval escalation writes inbox alert', () => {
+    assert.ok(engineSrc.includes('Review Loop Escalation'), 'Should write escalation alert to inbox');
+  });
+
+  await test('eval escalation uses evalMaxIterations from config', () => {
+    assert.ok(engineSrc.includes('evalMaxIterations'), 'Should read evalMaxIterations from config');
+  });
+
+  // ── Review vote protection ──
+
+  console.log('\n── Vote Protection ──');
+
+  await test('GitHub: approved never downgraded unless CHANGES_REQUESTED', () => {
+    const reviewBlock = ghSrc.slice(ghSrc.indexOf('let newReviewStatus'), ghSrc.indexOf('if (pr.reviewStatus !== newReviewStatus)'));
+    assert.ok(reviewBlock.includes("pr.reviewStatus === 'approved'") && reviewBlock.includes("newReviewStatus = 'approved'"),
+      'GitHub poller should preserve approved status');
+  });
+
+  await test('ADO: approved never downgraded unless vote -10', () => {
+    const reviewBlock = adoSrc.slice(adoSrc.indexOf('let newReviewStatus'), adoSrc.indexOf('Store human reviewer'));
+    assert.ok(reviewBlock.includes("pr.reviewStatus === 'approved'") && reviewBlock.includes("newReviewStatus = 'approved'"),
+      'ADO poller should preserve approved status');
+  });
+
+  await test('updatePrAfterReview never downgrades approved', () => {
+    assert.ok(lifecycleSrc.includes("target.reviewStatus === 'approved'") && lifecycleSrc.includes("!== 'changes-requested'"),
+      'updatePrAfterReview should guard against downgrading approved');
+  });
+
+  await test('updatePrAfterReview defaults to null (no change) when live check is pending', () => {
+    assert.ok(lifecycleSrc.includes('let postReviewStatus = null'),
+      'Default should be null (do not change) not waiting or pending');
+  });
+
+  await test('_reviewFixCycles reset on approval (GitHub)', () => {
+    assert.ok(ghSrc.includes("delete pr._reviewFixCycles") && ghSrc.includes("delete pr._evalEscalated"),
+      'GitHub should clear cycle counter on approval');
+  });
+
+  await test('_reviewFixCycles reset on approval (ADO)', () => {
+    assert.ok(adoSrc.includes("delete pr._reviewFixCycles") && adoSrc.includes("delete pr._evalEscalated"),
+      'ADO should clear cycle counter on approval');
+  });
+
+  // ── updatePrAfterReview passes resultSummary ──
+
+  await test('updatePrAfterReview receives resultSummary for review note', () => {
+    assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary)'),
+      'updatePrAfterReview should accept resultSummary parameter');
+    assert.ok(lifecycleSrc.includes('resultSummary || completedEntry'),
+      'Should use resultSummary as primary note source');
+  });
+
+  // ── Build fix ──
+
+  console.log('\n── Build Fix Flow ──');
+
+  await test('build fix NOT gated by evalEscalated', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts') || engineSrc.length);
+    assert.ok(!buildBlock.includes('evalEscalated'), 'Build fix should NOT be gated by evalEscalated');
+  });
+
+  await test('build fix has grace period (_buildFixPushedAt)', () => {
+    assert.ok(engineSrc.includes('_buildFixPushedAt') && engineSrc.includes('buildFixGracePeriod'),
+      'Should check grace period before re-dispatching build fix');
+  });
+
+  await test('build fix escalates after maxBuildFixAttempts', () => {
+    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('buildFixEscalated'),
+      'Should escalate after max attempts');
+  });
+
+  await test('_autoCompleted reset when build goes red', () => {
+    assert.ok(ghSrc.includes("'failing') delete pr._autoCompleted"),
+      'GitHub should reset _autoCompleted on build failure');
+    assert.ok(adoSrc.includes("'failing') delete pr._autoCompleted"),
+      'ADO should reset _autoCompleted on build failure');
+  });
+
+  await test('GitHub error logs fetch annotations + job log (always)', () => {
+    assert.ok(ghSrc.includes('hasUsefulAnnotations') && ghSrc.includes('actions/jobs'),
+      'Should fetch both annotations and job logs');
+  });
+
+  await test('ADO build detection uses builds API not status checks', () => {
+    assert.ok(adoSrc.includes('_apis/build/builds') && adoSrc.includes('sourceVersion === mergeCommitId'),
+      'ADO should query builds API with merge commit hash');
+  });
+
+  await test('ADO partiallySucceeded counts as passing', () => {
+    assert.ok(adoSrc.includes('partiallySucceeded'), 'ADO should treat partiallySucceeded as passing');
+  });
+
+  // ── Merge conflict fix ──
+
+  console.log('\n── Merge Conflict Fix ──');
+
+  await test('GitHub detects merge conflicts via mergeable field', () => {
+    assert.ok(ghSrc.includes('prData.mergeable === false') && ghSrc.includes('_mergeConflict'),
+      'GitHub should detect conflicts via mergeable field');
+  });
+
+  await test('ADO detects merge conflicts via mergeStatus', () => {
+    assert.ok(adoSrc.includes("mergeStatus === 'conflicts'") && adoSrc.includes('_mergeConflict'),
+      'ADO should detect conflicts via mergeStatus');
+  });
+
+  await test('merge conflict fix dispatched in discoverFromPrs', () => {
+    assert.ok(engineSrc.includes('_mergeConflict') && engineSrc.includes('conflict-fix-'),
+      'Should dispatch conflict fix with unique dispatch key');
+  });
+
+  await test('merge conflict fix gated by fixDispatched', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.includes('!fixDispatched'), 'Conflict fix should be gated by fixDispatched');
+  });
+
+  await test('_mergeConflict cleared when conflict resolves', () => {
+    assert.ok(ghSrc.includes("delete pr._mergeConflict"), 'GitHub should clear flag');
+    assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');
+  });
+
+  // ── Auto-complete ──
+
+  console.log('\n── Auto-Complete ──');
+
+  await test('auto-complete is opt-in (=== true)', () => {
+    assert.ok(ghSrc.includes('autoCompletePrs === true'), 'GitHub auto-complete should be opt-in');
+    assert.ok(adoSrc.includes('autoCompletePrs === true'), 'ADO auto-complete should be opt-in');
+  });
+
+  await test('auto-complete requires both approved and passing', () => {
+    assert.ok(ghSrc.includes("reviewStatus === 'approved'") && ghSrc.includes("buildStatus === 'passing'") && ghSrc.includes('_autoCompleted'),
+      'GitHub should require both conditions');
+  });
+
+  await test('GitHub merge method validated against whitelist', () => {
+    assert.ok(ghSrc.includes("['squash', 'merge', 'rebase']"),
+      'Merge method should be validated');
+  });
+
+  // ── Agent comment filtering ──
+
+  console.log('\n── Comment Filtering ──');
+
+  await test('agent comments included in context but do not trigger fix', () => {
+    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('!isAgent'),
+      'GitHub should detect agent comments and exclude from trigger');
+  });
+
+  await test('Minions signature patterns detected', () => {
+    assert.ok(ghSrc.includes("Minions\\s*\\(") && ghSrc.includes("by\\s+Minions"),
+      'Should detect both "Minions (" and "by Minions" patterns');
+  });
+
+  await test('agent comments advance cutoff without triggering', () => {
+    assert.ok(ghSrc.includes('agent comments only') || ghSrc.includes('allNewDates'),
+      'Cutoff should advance past agent comments to prevent re-scan');
+  });
+
+  // ── Label readability ──
+
+  await test('dispatch labels include PR title (no redundant PR prefix)', () => {
+    assert.ok(engineSrc.includes('Review ${pr.id}: ${pr.title}'), 'Review label should have title');
+    assert.ok(engineSrc.includes('Fix ${pr.id}: ${pr.title'), 'Fix label should have title');
+    assert.ok(!engineSrc.includes('Review PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
+    assert.ok(!engineSrc.includes('Fix PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
   });
 }
 
