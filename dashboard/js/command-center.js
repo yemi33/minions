@@ -244,7 +244,7 @@ function ccRenderTabBar() {
   for (var i = 0; i < _ccTabs.length; i++) {
     var t = _ccTabs[i];
     var isActive = t.id === _ccActiveTabId;
-    html += '<div class="cc-tab' + (isActive ? ' active' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
+    html += '<div class="cc-tab' + (isActive ? ' active' : '') + (t._sending ? ' working' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
     html += '<span class="cc-tab-text">' + escHtml(t.title) + '</span>';
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
@@ -433,7 +433,8 @@ async function _ccDoSend(message, skipUserMsg) {
   activeTab._sending = true;
   activeTab._sendStartedAt = Date.now();
   activeTab._abortController = new AbortController();
-  _ccSending = true; // UI indicator
+  _ccSending = true;
+  ccRenderTabBar();
   var _wasAborted = false;
   try { localStorage.setItem('cc-sending', JSON.stringify({ sending: true, startedAt: Date.now() })); } catch {}
 
@@ -635,9 +636,9 @@ async function _ccDoSend(message, skipUserMsg) {
   } finally {
     if (activeTab) { activeTab._sending = false; activeTab._abortController = null; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
+    ccRenderTabBar();
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
-    // Show notification badge on CC button if drawer is closed
     if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
   return _wasAborted;
