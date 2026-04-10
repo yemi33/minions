@@ -730,7 +730,10 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
-  let postReviewStatus = 'waiting';
+  // Default to 'pending' (not 'waiting') — if platform hasn't propagated the vote yet,
+  // 'pending' lets the next poll cycle pick it up. 'waiting' would trigger the awaitingReReview
+  // gate and block the PR until the fix→re-review flow runs.
+  let postReviewStatus = 'pending';
   try {
     const projectObj = project || shared.getProjects(config)[0];
     if (projectObj) {
@@ -739,7 +742,6 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
       const liveStatus = await checkFn(pr, projectObj);
-      // Use live status only if it's a decisive verdict (not 'pending' — review may not have propagated yet)
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
