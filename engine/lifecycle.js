@@ -751,7 +751,10 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    if (postReviewStatus) target.reviewStatus = postReviewStatus; // only update if live check returned decisive result
+    // Only update if live check returned decisive result; never downgrade from 'approved' unless explicitly rejected
+    if (postReviewStatus && !(target.reviewStatus === 'approved' && postReviewStatus !== 'changes-requested')) {
+      target.reviewStatus = postReviewStatus;
+    }
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,

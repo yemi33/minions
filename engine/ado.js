@@ -306,6 +306,8 @@ async function pollPrStatus(config) {
         }
       }
       else if (votes.some(v => v >= 5)) newReviewStatus = 'approved';
+      // Never downgrade from 'approved' — only -10 (reject) can override it
+      else if (pr.reviewStatus === 'approved') newReviewStatus = 'approved';
       else if (votes.some(v => v === -5)) newReviewStatus = 'waiting';
       else newReviewStatus = 'pending';
     }
