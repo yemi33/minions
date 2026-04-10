@@ -730,10 +730,9 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
-  // Default to 'pending' (not 'waiting') — if platform hasn't propagated the vote yet,
-  // 'pending' lets the next poll cycle pick it up. 'waiting' would trigger the awaitingReReview
-  // gate and block the PR until the fix→re-review flow runs.
-  let postReviewStatus = 'pending';
+  // If platform hasn't propagated the vote yet (returns 'pending'), keep current status unchanged.
+  // The poller will pick up the real status on the next cycle (~3 min).
+  let postReviewStatus = null; // null = don't change
   try {
     const projectObj = project || shared.getProjects(config)[0];
     if (projectObj) {
@@ -752,7 +751,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = postReviewStatus;
+    if (postReviewStatus) target.reviewStatus = postReviewStatus; // only update if live check returned decisive result
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,
