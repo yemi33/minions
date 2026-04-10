@@ -1576,9 +1576,26 @@ async function discoverFromPrs(config, project) {
     // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
+    // Review→fix cycle cap — stop after N iterations, alert human
+    const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
+    const evalCycles = pr._reviewFixCycles || 0;
+    if (evalCycles >= evalMax && !pr._evalEscalated) {
+      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+        `# Review Loop Escalation\n\n**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
+        `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
+        `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
+      try {
+        mutatePullRequests(projectPrPath(project), prs => {
+          const target = prs.find(p => p.id === pr.id);
+          if (target) target._evalEscalated = true;
+        });
+      } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
+      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
+      continue;
+    }
+
     // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
-    // Skip re-dispatch if already reviewed and no new commits pushed since last review
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed;
     if (needsReview) {
@@ -1627,7 +1644,16 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      if (item) {
+        newWork.push(item); setCooldown(key); fixDispatched = true;
+        // Increment review→fix cycle counter
+        try {
+          mutatePullRequests(projectPrPath(project), prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
+          });
+        } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
+      }
     }
 
     // PRs with pending human feedback (skip if review-fix already dispatched above)

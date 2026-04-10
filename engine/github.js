@@ -363,6 +363,11 @@ async function pollPrStatus(config) {
             } catch (err) { log('warn', `Metrics update: ${err.message}`); }
           }
         }
+        // Reset review→fix cycle counter on approval (loop succeeded)
+        if (newReviewStatus === 'approved') {
+          delete pr._reviewFixCycles;
+          delete pr._evalEscalated;
+        }
       }
     }
 

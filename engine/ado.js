@@ -341,6 +341,10 @@ async function pollPrStatus(config) {
             });
           } catch (err) { log('warn', `Metrics update: ${err.message}`); }
         }
+        if (newReviewStatus === 'approved') {
+          delete pr._reviewFixCycles;
+          delete pr._evalEscalated;
+        }
       }
     }
 
