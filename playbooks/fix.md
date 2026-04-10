@@ -29,7 +29,9 @@ Use subagents only for genuinely parallel, independent tasks. For sequential wor
 
 1. You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.
 
-2. Fix each issue listed above
+2. For each issue listed above, use your judgment:
+   - **Fix it** if the feedback is valid and improves the code
+   - **Explain your rationale** if you believe the current approach is correct — reply on the review thread explaining why, with specific reasoning (e.g., performance, consistency with codebase patterns, intentional design choice). Do NOT silently ignore feedback — always respond.
 
 3. Handle merge conflicts if any:
    - If `git pull` or the PR shows conflicts, resolve them in the worktree
@@ -64,11 +66,11 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 
 ## Resolve Review Comments
 
-After pushing, resolve each review comment/thread that you've addressed:
-- **GitHub**: Reply to each review comment confirming the fix, then resolve the conversation if possible
-- **ADO**: Reply to each thread with what was fixed, then set the thread status to `fixed` or `closed`
-
-Do NOT leave review threads open if you've addressed the finding — unresolved threads block auto-merge on some repos and create noise for human reviewers.
+After pushing, respond to each review comment/thread:
+- **If you fixed it**: Reply confirming the fix, then resolve the thread
+- **If you chose not to fix it**: Reply with your rationale explaining why the current approach is preferred — leave the thread open for the reviewer to decide
+- **GitHub**: Reply to each review comment, resolve conversations you've fixed
+- **ADO**: Reply to each thread, set status to `fixed` or `closed` for fixes; leave `active` for rationale replies
 
 ## When to Stop
 
