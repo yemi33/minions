@@ -883,17 +883,6 @@ async function handlePostMerge(pr, project, config, newStatus) {
     });
   }
 
-  const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
-  if (teamsUrl) {
-    try {
-      await fetch(teamsUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: `PR ${pr.id} merged: ${pr.title} (${project.name}) by ${pr.agent || 'unknown'}` })
-      });
-    } catch (err) { log('warn', `Teams post-merge notify failed: ${err.message}`); }
-  }
-
   log('info', `Post-merge hooks completed for ${pr.id}`);
 }
 
@@ -1485,6 +1474,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const isAutoRetry = !effectiveSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
   const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
+
+  // Teams notification — non-blocking
+  try {
+    const teams = require('./teams');
+    teams.teamsNotifyCompletion(dispatchItem, finalResult, agentId).catch(() => {});
+  } catch {}
 
   return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
 }

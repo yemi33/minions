@@ -256,6 +256,41 @@ async function teamsPostCCResponse(userMessage, ccResponse) {
   log('info', `Teams CC mirror sent (${formatted.length} chars)`);
 }
 
+// ── Post-Completion Notifications ──────────────────────────────────────────
+
+/**
+ * Notify Teams when an agent completes or fails a task.
+ * Only posts if the event type is in config.teams.notifyEvents.
+ * @param {object} dispatchItem — the dispatch entry (id, type, task, meta)
+ * @param {string} result — 'success', 'error', or 'timeout'
+ * @param {string} agentId — the agent that ran the task
+ */
+async function teamsNotifyCompletion(dispatchItem, result, agentId) {
+  if (!isTeamsEnabled()) return;
+  const cfg = getTeamsConfig();
+  const eventType = result === 'success' ? 'agent-completed' : 'agent-failed';
+  if (!cfg.notifyEvents || !cfg.notifyEvents.includes(eventType)) return;
+
+  const emoji = result === 'success' ? 'Done' : 'Failed';
+  const title = dispatchItem.task || dispatchItem.meta?.item?.title || dispatchItem.id;
+  const prLink = dispatchItem.meta?.pr?.url || dispatchItem.pr || '';
+  const prText = prLink ? ` | [PR](${prLink})` : '';
+
+  const text = `**${emoji}** — _${agentId}_ ${result}: ${title}${prText} | [dashboard](http://localhost:7331)`;
+
+  // Find first available conversation ref
+  const state = safeJson(TEAMS_STATE_PATH) || {};
+  const convKeys = Object.keys(state.conversations || {});
+  if (convKeys.length === 0) return;
+
+  try {
+    await teamsPost(convKeys[0], text);
+    log('info', `Teams completion notification sent for ${dispatchItem.id} (${result})`);
+  } catch (err) {
+    log('warn', `Teams completion notification failed: ${err.message}`);
+  }
+}
+
 // Reset cached adapter (for testing)
 function _resetAdapter() { _adapter = null; _botbuilder = null; _lastCCMirrorPost = 0; }
 
@@ -269,6 +304,7 @@ module.exports = {
   teamsPost,
   processTeamsInbox,
   teamsPostCCResponse,
+  teamsNotifyCompletion,
   CC_MIRROR_RATE_LIMIT_MS,
   TEAMS_STATE_PATH,
   TEAMS_INBOX_PATH,

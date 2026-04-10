@@ -9987,6 +9987,47 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('cfg.ccMirror'), 'should check ccMirror config');
   });
 
+  await test('teamsNotifyCompletion is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyCompletion, 'function', 'teamsNotifyCompletion should be a function');
+  });
+
+  await test('teamsNotifyCompletion returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyCompletion({ id: 'test', task: 'test' }, 'success', 'dallas');
+  });
+
+  await test('teamsNotifyCompletion filters by notifyEvents config', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes("'agent-completed'"), 'should map success to agent-completed');
+    assert.ok(fn.includes("'agent-failed'"), 'should map failure to agent-failed');
+  });
+
+  await test('teamsNotifyCompletion formats message with agent, title, result, and PR link', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('agentId'), 'should include agent ID');
+    assert.ok(fn.includes('title'), 'should include task title');
+    assert.ok(fn.includes('result'), 'should include result status');
+    assert.ok(fn.includes('prLink') || fn.includes('pr'), 'should handle PR link');
+    assert.ok(fn.includes('dashboard'), 'should include dashboard link');
+  });
+
+  await test('Dead TEAMS_PLAN_FLOW_URL block is removed from lifecycle.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(!src.includes('TEAMS_PLAN_FLOW_URL'), 'TEAMS_PLAN_FLOW_URL should be removed');
+  });
+
+  await test('runPostCompletionHooks calls teamsNotifyCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function runPostCompletionHooks'));
+    assert.ok(fn.includes('teamsNotifyCompletion'), 'should call teamsNotifyCompletion');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking with .catch');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
