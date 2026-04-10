@@ -101,13 +101,14 @@ const BUILD_ERROR_LOG_MAX_LINES = 150;
  */
 async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, seenBuildIds) {
   try {
-    // Try extracting buildId from targetUrl (e.g. .../_build/results?buildId=12345)
-    const targetUrl = failedStatus?.targetUrl || '';
-    let buildId = null;
-    const buildIdMatch = targetUrl.match(/buildId=(\d+)/);
-    if (buildIdMatch) {
-      buildId = buildIdMatch[1];
-    } else {
+    // Use pre-resolved buildId if available (from builds API query), else parse from targetUrl
+    let buildId = failedStatus?._buildId || null;
+    if (!buildId) {
+      const targetUrl = failedStatus?.targetUrl || '';
+      const buildIdMatch = targetUrl.match(/buildId=(\d+)/);
+      if (buildIdMatch) buildId = buildIdMatch[1];
+    }
+    if (!buildId) {
       // Fallback: query recent failed builds for this PR's source branch
       try {
         const branch = pr?.branch || pr?.sourceRefName?.replace('refs/heads/', '');
@@ -281,7 +282,8 @@ async function pollPrStatus(config) {
     }
 
     // Track head commit changes to detect new pushes (used for review re-dispatch gating)
-    const headCommit = prData.lastMergeSourceCommit?.commitId || prData.sourceRefName || '';
+    // Use lastMergeCommit (the merge commit), not lastMergeSourceCommit (source branch tip)
+    const headCommit = prData.lastMergeCommit?.commitId || prData.lastMergeSourceCommit?.commitId || '';
     if (headCommit && pr._adoHeadCommit !== headCommit) {
       if (pr._adoHeadCommit) { // skip first detection — only track changes
         pr.lastPushedAt = ts();
@@ -344,38 +346,45 @@ async function pollPrStatus(config) {
 
     if (newStatus !== PR_STATUS.ACTIVE) return updated;
 
-    const statusData = await adoFetch(`${repoBase}/statuses?api-version=7.1`, token);
-
-    const latest = new Map();
-    for (const s of statusData.value || []) {
-      const key = (s.context?.genre || '') + '/' + (s.context?.name || '');
-      if (!latest.has(key)) latest.set(key, s);
-    }
-
-    const buildStatuses = [...latest.values()].filter(s => {
-      const ctx = ((s.context?.genre || '') + '/' + (s.context?.name || '')).toLowerCase();
-      return /\bcodecoverage\b/.test(ctx) || /\bbuild\b/.test(ctx) ||
-             /\bdeploy\b/.test(ctx) || /(?:^|\/)ci(?:\/|$)/.test(ctx);
-    });
-
+    // Query builds API directly — status checks (/statuses) are unreliable (stale codecoverage postbacks)
+    // Use the merge commit hash to find builds for this PR
+    const mergeCommitId = prData.lastMergeCommit?.commitId;
     let buildStatus = 'none';
     let buildFailReason = '';
+    let buildStatuses = []; // for error log fetching
 
-    if (buildStatuses.length > 0) {
-      const states = buildStatuses.map(s => s.state).filter(Boolean);
-      const hasFailed = states.some(s => s === 'failed' || s === 'error');
-      const allDone = states.every(s => s === 'succeeded' || s === 'notApplicable');
-      const hasQueued = buildStatuses.some(s => !s.state);
+    if (mergeCommitId) {
+      try {
+        // Find builds where sourceVersion matches the PR's merge commit
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10&api-version=7.1`;
+        const buildsData = await adoFetch(buildsUrl, token);
+        const prBuilds = (buildsData?.value || []).filter(b =>
+          b.sourceVersion === mergeCommitId || b.sourceBranch === prData.sourceRefName
+        );
 
-      if (hasFailed) {
-        buildStatus = 'failing';
-        const failed = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
-        buildFailReason = failed?.description || failed?.context?.name || 'Build failed';
-      } else if (allDone && !hasQueued) {
-        buildStatus = 'passing';
-      } else {
-        buildStatus = 'running';
-      }
+        if (prBuilds.length > 0) {
+          // partiallySucceeded = warnings, not failures — counts as passing
+          const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
+          const allDone = prBuilds.every(b => b.status === 'completed');
+          const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
+          const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
+
+          if (hasFailed && allDone) {
+            buildStatus = 'failing';
+            const failed = prBuilds.find(b => b.result === 'failed');
+            buildFailReason = failed?.definition?.name || 'Build failed';
+            // Build fake status objects for error log fetching
+            buildStatuses = prBuilds.filter(b => b.result === 'failed').map(b => ({
+              state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
+              _buildId: String(b.id),
+            }));
+          } else if (allDone && allPassed) {
+            buildStatus = 'passing';
+          } else if (hasRunning) {
+            buildStatus = 'running';
+          }
+        }
+      } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }
 
     if (pr.buildStatus !== buildStatus) {
