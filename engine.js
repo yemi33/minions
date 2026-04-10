@@ -1576,10 +1576,11 @@ async function discoverFromPrs(config, project) {
     // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
-    // Review→fix cycle cap — stop after N iterations, alert human
+    // Review→fix cycle cap — stop review/fix dispatch after N iterations, but allow build fixes and conflict fixes
     const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
     const evalCycles = pr._reviewFixCycles || 0;
-    if (evalCycles >= evalMax && !pr._evalEscalated) {
+    const evalEscalated = evalCycles >= evalMax;
+    if (evalEscalated && !pr._evalEscalated) {
       writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
         `# Review Loop Escalation\n\n**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
         `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
@@ -1591,13 +1592,12 @@ async function discoverFromPrs(config, project) {
         });
       } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
       log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
-      continue;
     }
 
     // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed;
+    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1634,7 +1634,7 @@ async function discoverFromPrs(config, project) {
 
     // PRs with changes requested → route back to author for fix
     let fixDispatched = false;
-    if (reviewStatus === 'changes-requested' && !awaitingReReview) {
+    if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -1683,7 +1683,15 @@ async function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
       }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) {
+        newWork.push(item); setCooldown(key); fixDispatched = true;
+        try {
+          mutatePullRequests(projectPrPath(project), prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
+          });
+        } catch (e) { log('warn', 'increment review-fix cycles (human): ' + e.message); }
+      }
     }
 
     // PRs with build failures — route to author (has session context from implementing)

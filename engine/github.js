@@ -400,8 +400,9 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
-          // Build transitioned — clear grace period so next failure can trigger immediately
+          // Build transitioned — clear grace period and auto-complete flag
           delete pr._buildFixPushedAt;
+          if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
             delete pr._buildFailNotified;
             delete pr.buildErrorLog;
