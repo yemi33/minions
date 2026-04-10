@@ -582,6 +582,42 @@ function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'migrate PRD legacy statuses: ' + e.message); }
 
+  // Reset orphaned PRD item statuses — dispatched/failed with no matching work item (#779)
+  try {
+    const config = queries.getConfig();
+    const allProjects = getProjects(config);
+    const wiIds = new Set();
+    for (const project of allProjects) {
+      const items = safeJson(projectWorkItemsPath(project)) || [];
+      for (const wi of items) { if (wi?.id) wiIds.add(wi.id); }
+    }
+    try {
+      const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+      for (const wi of centralWi) { if (wi?.id) wiIds.add(wi.id); }
+    } catch { /* optional */ }
+
+    let prdDirEntries;
+    try { prdDirEntries = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); }
+    catch { prdDirEntries = []; }
+    for (const pf of prdDirEntries) {
+      const prdPath = path.join(PRD_DIR, pf);
+      const prd = safeJson(prdPath);
+      if (!prd?.missing_features) continue;
+      let reset = 0;
+      for (const feat of prd.missing_features) {
+        if ((feat.status === 'dispatched' || feat.status === 'failed') && !wiIds.has(feat.id)) {
+          feat.status = 'pending';
+          reset++;
+        }
+      }
+      if (reset > 0) {
+        safeWrite(prdPath, prd);
+        log('info', `Reset ${reset} orphaned PRD item status(es) → pending in ${pf}`);
+        cleaned++;
+      }
+    }
+  } catch (e) { log('warn', 'orphan PRD status reset: ' + e.message); }
+
   return cleaned;
 }
 

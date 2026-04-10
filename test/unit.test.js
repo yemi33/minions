@@ -2678,6 +2678,16 @@ async function testLegacyStatusMigration() {
       'cleanup should log reconciliation of failed-with-PR items');
   });
 
+  await test('cleanup.js resets orphaned PRD item statuses (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes("feat.status === 'dispatched'") && src.includes("!wiIds.has(feat.id)"),
+      'cleanup must detect orphaned dispatched PRD items with no matching work item');
+    assert.ok(src.includes("feat.status === 'failed'") && src.includes("feat.status = 'pending'"),
+      'cleanup must reset orphaned dispatched/failed PRD items to pending');
+    assert.ok(src.includes('orphaned PRD item status'),
+      'cleanup must log orphaned PRD status resets');
+  });
+
   await test('syncPrdFromPrs filter includes failed items with _pr (#407)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fnBody = src.slice(
@@ -8681,6 +8691,15 @@ async function testDashboardAuditMedium() {
       'delete must use mutateJsonFileLocked for atomic read-modify-write');
   });
 
+  await test('handleWorkItemsDelete resets PRD item status (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const deleteFn = src.slice(src.indexOf('async function handleWorkItemsDelete'), src.indexOf('async function handleWorkItemsArchive'));
+    assert.ok(deleteFn.includes('syncPrdItemStatus'),
+      'work item delete must call syncPrdItemStatus to reset PRD item status');
+    assert.ok(deleteFn.includes('item.sourcePlan'),
+      'PRD reset must check item.sourcePlan before calling syncPrdItemStatus');
+  });
+
   await test('openEditScheduleModal calls _updateCronPreview', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
     const editFn = src.match(/function openEditScheduleModal[\s\S]*?^}/m);
@@ -9990,6 +10009,16 @@ async function testAutoRecoveryAndAtomicity() {
       'PRD progress items mapping must include agent field');
     assert.ok(prdFn.includes('failReason: i._failReason') || prdFn.includes("failReason: i._failReason || ''"),
       'PRD progress items mapping must include failReason field');
+  });
+
+  await test('getPrdInfo resets orphaned dispatched/failed PRD items when work item missing (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const prdFn = src.slice(src.indexOf('function getPrdInfo'));
+    // When no work item exists and PRD status is dispatched, rawStatus should become pending
+    assert.ok(prdFn.includes("item.status === 'dispatched'") && prdFn.includes("'pending'"),
+      'getPrdInfo must reset orphaned dispatched PRD items to pending when work item is missing');
+    assert.ok(prdFn.includes("item.status === 'failed'"),
+      'getPrdInfo must also reset orphaned failed PRD items when work item is missing');
   });
 
   await test('areDependenciesMet returns failed when dep item is failed', () => {
