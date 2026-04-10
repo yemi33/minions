@@ -441,10 +441,17 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Filter out bot comments and minions's own comments
+    // Filter out bot comments, minions's own comments, and CI noise
     const humanComments = allComments.filter(c => {
       if (c.user?.type === 'Bot') return false;
       if (/\bMinions\s*\(/i.test(c.body || '')) return false;
+      // Common CI bot usernames
+      const login = (c.user?.login || '').toLowerCase();
+      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return false;
+      // Automated status comments (coverage reports, build badges, etc.)
+      const body = c.body || '';
+      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return false;
+      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return false; // badge images
       return true;
     });
 

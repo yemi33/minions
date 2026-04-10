@@ -459,6 +459,11 @@ async function pollPrHumanComments(config) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
         if (/\bMinions\s*\(/i.test(comment.content)) continue; // skip minions's own comments
+        // Skip bot/service account comments
+        const authorName = (comment.author?.displayName || '').toLowerCase();
+        if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
+        // Skip automated status comments (coverage, build reports)
+        if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(comment.content)) continue;
 
         const entry = {
           threadId: thread.id,
