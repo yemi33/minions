@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.763 (2026-04-10)
+
+### Features
+-  pulsing blue dot on CC tabs with active requests
+
+### Fixes
+-  only trigger verify when all PRD items succeed, not on partial failure
+-  clean handoff between restore and original stream intervals
+-  prevent competing thinking intervals on tab switch
+
 ## 0.1.760 (2026-04-10)
 
 ### Features
