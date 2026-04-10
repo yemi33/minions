@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.771 (2026-04-10)
+
+### Fixes
+-  clarify timeout.js error reason — "Exited with error" vs "Completed"
+
 ## 0.1.770 (2026-04-10)
 
 ### Features
