@@ -459,35 +459,37 @@ async function pollPrHumanComments(config) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
         const content = comment.content;
-        // Minions agent signatures
-        if (/\bMinions\s*\(/i.test(content)) continue;
-        if (/\b(Review|Fixed|Explored|Verified|Tested)\s+by\s+Minions\b/i.test(content)) continue;
-        if (/\[minions\]/i.test(content)) continue;
-        // Skip bot/service account comments
+        // Skip bots and CI noise
         const authorName = (comment.author?.displayName || '').toLowerCase();
         if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
-        // Short comments from same author that look agent-generated
-        if (content.length < 500 && /\b(fixed|addressed|resolved|pushed|updated|rebased)\b/i.test(content) && /\b(review|feedback|comment|finding)\b/i.test(content)) continue;
-        // Automated status comments (coverage, build reports)
         if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
+        // Detect agent comments (included in context, but don't trigger fix)
+        const isAgent = /\bMinions\s*\(/i.test(content) || /\bby\s+Minions\b/i.test(content) || /\[minions\]/i.test(content);
 
         const entry = {
           threadId: thread.id,
           commentId: comment.id,
           author: comment.author?.displayName || 'Human',
           content: comment.content,
-          date: comment.publishedDate
+          date: comment.publishedDate,
+          _isAgent: isAgent
         };
         allHumanComments.push(entry);
 
-        // Track which comments are new (for triggering — any new comment triggers a fix)
+        // Only non-agent new comments trigger a fix (agent reviews trigger via vote)
         const commentMs = comment.publishedDate ? new Date(comment.publishedDate).getTime() : 0;
-        if (commentMs && commentMs > cutoffMs) {
+        if (commentMs && commentMs > cutoffMs && !isAgent) {
           newHumanComments.push(entry);
         }
       }
     }
 
+    // Update cutoff even if only agent comments are new
+    const allNewDates = allHumanComments.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    if (allNewDates.length > 0 && newHumanComments.length === 0) {
+      pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
+      return false;
+    }
     if (newHumanComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent

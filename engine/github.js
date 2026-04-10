@@ -441,27 +441,25 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Filter out bot comments, minions agent comments, and CI noise
-    // Agents post as the PAT owner — detect by signature patterns, not account type
-    const prAuthorLogin = (prData?.user?.login || '').toLowerCase();
-    const humanComments = allComments.filter(c => {
-      if (c.user?.type === 'Bot') return false;
-      const body = c.body || '';
-      // Minions agent signatures (review, fix, explore, etc.)
-      if (/\bMinions\s*\(/i.test(body)) return false;
-      if (/\b(Review|Fixed|Explored|Verified|Tested)\s+by\s+Minions\b/i.test(body)) return false;
-      if (/\[minions\]/i.test(body)) return false;
-      // Comments from the PR author account are likely agent-generated (agents use same PAT)
-      // Only skip if the comment looks automated (short, or has agent patterns)
+    // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
+    // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    function _isBot(c) {
+      if (c.user?.type === 'Bot') return true;
       const login = (c.user?.login || '').toLowerCase();
-      if (login === prAuthorLogin && body.length < 500 && /\b(fixed|addressed|resolved|pushed|updated|rebased)\b/i.test(body)) return false;
-      // Common CI bot usernames
-      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return false;
-      // Automated status comments (coverage reports, build badges, etc.)
-      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return false;
-      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return false;
-      return true;
-    });
+      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
+      const body = c.body || '';
+      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
+      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
+      return false;
+    }
+    function _isAgentComment(c) {
+      const body = c.body || '';
+      if (/\bMinions\s*\(/i.test(body)) return true;
+      if (/\bby\s+Minions\b/i.test(body)) return true;
+      if (/\[minions\]/i.test(body)) return true;
+      return false;
+    }
+    const humanComments = allComments.filter(c => !_isBot(c));
 
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
     const cutoffMs = new Date(cutoffStr).getTime() || 0;
@@ -472,21 +470,29 @@ async function pollPrHumanComments(config) {
 
     for (const c of humanComments) {
       const date = c.created_at || c.updated_at || '';
+      const isAgent = _isAgentComment(c);
       const entry = {
         commentId: c.id,
         author: c.user?.login || 'Human',
         content: c.body || '',
-        date
+        date,
+        _isAgent: isAgent
       };
       allCommentEntries.push(entry);
 
-      // Any new comment triggers a fix — no @minions filter needed
+      // Only non-agent new comments trigger a fix (agent reviews trigger via vote, not comment)
       const dateMs = date ? new Date(date).getTime() : 0;
-      if (dateMs && dateMs > cutoffMs) {
+      if (dateMs && dateMs > cutoffMs && !isAgent) {
         newComments.push(entry);
       }
     }
 
+    // Update cutoff even if only agent comments are new (so we don't re-scan them)
+    const allNewDates = allCommentEntries.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    if (allNewDates.length > 0 && newComments.length === 0) {
+      pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
+      return false; // agent comments only — don't trigger fix
+    }
     if (newComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent
