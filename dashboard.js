@@ -3325,8 +3325,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;
+      let _ccStreamEnded = false;
       // Kill LLM process immediately if client disconnects mid-stream
-      req.on('close', () => { ccInFlightTabs.delete(tabId); if (_ccStreamAbort) _ccStreamAbort(); });
+      req.on('close', () => {
+        ccInFlightTabs.delete(tabId);
+        if (!_ccStreamEnded && _ccStreamAbort) {
+          console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
+          _ccStreamAbort();
+        }
+      });
 
       try {
         // Session management — per-tab: use sessionId from request, don't mutate global ccSession
@@ -3367,7 +3374,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           // Return null sessionId on resume failure so client clears the stale session
           const errorSessionId = (wasResume && result.code !== 0) ? null : tabSessionId;
           res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: errorSessionId }) + '\n\n');
-          res.end();
+          _ccStreamEnded = true; res.end();
           return;
         }
 
@@ -3396,14 +3403,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
         res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume }) + '\n\n');
-        res.end();
+        _ccStreamEnded = true; res.end();
       } finally {
         ccInFlightTabs.delete(tabId);
       }
     } catch (e) {
       ccInFlightTabs.delete(tabId);
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
-      try { res.end(); } catch {}
+      _ccStreamEnded = true; try { res.end(); } catch {}
     }
   }
 
