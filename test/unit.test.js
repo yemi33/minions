@@ -10156,6 +10156,30 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
   });
 
+  // ── Critical UX element regression checks ──
+  // These must run early (not in late test functions that may be skipped by earlier crashes)
+
+  await test('layout.html contains cc-tab-bar element', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    assert.ok(layout.includes('id="cc-tab-bar"'), 'layout.html must have cc-tab-bar element — CC tabs will not render without it');
+  });
+
+  await test('layout.html contains all critical CC elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['cc-tab-bar', 'cc-messages', 'cc-input', 'cc-session-info'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
+  });
+
+  await test('layout.html contains all critical modal elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['modal', 'modal-title', 'modal-body', 'modal-qa-thread'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
+  });
+
   await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
     const tmpDir = createTmpDir();
     const prFile = path.join(tmpDir, 'pull-requests.json');
