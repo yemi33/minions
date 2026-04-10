@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.770 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  increase ADO pipeline/task caps from 3 to 10, update docs
+-  ADO build detection uses builds API, not unreliable status checks
+-  handle work type names as action aliases for dispatch
+-  align Agent Usage and Engine Usage table columns
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
 ## 0.1.764 (2026-04-10)
 
 ### Features
