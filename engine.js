@@ -1683,15 +1683,7 @@ async function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
       }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) {
-        newWork.push(item); setCooldown(key); fixDispatched = true;
-        try {
-          mutatePullRequests(projectPrPath(project), prs => {
-            const target = prs.find(p => p.id === pr.id);
-            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
-          });
-        } catch (e) { log('warn', 'increment review-fix cycles (human): ' + e.message); }
-      }
+      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
