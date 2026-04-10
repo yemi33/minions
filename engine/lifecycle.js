@@ -751,8 +751,8 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    // Only update if live check returned decisive result; never downgrade from 'approved' unless explicitly rejected
-    if (postReviewStatus && !(target.reviewStatus === 'approved' && postReviewStatus !== 'changes-requested')) {
+    // Once approved, stays approved permanently — no path can downgrade
+    if (postReviewStatus && target.reviewStatus !== 'approved') {
       target.reviewStatus = postReviewStatus;
     }
     target.lastReviewedAt = ts();

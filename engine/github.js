@@ -330,8 +330,10 @@ async function pollPrStatus(config) {
       }
 
       let newReviewStatus = pr.reviewStatus || 'pending';
-      if (states.some(s => s === 'CHANGES_REQUESTED')) {
-        // Don't re-trigger if fix agent already responded — wait for re-review
+      // Once approved, it stays approved permanently
+      if (pr.reviewStatus === 'approved') {
+        newReviewStatus = 'approved';
+      } else if (states.some(s => s === 'CHANGES_REQUESTED')) {
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
           newReviewStatus = 'waiting';
         } else {
@@ -339,8 +341,6 @@ async function pollPrStatus(config) {
         }
       }
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
-      // Never downgrade from 'approved' — only CHANGES_REQUESTED can override it
-      else if (pr.reviewStatus === 'approved') newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
       else if (states.length === 0 && reviews.length > 0 && newReviewStatus === 'pending') newReviewStatus = 'waiting';
 
