@@ -730,9 +730,9 @@ async function testQueriesAgents() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
-    assert.ok(src.includes("w.status === WI_STATUS.DISPATCHED"),
+    assert.ok(src.includes("w.status !== WI_STATUS.DISPATCHED"),
       'fallback should only treat dispatched work items as working (using WI_STATUS constant)');
-    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
+    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() !== String(agentId).toLowerCase()"),
       'fallback should map by dispatched_to marker');
   });
 
