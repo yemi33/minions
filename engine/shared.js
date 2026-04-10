@@ -587,7 +587,24 @@ const PLAN_STATUS = {
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
   REVISION_REQUESTED: 'revision-requested',
 };
-const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed' };
+const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
+// PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
+const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
+
+/** Update per-agent review metrics (prsApproved/prsRejected). Only writes for configured agents. */
+function trackReviewMetric(pr, newReviewStatus, config) {
+  if (newReviewStatus !== 'approved' && newReviewStatus !== 'changes-requested') return;
+  const authorId = (pr.agent || '').toLowerCase();
+  if (!authorId || !config?.agents?.[authorId]) return;
+  try {
+    mutateJsonFileLocked(path.join(__dirname, 'metrics.json'), (metrics) => {
+      if (!metrics[authorId]) metrics[authorId] = {};
+      if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+      else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+      return metrics;
+    });
+  } catch (err) { log('warn', `Metrics update: ${err.message}`); }
+}
 const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout' };
 const PIPELINE_STATUS = {
   PENDING: 'pending', RUNNING: 'running', COMPLETED: 'completed',
@@ -1004,7 +1021,7 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
-  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,

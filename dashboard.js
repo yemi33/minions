@@ -748,7 +748,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 15 : 10,
+    maxTurns: canEdit ? 25 : 10,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
   });
@@ -2877,12 +2877,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  const docChatInFlight = new Set(); // per-document concurrency guard
   async function handleDocChat(req, res) {
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
       if (!body.document) return jsonReply(res, 400, { error: 'document required' });
 
+      // Per-document concurrency guard — prevent parallel writes to same file
+      const docKey = body.filePath || body.title || 'default';
+      if (docChatInFlight.has(docKey)) {
+        return jsonReply(res, 429, { error: 'This document is already being processed — wait for the current response.' });
+      }
+      docChatInFlight.add(docKey);
+
+      try {
       const canEdit = !!body.filePath;
       const isJson = body.filePath?.endsWith('.json');
       let currentContent = body.document;
@@ -3008,6 +3017,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions, pausedPrd });
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+      } finally { docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -3703,6 +3713,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!config.claude) config.claude = {};
       if (!config.agents) config.agents = {};
 
+      const _clamped = [];
       if (body.engine) {
         const e = body.engine;
         const D = shared.ENGINE_DEFAULTS;
@@ -3716,14 +3727,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
         };
-        const clamped = [];
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
             let val = Number(e[key]) || D[key];
             const raw = val;
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
-            if (val !== raw) clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
+            if (val !== raw) _clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
             config.engine[key] = val;
           }
         }
@@ -3787,10 +3797,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
-      const msg = clamped.length > 0
-        ? 'Settings saved. Some values were adjusted: ' + clamped.join('; ')
+      const msg = (_clamped.length > 0)
+        ? 'Settings saved. Some values were adjusted: ' + _clamped.join('; ')
         : 'Settings saved. Engine picks up changes on next tick.';
-      return jsonReply(res, 200, { ok: true, message: msg, clamped });
+      return jsonReply(res, 200, { ok: true, message: msg, clamped: _clamped });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -4148,13 +4158,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           description: '',
           agent: 'human',
           branch: '',
-          reviewStatus: autoObserve ? 'pending' : 'none',
-          status: autoObserve ? 'active' : 'linked',
+          reviewStatus: 'pending',
+          status: 'active',
           created: new Date().toISOString(),
           url,
           prdItems: [],
           _manual: true,
-          _autoObserve: !!autoObserve,
+          _contextOnly: !autoObserve,
           _context: context || '',
         });
         return prs;
