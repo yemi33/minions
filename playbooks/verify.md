@@ -153,4 +153,13 @@ Use subagents only for genuinely parallel, independent tasks (e.g., building sep
 
 ## When to Stop
 
-Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s). Stop after creating PRs.
+Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s).
+
+**IMPORTANT: Your final message MUST include the E2E PR URL(s) so the engine can track them.** Example final message:
+
+```
+Verification complete. E2E PR created: https://github.com/org/repo/pull/123
+Testing guide saved to prd/guides/verify-plan-name.md
+```
+
+Stop after confirming the PR was created.

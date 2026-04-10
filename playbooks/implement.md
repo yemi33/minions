@@ -81,4 +81,4 @@ Include build/test status and run instructions in the PR description. If the pro
 
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Do NOT continue exploring, refactoring, or adding features beyond the task description. Stop immediately.
+Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Your final message MUST include the PR URL so the engine can track it. Stop immediately after.

@@ -1,5 +1,277 @@
 # Changelog
 
+## 0.1.782 (2026-04-10)
+
+### Features
+-  fix agents resolve review threads after addressing findings
+
+### Fixes
+-  restore cc-tab-bar element + add critical UX regression tests
+
+## 0.1.780 (2026-04-10)
+
+### Features
+-  auto-complete PRs when builds green + review approved
+
+## 0.1.778 (2026-04-10)
+
+### Fixes
+-  agent comments included in context but don't trigger fix dispatch
+
+## 0.1.777 (2026-04-10)
+
+### Fixes
+-  pass reviewer's actual output to fix agent, not just task label
+
+## 0.1.776 (2026-04-10)
+
+### Features
+-  auto-rebase dependent PRs after dependency merge
+-  show PR merged/active status on PRD item links
+
+### Fixes
+-  better agent comment filtering — detect by patterns, not just signature
+-  filter CI bot noise from PR human comment detection
+
+### Other
+- refactor: shared _renderPrLink for list and graph PR status display
+
+## 0.1.771 (2026-04-10)
+
+### Fixes
+-  clarify timeout.js error reason — "Exited with error" vs "Completed"
+
+## 0.1.770 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  increase ADO pipeline/task caps from 3 to 10, update docs
+-  ADO build detection uses builds API, not unreliable status checks
+-  handle work type names as action aliases for dispatch
+-  align Agent Usage and Engine Usage table columns
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
+## 0.1.764 (2026-04-10)
+
+### Features
+-  pulsing blue dot on CC tabs with active requests
+
+### Fixes
+-  prevent stale dispatched work items from showing agent as working indefinitely
+-  only trigger verify when all PRD items succeed, not on partial failure
+-  clean handoff between restore and original stream intervals
+-  prevent competing thinking intervals on tab switch
+
+## 0.1.760 (2026-04-10)
+
+### Features
+-  show branch strategy badge on PRD group header
+
+### Fixes
+-  prevent completed SSE stream from aborting other tab's LLM process
+-  eliminate global ccSession corruption, clean up streaming state
+-  restore full streaming state (tools + partial text) on tab switch
+-  restored thinking UX matches original exactly (same bubble, layout)
+-  skip merged dependency branches instead of failing worktree setup
+-  restore same thinking UX when switching back to processing tab
+-  show thinking indicator when switching back to a processing tab
+-  CC messages go to originating tab, not whichever tab is visible
+-  tab title no longer covers close button
+-  replace stale _ccQueue/_ccAbortController references with per-tab state
+
+## 0.1.749 (2026-04-09)
+
+### Features
+-  truly parallel CC tabs — per-tab sessions, sending state, abort
+-  CC multi-tab conversations with session resume
+
+### Fixes
+-  move + button after tabs, style as folder tab
+-  clear stale sessionId on resume failure, folder-style tab UI
+-  CC tabs use per-tab sessions, not shared global session
+
+## 0.1.744 (2026-04-09)
+
+### Features
+- add prNumber field to pull-requests.json records (#711)
+
+### Fixes
+- handle max_turns exit in dispatch lifecycle cleanup (closes #716) (#735)
+-  link plan files as artifacts on plan/plan-to-prd work items
+-  escalate failed plan items instead of blocking indefinitely (closes #722) (#733)
+-  handle NUL pseudo-file in Windows worktree cleanup (#731)
+
+## 0.1.739 (2026-04-09)
+
+### Fixes
+-  heartbeat feedback loop resets own mtime-based timeout (closes #724) (#728)
+
+## 0.1.738 (2026-04-09)
+
+### Fixes
+- add regression tests for undefined DEFAULT_HEARTBEAT_TIMEOUTS (closes #721) (#726)
+-  pins not showing — invalidatePinsCache was clearing cache before async sync
+
+## 0.1.736 (2026-04-09)
+
+### Fixes
+-  remove undefined DEFAULT_HEARTBEAT_TIMEOUTS, fix 5 stale tests
+
+## 0.1.735 (2026-04-09)
+
+### Features
+-  configurable ccMaxTurns, native binary detection, relaxed CC exit check
+
+## 0.1.734 (2026-04-09)
+
+### Fixes
+-  prevent sync from overwriting pins during in-flight write
+-  merge localStorage pins to server on migration, always sync cache
+
+## 0.1.732 (2026-04-09)
+
+### Fixes
+-  notify user when settings values are clamped to allowed range
+-  raise maxConcurrent cap from 10 to 50
+
+## 0.1.730 (2026-04-09)
+
+### Features
+- Per-type heartbeat timeouts for read-heavy work types
+- playbook improvements — soften CAPS, add context-awareness, restructure decompose output
+- pipeline auto-detect — skip wait/plan stages when artifacts exist
+- replace raw status strings with WI_STATUS constants in dashboard.js
+- Soften playbook CAPS emphasis and add context-awareness guidance
+-  Add structured completion protocol to PR-producing playbooks
+-  Create engine/recovery.js with recovery recipes
+-  Add FAILURE_CLASS enum and classifyFailure() function
+-  Add AGENT_STATUS enum and worker-state tracking
+-  Validate required template variables before dispatch
+- make post-verify plan archiving opt-in via autoArchive config
+
+### Fixes
+-  show 'queued' instead of 'already dispatched' for pending work items
+-  resolve 3 failing unit tests on PR-661
+-  repair 3 pre-existing test failures in source-pattern tests
+-  merge master, sync dashboard-build jsFiles, bump HTML size limit
+-  resolve 4 pre-existing test failures breaking CI
+-  reject JSON/UUID fragments as PR titles, self-heal from platform
+
+## 0.1.725 (2026-04-09)
+
+### Fixes
+- PRD item descriptions truncated to 200 chars in plan viewer (#705)
+
+## 0.1.724 (2026-04-09)
+
+### Features
+-  server-side KB pin state so CC can pin items
+
+### Fixes
+-  hide Verify button on PRD when verify WI already exists
+-  sync KB pins from server on each render cycle
+- remove 200-char truncation from PRD item descriptions in plan viewer (closes #670) (#700)
+
+## 0.1.720 (2026-04-09)
+
+### Fixes
+-  CC "pin" always routes to KB, not pinned.md
+-  CC "pin a note" means move existing doc to KB, not create new
+
+## 0.1.717 (2026-04-09)
+
+### Features
+-  add 11 missing CC action types for comprehensive API coverage
+-  agents must check minions state before starting fresh research
+
+### Fixes
+-  add skill block format example to shared playbook
+
+## 0.1.714 (2026-04-09)
+
+### Other
+- docs: update README with session features
+
+## 0.1.713 (2026-04-09)
+
+### Fixes
+-  trigger-verify handles already-completed PRDs and existing verify WIs
+-  move re-execute action card out of doc-chat thread
+-  modal derivePlanStatus was called with wrong args, plans not cached
+
+## 0.1.710 (2026-04-09)
+
+### Fixes
+-  modal shows Execute for completed plans, missing status labels
+
+## 0.1.709 (2026-04-09)
+
+### Fixes
+-  remove auto-scroll on doc-chat session restore
+-  defer doc-chat scroll after display transition, update stale tests
+
+### Other
+- simplify: remove unused isActive, isPaused variables from plan modal
+
+## 0.1.706 (2026-04-09)
+
+### Other
+- simplify: remove dead modal button variables, fix canExecute reference
+
+## 0.1.705 (2026-04-09)
+
+### Fixes
+-  modal buttons now derive status from linked PRD when plan not in status
+
+## 0.1.704 (2026-04-09)
+
+### Other
+- docs: add PR review & fix loop documentation
+- refactor: move buildFixGracePeriod to ENGINE_DEFAULTS (no magic numbers)
+
+## 0.1.702 (2026-04-09)
+
+### Fixes
+-  build fix grace period — wait for CI before re-dispatching
+
+## 0.1.701 (2026-04-09)
+
+### Fixes
+-  prevent duplicate fix dispatch when review-fix and human-feedback fire on same tick
+-  PRD E2E section not updating when pullRequests change
+-  ADO build error log fetches all failing pipelines, not just first
+-  verify/implement playbooks must include PR URL in final message
+-  ADO build error log fallback when targetUrl lacks buildId
+-  syncPrsFromOutput missed PRs mentioned in assistant text blocks
+
+### Other
+- simplify: hoist textCreatedPattern regex out of block loop
+- refactor: reorder card buttons (Approve first), split modal approve/reject
+
+## 0.1.692 (2026-04-09)
+
+### Fixes
+-  fetch actual build error logs instead of just annotations
+
+## 0.1.691 (2026-04-09)
+
+### Features
+-  Re-execute button for plans with existing awaiting-approval PRD
+-  PR review/fix cycle pipeline, fix node rendering for never-run pipelines
+-  modal back button for artifact navigation
+-  collapsible doc-chat thread in modal
+
+### Fixes
+-  show E2E PR + testing guide in verify badge, improve PR matching
+-  add archive fallback for artifact notes when KB entry was swept
+-  link work item artifacts to KB entries, not raw archive copies
+
+### Other
+- simplify: deduplicate backFn — reuse artBackFn for note pills
+- refactor: remove dead stageFlow code from pipeline card rendering
+
 ## 0.1.683 (2026-04-09)
 
 ### Features

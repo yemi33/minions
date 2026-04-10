@@ -243,12 +243,14 @@ The web dashboard at `http://localhost:7331` provides:
 - **Meetings** — create multi-agent meetings, view live progress per round, advance/end/archive. Paginated (10/page). Create plan from meeting conclusion.
 - **Pipelines** — multi-stage pipeline builder. Create, trigger, continue past wait stages, view run history with artifact links. Paginated (10/page).
 - **Pull Requests** — paginated PR tracker (25/page) sorted by date, with review/build/merge status. Link external PRs manually.
-- **Notes & KB** — inbox (paginated, 15/page), team notes (editable), knowledge base by category (paginated, 30/page) with inline Q&A. Pinned notes for critical context.
+- **Notes & KB** — inbox (paginated, 15/page), team notes (editable), knowledge base by category (paginated, 30/page) with inline Q&A. Pin-to-top for quick reference (UI-only, localStorage). Pinned tab in KB. Protected from sweep dedup.
 - **Schedules** — create/edit/delete scheduled tasks with visual cron builder and natural language parsing. Paginated (15/page).
 - **Skills & MCP** — agent-created reusable workflows (minions-wide + project-specific), click to view full content. MCP server listing.
-- **Engine** — dispatch queue (completed paginated, 20/page), engine log (paginated, 50/page), LLM call performance (avg runtime by call type), agent metrics (with avg runtime), token usage.
-- **Settings** — engine config, eval loop, agent management, routing editor.
-- **Document modals** — inline Q&A on any document modal. Auto-polls for live updates with scroll preservation.
+- **Engine** — dispatch queue (completed paginated, 20/page), engine log (paginated, 50/page), LLM call performance (avg runtime by call type), agent metrics (with avg runtime), token usage, worktree count.
+- **Settings** — engine config, CC model/effort level, per-type max-turns, eval loop, agent management, routing editor.
+- **Document modals** — inline Q&A on any document modal. Auto-polls for live updates with scroll preservation. Back button for navigation between linked modals. Pin button for inbox/KB docs.
+- **Work item artifacts** — output logs, inbox notes (or KB entries after consolidation), branch, source plan, PR links shown as clickable pills in work item detail modal.
+- **Pipeline visualization** — horizontal node chain showing stages with type icons, status colors (pulse animation on running), arrows, condition forks, wait durations, loop indicators, and stop conditions. Compact mode on cards, full mode in detail modal.
 
 ## Project Config
 
@@ -451,7 +453,11 @@ Routing rules in `routing.md`. Charters in `agents/{name}/charter.md`. Both are 
 | `meeting-debate.md` | Meeting round 2: debate approaches |
 | `meeting-conclude.md` | Meeting round 3: synthesize conclusion |
 
-All playbooks use `{{template_variables}}` filled from project config. The `work-item.md` playbook uses `{{scope_section}}` to inject project-specific or multi-project context. Playbooks are fully customizable — edit them to match your workflow.
+All playbooks use `{{template_variables}}` filled from project config. Conditional blocks `{{#key}}...{{/key}}` are included only when the variable is truthy. Common rules from `playbooks/shared-rules.md` are auto-injected into every playbook.
+
+Every playbook has an explicit "When to Stop" section telling agents exactly what constitutes completion. Code-pushing playbooks enforce **build → test → repo checks → push** ordering. Per-type max-turns prevent runaway tool loops (explore=30, ask=20, implement=75, verify=100).
+
+Playbooks are fully customizable — edit them to match your workflow. System prompts for CC and plan advisor live in `prompts/` with `{{variable}}` substitution.
 
 ## Health Monitoring
 
@@ -541,6 +547,13 @@ Engine behavior is controlled via `config.json`. Key settings:
 | `evalMaxIterations` | 3 | Max review → fix cycles before escalating to human |
 | `evalMaxCost` | null | USD ceiling per work item across all eval iterations (null = no limit) |
 | `meetingRoundTimeout` | 600000 (10min) | Timeout per meeting round before auto-advance |
+| `ccModel` | `sonnet` | Model for Command Center and doc-chat (sonnet/haiku/opus) |
+| `ccEffort` | null | Effort level for CC/doc-chat (null/low/medium/high) |
+| `agentEffort` | null | Override effort level for all agent dispatches |
+| `maxTurnsByType` | `{}` | Per-type max-turns override (e.g., `{"explore": 40, "fix": 100}`) |
+| `maxBuildFixAttempts` | 3 | Max auto-fix dispatches per PR before escalating |
+
+Per-type max-turns defaults (when `maxTurnsByType` not set): explore=30, ask=20, review=30, plan=30, decompose=15, plan-to-prd=20, implement=75, fix=75, test=50, verify=100. Configurable from the Settings page.
 
 ### Scheduled Tasks
 
@@ -666,23 +679,29 @@ To move to a new machine: `npm install -g @yemi33/minions && minions init --forc
   routing.md             <- Dispatch rules table (generated, editable)
   notes.md               <- Team rules + consolidated learnings (generated)
   work-items.json        <- Central work queue (generated)
+  prompts/
+    cc-system.md         <- Command Center system prompt (editable, {{minions_dir}} substitution)
+    plan-advisor-system.md <- Plan review advisor prompt (editable, {{plan_path}} substitution)
   playbooks/
-    work-item.md         <- Shared work item template
-    implement.md         <- Build a PRD item
-    review.md            <- Review a PR
-    fix.md               <- Fix review feedback
-    explore.md           <- Codebase exploration
-    test.md              <- Run tests
+    shared-rules.md      <- Common rules injected into ALL playbooks automatically
+    work-item.md         <- Generic fallback template
+    implement.md         <- Build a PRD item (build → test → push → PR)
+    implement-shared.md  <- Implement on a shared branch (no individual PR)
+    review.md            <- Review a PR (comment + vote)
+    fix.md               <- Fix review feedback (build → test → push)
+    explore.md           <- Codebase exploration (write findings to inbox)
+    ask.md               <- Answer a question (write answer to inbox)
+    test.md              <- Run tests (write findings to inbox)
     build-and-test.md    <- Build project and run test suite
-    plan-to-prd.md       <- Convert plan to PRD gap items
+    plan-to-prd.md       <- Convert plan to structured PRD JSON
     plan.md              <- Generate a plan from user request
-    implement-shared.md  <- Implement on a shared branch
-    ask.md               <- Answer a question about the codebase
-    verify.md            <- Plan verification: build, test, start webapp, testing guide
+    verify.md            <- Plan verification: merge, build, test, testing guide, E2E PR
     decompose.md         <- Break large work items into 2-5 sub-tasks
     meeting-investigate.md <- Meeting round 1: research
     meeting-debate.md    <- Meeting round 2: debate
     meeting-conclude.md  <- Meeting round 3: conclude
+    templates/
+      verify-guide.md    <- Verification report template (lazy-loaded by verify agent)
   skills/                <- Agent-created reusable workflows (generated)
   agents/
     {name}/

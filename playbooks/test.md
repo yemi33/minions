@@ -39,7 +39,7 @@ Use subagents only for genuinely parallel, independent tasks. For building, test
 - If a build or test fails, report the error clearly — don't try to fix it unless asked
 - If running a local server, report the URL (e.g., http://localhost:3000)
 
-## Run Command (IMPORTANT)
+## Run Command
 
 When the build succeeds and the task involves running a server or app, output a ready-to-paste run command using **absolute paths** so the user can launch it from any terminal. Format it exactly like this:
 

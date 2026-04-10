@@ -401,9 +401,10 @@ function openPipelineDetail(id) {
   document.getElementById('modal-body').innerHTML = html;
   document.getElementById('modal').classList.add('open');
 
-  // Live-poll while modal is open and pipeline has an active run
-  if (activeRun) {
-    _pipelinePollId = id;
+  // Live-poll while modal is open — always poll (not just active runs)
+  // so the modal updates when stages advance, pipelines get triggered, etc.
+  _pipelinePollId = id;
+  if (!_pipelinePollInterval) {
     _pipelinePollInterval = setInterval(function() {
       if (!document.getElementById('modal')?.classList?.contains('open') || _pipelinePollId !== id) {
         _stopPipelinePoll(); return;
@@ -426,12 +427,29 @@ function openPipelineDetail(id) {
 }
 var _pipelinePollHash = '';
 
+/**
+ * Fetch fresh pipeline data and re-render the detail modal immediately.
+ * Used after actions (continue, trigger, abort) to avoid waiting for the 4s poll.
+ */
+async function _refreshPipelineDetail(id) {
+  try {
+    var res = await fetch('/api/pipelines');
+    var d = await res.json();
+    var fresh = (d.pipelines || []).find(function(x) { return x.id === id; });
+    if (fresh) {
+      _pipelinesData = _pipelinesData.map(function(x) { return x.id === id ? fresh : x; });
+      _pipelinePollHash = JSON.stringify(fresh.runs || []);
+      openPipelineDetail(id);
+    }
+  } catch (e) { /* silent — next poll will catch up */ }
+}
+
 async function _triggerPipeline(id, btn) {
   if (btn) { btn.textContent = 'Starting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   try {
     var res = await fetch('/api/pipelines/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
     var d = await res.json();
-    if (res.ok) { showToast('cmd-toast', 'Pipeline triggered: ' + (d.runId || ''), true); try { closeModal(); } catch {} refresh(); }
+    if (res.ok) { showToast('cmd-toast', 'Pipeline triggered: ' + (d.runId || ''), true); refresh(); await _refreshPipelineDetail(id); }
     else { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Failed: ' + (d.error || 'unknown')); }
   } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
 }
@@ -444,20 +462,8 @@ async function _abortPipeline(id, btn) {
     if (res.ok) {
       var d = await res.json().catch(function() { return {}; });
       showToast('cmd-toast', 'Pipeline aborted — ' + (d.cancelledWorkItems || 0) + ' work items cancelled', true);
-      // Replace abort button with Run Now
-      if (btn) {
-        btn.textContent = 'Run Now';
-        btn.style.color = 'var(--green)';
-        btn.style.borderColor = 'var(--green)';
-        btn.style.pointerEvents = '';
-        btn.style.opacity = '';
-        btn.onclick = function() { _triggerPipeline(id, btn); };
-        // Remove the retrigger button next to it (no longer needed)
-        var next = btn.nextElementSibling;
-        if (next && next.textContent.trim() === 'Retrigger') next.remove();
-      }
       refresh();
-      openPipelineDetail(id);
+      await _refreshPipelineDetail(id);
     } else { var d = await res.json().catch(function() { return {}; }); alert('Abort failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
   } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
@@ -470,8 +476,8 @@ async function _retriggerPipeline(id, btn) {
     var d = await res.json();
     if (res.ok) {
       showToast('cmd-toast', 'Pipeline retriggered: ' + (d.runId || ''), true);
-      if (btn) { btn.textContent = '\u2713 Retriggered'; btn.style.color = 'var(--green)'; }
-      setTimeout(function() { openPipelineDetail(id); }, 1500);
+      refresh();
+      await _refreshPipelineDetail(id);
     } else { alert('Retrigger failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
   } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
@@ -493,7 +499,8 @@ async function _continuePipeline(id, stageId, btn) {
     if (res.ok) {
       showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
       if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
-      setTimeout(function() { openPipelineDetail(id); }, 2000);
+      // Immediate refresh — no waiting for 4s poll
+      await _refreshPipelineDetail(id);
     } else {
       var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown'));
       if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }

@@ -461,11 +461,11 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-const CC_SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Sessions never expire by time — user controls lifecycle via tabs (new tab = new session, /clear = reset).
+// Only invalidated by: system prompt change, explicit clear, or tab close.
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-let ccInFlight = false;
-let ccInFlightSince = 0; // timestamp — auto-release stuck guard
+const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 
 // _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
@@ -478,17 +478,13 @@ function ccSessionValid() {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  const age = Date.now() - new Date(ccSession.lastActiveAt || 0).getTime();
-  return age < CC_SESSION_EXPIRY_MS && ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
 }
 
 // Load persisted CC session on startup
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId) {
-    const age = Date.now() - new Date(saved.lastActiveAt || 0).getTime();
-    if (age < CC_SESSION_EXPIRY_MS) ccSession = saved;
-  }
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 // Static system prompt — baked into session on creation, never changes
@@ -577,6 +573,7 @@ function parseCCActions(text) {
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk
+const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
@@ -584,10 +581,8 @@ const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
-    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      const age = now - new Date(s.lastActiveAt || 0).getTime();
-      if (age < CC_SESSION_EXPIRY_MS && s.turnCount < CC_SESSION_MAX_TURNS) {
+      if (s.turnCount < CC_SESSION_MAX_TURNS) {
         docSessions.set(key, s);
       }
     }
@@ -608,8 +603,7 @@ function resolveSession(store, key) {
   if (!key) return null;
   const s = docSessions.get(key);
   if (!s) return null;
-  const age = Date.now() - new Date(s.lastActiveAt).getTime();
-  if (age > CC_SESSION_EXPIRY_MS || s.turnCount >= CC_SESSION_MAX_TURNS) {
+  if (s.turnCount >= CC_SESSION_MAX_TURNS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -654,7 +648,8 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns = 25, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+  if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
   const existing = resolveSession(store, sessionKey);
@@ -676,18 +671,16 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     });
     llm.trackEngineUsage(label, result.usage);
 
-    if (result.code === 0 && result.text) {
+    if (result.text) {
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
     }
 
-    // Distinguish "session exists but call failed" (e.g. tool timeout, signal timeout)
+    // No text — distinguish "session exists but call failed" (e.g. tool timeout)
     // from "session is truly dead" (no sessionId returned, or stderr indicates invalid session).
-    // If the session still exists, preserve it so the next "try again" can resume.
     const sessionStillValid = llm.isResumeSessionStillValid(result);
     if (sessionStillValid) {
       console.log(`[${label}] Resume call failed (code=${result.code}, empty=${!result.text}) but session is still valid — preserving session for retry`);
-      // Update lastActiveAt so session doesn't expire while user retries
       updateSession(store, sessionKey, result.sessionId || sessionId, true);
       return result;
     }
@@ -711,7 +704,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   });
   llm.trackEngineUsage(label, result.usage);
 
-  if (result.code === 0 && result.text) {
+  if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
     return result;
   }
@@ -725,7 +718,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   });
   llm.trackEngineUsage(label, result.usage);
 
-  if (result.code === 0 && result.text) {
+  if (result.text) {
     updateSession(store, sessionKey, result.sessionId, false);
   }
   return result;
@@ -969,21 +962,51 @@ const server = http.createServer(async (req, res) => {
         safeWrite(activePath, plan);
       }
 
-      // Trigger completion check
-      const lifecycle = require('./engine/lifecycle');
       const config = queries.getConfig();
-      lifecycle.checkPlanCompletion({ item: { sourcePlan: body.file, id: 'manual' } }, config);
-
-      // Check if verify was created
       const project = PROJECTS.find(p => {
         const plan = safeJson(activePath) || safeJson(prdPath);
         return plan && p.name?.toLowerCase() === (plan.project || '').toLowerCase();
       }) || PROJECTS[0] || null;
+
+      // Check for existing verify WI — reset to pending if already done (re-verify)
+      if (project) {
+        const wiPath = shared.projectWorkItemsPath(project);
+        let existingVerify = null;
+        mutateWorkItems(wiPath, items => {
+          const v = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
+          if (v && (v.status === 'done' || v.status === 'failed')) {
+            v.status = 'pending';
+            delete v.completedAt;
+            delete v.dispatched_to;
+            delete v.dispatched_at;
+            v._retryCount = 0;
+            existingVerify = v;
+          } else if (v) {
+            existingVerify = v;
+          }
+        });
+        if (existingVerify) {
+          invalidateStatusCache();
+          return jsonReply(res, 200, { ok: true, verifyId: existingVerify.id });
+        }
+      }
+
+      // No existing verify — clear completion flag and trigger fresh creation
+      const planData = safeJson(activePath);
+      if (planData?._completionNotified) {
+        planData._completionNotified = false;
+        safeWrite(activePath, planData);
+      }
+
+      const lifecycle = require('./engine/lifecycle');
+      lifecycle.checkPlanCompletion({ item: { sourcePlan: body.file, id: 'manual' } }, config);
+
       if (project) {
         const wiPath = shared.projectWorkItemsPath(project);
         const items = safeJsonArr(wiPath);
         const verify = items.find(w => w.sourcePlan === body.file && w.itemType === 'verify');
         if (verify) {
+          invalidateStatusCache();
           return jsonReply(res, 200, { ok: true, verifyId: verify.id });
         }
       }
@@ -1017,7 +1040,74 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
-      if (!wiPath) return jsonReply(res, 404, { error: 'work item not found in any source' });
+      // If no work item found, attempt to re-materialize from PRD item definition
+      if (!wiPath) {
+        const prdFile = body.prdFile;
+        if (!prdFile) return jsonReply(res, 404, { error: 'work item not found in any source' });
+
+        // Look up PRD item to create a new work item on-demand
+        const prdPath = path.join(PRD_DIR, prdFile);
+        const plan = shared.safeJson(prdPath);
+        if (!plan?.missing_features) return jsonReply(res, 404, { error: 'PRD file not found or invalid' });
+        const prdItem = plan.missing_features.find(f => f.id === id);
+        if (!prdItem) return jsonReply(res, 404, { error: 'PRD item not found in ' + prdFile });
+
+        // Determine target work-items file (project from PRD item or plan, fallback to central)
+        const projName = prdItem.project || plan.project || prdFile.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
+        const proj = PROJECTS.find(p => p.name?.toLowerCase() === projName.toLowerCase());
+        const targetWiPath = proj ? shared.projectWorkItemsPath(proj) : path.join(MINIONS_DIR, 'work-items.json');
+
+        // Create new work item from PRD item definition (same logic as materializePlansAsWorkItems)
+        const complexity = prdItem.estimated_complexity || 'medium';
+        const criteria = (prdItem.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+        const newItem = {
+          id,
+          title: `Implement: ${prdItem.name}`,
+          type: complexity === 'large' ? 'implement:large' : 'implement',
+          priority: prdItem.priority || 'medium',
+          description: `${prdItem.description || ''}\n\n**Plan:** ${prdFile}\n**Plan Item:** ${prdItem.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
+          status: WI_STATUS.PENDING,
+          created: new Date().toISOString(),
+          createdBy: 'dashboard:prd-retry',
+          sourcePlan: prdFile,
+          depends_on: prdItem.depends_on || [],
+          branchStrategy: plan.branch_strategy || 'parallel',
+          featureBranch: plan.feature_branch || null,
+          project: prdItem.project || plan.project || null,
+          _source: proj?.name || 'central',
+          _retryCount: 0,
+        };
+        mutateWorkItems(targetWiPath, items => { items.push(newItem); });
+
+        // Reset PRD item status to pending
+        try {
+          const lifecycle = require('./engine/lifecycle');
+          lifecycle.syncPrdItemStatus(id, WI_STATUS.PENDING, prdFile);
+        } catch (e) { console.error('PRD status sync:', e.message); }
+
+        // Clear dispatch history and cooldowns for this item
+        const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+        const sourcePrefix = proj ? `work-${proj.name}-` : 'central-work-';
+        const dispatchKey = sourcePrefix + id;
+        try {
+          mutateJsonFileLocked(dispatchPath, (dispatch) => {
+            dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+            dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
+            dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
+            return dispatch;
+          }, { defaultValue: { pending: [], active: [], completed: [] } });
+        } catch (e) { console.error('dispatch cleanup:', e.message); }
+        try {
+          const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+          const cooldowns = safeJsonObj(cooldownPath);
+          if (cooldowns[dispatchKey]) {
+            delete cooldowns[dispatchKey];
+            safeWrite(cooldownPath, cooldowns);
+          }
+        } catch (e) { console.error('cooldown cleanup:', e.message); }
+
+        return jsonReply(res, 200, { ok: true, id, rematerialized: true });
+      }
 
       let found = false;
       mutateJsonFileLocked(wiPath, (items) => {
@@ -1025,12 +1115,12 @@ const server = http.createServer(async (req, res) => {
         const item = items.find(i => i.id === id);
         if (!item) return items;
         // Don't reset completed items unless explicitly forced
-        if ((item.status === 'done' || item.completedAt) && !body.force) {
+        if ((DONE_STATUSES.has(item.status) || item.completedAt) && !body.force) {
           found = 'already_done';
           return items;
         }
         found = true;
-        item.status = 'pending';
+        item.status = WI_STATUS.PENDING;
         item._retryCount = 0; // Reset retry counter on manual retry
         delete item.dispatched_at;
         delete item.dispatched_to;
@@ -1194,7 +1284,7 @@ const server = http.createServer(async (req, res) => {
       let wiPath;
       if (body.project) {
         // Write to project-specific queue
-        const targetProject = PROJECTS.find(p => p.name === body.project) || PROJECTS[0];
+        const targetProject = PROJECTS.find(p => p.name === body.project) || (PROJECTS.length > 0 ? PROJECTS[0] : null);
         if (!targetProject) return jsonReply(res, 400, { error: 'No projects configured' });
         wiPath = shared.projectWorkItemsPath(targetProject);
       } else {
@@ -1294,7 +1384,7 @@ const server = http.createServer(async (req, res) => {
       const item = {
         id, title: body.title, type: 'plan',
         priority: body.priority || 'high', description: body.description || '',
-        status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard',
+        status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
         branchStrategy: body.branch_strategy || 'parallel',
       };
       if (body.project) item.project = body.project;
@@ -1372,7 +1462,7 @@ const server = http.createServer(async (req, res) => {
         try {
           mutateWorkItems(wiPath, items => {
             const wi = items.find(w => w.sourcePlan === body.source && w.id === body.itemId);
-            if (wi && wi.status === 'pending') {
+            if (wi && wi.status === WI_STATUS.PENDING) {
               if (body.name !== undefined) wi.title = 'Implement: ' + body.name;
               if (body.description !== undefined) wi.description = body.description;
               if (body.priority !== undefined) wi.priority = body.priority;
@@ -1427,6 +1517,66 @@ const server = http.createServer(async (req, res) => {
       );
 
       return jsonReply(res, 200, { ok: true, cancelled });
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
+  }
+
+  async function handleAgentKill(req, res, match) {
+    try {
+      const agentId = match[1].replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!agentId) return jsonReply(res, 400, { error: 'agent id required' });
+
+      const agentDir = path.join(MINIONS_DIR, 'agents', agentId);
+      if (!fs.existsSync(agentDir)) return jsonReply(res, 404, { error: 'Agent not found' });
+
+      // 1. Kill process via pid file
+      const pidPath = path.join(agentDir, 'pid');
+      try {
+        const pid = parseInt(shared.safeRead(pidPath) || '', 10);
+        if (pid) {
+          shared.validatePid(pid); // throws if not numeric
+          shared.killGracefully({ pid }, 3000);
+        }
+      } catch { /* process already dead or no pid file */ }
+      try { fs.unlinkSync(pidPath); } catch { /* optional */ }
+
+      // 2. Clear session.json and steer.md so retry starts fresh
+      try { fs.unlinkSync(path.join(agentDir, 'session.json')); } catch { /* optional */ }
+      try { fs.unlinkSync(path.join(agentDir, 'steer.md')); } catch { /* optional */ }
+
+      // 3. Remove all active dispatch entries for this agent
+      const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+      const removedIds = [];
+      mutateJsonFileLocked(dispatchPath, (dp) => {
+        const removed = (dp.active || []).filter(d => d.agent === agentId);
+        removed.forEach(d => removedIds.push(d.id));
+        dp.active = (dp.active || []).filter(d => d.agent !== agentId);
+        return dp;
+      }, { defaultValue: { pending: [], active: [], completed: [] } });
+
+      // 4. Reset work items from dispatched → pending so they can be retried
+      const allWiPaths = [];
+      for (const proj of PROJECTS) allWiPaths.push(shared.projectWorkItemsPath(proj));
+      let resetCount = 0;
+      for (const wiPath of allWiPaths) {
+        try {
+          mutateWorkItems(wiPath, items => {
+            for (const item of items) {
+              if (item.dispatched_to === agentId && item.status === WI_STATUS.DISPATCHED) {
+                item.status = WI_STATUS.PENDING;
+                item._retryCount = (item._retryCount || 0) + 1;
+                delete item.dispatched_at;
+                delete item.dispatched_to;
+                delete item._pendingReason;
+                resetCount++;
+              }
+            }
+            return items;
+          });
+        } catch { /* optional */ }
+      }
+
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, agent: agentId, dispatchCleared: removedIds.length, workItemsReset: resetCount });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
@@ -1880,7 +2030,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     // Load work items to check for completed plan-to-prd conversions
     const centralWi = safeJsonArr(path.join(MINIONS_DIR, 'work-items.json'));
     const completedPrdFiles = new Set(
-      centralWi.filter(w => w.type === 'plan-to-prd' && w.status === 'done' && w.planFile)
+      centralWi.filter(w => w.type === 'plan-to-prd' && DONE_STATUSES.has(w.status) && w.planFile)
         .map(w => w.planFile)
     );
     const plans = [];
@@ -1911,6 +2061,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
               requiresApproval: plan.requires_approval || false,
               revisionFeedback: plan.revision_feedback || null,
               sourcePlan: plan.source_plan || null,
+              archiveReady: plan._archiveReady || false,
+              archiveReadyAt: plan._archiveReadyAt || null,
             });
           } catch { /* JSON parse fallback */ }
         } else {
@@ -2207,14 +2359,14 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       mutateWorkItems(wiPath, items => {
         // Dedup: check if already queued
         const alreadyQueued = items.find(w =>
-          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched')
+          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
         );
         if (alreadyQueued) { alreadyQueuedId = alreadyQueued.id; return; }
         items.push({
           id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
           type: 'plan-to-prd', priority: 'high',
           description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
           project: plan.project || '', planFile: plan.source_plan,
           _targetPrdFile: body.file,
         });
@@ -2241,13 +2393,13 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       mutateJsonFileLocked(centralPath, (items) => {
         if (!Array.isArray(items)) items = [];
         // Only block if actively pending/dispatched — allow re-execute after completion
-        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === 'pending' || w.status === 'dispatched'));
+        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED));
         if (existing) { existingId = existing.id; return items; }
         items.push({
           id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
           type: 'plan-to-prd', priority: 'high',
           description: 'Plan file: plans/' + body.file,
-          status: 'pending', created: new Date().toISOString(),
+          status: WI_STATUS.PENDING, created: new Date().toISOString(),
           createdBy: 'dashboard:execute', project: body.project || '',
           planFile: body.file,
         });
@@ -2302,7 +2454,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             for (const w of items) {
               if (w.sourcePlan === body.source) {
                 materializedPlanItemIds.add(w.id);
-                if (w.status === 'pending' || w.status === 'failed') {
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
                   // Delete — will re-materialize on next tick with updated plan data
                   reset++;
                   deletedItemIds.push(w.id);
@@ -2387,8 +2539,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           const centralPath = path.join(MINIONS_DIR, 'work-items.json');
           mutateWorkItems(centralPath, items => {
             for (const w of items) {
-              if (w.type === 'plan-to-prd' && w.status === 'done' && w.planFile === prdSourcePlan) {
-                w.status = 'cancelled';
+              if (w.type === 'plan-to-prd' && DONE_STATUSES.has(w.status) && w.planFile === prdSourcePlan) {
+                w.status = WI_STATUS.CANCELLED;
                 w._cancelledBy = 'prd-deleted';
               }
             }
@@ -2500,7 +2652,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           id, title: 'Revise plan: ' + (plan.plan_summary || body.file),
           type: 'plan-to-prd', priority: 'high',
           description: 'Revision requested on plan file: ' + (body.file.endsWith('.json') ? 'prd/' : 'plans/') + body.file + '\n\nFeedback:\n' + body.feedback + '\n\nRevise the plan to address this feedback. Read the existing plan, apply the feedback, and overwrite the file with the updated version. Set status back to "awaiting-approval".',
-          status: 'pending', created: new Date().toISOString(), createdBy: 'dashboard:revision',
+          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:revision',
           project: plan.project || '',
           planFile: body.file,
         });
@@ -2599,7 +2751,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             const filtered = [];
             for (const w of items) {
               if (w.sourcePlan === body.source) {
-                if (w.status === 'pending' || w.status === 'failed') {
+                if (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.FAILED) {
                   reset++;
                   deletedItemIds.push(w.id);
                 } else {
@@ -2630,7 +2782,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           type: 'plan-to-prd',
           priority: 'high',
           description: `The source plan \`${sourcePlanFile}\` has been revised. Convert it into a fresh PRD JSON.\n\nRevision instruction: ${body.instruction}\n\nRead the revised plan, generate updated PRD items (missing_features), and write to \`prd/${body.source}\`. Set status to "approved". Include \`"source_plan": "${sourcePlanFile}"\` in the JSON root.\n\nPreserve items that are already done (status "implemented" or "complete"). Reset or replace items that were pending/failed.`,
-          status: 'pending',
+          status: WI_STATUS.PENDING,
           created: new Date().toISOString(),
           createdBy: 'dashboard:revise-and-regenerate',
           project: prd.project || '',
@@ -3218,8 +3370,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenterNewSession(req, res) {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-    ccInFlight = false; // Reset concurrency guard so a stuck request doesn't block new sessions
+    ccInFlightTabs.clear(); // Reset all in-flight guards
     safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+    return jsonReply(res, 200, { ok: true });
+  }
+
+  async function handleCCSessionsList(req, res) {
+    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    return jsonReply(res, 200, { sessions });
+  }
+
+  async function handleCCSessionDelete(req, res, match) {
+    const id = match?.[1];
+    if (!id) return jsonReply(res, 400, { error: 'id required' });
+    const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+    const filtered = sessions.filter(s => s.id !== id);
+    safeWrite(CC_SESSIONS_PATH, filtered);
     return jsonReply(res, 200, { ok: true });
   }
 
@@ -3229,23 +3395,29 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
 
-      // Concurrency guard — only one CC call at a time, with auto-release for stuck requests
-      if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
-        return jsonReply(res, 429, { error: 'Command Center is busy — wait for the current request to finish, or click "New Session" to reset.' });
+      // Per-tab concurrency guard
+      const tabId = body.tabId || 'default';
+      if (ccInFlightTabs.has(tabId)) {
+        return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
       }
-      if (ccInFlight) console.log('[CC] Auto-releasing stuck in-flight guard after timeout');
-      ccInFlight = true;
-      ccInFlightSince = Date.now();
+      ccInFlightTabs.add(tabId);
 
       try {
+        let sessionReset = false;
         if (body.sessionId && body.sessionId !== ccSession.sessionId) {
           ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+        }
+        // Detect prompt hash change — force fresh session
+        if (body.sessionId && ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
+          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+          sessionReset = true;
         }
         const wasResume = !!(body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid());
 
         const result = await ccCall(body.message, { store: 'cc' });
 
-        if (result.code !== 0 || !result.text) {
+        // Non-zero exit with text = max_turns or partial success — still usable
+        if (!result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-5).join(' | ');
           console.error(`[CC] LLM failed after retries ${debugInfo}: ${stderrTail}`);
@@ -3260,12 +3432,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
-        return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume });
+        const reply = { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume };
+        if (sessionReset) reply.sessionReset = true;
+        return jsonReply(res, 200, reply);
       } finally {
-        ccInFlight = false;
-        ccInFlightSince = 0;
+        ccInFlightTabs.delete(tabId);
       }
-    } catch (e) { ccInFlight = false; return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { ccInFlightTabs.delete(tabId); return jsonReply(res, 500, { error: e.message }); }
   }
 
   async function handleCommandCenterStream(req, res) {
@@ -3273,33 +3446,48 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
-      if (ccInFlight && (Date.now() - ccInFlightSince) < CC_INFLIGHT_TIMEOUT_MS) {
-        res.statusCode = 429; res.end('CC busy'); return;
+      const tabId = body.tabId || 'default';
+      if (ccInFlightTabs.has(tabId)) {
+        res.statusCode = 429; res.end('This tab is already processing'); return;
       }
-      if (ccInFlight) console.log('[CC-stream] Auto-releasing stuck guard');
-      ccInFlight = true;
-      ccInFlightSince = Date.now();
+      ccInFlightTabs.add(tabId);
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;
+      let _ccStreamEnded = false;
       // Kill LLM process immediately if client disconnects mid-stream
-      req.on('close', () => { ccInFlight = false; ccInFlightSince = 0; if (_ccStreamAbort) _ccStreamAbort(); });
+      req.on('close', () => {
+        ccInFlightTabs.delete(tabId);
+        if (!_ccStreamEnded && _ccStreamAbort) {
+          console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
+          _ccStreamAbort();
+        }
+      });
 
       try {
-        // Session management — same as non-streaming path
-        if (body.sessionId && body.sessionId !== ccSession.sessionId) {
-          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+        // Session management — per-tab: use sessionId from request, don't mutate global ccSession
+        let tabSessionId = body.sessionId || null;
+        let sessionReset = false;
+        // If system prompt changed since this session was created, force a fresh session
+        if (tabSessionId) {
+          const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+          const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
+          if (tabEntry && tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
+            tabSessionId = null;
+            sessionReset = true;
+          }
         }
-        const wasResume = !!(ccSessionValid() && ccSession.sessionId);
-        const sessionId = wasResume ? ccSession.sessionId : null;
+        const wasResume = !!tabSessionId;
+        const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
         const prompt = (preamble ? preamble + '\n\n---\n\n' : '') + body.message;
 
         const { callLLMStreaming, trackEngineUsage: trackUsage } = require('./engine/llm');
         const streamModel = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
         const streamEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
+        const ccMaxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
         const llmPromise = callLLMStreaming(prompt, CC_STATIC_SYSTEM_PROMPT, {
-          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: 25,
+          timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
@@ -3313,47 +3501,58 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
-        // Handle failure — same error reporting as non-streaming
-        if (result.code !== 0 || !result.text) {
+        // Handle failure — non-zero exit with text = max_turns or partial success, still usable
+        if (!result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
           // If resuming a session failed, auto-reset so next attempt starts fresh
-          let retryHint;
-          if (wasResume && result.code !== 0) {
-            ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-            safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
-            retryHint = 'Session was reset — send your message again to start fresh.';
-          } else {
-            retryHint = ccSession.sessionId
-              ? 'Your session is still active — just send your message again to retry.'
-              : 'Try clicking **New Session** and sending your message again.';
-          }
-          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: ccSession.sessionId }) + '\n\n');
-          res.end();
+          const retryHint = wasResume && result.code !== 0
+            ? 'Session was reset — send your message again to start fresh.'
+            : 'Send your message again to retry.';
+          // Return null sessionId on resume failure so client clears the stale session
+          const errorSessionId = (wasResume && result.code !== 0) ? null : tabSessionId;
+          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: errorSessionId }) + '\n\n');
+          _ccStreamEnded = true; res.end();
           return;
         }
 
         // Update session
+        // Persist tab→session mapping (no global ccSession mutation)
         const now = Date.now();
-        if (result.sessionId) {
-          ccSession = { sessionId: result.sessionId, createdAt: ccSession.createdAt || now, lastActiveAt: now, turnCount: (ccSession.turnCount || 0) + 1, _promptHash: _ccPromptHash };
-          safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
+        const responseSessionId = result.sessionId || tabSessionId;
+        const tabId = body.tabId;
+        if (tabId && responseSessionId) {
+          try {
+            const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+            const existing = sessions.find(s => s.id === tabId);
+            const preview = (body.message || '').slice(0, 80);
+            if (existing) {
+              existing.sessionId = responseSessionId;
+              existing.lastActiveAt = new Date(now).toISOString();
+              existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
+              existing.preview = preview;
+              existing._promptHash = _ccPromptHash;
+            } else {
+              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
+            }
+            safeWrite(CC_SESSIONS_PATH, sessions);
+          } catch { /* non-critical */ }
         }
 
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
-        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId, newSession: !wasResume }) + '\n\n');
-        res.end();
+        const donePayload = { type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume };
+        if (sessionReset) donePayload.sessionReset = true;
+        res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
+        _ccStreamEnded = true; res.end();
       } finally {
-        ccInFlight = false;
-        ccInFlightSince = 0;
+        ccInFlightTabs.delete(tabId);
       }
     } catch (e) {
-      ccInFlight = false;
-      ccInFlightSince = 0;
+      ccInFlightTabs.delete(tabId);
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
-      try { res.end(); } catch {}
+      _ccStreamEnded = true; try { res.end(); } catch {}
     }
   }
 
@@ -3488,7 +3687,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const D = shared.ENGINE_DEFAULTS;
         // Numeric fields: { key: [min, max?] }
         const numericFields = {
-          tickInterval: [10000], maxConcurrent: [1, 10], inboxConsolidateThreshold: [1],
+          tickInterval: [10000], maxConcurrent: [1, 50], inboxConsolidateThreshold: [1],
           agentTimeout: [60000], maxTurns: [5, 500], heartbeatTimeout: [60000],
           worktreeCreateTimeout: [60000], worktreeCreateRetries: [0, 3],
           idleAlertMinutes: [1], shutdownTimeout: [30000], restartGracePeriod: [60000],
@@ -3496,11 +3695,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
         };
+        const clamped = [];
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
             let val = Number(e[key]) || D[key];
+            const raw = val;
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
+            if (val !== raw) clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
             config.engine[key] = val;
           }
         }
@@ -3525,12 +3727,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           config.engine.maxTurnsByType = mbt;
         }
         // Boolean fields
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents']) {
+        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents', 'autoArchive']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
         // Eval loop settings
         if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
         if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        if (e.ignoredCommentAuthors !== undefined) {
+          config.engine.ignoredCommentAuthors = String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        }
       }
 
       if (body.claude) {
@@ -3561,7 +3766,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
-      return jsonReply(res, 200, { ok: true, message: 'Settings saved. Engine picks up changes on next tick.' });
+      const msg = clamped.length > 0
+        ? 'Settings saved. Some values were adjusted: ' + clamped.join('; ')
+        : 'Settings saved. Engine picks up changes on next tick.';
+      return jsonReply(res, 200, { ok: true, message: msg, clamped });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -3754,6 +3962,28 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true });
     }},
 
+    // KB pin state (server-side so CC can pin items)
+    { method: 'GET', path: '/api/kb-pins', desc: 'Get pinned KB item keys', handler: async (req, res) => {
+      const pins = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'kb-pins.json')) || [];
+      return jsonReply(res, 200, { pins });
+    }},
+    { method: 'POST', path: '/api/kb-pins', desc: 'Set pinned KB item keys', params: 'pins[]', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!Array.isArray(body.pins)) return jsonReply(res, 400, { error: 'pins array required' });
+      safeWrite(path.join(MINIONS_DIR, 'engine', 'kb-pins.json'), body.pins);
+      return jsonReply(res, 200, { ok: true });
+    }},
+    { method: 'POST', path: '/api/kb-pins/toggle', desc: 'Toggle a single KB pin', params: 'key', handler: async (req, res) => {
+      const body = await readBody(req);
+      if (!body.key) return jsonReply(res, 400, { error: 'key required' });
+      const pinsPath = path.join(MINIONS_DIR, 'engine', 'kb-pins.json');
+      const pins = shared.safeJson(pinsPath) || [];
+      const idx = pins.indexOf(body.key);
+      if (idx >= 0) pins.splice(idx, 1); else pins.unshift(body.key);
+      safeWrite(pinsPath, pins);
+      return jsonReply(res, 200, { ok: true, pinned: idx < 0 });
+    }},
+
     // Notes
     { method: 'POST', path: '/api/notes', desc: 'Write a note to inbox for consolidation', params: 'title, what, why?, author?', handler: handleNotesCreate },
     { method: 'GET', path: '/api/notes-full', desc: 'Return full notes.md content', handler: handleNotesFull },
@@ -3942,6 +4172,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       return jsonReply(res, 200, { ok: true, message: 'Steering message sent' });
     }},
     { method: 'POST', path: '/api/agents/cancel', desc: 'Cancel an active agent by ID or task substring', params: 'agent?, task?', handler: handleAgentsCancel },
+    { method: 'POST', path: /^\/api\/agent\/([\w-]+)\/kill$/, desc: 'Kill a running agent: stop process, clear dispatch, reset work items to pending', handler: handleAgentKill },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live-stream(?:\?.*)?$/, desc: 'SSE real-time live output streaming', handler: handleAgentLiveStream },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/live(?:\?.*)?$/, desc: 'Tail live output for a working agent', params: 'tail? (bytes, default 8192)', handler: handleAgentLive },
     { method: 'GET', path: /^\/api\/agent\/([\w-]+)\/output(?:\?.*)?$/, desc: 'Fetch final output.log for an agent', handler: handleAgentOutput },
@@ -3999,7 +4230,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     // Command Center
     { method: 'POST', path: '/api/command-center/new-session', desc: 'Clear active CC session', handler: handleCommandCenterNewSession },
     { method: 'POST', path: '/api/command-center', desc: 'Conversational command center with full minions context', params: 'message, sessionId?', handler: handleCommandCenter },
-    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message', handler: handleCommandCenterStream },
+    { method: 'POST', path: '/api/command-center/stream', desc: 'Streaming CC — SSE with text chunks as they arrive', params: 'message, tabId?', handler: handleCommandCenterStream },
+    { method: 'GET', path: '/api/cc-sessions', desc: 'List CC session metadata for all tabs', handler: handleCCSessionsList },
+    { method: 'DELETE', path: /^\/api\/cc-sessions\/([\w-]+)$/, desc: 'Delete a CC session by tab ID', handler: handleCCSessionDelete },
 
     // Schedules
     { method: 'POST', path: '/api/schedules/parse-natural', desc: 'Parse natural language schedule text into cron expression', params: 'text', handler: handleSchedulesParseNatural },

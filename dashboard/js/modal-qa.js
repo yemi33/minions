@@ -102,7 +102,8 @@ function _initQaSession() {
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
-    _hideThreadWrap();
+    var wrap = document.getElementById('modal-qa-thread-wrap');
+    if (wrap) wrap.style.display = 'none';
   }
 }
 
@@ -111,7 +112,8 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
-  _hideThreadWrap();
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  if (wrap) wrap.style.display = 'none';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -337,25 +339,20 @@ function qaAbort() {
 
 function toggleDocChat() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
-  var isVisible = wrap.style.display !== 'none';
-  wrap.style.display = isVisible ? 'none' : '';
-  if (expandBar) expandBar.style.display = isVisible ? '' : 'none';
+  var visible = wrap.style.display !== 'none';
+  wrap.style.display = visible ? 'none' : '';
+  var btn = document.getElementById('qa-toggle-btn');
+  if (btn) btn.innerHTML = visible ? '&#x25B2; Expand' : '&#x25BC; Collapse';
 }
 
 function _showThreadWrap() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = '';
-  if (expandBar) expandBar.style.display = 'none';
+  if (wrap && wrap.style.display === 'none') {
+    wrap.style.display = '';
+    var btn = document.getElementById('qa-toggle-btn');
+    if (btn) btn.innerHTML = '&#x25BC; Collapse';
+  }
 }
 
-function _hideThreadWrap() {
-  var wrap = document.getElementById('modal-qa-thread-wrap');
-  var expandBar = document.getElementById('qa-expand-bar');
-  if (wrap) wrap.style.display = 'none';
-  if (expandBar) expandBar.style.display = 'none';
-}
-
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat };
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat, _showThreadWrap };

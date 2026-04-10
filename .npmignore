@@ -13,6 +13,12 @@ engine/*-prompt*.md
 engine/*-sys*.md
 engine/pid-*
 engine/tmp/
+engine/pipeline-runs.json
+engine/schedule-runs.json
+engine/pr-links.json
+engine/cc-session.json
+engine/doc-sessions.json
+engine/claude-caps.json
 
 # Agent runtime state
 agents/*/status.json
@@ -22,6 +28,7 @@ agents/*/live-output.log
 agents/*/history.md
 
 # Minions-specific state (stripped for distribution)
+pipelines/
 notes/
 notes.md
 knowledge/
@@ -30,7 +37,9 @@ plans/
 prd/
 prd.json
 work-items.json
+work-items.json.backup
 pull-requests.json
+projects/
 config.json
 CLAUDE.md
 identity/
@@ -44,7 +53,19 @@ team.md
 .git/
 .gitignore
 .github/
+.worktrees/
 test/
 playwright.config.js
 make-video.js
+*-screenshot*.png
+prd-screenshot*.png
+tmp_kb.json
+D\357\200\272*
+D:*
+squad*
+
+# Backup/temp files
+*.backup
+*.bak
+*-prev.log
 

@@ -10,7 +10,7 @@ A work item has been flagged as too large for a single agent dispatch. Analyze t
 ## Work Item
 
 - **ID:** {{item_id}}
-- **Title:** {{item_title}}
+- **Title:** {{item_name}}
 - **Description:** {{item_description}}
 - **Complexity:** {{item_complexity}}
 - **Project:** {{project_name}} (`{{project_path}}`)
