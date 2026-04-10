@@ -9880,6 +9880,62 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json')"), 'TEAMS_INBOX_PATH should be defined');
   });
 
+  await test('processTeamsInbox is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.processTeamsInbox, 'function', 'processTeamsInbox should be a function');
+  });
+
+  await test('processTeamsInbox returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false — should return immediately without errors
+    await teams.processTeamsInbox();
+  });
+
+  await test('processTeamsInbox reads inbox and filters unprocessed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('safeJson(TEAMS_INBOX_PATH)'), 'should read from TEAMS_INBOX_PATH');
+    assert.ok(fn.includes('!m._processedAt'), 'should filter for unprocessed messages');
+    assert.ok(fn.includes('_processedAt'), 'should mark messages as processed');
+  });
+
+  await test('processTeamsInbox calls CC via HTTP API', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('/api/command-center'), 'should call CC via dashboard HTTP API');
+    assert.ok(fn.includes('fetch('), 'should use fetch for HTTP call');
+  });
+
+  await test('processTeamsInbox tracks usage under teams category', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes("trackEngineUsage('teams'"), 'should track usage under teams category');
+  });
+
+  await test('processTeamsInbox prunes inbox when exceeding cap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('TEAMS_INBOX_CAP'), 'should reference TEAMS_INBOX_CAP');
+    assert.ok(fn.includes('data.length > TEAMS_INBOX_CAP'), 'should check if inbox exceeds cap');
+  });
+
+  await test('TEAMS_INBOX_CAP is 200', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.TEAMS_INBOX_CAP, 200, 'TEAMS_INBOX_CAP should be 200');
+  });
+
+  await test('Teams inbox timer in cli.js fires only when engine is running', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('teamsInboxTimer'), 'should define teamsInboxTimer');
+    assert.ok(src.includes("ctrl.state !== 'running'"), 'should check engine state before processing');
+    assert.ok(src.includes('processTeamsInbox'), 'should call processTeamsInbox');
+  });
+
+  await test('Teams inbox timer is cleared on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('clearInterval(teamsInboxTimer)'), 'should clear teamsInboxTimer on shutdown');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

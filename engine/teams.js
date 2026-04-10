@@ -12,6 +12,8 @@ const { log, safeJson, mutateJsonFileLocked, ENGINE_DEFAULTS } = shared;
 const { ENGINE_DIR, getConfig } = queries;
 
 const TEAMS_STATE_PATH = path.join(ENGINE_DIR, 'teams-state.json');
+const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
+const TEAMS_INBOX_CAP = 200;
 
 // Lazy-load botbuilder — may not be installed
 let _botbuilder = null;
@@ -149,6 +151,70 @@ async function teamsPost(key, text) {
   }
 }
 
+/**
+ * Process unread messages in the Teams inbox.
+ * Reads engine/teams-inbox.json, sends each unprocessed message through CC
+ * via the dashboard HTTP API, posts the CC response as a Teams reply,
+ * and marks the message as processed. Prunes oldest processed messages
+ * when inbox exceeds TEAMS_INBOX_CAP.
+ */
+async function processTeamsInbox() {
+  if (!isTeamsEnabled()) return;
+
+  // Read inbox — snapshot unprocessed messages, then release lock
+  const inbox = safeJson(TEAMS_INBOX_PATH);
+  if (!Array.isArray(inbox) || inbox.length === 0) return;
+
+  const unprocessed = inbox.filter(m => !m._processedAt);
+  if (unprocessed.length === 0) return;
+
+  log('info', `Teams inbox: ${unprocessed.length} unprocessed message(s)`);
+  const cfg = getTeamsConfig();
+  const port = process.env.PORT || 7331;
+
+  // Process sequentially to avoid CC session conflicts
+  for (const msg of unprocessed) {
+    try {
+      // Call CC via dashboard HTTP API
+      const ccRes = await fetch(`http://localhost:${port}/api/command-center`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg.text, tabId: `teams-${msg.id}` }),
+      });
+      const ccData = await ccRes.json().catch(() => ({}));
+      const responseText = ccData.text || ccData.error || 'No response from Command Center';
+
+      // Track usage under 'teams' category
+      const llm = require('./llm');
+      llm.trackEngineUsage('teams', ccData.usage || null);
+
+      // Post reply to Teams
+      if (msg.conversationRef?.conversation?.id) {
+        await teamsPost(msg.conversationRef.conversation.id, responseText);
+      }
+
+      // Mark as processed
+      mutateJsonFileLocked(TEAMS_INBOX_PATH, (data) => {
+        if (!Array.isArray(data)) return data;
+        const entry = data.find(m => m.id === msg.id);
+        if (entry) entry._processedAt = new Date().toISOString();
+
+        // Prune oldest processed messages when inbox exceeds cap
+        if (data.length > TEAMS_INBOX_CAP) {
+          const processed = data.filter(m => m._processedAt).sort((a, b) => (a.receivedAt || '').localeCompare(b.receivedAt || ''));
+          const toRemove = data.length - TEAMS_INBOX_CAP;
+          const removeIds = new Set(processed.slice(0, toRemove).map(m => m.id));
+          return data.filter(m => !removeIds.has(m.id));
+        }
+      }, { defaultValue: [] });
+
+      log('info', `Teams inbox: processed message ${msg.id} from ${msg.from}`);
+    } catch (err) {
+      log('warn', `Teams inbox: failed to process message ${msg.id}: ${err.message}`);
+    }
+  }
+}
+
 // Reset cached adapter (for testing)
 function _resetAdapter() { _adapter = null; _botbuilder = null; }
 
@@ -160,6 +226,9 @@ module.exports = {
   getConversationRef,
   teamsReply,
   teamsPost,
+  processTeamsInbox,
   TEAMS_STATE_PATH,
+  TEAMS_INBOX_PATH,
+  TEAMS_INBOX_CAP,
   _resetAdapter, // exported for testing
 };

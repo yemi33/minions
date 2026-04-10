@@ -372,6 +372,19 @@ const commands = {
       }
     }, 3000);
 
+    // Teams inbox poll timer — process incoming Teams messages through CC
+    const teams = require('./teams');
+    const teamsInboxInterval = config.teams?.inboxPollInterval ?? shared.ENGINE_DEFAULTS.teams.inboxPollInterval;
+    const teamsInboxTimer = teams.isTeamsEnabled() ? setInterval(() => {
+      try {
+        const ctrl = getControl();
+        if (ctrl.state !== 'running') return;
+        teams.processTeamsInbox().catch(err => {
+          shared.log('warn', `Teams inbox poll error: ${err.message}`);
+        });
+      } catch {}
+    }, teamsInboxInterval) : null;
+
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
 
@@ -422,6 +435,7 @@ const commands = {
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
       clearInterval(fastPollTimer);
+      if (teamsInboxTimer) clearInterval(teamsInboxTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);
