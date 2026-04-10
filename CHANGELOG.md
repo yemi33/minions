@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.765 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
 ## 0.1.764 (2026-04-10)
 
 ### Features
