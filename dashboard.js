@@ -1472,24 +1472,20 @@ const server = http.createServer(async (req, res) => {
       try {
         const pid = parseInt(shared.safeRead(pidPath) || '', 10);
         if (pid) {
-          const safePid = shared.validatePid(pid);
-          if (process.platform === 'win32') {
-            require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-          } else {
-            process.kill(safePid, 'SIGTERM');
-          }
+          shared.validatePid(pid); // throws if not numeric
+          shared.killGracefully({ pid }, 3000);
         }
       } catch { /* process already dead or no pid file */ }
       try { fs.unlinkSync(pidPath); } catch { /* optional */ }
 
-      // 2. Clear session.json so retry starts fresh
+      // 2. Clear session.json and steer.md so retry starts fresh
       try { fs.unlinkSync(path.join(agentDir, 'session.json')); } catch { /* optional */ }
+      try { fs.unlinkSync(path.join(agentDir, 'steer.md')); } catch { /* optional */ }
 
       // 3. Remove all active dispatch entries for this agent
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
       const removedIds = [];
       mutateJsonFileLocked(dispatchPath, (dp) => {
-        const before = (dp.active || []).length;
         const removed = (dp.active || []).filter(d => d.agent === agentId);
         removed.forEach(d => removedIds.push(d.id));
         dp.active = (dp.active || []).filter(d => d.agent !== agentId);
