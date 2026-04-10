@@ -1628,7 +1628,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
@@ -1643,7 +1643,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix PR ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment review→fix cycle counter
@@ -1682,7 +1682,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix PR ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
     }
 
@@ -1730,7 +1730,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: reviewNote,
-      }, `Fix build failure on PR ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key);
         // Increment build fix attempts counter
@@ -1780,7 +1780,7 @@ async function discoverFromPrs(config, project) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
             pr_id: pr.id, pr_branch: pr.branch || '',
             review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
-          }, `Fix merge conflicts on PR ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+          }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
           if (item) { newWork.push(item); setCooldown(key); }
         }
       }
