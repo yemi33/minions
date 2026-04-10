@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.778 (2026-04-10)
+
+### Fixes
+-  agent comments included in context but don't trigger fix dispatch
+
 ## 0.1.777 (2026-04-10)
 
 ### Fixes
