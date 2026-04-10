@@ -766,9 +766,13 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    // Once approved, stays approved permanently — no path can downgrade
-    if (postReviewStatus && target.reviewStatus !== 'approved') {
-      target.reviewStatus = postReviewStatus;
+    // Once approved, stays approved — only changes-requested can override
+    if (postReviewStatus) {
+      if (target.reviewStatus === 'approved' && postReviewStatus !== 'changes-requested') {
+        // Keep approved — don't downgrade
+      } else {
+        target.reviewStatus = postReviewStatus;
+      }
     }
     target.lastReviewedAt = ts();
     target.minionsReview = {
