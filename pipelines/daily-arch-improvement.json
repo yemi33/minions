@@ -1,0 +1,58 @@
+{
+  "id": "daily-arch-improvement",
+  "title": "Daily Architecture & Improvement Pipeline",
+  "stages": [
+    {
+      "id": "agentic-research",
+      "type": "task",
+      "taskType": "explore",
+      "title": "Agentic engineering best practices research",
+      "description": "Research the latest thinking across the agentic engineering space to surface relevant improvements for Minions.\n\nCover all of the following sources — not just one:\n- **Anthropic**: https://www.anthropic.com/news and https://docs.anthropic.com (agent best practices, tool use, prompt engineering, multi-agent systems)\n- **OpenAI**: https://openai.com/blog and https://cookbook.openai.com (agents, function calling, orchestration patterns)\n- **Google DeepMind / Google AI**: https://deepmind.google/discover/blog and https://ai.google/discover/news (multi-agent, reasoning, planning)\n- **Other frameworks & research**: search for recent posts/papers on LangGraph, AutoGen, CrewAI, arXiv multi-agent systems, and any other notable agentic framework updates\n\nSteps:\n1. Use WebSearch and WebFetch across all sources above. Focus on: agent reliability, orchestration patterns, prompt engineering, multi-agent coordination, tool use, context management, and anything directly relevant to a multi-agent dispatch engine.\n2. Collect the 5-8 most relevant/recent items across all sources — prioritise breadth over depth.\n3. Write findings to `inbox/agentic-research-{{date}}.md` with sections: **Source**, **Title**, **Summary**, **Relevance to Minions**.\n\nThis output will be used to inform today's architecture meeting."
+    },
+    {
+      "id": "arch-meeting",
+      "type": "meeting",
+      "title": "Daily Architecture & Bug Review",
+      "agenda": "Morning architecture review and improvement planning for the Minions agentic harness.\n\n1. What bugs or reliability issues have surfaced since yesterday?\n2. Which parts of the engine, lifecycle, or dashboard feel fragile or need rework?\n3. Are there architectural improvements worth tackling today (patterns, abstractions, performance, correctness)?\n4. What are the 1-3 highest-leverage improvements to plan for today?\n5. Agree on a focused improvement scope — not too broad, shippable today or tomorrow.\n6. Ripley will have researched the latest agentic engineering best practices (Anthropic, OpenAI, Google, and others) before this meeting. Review findings in `inbox/agentic-research-*.md` and discuss: do any recommendations apply to Minions? Should any be planned?\n\nOutput: bulleted list of agreed improvements and bugs, prioritised, with rough complexity estimates. This output will be used directly to create a plan.",
+      "participants": [
+        "all"
+      ],
+      "dependsOn": [
+        "agentic-research"
+      ]
+    },
+    {
+      "id": "arch-review-wait",
+      "type": "wait",
+      "title": "Review meeting conclusions before planning",
+      "description": "Review the architecture meeting conclusions above, then continue to create and dispatch the improvement plan.",
+      "dependsOn": [
+        "arch-meeting"
+      ]
+    },
+    {
+      "id": "create-and-execute-plan",
+      "type": "plan",
+      "title": "Create improvement plan from architecture meeting",
+      "description": "Based on today's architecture meeting findings, create a focused improvement plan.",
+      "dependsOn": [
+        "arch-review-wait"
+      ],
+      "autoApprove": true
+    },
+    {
+      "id": "executive-summary",
+      "type": "task",
+      "taskType": "explore",
+      "title": "Write executive summary and save to reports",
+      "description": "Write a concise executive summary of today's architecture review and the plan that was queued.\n\nSteps:\n1. Read the meeting transcript and plan from previous stages.\n2. Write an executive summary covering: (a) top issues identified, (b) plan created and what it will fix, (c) expected impact.\n3. Save the summary to notes/inbox/ using the writeToInbox pattern (filename: executive-summary-{{date}}.md).\n\nKeep the summary concise — 3-5 bullet points per section, executive-readable.",
+      "dependsOn": [
+        "create-and-execute-plan"
+      ]
+    }
+  ],
+  "trigger": {
+    "cron": "0 9 1,2,3,4,5"
+  },
+  "enabled": true
+}
