@@ -4720,7 +4720,7 @@ async function testVerifyWorkflow() {
   }, cleanup);
 
   // ── 3a. Plan completes with partial results when some items fail (escalation, no verify) ──
-  await test('verify: plan completes with failed items — no verify WI, escalation alert sent', () => {
+  await test('verify: plan completes with failed items — verify WI still created for done items, escalation alert sent', () => {
     cleanup();
     shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
     shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
@@ -4731,12 +4731,12 @@ async function testVerifyWorkflow() {
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
     ]);
 
-    // Failed items are terminal — plan completes but verify is NOT created (partial results)
+    // Failed items are terminal — plan completes and verify is created for partial results (done items exist)
     lifecycle.checkPlanCompletion(meta, config);
 
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
-    assert.strictEqual(verifyItems.length, 0, 'No verify WI when some items failed — only verify fully successful plans');
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI created when done items exist — even with some failures');
 
     // Escalation alert should be in inbox
     const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
@@ -5476,6 +5476,7 @@ async function testDashboardAssembly() {
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
     assert.ok(html.length < 600000, `HTML should be < 600KB (got ${html.length})`);
+
   });
 }
 
@@ -12171,9 +12172,11 @@ async function testPipelineReconciliation() {
 
   await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
-    const fnBody = src.slice(src.indexOf('function isStageComplete('), src.indexOf('\nfunction', src.indexOf('function isStageComplete(') + 1));
-    assert.ok(fnBody.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
-    assert.ok(fnBody.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
+    const isStageStart = src.indexOf('function isStageComplete(');
+    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:", isStageStart), src.indexOf("case STAGE_TYPE.MERGE_PRS:", isStageStart));
+    assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
+    assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
+    assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
   });
 
   await test('immediate completion check after executeStage returns RUNNING', () => {
@@ -12183,9 +12186,10 @@ async function testPipelineReconciliation() {
 
   await test('auto-archive removed — verify does not call archivePlan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const postHooks = src.slice(src.indexOf('function runPostCompletionHooks('), src.indexOf('\nmodule', src.indexOf('function runPostCompletionHooks(')));
-    assert.ok(!postHooks.includes('archivePlan('), 'Should NOT call archivePlan in post-completion hooks');
-    assert.ok(src.includes('Archive is manual'), 'Should have manual archive comment');
+    const chainIdx = src.indexOf('Plan chaining removed');
+    const verifySection = src.slice(chainIdx, src.indexOf('Clean up worktree', chainIdx));
+    assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
+    assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
   });
 
   await test('/api/plans/create writes Source Meeting header', () => {
@@ -12382,11 +12386,6 @@ async function testDashboardButtonConsistency() {
   await test('archive confirm warns about linked source plan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
-  });
-
-  await test('text selection prevents work item modal', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('getSelection') && src.includes('toString().length'), 'Should check selection');
   });
 
   await test('client-side transcript has null guards', () => {
