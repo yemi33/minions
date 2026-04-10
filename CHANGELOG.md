@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.774 (2026-04-10)
+
+### Features
+-  show PR merged/active status on PRD item links
+
+### Fixes
+-  filter CI bot noise from PR human comment detection
+
+### Other
+- refactor: shared _renderPrLink for list and graph PR status display
+
 ## 0.1.771 (2026-04-10)
 
 ### Fixes
