@@ -60,22 +60,26 @@ async function getAdoToken() {
   return null;
 }
 
-async function adoFetch(url, token, _retryCount = 0) {
+async function adoFetch(url, token, opts = {}) {
+  const _retryCount = typeof opts === 'number' ? opts : (opts._retryCount || 0); // backward compat
+  const method = (typeof opts === 'object' && opts.method) || 'GET';
+  const body = (typeof opts === 'object' && opts.body) || undefined;
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
+    method,
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(30000),
+    body,
   });
-  if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
-    // Invalidate cached token — it's likely expired
     _adoTokenCache = { token: null, expiresAt: 0 };
     if (_retryCount < MAX_RETRIES) {
       const freshToken = await getAdoToken();
       if (freshToken) {
         log('info', 'ADO token expired mid-session — refreshed and retrying');
-        return adoFetch(url, freshToken, _retryCount + 1);
+        return adoFetch(url, freshToken, { ...opts, _retryCount: _retryCount + 1 });
       }
     }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
