@@ -547,6 +547,8 @@ const ENGINE_DEFAULTS = {
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
+  autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
+  prMergeMethod: 'squash', // merge method: squash, merge, rebase
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops

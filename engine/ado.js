@@ -418,6 +418,31 @@ async function pollPrStatus(config) {
       }
     }
 
+    // Auto-complete: set auto-complete on PR when builds green + review approved
+    if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
+      const autoComplete = config.engine?.autoCompletePrs === true; // opt-in
+      if (autoComplete) {
+        try {
+          const mergeStrategy = config.engine?.prMergeMethod === 'merge' ? 1 : config.engine?.prMergeMethod === 'rebase' ? 2 : 3; // 3 = squash
+          const identityUrl = `${orgBase}/_apis/connectionData?api-version=7.1`;
+          const identity = await adoFetch(identityUrl, token).catch(() => null);
+          const autoCompleteUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
+          await adoFetch(autoCompleteUrl, token, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              autoCompleteSetBy: { id: identity?.authenticatedUser?.id },
+              completionOptions: { mergeStrategy, deleteSourceBranch: true, transitionWorkItems: true }
+            })
+          });
+          pr._autoCompleted = true;
+          log('info', `Auto-complete set on PR ${pr.id}: builds green + review approved`);
+          updated = true;
+        } catch (e) {
+          log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
+        }
+      }
+    }
+
     return updated;
     } catch (err) {
       // Auth errors → mark build status stale so dashboard shows uncertainty
