@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS } = shared;
+  WI_STATUS, ENGINE_DEFAULTS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -265,14 +265,21 @@ function getAgentStatus(agentId) {
 
   // Fallback: derive active state from work-item markers.
   // This protects UI status when dispatch.json briefly desyncs from work-item files.
+  // Guard: only trust dispatched state within 2x heartbeatTimeout to prevent stale
+  // dispatched items from permanently showing an agent as working after a dead process.
   try {
     const config = getConfig();
+    const heartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+    const staleThresholdMs = heartbeatTimeout * 2;
+    const now = Date.now();
     const allItems = getWorkItems(config);
     const latestInFlight = allItems
-      .filter(w =>
-        (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        w.status === WI_STATUS.DISPATCHED
-      )
+      .filter(w => {
+        if ((w.dispatched_to || '').toLowerCase() !== String(agentId).toLowerCase()) return false;
+        if (w.status !== WI_STATUS.DISPATCHED) return false;
+        const ageMs = w.dispatched_at ? now - new Date(w.dispatched_at).getTime() : Infinity;
+        return ageMs < staleThresholdMs;
+      })
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
       return {
