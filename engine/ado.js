@@ -141,9 +141,9 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, 
     );
     if (failedRecords.length === 0) return null;
 
-    // Fetch logs for failed tasks (cap at 3 to limit API calls)
+    // Fetch logs for failed tasks (cap at 10 to cover multi-stage pipelines)
     const logParts = [];
-    for (const record of failedRecords.slice(0, 3)) {
+    for (const record of failedRecords.slice(0, 10)) {
       try {
         const logUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/logs/${record.log.id}?api-version=7.1`;
         const text = await adoFetchText(logUrl, token);
@@ -404,7 +404,7 @@ async function pollPrStatus(config) {
 
       // Fetch actual compiler/build error logs when transitioning to failing
       if (buildStatus === 'failing') {
-        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 3);
+        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
         const logParts = [];
         const seenBuildIds = new Set();
         for (const failedStatusObj of failedStatusObjs) {
