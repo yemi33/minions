@@ -4207,6 +4207,8 @@ async function testExtractSkills() {
     const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
     assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
     assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
+    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item should use directory/SKILL.md format, not flat .md');
+    assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item must NOT use flat .md format');
   });
 
   restore();
@@ -10174,6 +10176,20 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
   });
 
+  await test('dep merge handles local-only branches by pushing to remote (#782)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('couldn\'t find remote ref'),
+      'engine.js must detect missing-remote-ref errors in dep fetch');
+    assert.ok(src.includes('git rev-parse --verify'),
+      'engine.js must check if branch exists locally when remote ref missing');
+    assert.ok(src.includes('git push origin') && src.includes('failedBranch'),
+      'engine.js must push local-only dep branches to origin');
+    assert.ok(src.includes('Pushed and fetched local-only dependency'),
+      'engine.js must log success after pushing local-only dependency');
+    assert.ok(src.includes('not on remote and push failed'),
+      'engine.js must log push failure for local-only dep branches');
+  });
+
   // ── Critical UX element regression checks ──
   // These must run early (not in late test functions that may be skipped by earlier crashes)
 
@@ -12291,8 +12307,8 @@ async function testIssue716HeartbeatFeedbackLoop() {
   // 4. Output completion detection scans for result and process-exit
   await test('timeout.js detects completed agents from output (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
-      'timeout.js should scan for result events and process-exit sentinel');
+    assert.ok(src.includes('"type":"result"') && src.includes('\\n[process-exit]'),
+      'timeout.js should scan for result events and process-exit sentinel (as start-of-line to avoid false positives from tool results)');
     assert.ok(src.includes('completedViaOutput'),
       'Should track completion via output detection');
     assert.ok(src.includes('completeDispatch(item.id'),
@@ -12313,7 +12329,7 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     // The blocking tool detection section should check for result/process-exit before extending
     const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
-    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
+    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('\\n[process-exit]'),
       'Blocking tool detection should check for completed agent before extending timeout');
   });
 
