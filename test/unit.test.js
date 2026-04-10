@@ -9773,6 +9773,67 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('docs/teams-setup.md'), 'doctor should reference setup guide when disabled');
   });
 
+  await test('engine/teams.js exports required functions', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.createAdapter, 'function', 'createAdapter should be a function');
+    assert.strictEqual(typeof teams.teamsReply, 'function', 'teamsReply should be a function');
+    assert.strictEqual(typeof teams.saveConversationRef, 'function', 'saveConversationRef should be a function');
+    assert.strictEqual(typeof teams.getConversationRef, 'function', 'getConversationRef should be a function');
+    assert.strictEqual(typeof teams.teamsPost, 'function', 'teamsPost should be a function');
+    assert.strictEqual(typeof teams.getTeamsConfig, 'function', 'getTeamsConfig should be a function');
+    assert.strictEqual(typeof teams.isTeamsEnabled, 'function', 'isTeamsEnabled should be a function');
+  });
+
+  await test('getTeamsConfig merges defaults with user config', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    const cfg = teams.getTeamsConfig();
+    // Should have all default fields even with no user config
+    assert.strictEqual(cfg.enabled, false, 'default enabled should be false');
+    assert.ok(Array.isArray(cfg.notifyEvents), 'notifyEvents should be an array');
+    assert.strictEqual(cfg.ccMirror, true, 'default ccMirror should be true');
+    assert.strictEqual(cfg.inboxPollInterval, 15000, 'default inboxPollInterval should be 15000');
+  });
+
+  await test('isTeamsEnabled returns false when disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false
+    assert.strictEqual(teams.isTeamsEnabled(), false, 'should be false with default config');
+  });
+
+  await test('createAdapter returns null when Teams is disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    const adapter = teams.createAdapter();
+    assert.strictEqual(adapter, null, 'adapter should be null when disabled');
+  });
+
+  await test('saveConversationRef uses mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('mutateJsonFileLocked(TEAMS_STATE_PATH'), 'saveConversationRef should use mutateJsonFileLocked');
+  });
+
+  await test('teamsReply and teamsPost are safe no-ops when adapter is null', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Should not throw
+    await teams.teamsReply(null, 'test');
+    await teams.teamsPost('key', 'test');
+  });
+
+  await test('getConversationRef returns null for unknown key', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.getConversationRef('nonexistent'), null);
+  });
+
+  await test('teams.js uses shared.log for all logging', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes("const { log,"), 'should destructure log from shared');
+    // Should not use console.log directly
+    const lines = src.split('\n');
+    const consoleLogLines = lines.filter(l => l.includes('console.log') && !l.trimStart().startsWith('//'));
+    assert.strictEqual(consoleLogLines.length, 0, 'should not use console.log directly');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

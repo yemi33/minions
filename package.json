@@ -41,7 +41,9 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2"
   },
-  "dependencies": {},
+  "dependencies": {
+    "botbuilder": "4.23.3"
+  },
   "publishConfig": {
     "access": "public"
   }
