@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.761 (2026-04-10)
+
+### Fixes
+-  prevent competing thinking intervals on tab switch
+
 ## 0.1.760 (2026-04-10)
 
 ### Features
