@@ -186,7 +186,7 @@ function checkPlanCompletion(meta, config) {
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (!existingVerify && doneItems.length > 0 && failedItems.length === 0) {
+  if (!existingVerify && doneItems.length > 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
