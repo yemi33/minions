@@ -496,6 +496,7 @@ async function pollPrHumanComments(config) {
     // Collect ALL human comments on the PR for full context
     const allHumanComments = [];
     const newHumanComments = [];
+    const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
 
     for (const thread of threads) {
       for (const comment of (thread.comments || [])) {
@@ -503,7 +504,6 @@ async function pollPrHumanComments(config) {
         const content = comment.content;
         // Skip bots, CI noise, and ignored authors
         const authorName = (comment.author?.displayName || '').toLowerCase();
-        const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
         if (ignoredAuthors.some(a => authorName.includes(a))) continue;
         if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
         if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
