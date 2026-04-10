@@ -720,7 +720,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-async function updatePrAfterReview(agentId, pr, project, config) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
 
   if (!pr?.id) return;
 
@@ -755,7 +755,7 @@ async function updatePrAfterReview(agentId, pr, project, config) {
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: completedEntry?.task || ''
+      note: resultSummary || completedEntry?.task || ''
     };
     updatedTarget = { ...pr, ...target };
     return prs;
@@ -1592,7 +1592,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
+  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {
