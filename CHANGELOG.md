@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.777 (2026-04-10)
+
+### Fixes
+-  pass reviewer's actual output to fix agent, not just task label
+
 ## 0.1.776 (2026-04-10)
 
 ### Features
