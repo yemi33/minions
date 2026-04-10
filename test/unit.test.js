@@ -9834,6 +9834,52 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(consoleLogLines.length, 0, 'should not use console.log directly');
   });
 
+  await test('POST /api/bot route is registered in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path: '/api/bot'"), '/api/bot route should be registered');
+    assert.ok(src.includes("method: 'POST'") && src.includes('/api/bot'), 'should be a POST route');
+    assert.ok(src.includes('handleTeamsBot'), 'should reference handleTeamsBot handler');
+  });
+
+  await test('/api/bot returns 503 when Teams disabled', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('503'), 'should return 503 when disabled');
+    assert.ok(handler.includes('Teams integration disabled'), 'should include disabled message');
+  });
+
+  await test('/api/bot filters bot own messages by appId', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('cfg.appId'), 'should compare from.id to appId');
+    assert.ok(handler.includes('activity.from?.id === cfg.appId'), 'should filter bot own messages');
+  });
+
+  await test('/api/bot writes to teams-inbox.json with required fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('mutateJsonFileLocked(TEAMS_INBOX_PATH'), 'should use mutateJsonFileLocked for teams-inbox.json');
+    assert.ok(handler.includes('id: msgId'), 'message should have id field');
+    assert.ok(handler.includes('text: activity.text'), 'message should have text field');
+    assert.ok(handler.includes("from: activity.from?.name"), 'message should have from field');
+    assert.ok(handler.includes('conversationRef:'), 'message should have conversationRef field');
+    assert.ok(handler.includes('receivedAt:'), 'message should have receivedAt field');
+    assert.ok(handler.includes('_processedAt: null'), 'message should have _processedAt field');
+  });
+
+  await test('/api/bot saves conversationRef on conversationUpdate and installationUpdate', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes("activity.type === 'conversationUpdate'"), 'should handle conversationUpdate');
+    assert.ok(handler.includes("activity.type === 'installationUpdate'"), 'should handle installationUpdate');
+    assert.ok(handler.includes('teams.saveConversationRef'), 'should call saveConversationRef');
+  });
+
+  await test('TEAMS_INBOX_PATH is defined in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json')"), 'TEAMS_INBOX_PATH should be defined');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
