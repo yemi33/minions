@@ -41,7 +41,7 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 
 - Gate: `buildFixAttempts < maxBuildFixAttempts` (default 3) + grace period expired
 - **Grace period** (`_buildFixPushedAt`): after fix dispatches, waits `buildFixGracePeriod` (default 10min, configurable in `ENGINE_DEFAULTS`) for CI to run before re-dispatching. Cleared when poller detects build status transition (CI actually ran).
-- **Error logs**: GitHub fetches annotations (failures only, not warnings) + Actions job log (always). ADO fetches build timeline + failed task logs. Both fetch up to 3 failing pipelines.
+- **Error logs**: GitHub fetches annotations (failures only, not warnings) + Actions job log (always). ADO queries builds API directly (not status checks), fetches build timeline → failed task logs (up to 10 per build, up to 10 failing pipelines).
 - **Escalation**: after 3 failed attempts, writes inbox alert, sets `buildFixEscalated = true`, stops auto-dispatch. Counter resets when build recovers.
 
 ## 5. Fix completes
@@ -108,3 +108,20 @@ How the engine manages the lifecycle of a PR from creation through review, fix, 
 | `lastReviewedAt` | `updatePrAfterReview()` | Prevents re-dispatch if reviewed |
 | `minionsReview` | Post-completion hooks | `{ reviewer, reviewedAt, note, fixedAt }` |
 | `humanFeedback` | `pollPrHumanComments()` | `{ pendingFix, feedbackContent, lastProcessedCommentDate }` |
+
+## Platform differences
+
+| | GitHub | ADO |
+|---|---|---|
+| **Build status API** | `/commits/{sha}/check-runs` | `_apis/build/builds` (not status checks — those show stale codecoverage postbacks) |
+| **Commit tracking** | `head.sha` (source branch tip) | `lastMergeCommit.commitId` (merge commit that builds use as sourceVersion) |
+| **Passing** | success, skipped, neutral | succeeded, partiallySucceeded (warnings, not failures) |
+| **Error logs** | Annotations (failures only) + Actions job log (always) | Build timeline → failed task logs (up to 10 tasks, up to 10 pipelines) |
+| **Push detection** | `head.sha` change | `lastMergeCommit.commitId` change |
+
+### ADO lessons learned
+
+- Don't trust `/pullRequests/{id}/statuses` — shows stale codecoverage postbacks, not actual build results
+- Builds use the merge commit hash as `sourceVersion`, not the source branch commit — compare against `lastMergeCommit.commitId`
+- `partiallySucceeded` counts as passing (warnings, not failures)
+- A stale but passing build is still valid — don't re-trigger builds that already passed

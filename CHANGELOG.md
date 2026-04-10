@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.1.782 (2026-04-10)
+
+### Features
+-  fix agents resolve review threads after addressing findings
+
+### Fixes
+-  restore cc-tab-bar element + add critical UX regression tests
+
+## 0.1.780 (2026-04-10)
+
+### Features
+-  auto-complete PRs when builds green + review approved
+
+## 0.1.778 (2026-04-10)
+
+### Fixes
+-  agent comments included in context but don't trigger fix dispatch
+
+## 0.1.777 (2026-04-10)
+
+### Fixes
+-  pass reviewer's actual output to fix agent, not just task label
+
+## 0.1.776 (2026-04-10)
+
+### Features
+-  auto-rebase dependent PRs after dependency merge
+-  show PR merged/active status on PRD item links
+
+### Fixes
+-  better agent comment filtering — detect by patterns, not just signature
+-  filter CI bot noise from PR human comment detection
+
+### Other
+- refactor: shared _renderPrLink for list and graph PR status display
+
+## 0.1.771 (2026-04-10)
+
+### Fixes
+-  clarify timeout.js error reason — "Exited with error" vs "Completed"
+
+## 0.1.770 (2026-04-10)
+
+### Features
+- id/kill endpoint
+
+### Fixes
+-  increase ADO pipeline/task caps from 3 to 10, update docs
+-  ADO build detection uses builds API, not unreliable status checks
+-  handle work type names as action aliases for dispatch
+-  align Agent Usage and Engine Usage table columns
+-  harden agent kill endpoint — use killGracefully, clean steer.md, remove dead var
+
 ## 0.1.764 (2026-04-10)
 
 ### Features

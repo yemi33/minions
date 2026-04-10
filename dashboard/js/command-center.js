@@ -161,6 +161,7 @@ function ccSwitchTab(id) {
     ccAddMessage('assistant', _restoreStreamHtml(), true);
     var restoreDiv = el.lastElementChild;
     restoreDiv.id = 'cc-restore-thinking';
+    restoreDiv.setAttribute('data-stream-tab', tab.id);
     el.scrollTop = el.scrollHeight;
     // Live update — stops when tab switches away or request completes
     var restoreInterval = setInterval(function() {
@@ -324,7 +325,8 @@ function ccUpdateSessionIndicator() {
 
 function ccAddMessage(role, html, skipSave, targetTabId) {
   var isUser = role === 'user';
-  var isAssistant = !isUser;
+  var isSystem = role === 'system';
+  var isAssistant = !isUser && !isSystem;
   var targetTab = targetTabId ? _ccTabs.find(function(t) { return t.id === targetTabId; }) : _ccActiveTab();
   // Only render to DOM if this message is for the currently visible tab
   var isVisible = !targetTabId || targetTabId === _ccActiveTabId;
@@ -333,7 +335,7 @@ function ccAddMessage(role, html, skipSave, targetTabId) {
     var div = document.createElement('div');
     div.className = isAssistant ? 'cc-msg-assistant' : '';
     div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
-      (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
+      (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : isSystem ? 'align-self:center;max-width:100%' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
     div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
     var wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
     el.appendChild(div);
@@ -376,16 +378,11 @@ async function ccSend() {
   }
   var wasAborted = await _ccDoSend(message);
 
-  // Drain this tab's queue — send each queued message in order
-  while (tab._queue && tab._queue.length > 0) {
-    if (wasAborted) {
-      tab._sending = true;
-      await new Promise(function(r) { setTimeout(r, 500); });
-      tab._sending = false;
-    }
-    var next = tab._queue.shift();
+  // Flush queued messages — combine into single request
+  if (tab._queue && tab._queue.length > 0 && !wasAborted) {
+    var combined = tab._queue.splice(0).join('\n\n');
     _renderQueueIndicator();
-    wasAborted = await _ccDoSend(next);
+    wasAborted = await _ccDoSend(combined);
   }
 }
 
@@ -466,15 +463,23 @@ async function _ccDoSend(message, skipUserMsg) {
   if (activeTab) { activeTab._streamedText = ''; activeTab._toolsUsed = []; }
 
   // Get active tab's sessionId to send with request
-  var activeTab = _ccActiveTab();
   var tabSessionId = activeTab ? activeTab.sessionId : null;
-  var activeTabId = _ccActiveTabId;
 
   // Show thinking immediately — before fetch starts
   addMsg('assistant', '<span style="color:var(--muted);font-size:11px">Thinking...</span>', true);
   var msgs = document.getElementById('cc-messages');
   var streamDiv = msgs.lastElementChild;
-    var dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
+  if (streamDiv) streamDiv.setAttribute('data-stream-tab', activeTabId);
+  function _cleanupStreamDiv() {
+    clearInterval(phaseTimer);
+    if (streamDiv && streamDiv.parentNode) streamDiv.remove();
+    // Only remove restore-thinking if it belongs to this tab (check data-stream-tab)
+    var re = document.getElementById('cc-restore-thinking');
+    if (re && re.getAttribute('data-stream-tab') === activeTabId) re.remove();
+    var ds = document.querySelector('[data-stream-tab="' + activeTabId + '"]');
+    if (ds) ds.remove();
+  }
+  var dotPulse = '<span style="display:inline-flex;gap:3px;margin-left:6px;vertical-align:middle"><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.2s"></span><span style="width:4px;height:4px;background:var(--blue);border-radius:50%;animation:dotPulse 1.2s infinite;animation-delay:0.4s"></span></span>';
     function _getThinkingHtml() {
       var elapsed = Date.now() - ccStartTime;
       var label = 'Thinking...';
@@ -490,7 +495,7 @@ async function _ccDoSend(message, skipUserMsg) {
       if (_ccActiveTabId !== activeTabId) return;
       // Re-acquire streamDiv if it was detached (tab switch and back)
       if (!streamDiv.parentNode) {
-        var re = document.getElementById('cc-restore-thinking');
+        var re = document.getElementById('cc-restore-thinking') || document.querySelector('[data-stream-tab="' + activeTabId + '"]');
         if (re) { streamDiv = re; re.removeAttribute('id'); } else return;
       }
       var html = '';
@@ -523,7 +528,7 @@ async function _ccDoSend(message, skipUserMsg) {
     });
 
     if (!res.ok) {
-      clearInterval(phaseTimer); streamDiv.remove();
+      _cleanupStreamDiv();
       var errText = await res.text();
       addMsg('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
         (errText.includes('busy') ? ' <button onclick="ccNewTab()" style="margin-top:4px;padding:3px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--blue);cursor:pointer;font-size:10px">Reset CC</button>' : ''));
@@ -555,22 +560,26 @@ async function _ccDoSend(message, skipUserMsg) {
             updateStreamDiv();
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
           } else if (evt.type === 'done') {
-            // Replace streaming div with a proper ccAddMessage
-            clearInterval(phaseTimer); streamDiv.remove();
+            _cleanupStreamDiv();
+            // If system prompt changed, show a notice before the response
+            if (evt.sessionReset) {
+              addMsg('system', '<div style="text-align:center;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">Minions was updated — started a fresh session with latest context.</div>', false, activeTabId);
+            }
             // placeholder was added with skipSave=true — nothing to pop
             var ccElapsed = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered = renderMd(evt.text || streamedText || '');
             addMsg('assistant', rendered + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed + 's</div>');
             if (evt.sessionId !== undefined) {
-              var currentTab = _ccActiveTab();
-              if (currentTab) { currentTab.sessionId = evt.sessionId || null; }
+              // Save session to the originating tab, not whichever tab is active now
+              var originTab = _ccTabs.find(function(t) { return t.id === activeTabId; });
+              if (originTab) { originTab.sessionId = evt.sessionId || null; }
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (evt.actions && evt.actions.length > 0) {
               for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai]); }
             }
           } else if (evt.type === 'error') {
-            clearInterval(phaseTimer); streamDiv.remove();
+            _cleanupStreamDiv();
             // placeholder was skipSave — no pop needed
             addMsg('assistant', '<span style="color:var(--red)">' + escHtml(evt.error) + '</span>');
           }
@@ -586,14 +595,14 @@ async function _ccDoSend(message, skipUserMsg) {
         try {
           var revt = JSON.parse(rline.slice(6));
           if (revt.type === 'done') {
-            clearInterval(phaseTimer); streamDiv.remove();
+            _cleanupStreamDiv();
             // placeholder was skipSave — no pop needed
             var ccElapsed2 = Math.round((Date.now() - ccStartTime) / 1000);
             var rendered2 = renderMd(revt.text || streamedText || '');
             addMsg('assistant', rendered2 + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed2 + 's</div>');
             if (revt.sessionId !== undefined) {
-              var currentTab2 = _ccActiveTab();
-              if (currentTab2) { currentTab2.sessionId = revt.sessionId || null; }
+              var originTab2 = _ccTabs.find(function(t) { return t.id === activeTabId; });
+              if (originTab2) { originTab2.sessionId = revt.sessionId || null; }
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (revt.actions && revt.actions.length > 0) {
@@ -607,15 +616,15 @@ async function _ccDoSend(message, skipUserMsg) {
       }
     }
     // If stream ended without a 'done' event, finalize with whatever we have
-    if (streamDiv.parentNode) {
-      clearInterval(phaseTimer); streamDiv.remove();
+    if (streamDiv.parentNode || document.getElementById('cc-restore-thinking') || document.querySelector('[data-stream-tab="' + activeTabId + '"]')) {
+      _cleanupStreamDiv();
       if (streamedText) {
         var ccElapsed3 = Math.round((Date.now() - ccStartTime) / 1000);
         addMsg('assistant', renderMd(streamedText) + '<div style="font-size:9px;color:var(--muted);margin-top:6px;display:flex;justify-content:flex-end;padding-right:30px">' + ccElapsed3 + 's</div>');
       }
     }
   } catch (e) {
-    if (streamDiv?.parentNode) { clearInterval(phaseTimer); streamDiv.remove(); }
+    _cleanupStreamDiv();
     if (e.name === 'AbortError') {
       _wasAborted = true;
       if (streamedText) {

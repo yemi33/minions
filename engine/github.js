@@ -330,8 +330,10 @@ async function pollPrStatus(config) {
       }
 
       let newReviewStatus = pr.reviewStatus || 'pending';
-      if (states.some(s => s === 'CHANGES_REQUESTED')) {
-        // Don't re-trigger if fix agent already responded — wait for re-review
+      // Once approved, it stays approved permanently
+      if (pr.reviewStatus === 'approved') {
+        newReviewStatus = 'approved';
+      } else if (states.some(s => s === 'CHANGES_REQUESTED')) {
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
           newReviewStatus = 'waiting';
         } else {
@@ -340,8 +342,6 @@ async function pollPrStatus(config) {
       }
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
-      // If all reviews were COMMENTED (filtered out), states is empty but reviews exist.
-      // Set to 'waiting' instead of leaving as 'pending' to prevent infinite review re-dispatch.
       else if (states.length === 0 && reviews.length > 0 && newReviewStatus === 'pending') newReviewStatus = 'waiting';
 
       if (pr.reviewStatus !== newReviewStatus) {
@@ -362,6 +362,11 @@ async function pollPrStatus(config) {
               });
             } catch (err) { log('warn', `Metrics update: ${err.message}`); }
           }
+        }
+        // Reset review→fix cycle counter on approval (loop succeeded)
+        if (newReviewStatus === 'approved') {
+          delete pr._reviewFixCycles;
+          delete pr._evalEscalated;
         }
       }
     }
@@ -395,8 +400,9 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
-          // Build transitioned — clear grace period so next failure can trigger immediately
+          // Build transitioned — clear grace period and auto-complete flag
           delete pr._buildFixPushedAt;
+          if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
             delete pr._buildFailNotified;
             delete pr.buildErrorLog;
@@ -414,6 +420,34 @@ async function pollPrStatus(config) {
               log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
             }
           }
+        }
+      }
+    }
+
+    // Merge conflict detection
+    if (prData.state === 'open' && prData.mergeable === false) {
+      if (!pr._mergeConflict) {
+        pr._mergeConflict = true;
+        log('info', `PR ${pr.id} has merge conflicts — will dispatch fix if not already in progress`);
+        updated = true;
+      }
+    } else if (pr._mergeConflict) {
+      delete pr._mergeConflict;
+      updated = true;
+    }
+
+    // Auto-complete: merge PR when builds green + review approved
+    if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
+      const autoComplete = config.engine?.autoCompletePrs === true; // opt-in
+      if (autoComplete) {
+        try {
+          const mergeMethod = ['squash', 'merge', 'rebase'].includes(config.engine?.prMergeMethod) ? config.engine.prMergeMethod : 'squash';
+          await execAsync(`gh pr merge ${prNum} --${mergeMethod} --repo ${slug} --delete-branch`, { timeout: 30000, encoding: 'utf-8' });
+          pr._autoCompleted = true;
+          log('info', `Auto-completed PR ${pr.id}: builds green + review approved → merged (${mergeMethod})`);
+          updated = true;
+        } catch (e) {
+          log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
         }
       }
     }
@@ -441,12 +475,27 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Filter out bot comments and minions's own comments
-    const humanComments = allComments.filter(c => {
-      if (c.user?.type === 'Bot') return false;
-      if (/\bMinions\s*\(/i.test(c.body || '')) return false;
-      return true;
-    });
+    // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
+    // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
+    function _isBot(c) {
+      if (c.user?.type === 'Bot') return true;
+      const login = (c.user?.login || '').toLowerCase();
+      if (ignoredAuthors.has(login)) return true;
+      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
+      const body = c.body || '';
+      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
+      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
+      return false;
+    }
+    function _isAgentComment(c) {
+      const body = c.body || '';
+      if (/\bMinions\s*\(/i.test(body)) return true;
+      if (/\bby\s+Minions\b/i.test(body)) return true;
+      if (/\[minions\]/i.test(body)) return true;
+      return false;
+    }
+    const humanComments = allComments.filter(c => !_isBot(c));
 
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
     const cutoffMs = new Date(cutoffStr).getTime() || 0;
@@ -457,21 +506,29 @@ async function pollPrHumanComments(config) {
 
     for (const c of humanComments) {
       const date = c.created_at || c.updated_at || '';
+      const isAgent = _isAgentComment(c);
       const entry = {
         commentId: c.id,
         author: c.user?.login || 'Human',
         content: c.body || '',
-        date
+        date,
+        _isAgent: isAgent
       };
       allCommentEntries.push(entry);
 
-      // Any new comment triggers a fix — no @minions filter needed
+      // Only non-agent new comments trigger a fix (agent reviews trigger via vote, not comment)
       const dateMs = date ? new Date(date).getTime() : 0;
-      if (dateMs && dateMs > cutoffMs) {
+      if (dateMs && dateMs > cutoffMs && !isAgent) {
         newComments.push(entry);
       }
     }
 
+    // Update cutoff even if only agent comments are new (so we don't re-scan them)
+    const allNewDates = allCommentEntries.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    if (allNewDates.length > 0 && newComments.length === 0) {
+      pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
+      return false; // agent comments only — don't trigger fix
+    }
     if (newComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent

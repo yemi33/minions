@@ -137,7 +137,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, processPendingRebases } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -493,8 +493,25 @@ async function spawnAgent(dispatchItem, config) {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                 log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
               } catch (mergeErr) {
-                log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
-                depMergeFailed = true;
+                // Merge failed — possibly due to diverged history from a force-pushed (rebased) dep branch.
+                // Abort partial merge, reset worktree to clean main base, and re-merge all deps from scratch.
+                log('warn', `Merge of ${depBranch} into ${branchName} failed: ${mergeErr.message} — attempting reset and re-merge of all deps`);
+                try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
+                const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                try {
+                  await execAsync(`git reset --hard "origin/${mainRef}"`, { ..._gitOpts, cwd: worktreePath });
+                  log('info', `Reset worktree ${branchName} to origin/${mainRef} for clean dep re-merge`);
+                  // Re-merge ALL fetched dep branches from scratch on clean base
+                  for (const { branch: reBranch, prId: rePrId } of fetched) {
+                    await execAsync(`git merge "origin/${reBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
+                    log('info', `Re-merged dependency branch ${reBranch} (${rePrId}) into worktree ${branchName}`);
+                  }
+                  log('info', `Successfully re-merged all ${fetched.length} dep branches after reset for ${branchName}`);
+                } catch (resetErr) {
+                  log('warn', `Failed to reset and re-merge deps for ${branchName}: ${resetErr.message}`);
+                  try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
+                  depMergeFailed = true;
+                }
                 break;
               }
             }
@@ -1185,6 +1202,10 @@ function autoCleanPrdWorkItems(prdFile, config) {
       }
       return dispatch;
     });
+    // Reset PRD item status to 'missing' so engine re-materializes on next tick
+    for (const id of deletedIds) {
+      try { syncPrdItemStatus(id, 'missing', prdFile); } catch (e) { log('warn', `PRD status reset for ${id}: ${e.message}`); }
+    }
     log('info', `Plan sync: cleared ${deletedIds.length} pending/failed work items for ${prdFile}`);
   }
 }
@@ -1576,11 +1597,28 @@ async function discoverFromPrs(config, project) {
     // The poller holds reviewStatus at 'waiting' until the reviewer acts on the new code.
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
+    // Review→fix cycle cap — stop review/fix dispatch after N iterations, but allow build fixes and conflict fixes
+    const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
+    const evalCycles = pr._reviewFixCycles || 0;
+    const evalEscalated = evalCycles >= evalMax;
+    if (evalEscalated && !pr._evalEscalated) {
+      writeInboxAlert(`eval-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
+        `# Review Loop Escalation\n\n**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has gone through **${evalCycles}** review→fix cycles without approval.\n\n` +
+        `Last review: ${pr.minionsReview?.note ? pr.minionsReview.note.slice(0, 200) : 'See PR thread'}\n\n` +
+        `Auto-dispatch of reviews and fixes has been suspended. Please review the PR manually.`);
+      try {
+        mutatePullRequests(projectPrPath(project), prs => {
+          const target = prs.find(p => p.id === pr.id);
+          if (target) target._evalEscalated = true;
+        });
+      } catch (e) { log('warn', 'mark eval escalated: ' + e.message); }
+      log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
+    }
+
     // PRs needing review: pending review status and not already reviewed without new commits
     const autoReview = config.engine?.autoReview !== false;
-    // Skip re-dispatch if already reviewed and no new commits pushed since last review
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed;
+    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1611,13 +1649,13 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'review', {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
-      }, `Review PR ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
     // PRs with changes requested → route back to author for fix
     let fixDispatched = false;
-    if (reviewStatus === 'changes-requested' && !awaitingReReview) {
+    if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);
@@ -1626,8 +1664,17 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
-      }, `Fix PR ${pr.id} review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) {
+        newWork.push(item); setCooldown(key); fixDispatched = true;
+        // Increment review→fix cycle counter
+        try {
+          mutatePullRequests(projectPrPath(project), prs => {
+            const target = prs.find(p => p.id === pr.id);
+            if (target) target._reviewFixCycles = (target._reviewFixCycles || 0) + 1;
+          });
+        } catch (e) { log('warn', 'increment review-fix cycles: ' + e.message); }
+      }
     }
 
     // PRs with pending human feedback (skip if review-fix already dispatched above)
@@ -1656,26 +1703,26 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
-      }, `Fix PR ${pr.id} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
     if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
         if (!pr.buildFixEscalated) {
           writeInboxAlert(`build-fix-escalated-${pr.agent || 'unassigned'}-${pr.id}`,
             `# Build Fix Escalation\n\n` +
-            `**PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
+            `**PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has failed **${pr.buildFixAttempts}** consecutive auto-fix attempts.\n` +
             `**Last failure:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n` +
             `Auto-fix dispatch has been suspended. Please investigate manually.\n`
           );
@@ -1704,7 +1751,7 @@ async function discoverFromPrs(config, project) {
       const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
         pr_id: pr.id, pr_branch: pr.branch || '',
         review_note: reviewNote,
-      }, `Fix build failure on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
         newWork.push(item); setCooldown(key);
         // Increment build fix attempts counter
@@ -1723,7 +1770,7 @@ async function discoverFromPrs(config, project) {
       // Notify the author agent about the build failure
       if (pr.agent && !pr._buildFailNotified) {
         let alertBody = `# Build Failure Notification\n\n` +
-          `**Your PR ${pr.id}** on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
+          `**Your PR ${pr.id}**: ${pr.title || ''} on branch \`${pr.branch || 'unknown'}\` has a failing build.\n` +
           `**Reason:** ${pr.buildFailReason || 'Check CI pipeline for details'}\n\n`;
         if (pr.buildErrorLog) {
           // Include first 30 lines of error log in notification (full log in fix agent prompt)
@@ -1742,6 +1789,21 @@ async function discoverFromPrs(config, project) {
             }
           });
         } catch (e) { log('warn', 'mark build fail notified: ' + e.message); }
+      }
+    }
+
+    // PRs with merge conflicts — dispatch fix to resolve
+    if (pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+      const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
+      if (!isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+        const agentId = resolveAgent('fix', config, pr.agent);
+        if (agentId) {
+          const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+            pr_id: pr.id, pr_branch: pr.branch || '',
+            review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
+          }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+          if (item) { newWork.push(item); setCooldown(key); }
+        }
       }
     }
 
@@ -2636,16 +2698,27 @@ let tickCount = 0;
 const completedPlanCache = new Set();
 
 let tickRunning = false;
+let _tickStartedAt = 0;
+const TICK_TIMEOUT_MS = 300000; // 5 min — force-release tick lock if stuck
 
 async function tick() {
-  if (tickRunning) return; // prevent overlapping ticks
+  if (tickRunning) {
+    if (_tickStartedAt && Date.now() - _tickStartedAt > TICK_TIMEOUT_MS) {
+      log('error', `Tick hung for ${Math.round((Date.now() - _tickStartedAt) / 1000)}s — force-releasing lock`);
+      tickRunning = false;
+      _tickStartedAt = 0;
+    }
+    return;
+  }
   tickRunning = true;
+  _tickStartedAt = Date.now();
   try {
     await tickInner();
   } catch (e) {
     log('error', `Tick error: ${e.message}`);
   } finally {
     tickRunning = false;
+    _tickStartedAt = 0;
   }
 }
 
@@ -2694,6 +2767,7 @@ async function tickInner() {
   if (tickCount % 6 === 0 || needsAdoPollRetry()) {
     try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await processPendingRebases(config); } catch (err) { log('warn', `Pending rebase processing error: ${err?.message || err}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
     // Check if any plans can be marked completed (all features done/in-pr)
