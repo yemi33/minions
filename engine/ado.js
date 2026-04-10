@@ -63,7 +63,8 @@ async function getAdoToken() {
 async function adoFetch(url, token, _retryCount = 0) {
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   const text = await res.text();
@@ -85,7 +86,8 @@ async function adoFetch(url, token, _retryCount = 0) {
 /** Fetch raw text from ADO API (for build logs which aren't JSON). */
 async function adoFetchText(url, token) {
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}` }
+    headers: { 'Authorization': `Bearer ${token}` },
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   return res.text();

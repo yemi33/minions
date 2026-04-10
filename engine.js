@@ -493,8 +493,25 @@ async function spawnAgent(dispatchItem, config) {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                 log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
               } catch (mergeErr) {
-                log('warn', `Failed to merge dependency ${depBranch} into ${branchName}: ${mergeErr.message}`);
-                depMergeFailed = true;
+                // Merge failed — possibly due to diverged history from a force-pushed (rebased) dep branch.
+                // Abort partial merge, reset worktree to clean main base, and re-merge all deps from scratch.
+                log('warn', `Merge of ${depBranch} into ${branchName} failed: ${mergeErr.message} — attempting reset and re-merge of all deps`);
+                try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
+                const mainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                try {
+                  await execAsync(`git reset --hard "origin/${mainRef}"`, { ..._gitOpts, cwd: worktreePath });
+                  log('info', `Reset worktree ${branchName} to origin/${mainRef} for clean dep re-merge`);
+                  // Re-merge ALL fetched dep branches from scratch on clean base
+                  for (const { branch: reBranch, prId: rePrId } of fetched) {
+                    await execAsync(`git merge "origin/${reBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
+                    log('info', `Re-merged dependency branch ${reBranch} (${rePrId}) into worktree ${branchName}`);
+                  }
+                  log('info', `Successfully re-merged all ${fetched.length} dep branches after reset for ${branchName}`);
+                } catch (resetErr) {
+                  log('warn', `Failed to reset and re-merge deps for ${branchName}: ${resetErr.message}`);
+                  try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
+                  depMergeFailed = true;
+                }
                 break;
               }
             }
@@ -1185,6 +1202,10 @@ function autoCleanPrdWorkItems(prdFile, config) {
       }
       return dispatch;
     });
+    // Reset PRD item status to 'missing' so engine re-materializes on next tick
+    for (const id of deletedIds) {
+      try { syncPrdItemStatus(id, 'missing', prdFile); } catch (e) { log('warn', `PRD status reset for ${id}: ${e.message}`); }
+    }
     log('info', `Plan sync: cleared ${deletedIds.length} pending/failed work items for ${prdFile}`);
   }
 }
@@ -2677,16 +2698,27 @@ let tickCount = 0;
 const completedPlanCache = new Set();
 
 let tickRunning = false;
+let _tickStartedAt = 0;
+const TICK_TIMEOUT_MS = 300000; // 5 min — force-release tick lock if stuck
 
 async function tick() {
-  if (tickRunning) return; // prevent overlapping ticks
+  if (tickRunning) {
+    if (_tickStartedAt && Date.now() - _tickStartedAt > TICK_TIMEOUT_MS) {
+      log('error', `Tick hung for ${Math.round((Date.now() - _tickStartedAt) / 1000)}s — force-releasing lock`);
+      tickRunning = false;
+      _tickStartedAt = 0;
+    }
+    return;
+  }
   tickRunning = true;
+  _tickStartedAt = Date.now();
   try {
     await tickInner();
   } catch (e) {
     log('error', `Tick error: ${e.message}`);
   } finally {
     tickRunning = false;
+    _tickStartedAt = 0;
   }
 }
 

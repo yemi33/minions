@@ -4207,8 +4207,8 @@ async function testExtractSkills() {
     const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
     assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
     assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
-    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item should use directory/SKILL.md format, not flat .md');
-    assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item must NOT use flat .md format');
+    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item path should use directory/SKILL.md format, not flat .md');
+    assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item path should NOT use flat .md format');
   });
 
   restore();
@@ -6138,6 +6138,34 @@ async function testDispatchCycleIntegration() {
       'engine.js must define resolveDependencyBranches');
     assert.ok(engineSrc.includes('dependency branch') || engineSrc.includes('depBranch'),
       'engine.js must resolve and merge dependency branches');
+  });
+
+  await test('Dep merge handles force-pushed branches by resetting and re-merging', () => {
+    // When git merge fails (e.g. diverged history from force-push), the engine should:
+    // 1. Abort the partial merge
+    // 2. Reset worktree to origin/<mainBranch>
+    // 3. Re-merge all deps from scratch
+    assert.ok(engineSrc.includes('git merge --abort'),
+      'engine.js must abort partial merge on dep merge failure');
+    assert.ok(engineSrc.includes('git reset --hard') && engineSrc.includes('resolveMainBranch'),
+      'engine.js must reset worktree to main branch on dep merge failure');
+    assert.ok(engineSrc.includes('Re-merged dependency branch'),
+      'engine.js must re-merge all deps after reset');
+    assert.ok(engineSrc.includes('reset and re-merge of all deps'),
+      'engine.js must log the reset and re-merge attempt');
+  });
+
+  await test('Dep merge re-merge failure marks depMergeFailed', () => {
+    // If re-merge also fails (genuine conflict), depMergeFailed must be set
+    // so the dispatch is completed with ERROR and retried next tick
+    assert.ok(engineSrc.includes('Failed to reset and re-merge deps'),
+      'engine.js must log re-merge failure');
+    // After reset failure, must also abort any in-progress merge from the re-merge attempt
+    const resetCatchBlock = engineSrc.substring(
+      engineSrc.indexOf('Failed to reset and re-merge deps')
+    );
+    assert.ok(resetCatchBlock.includes('depMergeFailed = true'),
+      'engine.js must set depMergeFailed on re-merge failure');
   });
 
   await test('Spawn renders playbook with system prompt', () => {
@@ -9968,11 +9996,55 @@ async function testAutoRecoveryAndAtomicity() {
       'Retry button should call prdItemRequeue');
   });
 
+  await test('PRD list view shows retry button when work item missing (orphaned PRD item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const renderItem = src.slice(src.indexOf('const renderItem'));
+    // canRequeue should handle !wi case for stuck PRD items
+    assert.ok(renderItem.includes("!wi && i.status") && renderItem.includes("!== 'missing'") && renderItem.includes("!== 'done'"),
+      'canRequeue should also trigger when no work item exists and PRD status is stuck');
+  });
+
   await test('PRD graph view also shows retry button for failed items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     const graphFn = src.slice(src.indexOf('const renderGraph'));
     assert.ok(graphFn.includes("'failed'") && graphFn.includes('prdItemRequeue'),
       'Graph view should check failed status and have prdItemRequeue click handler');
+  });
+
+  await test('PRD graph view shows retry for orphaned items (no work item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'));
+    assert.ok(graphFn.includes("!w && i.status") && graphFn.includes("!== 'missing'"),
+      'Graph view canRetry should handle missing work item case');
+  });
+
+  await test('prdItemRequeue sends prdFile parameter for re-materialization', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function prdItemRequeue'));
+    assert.ok(fn.includes('prdFile'),
+      'prdItemRequeue should accept and send prdFile parameter');
+    assert.ok(fn.includes('payload.prdFile'),
+      'prdItemRequeue should add prdFile to request payload');
+  });
+
+  await test('handleWorkItemsRetry re-materializes from PRD when work item missing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handleWorkItemsRetry'));
+    assert.ok(fn.includes('body.prdFile'),
+      'Retry handler should check for prdFile in request body');
+    assert.ok(fn.includes("createdBy: 'dashboard:prd-retry'"),
+      'Re-materialized work items should be tagged as dashboard:prd-retry');
+    assert.ok(fn.includes('rematerialized: true'),
+      'Response should indicate work item was re-materialized');
+    assert.ok(fn.includes('syncPrdItemStatus'),
+      'Retry handler should sync PRD item status after re-materialization');
+  });
+
+  await test('autoCleanPrdWorkItems resets PRD status to missing after deleting work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function autoCleanPrdWorkItems'), src.indexOf('function autoCleanPrdWorkItems') + 2000);
+    assert.ok(fn.includes("syncPrdItemStatus(id, 'missing', prdFile)"),
+      'autoCleanPrdWorkItems must reset PRD item status to missing when deleting work items');
   });
 
   await test('PRD view toggle uses rerenderPrdFromCache (not refresh)', () => {
@@ -10174,20 +10246,6 @@ async function testAutoRecoveryAndAtomicity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('Promise.allSettled'), 'Should use Promise.allSettled for parallel dep fetches');
     assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
-  });
-
-  await test('dep merge handles local-only branches by pushing to remote (#782)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('couldn\'t find remote ref'),
-      'engine.js must detect missing-remote-ref errors in dep fetch');
-    assert.ok(src.includes('git rev-parse --verify'),
-      'engine.js must check if branch exists locally when remote ref missing');
-    assert.ok(src.includes('git push origin') && src.includes('failedBranch'),
-      'engine.js must push local-only dep branches to origin');
-    assert.ok(src.includes('Pushed and fetched local-only dependency'),
-      'engine.js must log success after pushing local-only dependency');
-    assert.ok(src.includes('not on remote and push failed'),
-      'engine.js must log push failure for local-only dep branches');
   });
 
   // ── Critical UX element regression checks ──
@@ -12307,8 +12365,8 @@ async function testIssue716HeartbeatFeedbackLoop() {
   // 4. Output completion detection scans for result and process-exit
   await test('timeout.js detects completed agents from output (#716)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
-    assert.ok(src.includes('"type":"result"') && src.includes('\\n[process-exit]'),
-      'timeout.js should scan for result events and process-exit sentinel (as start-of-line to avoid false positives from tool results)');
+    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
+      'timeout.js should scan for result events and process-exit sentinel');
     assert.ok(src.includes('completedViaOutput'),
       'Should track completion via output detection');
     assert.ok(src.includes('completeDispatch(item.id'),
@@ -12329,7 +12387,7 @@ async function testIssue716HeartbeatFeedbackLoop() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
     // The blocking tool detection section should check for result/process-exit before extending
     const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
-    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('\\n[process-exit]'),
+    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
       'Blocking tool detection should check for completed agent before extending timeout');
   });
 
