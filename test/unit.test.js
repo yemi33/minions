@@ -9936,6 +9936,57 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('clearInterval(teamsInboxTimer)'), 'should clear teamsInboxTimer on shutdown');
   });
 
+  await test('teamsPostCCResponse is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsPostCCResponse, 'function', 'teamsPostCCResponse should be a function');
+  });
+
+  await test('teamsPostCCResponse returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Default config has enabled: false — should return immediately
+    await teams.teamsPostCCResponse('test', 'response');
+  });
+
+  await test('teamsPostCCResponse truncates at 4000 chars', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('maxLen = 4000'), 'should truncate at 4000 chars');
+    assert.ok(fn.includes('[see dashboard]'), 'should add dashboard link suffix');
+  });
+
+  await test('teamsPostCCResponse has 5s rate limit', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.CC_MIRROR_RATE_LIMIT_MS, 5000, 'rate limit should be 5000ms');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('_lastCCMirrorPost'), 'should track last mirror post timestamp');
+    assert.ok(fn.includes('CC_MIRROR_RATE_LIMIT_MS'), 'should reference rate limit constant');
+  });
+
+  await test('CC mirror hooks in dashboard.js skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Non-streaming handler
+    const ccHandler = src.slice(src.indexOf('async function handleCommandCenter('));
+    assert.ok(ccHandler.includes("tabId.startsWith('teams-')"), 'non-streaming should check tabId for teams origin');
+    assert.ok(ccHandler.includes('teamsPostCCResponse'), 'non-streaming should call teamsPostCCResponse');
+    assert.ok(ccHandler.includes('.catch(() => {})'), 'non-streaming mirror should be non-blocking');
+  });
+
+  await test('CC streaming mirror hooks skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const streamHandler = src.slice(src.indexOf('async function handleCommandCenterStream('));
+    assert.ok(streamHandler.includes("_streamTabId.startsWith('teams-')"), 'streaming should check tabId for teams origin');
+    assert.ok(streamHandler.includes('teamsPostCCResponse'), 'streaming should call teamsPostCCResponse');
+    assert.ok(streamHandler.includes('.catch(() => {})'), 'streaming mirror should be non-blocking');
+  });
+
+  await test('CC mirror checks ccMirror config before posting', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('cfg.ccMirror'), 'should check ccMirror config');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

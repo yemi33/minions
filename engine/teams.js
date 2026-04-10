@@ -215,8 +215,49 @@ async function processTeamsInbox() {
   }
 }
 
+// ── CC Mirror to Teams ─────────────────────────────────────────────────────
+
+const CC_MIRROR_RATE_LIMIT_MS = 5000;
+let _lastCCMirrorPost = 0;
+
+/**
+ * Mirror a CC response to Teams so the team sees orchestration activity.
+ * Truncates response at 4000 chars with a dashboard link suffix.
+ * Rate-limited to 1 post per 5 seconds — excess posts silently skipped.
+ * @param {string} userMessage — the user's CC input
+ * @param {string} ccResponse — the CC response text
+ */
+async function teamsPostCCResponse(userMessage, ccResponse) {
+  if (!isTeamsEnabled()) return;
+  const cfg = getTeamsConfig();
+  if (!cfg.ccMirror) return;
+
+  // Rate limit
+  const now = Date.now();
+  if (now - _lastCCMirrorPost < CC_MIRROR_RATE_LIMIT_MS) return;
+  _lastCCMirrorPost = now;
+
+  const maxLen = 4000;
+  const truncatedResponse = ccResponse.length > maxLen
+    ? ccResponse.slice(0, maxLen) + '... [see dashboard](http://localhost:7331)'
+    : ccResponse;
+
+  const formatted = `**CC** — _${userMessage.slice(0, 200)}_\n\n${truncatedResponse}`;
+
+  // Find first available conversation ref
+  const state = safeJson(TEAMS_STATE_PATH) || {};
+  const convKeys = Object.keys(state.conversations || {});
+  if (convKeys.length === 0) {
+    log('info', 'Teams CC mirror skipped — no conversation refs stored');
+    return;
+  }
+
+  await teamsPost(convKeys[0], formatted);
+  log('info', `Teams CC mirror sent (${formatted.length} chars)`);
+}
+
 // Reset cached adapter (for testing)
-function _resetAdapter() { _adapter = null; _botbuilder = null; }
+function _resetAdapter() { _adapter = null; _botbuilder = null; _lastCCMirrorPost = 0; }
 
 module.exports = {
   getTeamsConfig,
@@ -227,6 +268,8 @@ module.exports = {
   teamsReply,
   teamsPost,
   processTeamsInbox,
+  teamsPostCCResponse,
+  CC_MIRROR_RATE_LIMIT_MS,
   TEAMS_STATE_PATH,
   TEAMS_INBOX_PATH,
   TEAMS_INBOX_CAP,

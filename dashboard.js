@@ -3307,6 +3307,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        if (!tabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
         return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume });
       } finally {
         ccInFlightTabs.delete(tabId);
@@ -3413,6 +3418,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
         res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: ccSession.sessionId, newSession: !wasResume }) + '\n\n');
+
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        const _streamTabId = body.tabId || 'default';
+        if (!_streamTabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
         res.end();
       } finally {
         ccInFlightTabs.delete(tabId);
