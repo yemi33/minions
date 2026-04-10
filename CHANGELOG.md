@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.786 (2026-04-10)
+
+### Features
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
+### Fixes
+-  stale ADO build detection + merge conflict auto-fix for both platforms
+-  don't overwrite reviewStatus when platform vote hasn't propagated
+-  don't overwrite approval with 'waiting' when platform API lags
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
