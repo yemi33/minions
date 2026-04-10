@@ -1081,7 +1081,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     let enrichedBlock = block;
     if (!m('author')) enrichedBlock = enrichedBlock.replace('---\n', `---\nauthor: ${agentName}\n`);
     if (!m('created')) enrichedBlock = enrichedBlock.replace('---\n', `---\ncreated: ${dateStamp()}\n`);
-    const filename = name.replace(/[^a-z0-9-]/g, '-') + '.md';
+    const skillDirName = name.replace(/[^a-z0-9-]/g, '-');
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
@@ -1092,7 +1092,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
           if (data.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED)) return data;
           skillId = `SK${String(data.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           data.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
-            description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
+            description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${skillDirName}/SKILL.md\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           return data;
         });
