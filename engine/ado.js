@@ -501,8 +501,10 @@ async function pollPrHumanComments(config) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
         const content = comment.content;
-        // Skip bots and CI noise
+        // Skip bots, CI noise, and ignored authors
         const authorName = (comment.author?.displayName || '').toLowerCase();
+        const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
+        if (ignoredAuthors.some(a => authorName.includes(a))) continue;
         if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
         if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
         // Detect agent comments (included in context, but don't trigger fix)

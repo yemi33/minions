@@ -549,6 +549,7 @@ const ENGINE_DEFAULTS = {
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
   autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
   prMergeMethod: 'squash', // merge method: squash, merge, rebase
+  ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops

@@ -461,7 +461,8 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-const CC_SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Sessions never expire by time — user controls lifecycle via tabs (new tab = new session, /clear = reset).
+// Only invalidated by: system prompt change, explicit clear, or tab close.
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
@@ -477,17 +478,13 @@ function ccSessionValid() {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  const age = Date.now() - new Date(ccSession.lastActiveAt || 0).getTime();
-  return age < CC_SESSION_EXPIRY_MS && ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
 }
 
 // Load persisted CC session on startup
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId) {
-    const age = Date.now() - new Date(saved.lastActiveAt || 0).getTime();
-    if (age < CC_SESSION_EXPIRY_MS) ccSession = saved;
-  }
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 // Static system prompt — baked into session on creation, never changes
@@ -584,10 +581,8 @@ const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
-    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      const age = now - new Date(s.lastActiveAt || 0).getTime();
-      if (age < CC_SESSION_EXPIRY_MS && s.turnCount < CC_SESSION_MAX_TURNS) {
+      if (s.turnCount < CC_SESSION_MAX_TURNS) {
         docSessions.set(key, s);
       }
     }
@@ -608,8 +603,7 @@ function resolveSession(store, key) {
   if (!key) return null;
   const s = docSessions.get(key);
   if (!s) return null;
-  const age = Date.now() - new Date(s.lastActiveAt).getTime();
-  if (age > CC_SESSION_EXPIRY_MS || s.turnCount >= CC_SESSION_MAX_TURNS) {
+  if (s.turnCount >= CC_SESSION_MAX_TURNS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -3342,8 +3336,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightTabs.add(tabId);
 
       try {
+        let sessionReset = false;
         if (body.sessionId && body.sessionId !== ccSession.sessionId) {
           ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+        }
+        // Detect prompt hash change — force fresh session
+        if (body.sessionId && ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
+          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+          sessionReset = true;
         }
         const wasResume = !!(body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid());
 
@@ -3365,7 +3365,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
-        return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume });
+        const reply = { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume };
+        if (sessionReset) reply.sessionReset = true;
+        return jsonReply(res, 200, reply);
       } finally {
         ccInFlightTabs.delete(tabId);
       }
@@ -3397,7 +3399,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
         // Session management — per-tab: use sessionId from request, don't mutate global ccSession
-        const tabSessionId = body.sessionId || null;
+        let tabSessionId = body.sessionId || null;
+        let sessionReset = false;
+        // If system prompt changed since this session was created, force a fresh session
+        if (tabSessionId) {
+          const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+          const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
+          if (tabEntry && tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
+            tabSessionId = null;
+            sessionReset = true;
+          }
+        }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
@@ -3451,10 +3463,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             if (existing) {
               existing.sessionId = responseSessionId;
               existing.lastActiveAt = new Date(now).toISOString();
-              existing.turnCount = (existing.turnCount || 0) + 1;
+              existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
               existing.preview = preview;
+              existing._promptHash = _ccPromptHash;
             } else {
-              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview });
+              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -3462,7 +3475,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
-        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume }) + '\n\n');
+        const donePayload = { type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume };
+        if (sessionReset) donePayload.sessionReset = true;
+        res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
         _ccStreamEnded = true; res.end();
       } finally {
         ccInFlightTabs.delete(tabId);
@@ -3651,6 +3666,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Eval loop settings
         if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
         if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        if (e.ignoredCommentAuthors !== undefined) {
+          config.engine.ignoredCommentAuthors = String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        }
       }
 
       if (body.claude) {

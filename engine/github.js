@@ -477,9 +477,11 @@ async function pollPrHumanComments(config) {
 
     // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
     // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
     function _isBot(c) {
       if (c.user?.type === 'Bot') return true;
       const login = (c.user?.login || '').toLowerCase();
+      if (ignoredAuthors.has(login)) return true;
       if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
       const body = c.body || '';
       if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
