@@ -362,9 +362,8 @@ async function pollPrStatus(config) {
         // Find builds where sourceVersion matches the PR's merge commit
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        const prBuilds = (buildsData?.value || []).filter(b =>
-          b.sourceVersion === mergeCommitId || b.sourceBranch === prData.sourceRefName
-        );
+        // Only match builds against the current merge commit — sourceBranch match catches stale builds
+        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
           // partiallySucceeded = warnings, not failures — counts as passing
@@ -445,6 +444,18 @@ async function pollPrStatus(config) {
           log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
         }
       }
+    }
+
+    // Merge conflict detection
+    if (prData.mergeStatus === 'conflicts') {
+      if (!pr._mergeConflict) {
+        pr._mergeConflict = true;
+        log('info', `PR ${pr.id} has merge conflicts — will dispatch fix if not already in progress`);
+        updated = true;
+      }
+    } else if (pr._mergeConflict) {
+      delete pr._mergeConflict;
+      updated = true;
     }
 
     return updated;

@@ -423,6 +423,18 @@ async function pollPrStatus(config) {
       }
     }
 
+    // Merge conflict detection
+    if (prData.state === 'open' && prData.mergeable === false) {
+      if (!pr._mergeConflict) {
+        pr._mergeConflict = true;
+        log('info', `PR ${pr.id} has merge conflicts — will dispatch fix if not already in progress`);
+        updated = true;
+      }
+    } else if (pr._mergeConflict) {
+      delete pr._mergeConflict;
+      updated = true;
+    }
+
     // Auto-complete: merge PR when builds green + review approved
     if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
       const autoComplete = config.engine?.autoCompletePrs === true; // opt-in

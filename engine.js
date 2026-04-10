@@ -1771,6 +1771,21 @@ async function discoverFromPrs(config, project) {
       }
     }
 
+    // PRs with merge conflicts — dispatch fix to resolve
+    if (pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+      const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
+      if (!isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+        const agentId = resolveAgent('fix', config, pr.agent);
+        if (agentId) {
+          const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
+            pr_id: pr.id, pr_branch: pr.branch || '',
+            review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
+          }, `Fix merge conflicts on PR ${pr.id}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+          if (item) { newWork.push(item); setCooldown(key); }
+        }
+      }
+    }
+
   }
   // Build & test now runs once at PRD completion (via verify task), not per-PR.
 
