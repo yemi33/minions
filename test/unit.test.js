@@ -10028,6 +10028,56 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking with .catch');
   });
 
+  await test('teamsNotifyPrEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPrEvent, 'function', 'teamsNotifyPrEvent should be a function');
+  });
+
+  await test('teamsNotifyPrEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPrEvent({ id: 'PR-1', title: 'test' }, 'pr-merged', { name: 'test' }, null);
+  });
+
+  await test('teamsNotifyPrEvent filters by notifyEvents and deduplicates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('_teamsNotifiedEvents'), 'should check dedup array');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
+  });
+
+  await test('teamsNotifyPrEvent formats message with PR title, link, event, project, agent', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('pr.title'), 'should include PR title');
+    assert.ok(fn.includes('pr.url'), 'should include PR link');
+    assert.ok(fn.includes('event'), 'should include event type');
+    assert.ok(fn.includes('project'), 'should include project');
+    assert.ok(fn.includes('pr.agent'), 'should include agent');
+  });
+
+  await test('handlePostMerge calls teamsNotifyPrEvent for merge and abandon', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePostMerge'));
+    assert.ok(fn.includes('teamsNotifyPrEvent'), 'should call teamsNotifyPrEvent');
+    assert.ok(fn.includes("'pr-merged'"), 'should handle pr-merged event');
+    assert.ok(fn.includes("'pr-abandoned'"), 'should handle pr-abandoned event');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking');
+  });
+
+  await test('ado.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'ado.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'ado.js should notify on build-failed');
+  });
+
+  await test('github.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'github.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'github.js should notify on build-failed');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

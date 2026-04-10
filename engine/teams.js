@@ -291,6 +291,59 @@ async function teamsNotifyCompletion(dispatchItem, result, agentId) {
   }
 }
 
+// ── PR Lifecycle Notifications ─────────────────────────────────────────────
+
+/**
+ * Notify Teams about a PR lifecycle event (merge, abandon, build-failed, approved).
+ * Deduplicates via _teamsNotifiedEvents on PR object.
+ * @param {object} pr — the PR object from pull-requests.json
+ * @param {string} event — event type: 'pr-merged', 'pr-abandoned', 'build-failed', 'pr-approved'
+ * @param {object} project — the project config object
+ * @param {string} prFilePath — path to pull-requests.json for dedup write
+ */
+async function teamsNotifyPrEvent(pr, event, project, prFilePath) {
+  if (!isTeamsEnabled()) return;
+  const cfg = getTeamsConfig();
+  if (!cfg.notifyEvents || !cfg.notifyEvents.includes(event)) return;
+
+  // Dedup check — don't re-notify the same event
+  if (pr._teamsNotifiedEvents && pr._teamsNotifiedEvents.includes(event)) return;
+
+  const prLink = pr.url || '';
+  const linkText = prLink ? ` | [PR](${prLink})` : '';
+  const projectName = project?.name || 'unknown';
+  const agent = pr.agent || 'unknown';
+  const title = pr.title || pr.id || 'Untitled PR';
+
+  const text = `**${event}** — _${agent}_ | ${title} (${projectName})${linkText} | [dashboard](http://localhost:7331)`;
+
+  // Find first available conversation ref
+  const state = safeJson(TEAMS_STATE_PATH) || {};
+  const convKeys = Object.keys(state.conversations || {});
+  if (convKeys.length === 0) return;
+
+  try {
+    await teamsPost(convKeys[0], text);
+    log('info', `Teams PR notification sent: ${event} for ${pr.id}`);
+
+    // Record dedup — update _teamsNotifiedEvents on PR via lock
+    if (prFilePath) {
+      mutateJsonFileLocked(prFilePath, (prs) => {
+        if (!Array.isArray(prs)) return prs;
+        const target = prs.find(p => p.id === pr.id);
+        if (target) {
+          if (!target._teamsNotifiedEvents) target._teamsNotifiedEvents = [];
+          if (!target._teamsNotifiedEvents.includes(event)) {
+            target._teamsNotifiedEvents.push(event);
+          }
+        }
+      }, { defaultValue: [] });
+    }
+  } catch (err) {
+    log('warn', `Teams PR notification failed for ${pr.id}: ${err.message}`);
+  }
+}
+
 // Reset cached adapter (for testing)
 function _resetAdapter() { _adapter = null; _botbuilder = null; _lastCCMirrorPost = 0; }
 
@@ -305,6 +358,7 @@ module.exports = {
   processTeamsInbox,
   teamsPostCCResponse,
   teamsNotifyCompletion,
+  teamsNotifyPrEvent,
   CC_MIRROR_RATE_LIMIT_MS,
   TEAMS_STATE_PATH,
   TEAMS_INBOX_PATH,

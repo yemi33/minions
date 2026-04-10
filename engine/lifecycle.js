@@ -883,6 +883,14 @@ async function handlePostMerge(pr, project, config, newStatus) {
     });
   }
 
+  // Teams PR lifecycle notification — non-blocking
+  try {
+    const teams = require('./teams');
+    const prEvent = newStatus === PR_STATUS.MERGED ? 'pr-merged' : 'pr-abandoned';
+    const prFilePath = project ? projectPrPath(project) : null;
+    teams.teamsNotifyPrEvent(pr, prEvent, project, prFilePath).catch(() => {});
+  } catch {}
+
   log('info', `Post-merge hooks completed for ${pr.id}`);
 }
 
