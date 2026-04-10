@@ -26,6 +26,7 @@ let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{
 let _qaProcessing = false; // true while waiting for response
 let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
+const QA_QUEUE_CAP = 10; // max queued messages
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
 // Restore from localStorage
@@ -103,7 +104,9 @@ function _initQaSession() {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
     var wrap = document.getElementById('modal-qa-thread-wrap');
+    var expandBar = document.getElementById('qa-expand-bar');
     if (wrap) wrap.style.display = 'none';
+    if (expandBar) expandBar.style.display = 'none';
   }
 }
 
@@ -113,7 +116,9 @@ function clearQaConversation() {
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
   var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
   if (wrap) wrap.style.display = 'none';
+  if (expandBar) expandBar.style.display = 'none';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -156,10 +161,14 @@ function modalSend() {
   document.getElementById('modal-qa-pill').style.display = 'none';
 
   if (_qaProcessing) {
+    if (_qaQueue.length >= QA_QUEUE_CAP) {
+      showToast('cmd-toast', 'Queue full — wait for current response', false);
+      return;
+    }
     // Queue the message — show it as "queued" in the thread
     _qaQueue.push({ message, selection });
-    const preview = message.split(/\s+/).slice(0, 6).join(' ') + (message.split(/\s+/).length > 6 ? '...' : '');
-    thread.innerHTML += '<div class="modal-qa-loading" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(preview) + '" — will send after current response</div>';
+    const preview = escHtml(message.length > 60 ? message.slice(0, 57) + '...' : message);
+    thread.innerHTML += '<div class="qa-queued-item" style="color:var(--muted);font-size:10px;padding:4px 8px">Queued: "' + preview + '"</div>';
     thread.scrollTop = thread.scrollHeight;
     return;
   }
@@ -320,10 +329,9 @@ async function _processQaMessage(message, selection) {
   // Process next queued message
   if (_qaQueue.length > 0) {
     const next = _qaQueue.shift();
-    const queuedEls = thread.querySelectorAll('.modal-qa-loading');
-    for (const el of queuedEls) {
-      if (el.textContent.includes('Queued')) { el.remove(); break; }
-    }
+    // Remove the first queued indicator (matches the message being sent now)
+    const queuedEl = thread.querySelector('.qa-queued-item');
+    if (queuedEl) queuedEl.remove();
     _processQaMessage(next.message, next.selection);
   } else if (modalIsOpen) {
     document.getElementById('modal-qa-input')?.focus();
@@ -339,20 +347,18 @@ function qaAbort() {
 
 function toggleDocChat() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
   if (!wrap) return;
   var visible = wrap.style.display !== 'none';
   wrap.style.display = visible ? 'none' : '';
-  var btn = document.getElementById('qa-toggle-btn');
-  if (btn) btn.innerHTML = visible ? '&#x25B2; Expand' : '&#x25BC; Collapse';
+  if (expandBar) expandBar.style.display = visible ? '' : 'none';
 }
 
 function _showThreadWrap() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
-  if (wrap && wrap.style.display === 'none') {
-    wrap.style.display = '';
-    var btn = document.getElementById('qa-toggle-btn');
-    if (btn) btn.innerHTML = '&#x25BC; Collapse';
-  }
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = '';
+  if (expandBar) expandBar.style.display = 'none';
 }
 
 window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat, _showThreadWrap };
