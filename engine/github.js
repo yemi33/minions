@@ -441,17 +441,25 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Filter out bot comments, minions's own comments, and CI noise
+    // Filter out bot comments, minions agent comments, and CI noise
+    // Agents post as the PAT owner — detect by signature patterns, not account type
+    const prAuthorLogin = (prData?.user?.login || '').toLowerCase();
     const humanComments = allComments.filter(c => {
       if (c.user?.type === 'Bot') return false;
-      if (/\bMinions\s*\(/i.test(c.body || '')) return false;
-      // Common CI bot usernames
+      const body = c.body || '';
+      // Minions agent signatures (review, fix, explore, etc.)
+      if (/\bMinions\s*\(/i.test(body)) return false;
+      if (/\b(Review|Fixed|Explored|Verified|Tested)\s+by\s+Minions\b/i.test(body)) return false;
+      if (/\[minions\]/i.test(body)) return false;
+      // Comments from the PR author account are likely agent-generated (agents use same PAT)
+      // Only skip if the comment looks automated (short, or has agent patterns)
       const login = (c.user?.login || '').toLowerCase();
+      if (login === prAuthorLogin && body.length < 500 && /\b(fixed|addressed|resolved|pushed|updated|rebased)\b/i.test(body)) return false;
+      // Common CI bot usernames
       if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return false;
       // Automated status comments (coverage reports, build badges, etc.)
-      const body = c.body || '';
       if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return false;
-      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return false; // badge images
+      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return false;
       return true;
     });
 

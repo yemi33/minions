@@ -458,12 +458,18 @@ async function pollPrHumanComments(config) {
     for (const thread of threads) {
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
-        if (/\bMinions\s*\(/i.test(comment.content)) continue; // skip minions's own comments
+        const content = comment.content;
+        // Minions agent signatures
+        if (/\bMinions\s*\(/i.test(content)) continue;
+        if (/\b(Review|Fixed|Explored|Verified|Tested)\s+by\s+Minions\b/i.test(content)) continue;
+        if (/\[minions\]/i.test(content)) continue;
         // Skip bot/service account comments
         const authorName = (comment.author?.displayName || '').toLowerCase();
         if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
-        // Skip automated status comments (coverage, build reports)
-        if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(comment.content)) continue;
+        // Short comments from same author that look agent-generated
+        if (content.length < 500 && /\b(fixed|addressed|resolved|pushed|updated|rebased)\b/i.test(content) && /\b(review|feedback|comment|finding)\b/i.test(content)) continue;
+        // Automated status comments (coverage, build reports)
+        if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
 
         const entry = {
           threadId: thread.id,
