@@ -6138,6 +6138,34 @@ async function testDispatchCycleIntegration() {
       'engine.js must resolve and merge dependency branches');
   });
 
+  await test('Dep merge handles force-pushed branches by resetting and re-merging', () => {
+    // When git merge fails (e.g. diverged history from force-push), the engine should:
+    // 1. Abort the partial merge
+    // 2. Reset worktree to origin/<mainBranch>
+    // 3. Re-merge all deps from scratch
+    assert.ok(engineSrc.includes('git merge --abort'),
+      'engine.js must abort partial merge on dep merge failure');
+    assert.ok(engineSrc.includes('git reset --hard') && engineSrc.includes('resolveMainBranch'),
+      'engine.js must reset worktree to main branch on dep merge failure');
+    assert.ok(engineSrc.includes('Re-merged dependency branch'),
+      'engine.js must re-merge all deps after reset');
+    assert.ok(engineSrc.includes('reset and re-merge of all deps'),
+      'engine.js must log the reset and re-merge attempt');
+  });
+
+  await test('Dep merge re-merge failure marks depMergeFailed', () => {
+    // If re-merge also fails (genuine conflict), depMergeFailed must be set
+    // so the dispatch is completed with ERROR and retried next tick
+    assert.ok(engineSrc.includes('Failed to reset and re-merge deps'),
+      'engine.js must log re-merge failure');
+    // After reset failure, must also abort any in-progress merge from the re-merge attempt
+    const resetCatchBlock = engineSrc.substring(
+      engineSrc.indexOf('Failed to reset and re-merge deps')
+    );
+    assert.ok(resetCatchBlock.includes('depMergeFailed = true'),
+      'engine.js must set depMergeFailed on re-merge failure');
+  });
+
   await test('Spawn renders playbook with system prompt', () => {
     assert.ok(engineSrc.includes('function renderPlaybook'),
       'engine.js must define renderPlaybook');
