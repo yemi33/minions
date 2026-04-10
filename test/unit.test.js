@@ -9966,11 +9966,55 @@ async function testAutoRecoveryAndAtomicity() {
       'Retry button should call prdItemRequeue');
   });
 
+  await test('PRD list view shows retry button when work item missing (orphaned PRD item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const renderItem = src.slice(src.indexOf('const renderItem'));
+    // canRequeue should handle !wi case for stuck PRD items
+    assert.ok(renderItem.includes("!wi && i.status") && renderItem.includes("!== 'missing'") && renderItem.includes("!== 'done'"),
+      'canRequeue should also trigger when no work item exists and PRD status is stuck');
+  });
+
   await test('PRD graph view also shows retry button for failed items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     const graphFn = src.slice(src.indexOf('const renderGraph'));
     assert.ok(graphFn.includes("'failed'") && graphFn.includes('prdItemRequeue'),
       'Graph view should check failed status and have prdItemRequeue click handler');
+  });
+
+  await test('PRD graph view shows retry for orphaned items (no work item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'));
+    assert.ok(graphFn.includes("!w && i.status") && graphFn.includes("!== 'missing'"),
+      'Graph view canRetry should handle missing work item case');
+  });
+
+  await test('prdItemRequeue sends prdFile parameter for re-materialization', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function prdItemRequeue'));
+    assert.ok(fn.includes('prdFile'),
+      'prdItemRequeue should accept and send prdFile parameter');
+    assert.ok(fn.includes('payload.prdFile'),
+      'prdItemRequeue should add prdFile to request payload');
+  });
+
+  await test('handleWorkItemsRetry re-materializes from PRD when work item missing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handleWorkItemsRetry'));
+    assert.ok(fn.includes('body.prdFile'),
+      'Retry handler should check for prdFile in request body');
+    assert.ok(fn.includes("createdBy: 'dashboard:prd-retry'"),
+      'Re-materialized work items should be tagged as dashboard:prd-retry');
+    assert.ok(fn.includes('rematerialized: true'),
+      'Response should indicate work item was re-materialized');
+    assert.ok(fn.includes('syncPrdItemStatus'),
+      'Retry handler should sync PRD item status after re-materialization');
+  });
+
+  await test('autoCleanPrdWorkItems resets PRD status to missing after deleting work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function autoCleanPrdWorkItems'), src.indexOf('function autoCleanPrdWorkItems') + 2000);
+    assert.ok(fn.includes("syncPrdItemStatus(id, 'missing', prdFile)"),
+      'autoCleanPrdWorkItems must reset PRD item status to missing when deleting work items');
   });
 
   await test('PRD view toggle uses rerenderPrdFromCache (not refresh)', () => {

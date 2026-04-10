@@ -1185,6 +1185,10 @@ function autoCleanPrdWorkItems(prdFile, config) {
       }
       return dispatch;
     });
+    // Reset PRD item status to 'missing' so engine re-materializes on next tick
+    for (const id of deletedIds) {
+      try { syncPrdItemStatus(id, 'missing', prdFile); } catch (e) { log('warn', `PRD status reset for ${id}: ${e.message}`); }
+    }
     log('info', `Plan sync: cleared ${deletedIds.length} pending/failed work items for ${prdFile}`);
   }
 }
