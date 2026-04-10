@@ -490,7 +490,7 @@ async function _ccDoSend(message, skipUserMsg) {
       // Re-acquire streamDiv if it was detached (tab switch and back)
       if (!streamDiv.parentNode) {
         var re = document.getElementById('cc-restore-thinking');
-        if (re) { streamDiv = re; } else return;
+        if (re) { streamDiv = re; re.removeAttribute('id'); } else return;
       }
       var html = '';
       if (toolsUsed.length > 0) {
