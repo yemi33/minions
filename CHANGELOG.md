@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.781 (2026-04-10)
+
+### Fixes
+-  restore cc-tab-bar element + add critical UX regression tests
+
 ## 0.1.780 (2026-04-10)
 
 ### Features
