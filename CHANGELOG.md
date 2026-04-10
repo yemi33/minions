@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.789 (2026-04-10)
+
+### Features
+-  broaden daily pipeline research from Anthropic-only to full agentic space
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
+### Fixes
+-  human feedback fixes are never capped (only minion review→fix loop is)
+-  5 bugs from comprehensive audit
+-  stale ADO build detection + merge conflict auto-fix for both platforms
+-  don't overwrite reviewStatus when platform vote hasn't propagated
+-  don't overwrite approval with 'waiting' when platform API lags
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
