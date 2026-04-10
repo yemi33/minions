@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.776 (2026-04-10)
+
+### Features
+-  auto-rebase dependent PRs after dependency merge
+-  show PR merged/active status on PRD item links
+
+### Fixes
+-  better agent comment filtering — detect by patterns, not just signature
+-  filter CI bot noise from PR human comment detection
+
+### Other
+- refactor: shared _renderPrLink for list and graph PR status display
+
 ## 0.1.771 (2026-04-10)
 
 ### Fixes
