@@ -162,9 +162,10 @@ function ccSwitchTab(id) {
     var restoreDiv = el.lastElementChild;
     restoreDiv.id = 'cc-restore-thinking';
     el.scrollTop = el.scrollHeight;
+    // Live update — stops when tab switches away or request completes
     var restoreInterval = setInterval(function() {
       var re = document.getElementById('cc-restore-thinking');
-      if (!re || !tab._sending) { clearInterval(restoreInterval); if (re) re.remove(); return; }
+      if (!re || !tab._sending || _ccActiveTabId !== tab.id) { clearInterval(restoreInterval); return; }
       re.innerHTML = _restoreStreamHtml();
       if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) el.scrollTop = el.scrollHeight;
     }, 1000);
@@ -484,6 +485,13 @@ async function _ccDoSend(message, skipUserMsg) {
         '<button onclick="ccAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer;margin-left:4px">Stop</button></div>';
     }
     function updateStreamDiv() {
+      // Skip DOM updates if user switched to a different tab (restore interval handles that tab)
+      if (_ccActiveTabId !== activeTabId) return;
+      // Re-acquire streamDiv if it was detached (tab switch and back)
+      if (!streamDiv.parentNode) {
+        var re = document.getElementById('cc-restore-thinking');
+        if (re) { streamDiv = re; } else return;
+      }
       var html = '';
       if (toolsUsed.length > 0) {
         html += '<div style="margin-bottom:6px">';
