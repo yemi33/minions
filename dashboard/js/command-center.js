@@ -683,9 +683,15 @@ async function ccExecuteAction(action) {
 
   try {
     switch (action.type) {
-      case 'dispatch': {
+      case 'dispatch':
+      case 'fix':
+      case 'implement':
+      case 'explore':
+      case 'review':
+      case 'test': {
+        var workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
         var res = await _ccFetch('/api/work-items', {
-            title: action.title, type: action.workType || 'implement',
+            title: action.title, type: workType,
             priority: action.priority || 'medium', description: action.description || '',
             project: action.project || '', agents: action.agents || [],
         });
