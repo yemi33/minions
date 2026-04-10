@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.782 (2026-04-10)
+
+### Features
+-  fix agents resolve review threads after addressing findings
+
+### Fixes
+-  restore cc-tab-bar element + add critical UX regression tests
+
 ## 0.1.780 (2026-04-10)
 
 ### Features
