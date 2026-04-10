@@ -16,6 +16,14 @@ const TEAMS_STATE_PATH = path.join(ENGINE_DIR, 'teams-state.json');
 const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 const TEAMS_INBOX_CAP = 200;
 
+// ── Rate Limiting & Circuit Breaker Constants ─────────────────────────────
+const MAX_RETRIES_429 = 2;
+const MAX_RETRIES_5XX = 3;
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_RECOVERY_MS = 10 * 60 * 1000; // 10 minutes
+const OUTBOUND_QUEUE_MAX = 100;
+const OUTBOUND_DRAIN_INTERVAL_MS = 250; // 4 messages per second
+
 // Lazy-load botbuilder — may not be installed
 let _botbuilder = null;
 function getBotbuilder() {
@@ -109,6 +117,172 @@ function getConversationRef(key) {
   return state.conversations?.[key]?.ref || null;
 }
 
+// ── Circuit Breaker ───────────────────────────────────────────────────────
+
+const _circuit = {
+  state: 'closed', // 'closed' | 'open' | 'half-open'
+  failures: 0,
+  openedAt: 0,
+};
+
+function _isCircuitOpen() {
+  if (_circuit.state === 'closed') return false;
+  if (_circuit.state === 'open') {
+    if (Date.now() - _circuit.openedAt >= CIRCUIT_RECOVERY_MS) {
+      _circuit.state = 'half-open';
+      log('info', 'Teams circuit breaker: half-open — allowing probe request');
+      return false;
+    }
+    return true;
+  }
+  return false; // half-open allows one probe
+}
+
+function _onSendSuccess() {
+  if (_circuit.state !== 'closed') {
+    log('info', `Teams circuit breaker: closed (was ${_circuit.state})`);
+  }
+  _circuit.state = 'closed';
+  _circuit.failures = 0;
+}
+
+function _onSendFailure() {
+  _circuit.failures++;
+  if (_circuit.state === 'half-open') {
+    _circuit.state = 'open';
+    _circuit.openedAt = Date.now();
+    log('warn', 'Teams circuit breaker: probe failed — reopening for 10 minutes');
+  } else if (_circuit.failures >= CIRCUIT_FAILURE_THRESHOLD) {
+    _circuit.state = 'open';
+    _circuit.openedAt = Date.now();
+    log('warn', `Teams circuit breaker: OPEN after ${_circuit.failures} consecutive failures — disabling for 10 minutes`);
+  }
+}
+
+// ── Retry Logic ───────────────────────────────────────────────────────────
+
+function _sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Execute sendFn with retry on 429 (Retry-After) and 5xx (exponential backoff).
+ * @param {Function} sendFn — async function that performs the actual send
+ */
+async function _sendWithRetry(sendFn) {
+  let lastErr;
+  let retries429 = 0;
+  let retries5xx = 0;
+  const maxAttempts = 1 + MAX_RETRIES_429 + MAX_RETRIES_5XX;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      await sendFn();
+      return;
+    } catch (err) {
+      lastErr = err;
+      const status = err.statusCode || err.status || 0;
+
+      if (status === 429 && retries429 < MAX_RETRIES_429) {
+        retries429++;
+        const retryAfterSec = parseInt(err.headers?.['retry-after'] || '1', 10);
+        const delayMs = Math.max(retryAfterSec, 1) * 1000;
+        log('info', `Teams 429 — retry ${retries429}/${MAX_RETRIES_429} after ${delayMs}ms`);
+        await _sleep(delayMs);
+        continue;
+      }
+
+      if (status >= 500 && status < 600 && retries5xx < MAX_RETRIES_5XX) {
+        retries5xx++;
+        const backoffMs = Math.pow(2, retries5xx - 1) * 1000; // 1s, 2s, 4s
+        log('info', `Teams ${status} — retry ${retries5xx}/${MAX_RETRIES_5XX} after ${backoffMs}ms`);
+        await _sleep(backoffMs);
+        continue;
+      }
+
+      throw err;
+    }
+  }
+  if (lastErr) throw lastErr;
+}
+
+// ── Outbound Queue ────────────────────────────────────────────────────────
+
+const _outboundQueue = [];
+let _drainTimer = null;
+
+function _enqueueMessage(key, content) {
+  if (_outboundQueue.length >= OUTBOUND_QUEUE_MAX) {
+    log('warn', `Teams outbound queue full (${OUTBOUND_QUEUE_MAX}) — dropping message for ${key}`);
+    return;
+  }
+  _outboundQueue.push({ key, content });
+  _startDrainTimer();
+}
+
+function _startDrainTimer() {
+  if (_drainTimer) return;
+  _drainTimer = setInterval(_drainQueue, OUTBOUND_DRAIN_INTERVAL_MS);
+}
+
+function _stopDrainTimer() {
+  if (_drainTimer) {
+    clearInterval(_drainTimer);
+    _drainTimer = null;
+  }
+}
+
+async function _drainQueue() {
+  if (_outboundQueue.length === 0) {
+    _stopDrainTimer();
+    return;
+  }
+
+  const item = _outboundQueue.shift();
+  if (!item) return;
+
+  try {
+    await _sendProactive(item.key, item.content);
+  } catch (err) {
+    log('warn', `Teams queued message failed for ${item.key}: ${err.message}`);
+  }
+}
+
+/**
+ * Send a proactive message with circuit breaker and retry.
+ * Called by the drain timer — not directly by callers.
+ */
+async function _sendProactive(key, content) {
+  if (_isCircuitOpen()) {
+    log('info', `Teams circuit open — skipping message to ${key}`);
+    return;
+  }
+
+  const adapter = createAdapter();
+  if (!adapter) return;
+
+  const ref = getConversationRef(key);
+  if (!ref) {
+    log('warn', `Teams post skipped — no conversation ref for key: ${key}`);
+    return;
+  }
+
+  try {
+    const activity = toActivity(content);
+    await _sendWithRetry(async () => {
+      await adapter.continueConversationAsync(getTeamsConfig().appId, ref, async (context) => {
+        await context.sendActivity(activity);
+      });
+    });
+    _onSendSuccess();
+    const len = typeof content === 'string' ? content.length : JSON.stringify(content).length;
+    log('info', `Teams proactive message sent to ${key} (${len} chars)`);
+  } catch (err) {
+    _onSendFailure();
+    log('warn', `Teams proactive post failed for ${key}: ${err.message}`);
+  }
+}
+
 /**
  * Build an activity object from text or Adaptive Card.
  * @param {string|object} content — plain text string or Adaptive Card object (with type: 'AdaptiveCard')
@@ -138,11 +312,19 @@ function toActivity(content) {
 async function teamsReply(context, content) {
   const adapter = createAdapter();
   if (!adapter || !context) return;
+  if (_isCircuitOpen()) {
+    log('info', 'Teams circuit open — skipping reply');
+    return;
+  }
   try {
-    await context.sendActivity(toActivity(content));
+    await _sendWithRetry(async () => {
+      await context.sendActivity(toActivity(content));
+    });
+    _onSendSuccess();
     const len = typeof content === 'string' ? content.length : JSON.stringify(content).length;
     log('info', `Teams reply sent (${len} chars)`);
   } catch (err) {
+    _onSendFailure();
     log('warn', `Teams reply failed: ${err.message}`);
   }
 }
@@ -154,25 +336,8 @@ async function teamsReply(context, content) {
  * @param {string|object} content — message text or Adaptive Card object
  */
 async function teamsPost(key, content) {
-  const adapter = createAdapter();
-  if (!adapter) return;
-
-  const ref = getConversationRef(key);
-  if (!ref) {
-    log('warn', `Teams post skipped — no conversation ref for key: ${key}`);
-    return;
-  }
-
-  try {
-    const activity = toActivity(content);
-    await adapter.continueConversationAsync(getTeamsConfig().appId, ref, async (context) => {
-      await context.sendActivity(activity);
-    });
-    const len = typeof content === 'string' ? content.length : JSON.stringify(content).length;
-    log('info', `Teams proactive message sent to ${key} (${len} chars)`);
-  } catch (err) {
-    log('warn', `Teams proactive post failed for ${key}: ${err.message}`);
-  }
+  if (!createAdapter()) return;
+  _enqueueMessage(key, content);
 }
 
 /**
@@ -382,8 +547,17 @@ async function teamsNotifyPlanEvent(planInfo, event) {
   }
 }
 
-// Reset cached adapter (for testing)
-function _resetAdapter() { _adapter = null; _botbuilder = null; _lastCCMirrorPost = 0; }
+// Reset cached adapter and internal state (for testing)
+function _resetAdapter() {
+  _adapter = null;
+  _botbuilder = null;
+  _lastCCMirrorPost = 0;
+  _circuit.state = 'closed';
+  _circuit.failures = 0;
+  _circuit.openedAt = 0;
+  _outboundQueue.length = 0;
+  _stopDrainTimer();
+}
 
 module.exports = {
   getTeamsConfig,
@@ -402,5 +576,14 @@ module.exports = {
   TEAMS_STATE_PATH,
   TEAMS_INBOX_PATH,
   TEAMS_INBOX_CAP,
+  MAX_RETRIES_429,
+  MAX_RETRIES_5XX,
+  CIRCUIT_FAILURE_THRESHOLD,
+  CIRCUIT_RECOVERY_MS,
+  OUTBOUND_QUEUE_MAX,
+  OUTBOUND_DRAIN_INTERVAL_MS,
+  _circuit, // exported for testing
+  _outboundQueue, // exported for testing
   _resetAdapter, // exported for testing
+  _stopDrainTimer, // exported for testing
 };

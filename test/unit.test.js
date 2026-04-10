@@ -10181,6 +10181,158 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes('cards.buildCCResponseCard'), 'teamsPostCCResponse should use buildCCResponseCard');
   });
 
+  // ── Teams Rate Limiting & Error Handling ──────────────────────────────────
+
+  await test('teams.js exports rate limiting constants', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.MAX_RETRIES_429, 2, 'MAX_RETRIES_429 should be 2');
+    assert.strictEqual(teams.MAX_RETRIES_5XX, 3, 'MAX_RETRIES_5XX should be 3');
+    assert.strictEqual(teams.CIRCUIT_FAILURE_THRESHOLD, 5, 'CIRCUIT_FAILURE_THRESHOLD should be 5');
+    assert.strictEqual(teams.CIRCUIT_RECOVERY_MS, 10 * 60 * 1000, 'CIRCUIT_RECOVERY_MS should be 10 minutes');
+    assert.strictEqual(teams.OUTBOUND_QUEUE_MAX, 100, 'OUTBOUND_QUEUE_MAX should be 100');
+    assert.strictEqual(teams.OUTBOUND_DRAIN_INTERVAL_MS, 250, 'OUTBOUND_DRAIN_INTERVAL_MS should be 250ms (4/sec)');
+  });
+
+  await test('circuit breaker starts in closed state', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'initial state should be closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'initial failures should be 0');
+  });
+
+  await test('circuit breaker state is reset by _resetAdapter', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._circuit.state = 'open';
+    teams._circuit.failures = 10;
+    teams._circuit.openedAt = Date.now();
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'should reset to closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'should reset failures to 0');
+    assert.strictEqual(teams._circuit.openedAt, 0, 'should reset openedAt to 0');
+  });
+
+  await test('circuit breaker source: opens after CIRCUIT_FAILURE_THRESHOLD failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('_circuit.failures >= CIRCUIT_FAILURE_THRESHOLD'), 'should check failure threshold');
+    assert.ok(src.includes("_circuit.state = 'open'"), 'should set state to open');
+    assert.ok(src.includes('CIRCUIT_RECOVERY_MS'), 'should reference recovery time');
+  });
+
+  await test('circuit breaker source: half-open probe after recovery period', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _isCircuitOpen'));
+    assert.ok(fn.includes("'half-open'"), 'should transition to half-open');
+    assert.ok(fn.includes('CIRCUIT_RECOVERY_MS'), 'should check recovery period');
+  });
+
+  await test('circuit breaker source: probe failure reopens circuit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendFailure'));
+    assert.ok(fn.includes("_circuit.state === 'half-open'"), 'should check for half-open state');
+    assert.ok(fn.includes("_circuit.state = 'open'"), 'should reopen on probe failure');
+  });
+
+  await test('circuit breaker source: success resets to closed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendSuccess'));
+    assert.ok(fn.includes("_circuit.state = 'closed'"), 'should reset to closed on success');
+    assert.ok(fn.includes('_circuit.failures = 0'), 'should reset failure count');
+  });
+
+  await test('_sendWithRetry handles 429 with Retry-After', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status === 429'), 'should detect 429 status');
+    assert.ok(fn.includes('retry-after'), 'should read Retry-After header');
+    assert.ok(fn.includes('MAX_RETRIES_429'), 'should use MAX_RETRIES_429 limit');
+    assert.ok(fn.includes('_sleep(delayMs)'), 'should delay before retry');
+  });
+
+  await test('_sendWithRetry handles 5xx with exponential backoff', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status >= 500'), 'should detect 5xx status');
+    assert.ok(fn.includes('Math.pow(2, retries5xx - 1) * 1000'), 'should use exponential backoff (1s, 2s, 4s)');
+    assert.ok(fn.includes('MAX_RETRIES_5XX'), 'should use MAX_RETRIES_5XX limit');
+  });
+
+  await test('outbound queue is exported and starts empty', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.ok(Array.isArray(teams._outboundQueue), '_outboundQueue should be an array');
+    assert.strictEqual(teams._outboundQueue.length, 0, 'should start empty');
+  });
+
+  await test('outbound queue source: drops messages at OUTBOUND_QUEUE_MAX', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _enqueueMessage'));
+    assert.ok(fn.includes('_outboundQueue.length >= OUTBOUND_QUEUE_MAX'), 'should check queue length against max');
+    assert.ok(fn.includes('dropping message'), 'should log when dropping');
+  });
+
+  await test('outbound queue source: drains at OUTBOUND_DRAIN_INTERVAL_MS', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('setInterval(_drainQueue, OUTBOUND_DRAIN_INTERVAL_MS)'), 'should drain at configured interval');
+  });
+
+  await test('outbound queue source: auto-stops drain timer when empty', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _drainQueue'));
+    assert.ok(fn.includes('_outboundQueue.length === 0'), 'should check if queue is empty');
+    assert.ok(fn.includes('_stopDrainTimer()'), 'should stop timer when empty');
+  });
+
+  await test('teamsPost uses outbound queue instead of direct send', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPost('));
+    assert.ok(fn.includes('_enqueueMessage'), 'teamsPost should enqueue instead of sending directly');
+    assert.ok(!fn.includes('continueConversationAsync'), 'teamsPost should not call adapter directly');
+  });
+
+  await test('teamsReply uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsReply('));
+    assert.ok(fn.includes('_isCircuitOpen()'), 'teamsReply should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), 'teamsReply should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), 'teamsReply should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), 'teamsReply should call _onSendFailure');
+  });
+
+  await test('_sendProactive uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendProactive('));
+    assert.ok(fn.includes('_isCircuitOpen()'), '_sendProactive should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), '_sendProactive should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), '_sendProactive should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), '_sendProactive should call _onSendFailure');
+  });
+
+  await test('no unhandled rejections in Teams code — all async paths have catch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    // Every async function that calls sendActivity or continueConversationAsync
+    // should be wrapped in try-catch
+    const asyncFns = src.match(/async function \w+/g) || [];
+    for (const fn of asyncFns) {
+      const fnName = fn.replace('async function ', '');
+      const fnBody = src.slice(src.indexOf(fn));
+      const nextFn = fnBody.indexOf('\nasync function ', 1);
+      const body = nextFn > 0 ? fnBody.slice(0, nextFn) : fnBody;
+      if (body.includes('await') && !body.includes('try')) {
+        // processTeamsInbox has try-catch inside the for loop
+        if (fnName !== '_sleep') {
+          assert.fail(`${fnName} has await but no try-catch — potential unhandled rejection`);
+        }
+      }
+    }
+  });
+
+  await test('_resetAdapter clears outbound queue and drain timer', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._outboundQueue.push({ key: 'test', content: 'msg' });
+    teams._resetAdapter();
+    assert.strictEqual(teams._outboundQueue.length, 0, 'queue should be cleared');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
