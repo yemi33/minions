@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS } = shared;
+  WI_STATUS, ENGINE_DEFAULTS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -265,14 +265,21 @@ function getAgentStatus(agentId) {
 
   // Fallback: derive active state from work-item markers.
   // This protects UI status when dispatch.json briefly desyncs from work-item files.
+  // Guard: only trust dispatched state within 2x heartbeatTimeout to prevent stale
+  // dispatched items from permanently showing an agent as working after a dead process.
   try {
     const config = getConfig();
+    const heartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+    const staleThresholdMs = heartbeatTimeout * 2;
+    const now = Date.now();
     const allItems = getWorkItems(config);
     const latestInFlight = allItems
-      .filter(w =>
-        (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        w.status === WI_STATUS.DISPATCHED
-      )
+      .filter(w => {
+        if ((w.dispatched_to || '').toLowerCase() !== String(agentId).toLowerCase()) return false;
+        if (w.status !== WI_STATUS.DISPATCHED) return false;
+        const ageMs = w.dispatched_at ? now - new Date(w.dispatched_at).getTime() : Infinity;
+        return ageMs < staleThresholdMs;
+      })
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
       return {
@@ -754,6 +761,8 @@ function getWorkItems(config) {
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
+    if (item._planFileName) arts.plan = item._planFileName;
+    else if (item.planFile) arts.plan = item.planFile;
     if (item._pr) arts.pr = item._pr;
     if (Object.keys(arts).length > 0) item._artifacts = arts;
   }
@@ -862,6 +871,7 @@ function getPrdInfo(config) {
               ...f, _source: pf, _planStatus: plan.status || 'active',
               _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
               _archived: archived, _sourcePlan: plan.source_plan || '',
+              _branchStrategy: plan.branch_strategy || 'parallel',
               _planStale: planStale || plan.planStale || false, _lastSyncedFromPlan: plan.lastSyncedFromPlan || null,
               _prdUpdatedAt: new Date(stat.mtimeMs).toISOString(),
               _prdCompletedAt: plan.completedAt || '',
@@ -976,7 +986,7 @@ function getPrdInfo(config) {
     items: items.map(i => ({
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
-      description: (i.description || '').slice(0, 200), projects: i.projects || [],
+      description: i.description || '', projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null, prdCompletedAt: i._prdCompletedAt || '',

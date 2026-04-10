@@ -7,11 +7,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const shared = require('./shared');
-const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS } = shared;
+const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks, addPrLink,
+  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
+const { isBranchActive } = require('./cooldown');
 const { getConfig, getInboxFiles, getNotes, getPrs, getDispatch,
   MINIONS_DIR, ENGINE_DIR, PLANS_DIR, PRD_DIR, INBOX_DIR, AGENTS_DIR } = queries;
 
@@ -34,7 +35,7 @@ function checkPlanCompletion(meta, config) {
   const planItems = allWorkItems.filter(w => w.sourcePlan === planFile && w.itemType !== 'pr' && w.itemType !== 'verify');
   if (planItems.length === 0) return;
 
-  // Hard completion gate: every PRD feature ID must have a corresponding work item in done status.
+  // Hard completion gate: every PRD feature ID must have a corresponding work item in a terminal state.
   const planFeatureIds = new Set((plan.missing_features || []).map(f => f.id).filter(Boolean));
   const workItemById = {};
   for (const w of planItems) { if (w.id) workItemById[w.id] = w; }
@@ -51,20 +52,36 @@ function checkPlanCompletion(meta, config) {
     return;
   }
 
-  // Check 2: every feature's work item must be done (or PRD item marked done externally)
-  const notDone = [...planFeatureIds].filter(id => {
+  // Check 2: every feature must be in a terminal state (done, failed, or cancelled).
+  // Failed/cancelled items are unrecoverable — waiting on them blocks the plan indefinitely.
+  const notTerminal = [...planFeatureIds].filter(id => {
     const w = workItemById[id];
-    if (w && DONE_STATUSES.has(w.status)) return false;
+    if (w && PLAN_TERMINAL_STATUSES.has(w.status)) return false;
     const prdItem = (plan.missing_features || []).find(f => f.id === id);
-    return !(prdItem && DONE_STATUSES.has(prdItem.status));
+    return !(prdItem && PLAN_TERMINAL_STATUSES.has(prdItem.status));
   });
-  if (notDone.length > 0) {
-    log('info', `Plan ${planFile}: waiting for done on ${notDone.length}/${planFeatureIds.size} item(s): ${notDone.join(', ')}`);
+  if (notTerminal.length > 0) {
+    log('info', `Plan ${planFile}: waiting for ${notTerminal.length}/${planFeatureIds.size} item(s) to reach terminal state: ${notTerminal.join(', ')}`);
     return;
   }
 
   const doneItems = planItems.filter(w => DONE_STATUSES.has(w.status));
-  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED);
+  const failedItems = planItems.filter(w => w.status === WI_STATUS.FAILED || w.status === WI_STATUS.CANCELLED);
+
+  // Escalate failed/cancelled items to human — write inbox alert (deduped by slug)
+  if (failedItems.length > 0) {
+    const alertSlug = `plan-failure-escalation-${planFile.replace('.json', '')}`;
+    const failDetails = failedItems.map(w =>
+      `- \`${w.id}\`: ${w.title || 'Unknown'} — ${w.failReason || w.status}`
+    ).join('\n');
+    shared.writeToInbox('engine', alertSlug,
+      `# Plan Items Failed: ${plan.plan_summary || planFile}\n\n` +
+      `**${failedItems.length}** of ${planFeatureIds.size} item(s) failed or were cancelled:\n\n${failDetails}\n\n` +
+      `The plan is completing with partial results (${doneItems.length} done, ${failedItems.length} failed).\n` +
+      `Review failed items and re-dispatch manually if needed.\n`
+    );
+    log('warn', `Plan ${planFile}: ${failedItems.length} item(s) failed/cancelled — escalating to human: ${failedItems.map(w => w.id).join(', ')}`);
+  }
 
   // 1. Mark plan as completed
   plan.status = PLAN_STATUS.COMPLETED;
@@ -169,7 +186,7 @@ function checkPlanCompletion(meta, config) {
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (!existingVerify && doneItems.length > 0) {
+  if (!existingVerify && doneItems.length > 0 && failedItems.length === 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -567,6 +584,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
   const prMatches = new Set();
   const urlPattern = /(?:visualstudio\.com|dev\.azure\.com)[^\s"]*?pullrequest\/(\d+)|github\.com\/[^\s"]*?\/pull\/(\d+)/g;
+  const textCreatedPattern = /(?:PR created|created PR|E2E PR)[:\s#-]*(\d{1,})/gi;
   let match;
 
   try {
@@ -582,6 +600,13 @@ function syncPrsFromOutput(output, agentId, meta, config) {
             if (text.includes('pullRequestId') || text.includes('create_pull_request')) {
               while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
             }
+          }
+          // Also scan assistant text blocks for PR URLs and "PR created" patterns
+          if (block.type === 'text' && block.text) {
+            while ((match = urlPattern.exec(block.text)) !== null) prMatches.add(match[1] || match[2]);
+            textCreatedPattern.lastIndex = 0;
+            let m2;
+            while ((m2 = textCreatedPattern.exec(block.text)) !== null) prMatches.add(m2[1]);
           }
         }
         if (parsed.type === 'result' && parsed.result) {
@@ -649,7 +674,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     let title = meta?.item?.title || '';
     const titleMatch = output.match(new RegExp(`${prId}[^\\n]*?[—–-]\\s*([^\\n]+)`, 'i'));
     if (titleMatch) title = titleMatch[1].trim();
-    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120) {
+    if (title.includes('session_id') || title.includes('is_error') || title.includes('uuid') || title.length > 120 || /[{}"\[\]]/.test(title) || /^[0-9a-f-]{8,}$/i.test(title)) {
       title = meta?.item?.title || '';
     }
 
@@ -658,6 +683,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
       prId, fullId,
       entry: {
         id: fullId,
+        prNumber: parseInt(prId, 10) || prId,
         title: (title || `PR created by ${agentName}`).slice(0, 120),
         agent: agentName,
         branch: meta?.branch || '',
@@ -694,7 +720,7 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
-async function updatePrAfterReview(agentId, pr, project, config) {
+async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
 
   if (!pr?.id) return;
 
@@ -704,7 +730,9 @@ async function updatePrAfterReview(agentId, pr, project, config) {
   const completedEntry = (dispatch.completed || []).find(d => d.agent === agentId && d.type === 'review');
 
   // Check actual review status from the platform (agent may have approved or requested changes)
-  let postReviewStatus = 'waiting';
+  // If platform hasn't propagated the vote yet (returns 'pending'), keep current status unchanged.
+  // The poller will pick up the real status on the next cycle (~3 min).
+  let postReviewStatus = null; // null = don't change
   try {
     const projectObj = project || shared.getProjects(config)[0];
     if (projectObj) {
@@ -713,7 +741,6 @@ async function updatePrAfterReview(agentId, pr, project, config) {
         ? require('./github').checkLiveReviewStatus
         : require('./ado').checkLiveReviewStatus;
       const liveStatus = await checkFn(pr, projectObj);
-      // Use live status only if it's a decisive verdict (not 'pending' — review may not have propagated yet)
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
@@ -724,12 +751,15 @@ async function updatePrAfterReview(agentId, pr, project, config) {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = postReviewStatus;
+    // Once approved, stays approved permanently — no path can downgrade
+    if (postReviewStatus && target.reviewStatus !== 'approved') {
+      target.reviewStatus = postReviewStatus;
+    }
     target.lastReviewedAt = ts();
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: completedEntry?.task || ''
+      note: resultSummary || completedEntry?.task || ''
     };
     updatedTarget = { ...pr, ...target };
     return prs;
@@ -758,7 +788,8 @@ function updatePrAfterFix(pr, project, source) {
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    target.reviewStatus = 'waiting';
+    // Never downgrade from approved — fix was dispatched but PR is already approved
+    if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
     // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
@@ -770,6 +801,119 @@ function updatePrAfterFix(pr, project, source) {
     }
     return prs;
   }, { defaultValue: [] });
+}
+
+// ─── Post-Merge Rebase ──────────────────────────────────────────────────────
+
+/**
+ * Find active PRs whose work items depend on the just-merged item.
+ * Excludes shared-branch items (those use git pull instead).
+ */
+function findDependentActivePrs(mergedItemId, config) {
+  const results = [];
+  const allWi = queries.getWorkItems(config);
+  const dependentWis = allWi.filter(wi =>
+    wi.depends_on?.includes(mergedItemId) &&
+    !DONE_STATUSES.has(wi.status) &&
+    wi.branchStrategy !== 'shared-branch'
+  );
+  if (dependentWis.length === 0) return results;
+
+  const projects = shared.getProjects(config);
+  for (const p of projects) {
+    const prs = safeJson(projectPrPath(p)) || [];
+    for (const pr of prs) {
+      if (!pr.branch || pr.status !== 'active') continue;
+      const linked = (pr.prdItems || []).some(id => dependentWis.some(wi => wi.id === id));
+      if (linked && !results.some(r => r.pr.id === pr.id)) {
+        const wi = dependentWis.find(w => (pr.prdItems || []).includes(w.id));
+        results.push({ pr, project: p, workItem: wi });
+      }
+    }
+  }
+  return results;
+}
+
+/**
+ * Rebase a PR branch onto main in a temporary worktree.
+ * Returns { success: true } or { success: false, error: string }.
+ */
+async function rebaseBranchOntoMain(pr, project, config) {
+  const root = path.resolve(project.localPath);
+  const mainBranch = shared.resolveMainBranch(root, project.mainBranch);
+  const branch = pr.branch;
+  const wtRoot = path.resolve(root, config.engine?.worktreeRoot || ENGINE_DEFAULTS.worktreeRoot);
+  const tmpWt = path.join(wtRoot, `rebase-${shared.sanitizeBranch(branch)}-${Date.now()}`).replace(/\\/g, '/');
+  const _gitOpts = { cwd: root, timeout: 30000, windowsHide: true };
+
+  try {
+    await execAsync(`git fetch origin "${mainBranch}" "${branch}"`, _gitOpts);
+    try {
+      await execAsync(`git worktree add "${tmpWt}" "${branch}"`, { ..._gitOpts, timeout: 60000 });
+    } catch (wtErr) {
+      // Branch may already be checked out in a stale worktree — prune and retry once
+      if (String(wtErr.message || wtErr).includes('already checked out')) {
+        await execAsync(`git worktree prune`, _gitOpts);
+        await execAsync(`git worktree add "${tmpWt}" "${branch}"`, { ..._gitOpts, timeout: 60000 });
+      } else { throw wtErr; }
+    }
+  } catch (err) {
+    log('warn', `Post-merge rebase: setup failed for ${branch}: ${err.message}`);
+    try { await execAsync(`git worktree remove "${tmpWt}" --force`, _gitOpts); } catch {}
+    return { success: false, error: err.message };
+  }
+
+  try {
+    await execAsync(`git rebase "origin/${mainBranch}"`, { cwd: tmpWt, timeout: 120000, windowsHide: true });
+    await execAsync(`git push --force-with-lease origin "${branch}"`, { cwd: tmpWt, timeout: 30000, windowsHide: true });
+    log('info', `Post-merge rebase: rebased ${branch} onto ${mainBranch} and force-pushed`);
+    return { success: true };
+  } catch (err) {
+    try { await execAsync(`git rebase --abort`, { cwd: tmpWt, timeout: 10000, windowsHide: true }); } catch {}
+    log('warn', `Post-merge rebase failed for ${branch}: ${err.message}`);
+    return { success: false, error: err.message };
+  } finally {
+    try { shared.removeWorktree(tmpWt, root, wtRoot); } catch {}
+    try { await execAsync(`git worktree prune`, _gitOpts); } catch {}
+  }
+}
+
+const PENDING_REBASES_PATH = path.join(ENGINE_DIR, 'pending-rebases.json');
+
+function queuePendingRebase(pr, project, mergedItemId) {
+  const pending = safeJson(PENDING_REBASES_PATH) || [];
+  if (pending.some(e => e.prId === pr.id)) return; // already queued
+  pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
+  safeWrite(PENDING_REBASES_PATH, pending);
+}
+
+async function processPendingRebases(config) {
+  const pending = safeJson(PENDING_REBASES_PATH) || [];
+  if (pending.length === 0) return;
+
+  const remaining = [];
+  for (const entry of pending) {
+    if (isBranchActive(entry.branch)) { remaining.push(entry); continue; }
+
+    const project = shared.getProjects(config).find(p => p.name === entry.projectName);
+    if (!project) continue;
+
+    const prs = safeJson(projectPrPath(project)) || [];
+    const pr = prs.find(p => p.id === entry.prId && p.status === 'active');
+    if (!pr) continue; // PR closed/merged since queuing
+
+    const result = await rebaseBranchOntoMain(pr, project, config);
+    if (!result.success) {
+      entry.attempts = (entry.attempts || 0) + 1;
+      if (entry.attempts < 3) {
+        remaining.push(entry);
+      } else {
+        shared.writeToInbox('engine', `rebase-fail-${pr.id}`,
+          `# Rebase Failed: ${pr.id}\n\nBranch \`${pr.branch}\` could not be rebased onto main after dependency ${entry.mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+      }
+    }
+  }
+  safeWrite(PENDING_REBASES_PATH, remaining);
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -846,6 +990,23 @@ async function handlePostMerge(pr, project, config, newStatus) {
         if (found) break;
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
+
+    // Rebase dependent PRs onto main now that this dependency is merged
+    try {
+      const dependentPrs = findDependentActivePrs(mergedItemId, config);
+      for (const { pr: depPr, project: depProject } of dependentPrs) {
+        if (isBranchActive(depPr.branch)) {
+          queuePendingRebase(depPr, depProject, mergedItemId);
+          log('info', `Post-merge rebase deferred: ${depPr.branch} locked by active agent`);
+          continue;
+        }
+        const result = await rebaseBranchOntoMain(depPr, depProject, config);
+        if (!result.success) {
+          shared.writeToInbox('engine', `rebase-fail-${depPr.id}`,
+            `# Rebase Failed: ${depPr.id}\n\nBranch \`${depPr.branch}\` could not be rebased onto main after dependency ${mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+        }
+      }
+    } catch (err) { log('warn', `Post-merge rebase phase error: ${err.message}`); }
   }
 
   const agentId = (pr.agent || '').toLowerCase();
@@ -920,7 +1081,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
     let enrichedBlock = block;
     if (!m('author')) enrichedBlock = enrichedBlock.replace('---\n', `---\nauthor: ${agentName}\n`);
     if (!m('created')) enrichedBlock = enrichedBlock.replace('---\n', `---\ncreated: ${dateStamp()}\n`);
-    const filename = name.replace(/[^a-z0-9-]/g, '-') + '.md';
+    const skillDirName = name.replace(/[^a-z0-9-]/g, '-');
     if (scope === 'project' && project) {
       const proj = shared.getProjects(config).find(p => p.name === project);
       if (proj) {
@@ -931,7 +1092,7 @@ function extractSkillsFromOutput(output, agentId, dispatchItem, config) {
           if (data.some(i => i.title === `Add skill: ${name}` && i.status !== WI_STATUS.FAILED)) return data;
           skillId = `SK${String(data.filter(i => i.id?.startsWith('SK')).length + 1).padStart(3, '0')}`;
           data.push({ id: skillId, type: 'implement', title: `Add skill: ${name}`,
-            description: `Create project-level skill \`${filename}\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${filename}\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
+            description: `Create project-level skill \`${skillDirName}/SKILL.md\` in ${project}.\n\nWrite this file to \`${proj.localPath}/.claude/skills/${skillDirName}/SKILL.md\` via a PR.\n\n## Skill Content\n\n\`\`\`\n${enrichedBlock}\n\`\`\``,
             priority: 'low', status: WI_STATUS.QUEUED, created: ts(), createdBy: `engine:skill-extraction:${agentName}` });
           return data;
         });
@@ -1094,6 +1255,49 @@ function parseAgentOutput(stdout) {
 }
 
 /**
+ * Parse structured completion block from agent output.
+ * Agents produce a ```completion fenced block with key: value pairs.
+ * Returns parsed object or null if not found / malformed.
+ * If multiple blocks exist, the last one wins (agent may retry).
+ */
+function parseStructuredCompletion(stdout) {
+  if (!stdout || typeof stdout !== 'string') return null;
+
+  // Extract text from stream-json output if needed
+  let text = stdout;
+  if (stdout.includes('"type":')) {
+    try {
+      const parsed = shared.parseStreamJsonOutput(stdout);
+      if (parsed.text) text = parsed.text;
+    } catch {}
+  }
+
+  // Find all ```completion blocks, take the last one
+  const blockPattern = /```completion\s*\n([\s\S]*?)```/g;
+  let lastMatch = null;
+  let m;
+  while ((m = blockPattern.exec(text)) !== null) {
+    lastMatch = m[1];
+  }
+  if (!lastMatch) return null;
+
+  // Parse key: value pairs
+  const result = {};
+  const lines = lastMatch.trim().split('\n');
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 1) continue;
+    const key = line.slice(0, colonIdx).trim().toLowerCase();
+    const value = line.slice(colonIdx + 1).trim();
+    if (key && value) result[key] = value;
+  }
+
+  // Must have at least the status field to be valid
+  if (!result.status) return null;
+  return result;
+}
+
+/**
  * Handle decomposition result — parse sub-items from agent output and create child work items.
  * Called from runPostCompletionHooks when type === 'decompose'.
  */
@@ -1183,6 +1387,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const result = isSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
   const { resultSummary, taskUsage, sessionId, model } = parseAgentOutput(stdout);
 
+  // Try structured completion protocol first (```completion block from agent output)
+  const structuredCompletion = parseStructuredCompletion(stdout);
+  if (structuredCompletion) {
+    log('info', `Structured completion from ${agentId}: status=${structuredCompletion.status}, pr=${structuredCompletion.pr || 'N/A'}`);
+  }
+
   // Save session for potential resume on next dispatch
   if (isSuccess && sessionId && agentId && !agentId.startsWith('temp-')) {
     try {
@@ -1198,6 +1408,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   try {
     prsCreatedCount = syncPrsFromOutput(stdout, agentId, meta, config) || 0;
   } catch (err) { log('warn', `PR sync from output: ${err.message}`); }
+
+  // Structured completion may report PR even when regex didn't find it
+  const scHasPr = structuredCompletion && structuredCompletion.pr && structuredCompletion.pr !== 'N/A';
+  if (scHasPr && prsCreatedCount === 0) {
+    log('info', `Structured completion reports PR (${structuredCompletion.pr}) but regex sync found none — PR may already be tracked`);
+  }
 
   // Auto-recover: if a failed implement/fix agent created PRs, it likely succeeded before being killed (e.g. heartbeat timeout)
   const prCreatingType = type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX;
@@ -1381,7 +1597,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config);
+  if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {
@@ -1406,7 +1622,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
 
-  return { resultSummary, taskUsage, autoRecovered };
+  return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
 }
 
 // ─── PR → PRD Status Sync ─────────────────────────────────────────────────────
@@ -1452,6 +1668,67 @@ function syncPrdFromPrs(config) {
   }
 }
 
+// ─── Failure Classification ─────────────────────────────────────────────────
+
+/**
+ * Classify an agent failure into a FAILURE_CLASS value based on exit code and output.
+ * @param {number} code — process exit code
+ * @param {string} stdout — agent stdout
+ * @param {string} stderr — agent stderr
+ * @returns {string} — one of FAILURE_CLASS values
+ */
+function classifyFailure(code, stdout = '', stderr = '') {
+  const out = String(stdout || '').toLowerCase();
+  const err = String(stderr || '').toLowerCase();
+  const combined = out + '\n' + err;
+
+  // Exit code 78 — configuration error (Claude CLI not found, bad setup)
+  if (code === 78) return FAILURE_CLASS.CONFIG_ERROR;
+
+  // Permission / trust / auth failures
+  if (/permission denied|access denied|unauthorized|403 forbidden|trust.*blocked|auth.*fail/i.test(combined)) {
+    return FAILURE_CLASS.PERMISSION_BLOCKED;
+  }
+
+  // Merge conflicts
+  if (/merge conflict|conflict.*merge|automatic merge failed|fix conflicts/i.test(combined)) {
+    return FAILURE_CLASS.MERGE_CONFLICT;
+  }
+
+  // Context window / max turns exhausted
+  if (/context window|max.*turns.*reached|error_max_turns|terminal_reason.*max_turns|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+    return FAILURE_CLASS.OUT_OF_CONTEXT;
+  }
+
+  // Network / API errors
+  if (/rate limit|429|econnrefused|enotfound|etimedout|dns.*resolution|api.*error.*5\d\d|overloaded/i.test(combined)) {
+    return FAILURE_CLASS.NETWORK_ERROR;
+  }
+
+  // Build / test / lint failures
+  if (/build failed|compilation error|test.*fail|lint.*error|type.*error|error ts\d+|syntax error|npm err/i.test(combined)) {
+    return FAILURE_CLASS.BUILD_FAILURE;
+  }
+
+  // Spawn errors — process crashed immediately or couldn't start
+  if (/spawn.*error|enoent|cannot find module|cannot find.*binary/i.test(combined)) {
+    return FAILURE_CLASS.SPAWN_ERROR;
+  }
+
+  // Empty output — agent produced nothing useful
+  if (!stdout || stdout.trim().length < 50) {
+    return FAILURE_CLASS.EMPTY_OUTPUT;
+  }
+
+  // Timeout is classified by the caller (timeout.js), not by output pattern
+  // but check for timeout markers in output as fallback
+  if (/timed.?out|timeout|heartbeat.*expired/i.test(combined)) {
+    return FAILURE_CLASS.TIMEOUT;
+  }
+
+  return FAILURE_CLASS.UNKNOWN;
+}
+
 module.exports = {
   checkPlanCompletion,
   archivePlan,
@@ -1468,9 +1745,13 @@ module.exports = {
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,
+  parseStructuredCompletion,
   runPostCompletionHooks,
   syncPrdFromPrs,
   resolveWorkItemPath,
   isItemCompleted,
+  classifyFailure,
+  processPendingRebases,
+  findDependentActivePrs,
 };
 

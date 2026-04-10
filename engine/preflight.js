@@ -37,7 +37,7 @@ function findClaudeBinary() {
   for (const p of searchPaths) {
     try { if (fs.existsSync(p)) return p; } catch {}
   }
-  // Fallback: which/where → resolve wrapper to cli.js
+  // Fallback: which/where → resolve wrapper to cli.js, or detect native binary
   try {
     const isWin = process.platform === 'win32';
     const cmd = isWin ? 'where claude 2>NUL' : 'which claude 2>/dev/null';
@@ -55,7 +55,11 @@ function findClaudeBinary() {
           const candidate = path.join(path.dirname(whichNative), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
           if (fs.existsSync(candidate)) return candidate;
         }
-      } catch {}
+      } catch {
+        // Can't read as text — it's a compiled native binary
+      }
+      // Native installer binary on PATH — use directly
+      return whichNative;
     }
   } catch { /* optional */ }
   // Last resort: npm root -g
@@ -101,9 +105,11 @@ function runPreflight(opts = {}) {
   // 3. Claude Code CLI
   const claudeBin = findClaudeBinary();
   if (claudeBin) {
-    results.push({ name: 'Claude Code CLI', ok: true, message: path.basename(path.dirname(path.dirname(claudeBin))) });
+    const isNative = !claudeBin.endsWith('cli.js');
+    const label = isNative ? 'native' : path.basename(path.dirname(path.dirname(claudeBin)));
+    results.push({ name: 'Claude Code CLI', ok: true, message: label });
   } else {
-    results.push({ name: 'Claude Code CLI', ok: false, message: 'not found — install with: npm install -g @anthropic-ai/claude-code' });
+    results.push({ name: 'Claude Code CLI', ok: false, message: 'not found — install from https://claude.ai/download or: npm install -g @anthropic-ai/claude-code' });
     allOk = false;
   }
 

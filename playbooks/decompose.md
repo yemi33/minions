@@ -10,7 +10,7 @@ A work item has been flagged as too large for a single agent dispatch. Analyze t
 ## Work Item
 
 - **ID:** {{item_id}}
-- **Title:** {{item_title}}
+- **Title:** {{item_name}}
 - **Description:** {{item_description}}
 - **Complexity:** {{item_complexity}}
 - **Project:** {{project_name}} (`{{project_path}}`)
@@ -48,10 +48,13 @@ Write the decomposition result as a JSON code block in your response:
     {
       "id": "{{item_id}}-a",
       "name": "Short descriptive name",
+      "objective": "One-sentence goal: what this sub-task achieves.",
       "description": "What to build, where, and how. Be specific enough that an engineer can implement without further exploration.",
       "estimated_complexity": "small|medium",
       "depends_on": [],
-      "acceptance_criteria": ["Criterion 1", "Criterion 2"]
+      "acceptance_criteria": ["Criterion 1", "Criterion 2"],
+      "expected_output": "What done looks like — the artifact produced (e.g., a PR adding X, a new file at Y, a config change).",
+      "scope_boundaries": ["Out-of-scope item 1", "Out-of-scope item 2"]
     }
   ]
 }

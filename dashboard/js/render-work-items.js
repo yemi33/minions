@@ -40,7 +40,7 @@ function wiRow(item) {
     : (item.branchStrategy === 'shared-branch' && item.status === 'done')
       ? '<span style="font-size:9px;color:var(--muted)" title="Part of shared branch — aggregate PR created at verify stage">shared branch</span>'
       : '<span style="color:var(--muted)">—</span>';
-  return '<tr style="cursor:pointer" onclick="openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
+  return '<tr style="cursor:pointer" onclick="if(window.getSelection().toString().length>0)return;openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml((item.title || '').slice(0, 200)) + '">' + escHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
@@ -48,7 +48,8 @@ function wiRow(item) {
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
-      (item._pendingReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason && item.status === 'pending' && item._pendingReason !== 'already_dispatched' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason === 'already_dispatched' && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--blue);margin-left:4px" title="In dispatch queue, waiting to be assigned">queued</span>' : '') +
       (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escHtml(item._blockedBy) + ')' : '') + '">' + escHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
       (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
@@ -440,7 +441,7 @@ function openWorkItemDetail(id) {
   if (item.dispatched_at) html += field('Dispatched', escHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escHtml(item.dispatched_to || '?'));
   if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
   if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
-  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', item._pendingReason === 'already_dispatched' ? 'Queued — waiting for available agent slot' : escHtml(item._pendingReason.replace(/_/g, ' ')));
   if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escHtml(item._blockedBy) + '</strong>' : ''));
   if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
   if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
