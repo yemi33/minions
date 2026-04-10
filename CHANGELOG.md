@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.785 (2026-04-10)
+
+### Features
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
+### Fixes
+-  don't overwrite reviewStatus when platform vote hasn't propagated
+-  don't overwrite approval with 'waiting' when platform API lags
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
