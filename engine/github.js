@@ -418,6 +418,22 @@ async function pollPrStatus(config) {
       }
     }
 
+    // Auto-complete: merge PR when builds green + review approved
+    if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
+      const autoComplete = config.engine?.autoCompletePrs !== false; // default: on
+      if (autoComplete) {
+        try {
+          const mergeMethod = config.engine?.prMergeMethod || 'squash';
+          await execAsync(`gh pr merge ${prNum} --${mergeMethod} --repo ${slug} --delete-branch`, { timeout: 30000, encoding: 'utf-8' });
+          pr._autoCompleted = true;
+          log('info', `Auto-completed PR ${pr.id}: builds green + review approved → merged (${mergeMethod})`);
+          updated = true;
+        } catch (e) {
+          log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
+        }
+      }
+    }
+
     return updated;
   });
 
