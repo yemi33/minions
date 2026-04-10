@@ -66,6 +66,13 @@ function renderPrd(prd, prog) {
   section.innerHTML = '';
 }
 
+function _renderPrLink(pr, opts) {
+  var size = (opts && opts.size) || '10px';
+  var statusColor = pr.status === 'merged' ? 'var(--green)' : pr.status === 'abandoned' ? 'var(--red)' : 'var(--blue)';
+  var statusIcon = pr.status === 'merged' ? '✓' : pr.status === 'abandoned' ? '✗' : '○';
+  return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:' + size + ';color:' + statusColor + ';text-decoration:underline;cursor:pointer;margin-left:4px" title="' + escHtml((pr.title || '') + ' (' + (pr.status || 'active') + ')') + '">' + statusIcon + ' ' + escHtml(pr.id) + '</a>';
+}
+
 function renderPrdProgress(prog) {
   const el = document.getElementById('prd-progress-content');
   const countEl = document.getElementById('prd-progress-count');
@@ -149,11 +156,7 @@ function renderPrdProgress(prog) {
   }
 
   const renderItem = (i) => {
-    const prLinks = (i.prs || []).map(function(pr) {
-      var statusColor = pr.status === 'merged' ? 'var(--green)' : pr.status === 'abandoned' ? 'var(--red)' : 'var(--blue)';
-      var statusIcon = pr.status === 'merged' ? '✓' : pr.status === 'abandoned' ? '✗' : '○';
-      return '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px;color:' + statusColor + '" title="' + escHtml((pr.title || '') + ' (' + (pr.status || 'active') + ')') + '">' + statusIcon + ' ' + escHtml(pr.id) + '</a>';
-    }).join(' ');
+    const prLinks = (i.prs || []).map(function(pr) { return _renderPrLink(pr); }).join(' ');
     const projBadges = (i.projects || []).map(p =>
       '<span class="prd-project-badge">' + escHtml(p) + '</span>'
     ).join(' ');
@@ -394,9 +397,7 @@ function renderPrdProgress(prog) {
             })() +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
           '</div>' +
-          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
-            return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:underline;cursor:pointer" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>';
-          }).join(' ') + '</div>' : '') +
+          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) { return _renderPrLink(pr, { size: '9px' }); }).join(' ') + '</div>' : '') +
           (i.status === 'decomposed' ? (function() {
             var children = (window._lastWorkItems || []).filter(function(w) { return w.parent_id === i.id; });
             if (!children.length) return '';
