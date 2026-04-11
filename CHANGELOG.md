@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.891 (2026-04-11)
+
+### Features
+-  add 13 missing CC action types for full dashboard parity
+
+### Fixes
+- parse review verdict from agent output for GitHub self-approval (#912) (#918)
+- verify PRD file exists before marking plan-to-prd done (#893) (#911)
+- re-open done work items when PRD item reset to missing (#906) (#910)
+- require explicit vote step in review playbook
+-  CC queued message silently retries on 429 after abort
+- track e2e/ and fix/ branches in PR reconciler
+- show stale banner on paused PRDs (#905) (#909)
+- regenerate-plan now dispatches diff-aware plan-to-prd agent
+- suppress false [steering-failed] banner when agent responded (closes #894) (#896)
+- delete .backup sidecar when archiving PRD
+-  CC action bugs + security guard on generic fallback
+- reset central work-items.json on agent kill (closes #890) (#891)
+- include started_at in done/error agent status so duration renders
+
+### Other
+- docs: add verification report for plan minions-2026-04-01-5 (#900)
+- refactor: extract reopenWorkItem helper to shared.js
+- simplify: fix CC regenerate-plan field name, remove dead revise-and-regenerate handler
+- remove doc-chat plan auto-pause in favour of stale banner only
+- simplify: CC actions cleanup — missing wakeEngine, redundant refresh, hardened fallback
+
 ## 0.1.873 (2026-04-11)
 
 ### Features
