@@ -127,6 +127,7 @@ function checkSteering(config) {
 function checkTimeouts(config) {
   const activeProcesses = engine().activeProcesses;
   const engineRestartGraceUntil = engine().engineRestartGraceUntil;
+  const engineRestartGraceExempt = engine().engineRestartGraceExempt;
   const { completeDispatch } = dispatch();
   const { runPostCompletionHooks } = require('./lifecycle');
 
@@ -307,8 +308,8 @@ function checkTimeouts(config) {
     const procInfo = activeProcesses.get(item.id);
     if (procInfo?._steeringAt && Date.now() - procInfo._steeringAt < 60000) continue;
 
-    if (!hasProcess && silentMs > effectiveTimeout && Date.now() > engineRestartGraceUntil) {
-      // No tracked process AND no recent output past effective timeout AND grace period expired → orphaned
+    if (!hasProcess && silentMs > effectiveTimeout && (Date.now() > engineRestartGraceUntil || engineRestartGraceExempt?.has(item.id))) {
+      // No tracked process AND no recent output past effective timeout AND (grace period expired OR confirmed-dead at restart) → orphaned
       log('warn', `Orphan detected: ${item.agent} (${item.id}) — no process tracked, silent for ${silentSec}s${isBlocking ? ' (blocking timeout exceeded)' : ''}`);
       dispatch().updateAgentStatus(item.id, AGENT_STATUS.TIMED_OUT, `Orphaned — no process, silent for ${silentSec}s`);
       // Clear session so retry starts fresh

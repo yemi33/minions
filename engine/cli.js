@@ -161,6 +161,7 @@ const commands = {
           }
         }
 
+        const hadPid = agentPid && agentPid > 0; // track before liveness check
         if (agentPid && agentPid > 0) {
           try {
             if (process.platform === 'win32') {
@@ -170,6 +171,11 @@ const commands = {
               process.kill(agentPid, 0);
             }
           } catch { agentPid = null; }
+        }
+
+        // PID was found but confirmed dead — exempt from restart grace period (#869)
+        if (hadPid && !agentPid) {
+          e.engineRestartGraceExempt.add(item.id);
         }
 
         if (agentPid) {

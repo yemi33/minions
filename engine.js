@@ -146,6 +146,7 @@ const activeProcesses = new Map(); // dispatchId → { proc, agentId, startedAt 
 const realActivityMap = new Map(); // dispatchId → timestamp of last REAL agent output (not engine heartbeat)
 // tempAgents imported from engine/routing.js
 let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection until this time
+const engineRestartGraceExempt = new Set(); // dispatch IDs with confirmed-dead PIDs at restart — bypass grace period
 
 // Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
 // Cleared at the start of each tick cycle (see tickInner)
@@ -3155,7 +3156,8 @@ module.exports = {
 
   // Dispatch management (re-exported from engine/dispatch.js)
   mutateDispatch, addToDispatch, isRetryableFailureReason, completeDispatch, writeInboxAlert, updateAgentStatus,
-  activeProcesses, realActivityMap, get engineRestartGraceUntil() { return engineRestartGraceUntil; },
+  activeProcesses, realActivityMap, engineRestartGraceExempt,
+  get engineRestartGraceUntil() { return engineRestartGraceUntil; },
   set engineRestartGraceUntil(v) { engineRestartGraceUntil = v; },
 
   // Agent lifecycle
