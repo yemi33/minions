@@ -122,7 +122,7 @@ function _initQaSession() {
     var wrap = document.getElementById('modal-qa-thread-wrap');
     var expandBar = document.getElementById('qa-expand-bar');
     if (wrap) wrap.style.display = 'none';
-    if (expandBar) expandBar.style.display = '';
+    if (expandBar) expandBar.style.display = 'none';
   }
 }
 
@@ -134,7 +134,7 @@ function clearQaConversation() {
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
   if (wrap) wrap.style.display = 'none';
-  if (expandBar) expandBar.style.display = '';
+  if (expandBar) expandBar.style.display = 'none';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
