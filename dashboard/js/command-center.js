@@ -706,7 +706,6 @@ function _tagServerExecuted(actions, actionResults) {
   }
 }
 
-
 async function ccExecuteAction(action, targetTabId) {
   var status = document.createElement('div');
   status.style.cssText = 'padding:4px 10px;border-radius:4px;font-size:10px;align-self:flex-start;border:1px dashed var(--border);color:var(--muted)';

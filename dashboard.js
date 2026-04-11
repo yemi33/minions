@@ -592,7 +592,7 @@ async function executeCCActions(actions) {
             items.push({
               id, title: action.title || 'Untitled', type: workType,
               priority: action.priority || 'medium', description: action.description || '',
-              status: 'pending', created: new Date().toISOString(),
+              status: WI_STATUS.PENDING, created: new Date().toISOString(),
               createdBy: 'command-center', project,
               ...(action.agents?.length ? { preferred_agent: action.agents[0] } : {}),
             });
@@ -607,7 +607,9 @@ async function executeCCActions(actions) {
           break;
         }
         case 'knowledge': {
+          const validCategories = ['architecture', 'conventions', 'project-notes', 'build-reports', 'reviews'];
           const category = action.category || 'project-notes';
+          if (!validCategories.includes(category)) { results.push({ type: 'knowledge', error: 'Invalid category: ' + category }); break; }
           const slug = shared.slugify(action.title || 'entry');
           const kbDir = path.join(MINIONS_DIR, 'knowledge', category);
           if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
@@ -616,8 +618,8 @@ async function executeCCActions(actions) {
           break;
         }
         default:
-          // For action types that map 1:1 to API endpoints, flag as client-executed
-          results.push({ type: action.type, ok: true, clientExecuted: false });
+          // Server didn't handle — frontend must execute
+          results.push({ type: action.type });
           break;
       }
     } catch (e) {
