@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.855 (2026-04-11)
+
+### Fixes
+-  pipeline modal buttons stuck on loading state after success
+
 ## 0.1.854 (2026-04-11)
 
 ### Features
