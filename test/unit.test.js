@@ -14193,6 +14193,70 @@ async function testPrReviewFixFlows() {
       'Should use resultSummary as primary note source');
   });
 
+  // ── Review verdict parsing (GitHub self-approval workaround) ──
+
+  console.log('\n── Review Verdict Parsing ──');
+
+  await test('parseReviewVerdict is exported from lifecycle.js', () => {
+    assert.ok(lifecycleSrc.includes('function parseReviewVerdict('),
+      'parseReviewVerdict function must exist');
+    assert.ok(lifecycleSrc.includes('parseReviewVerdict,'),
+      'parseReviewVerdict must be exported');
+  });
+
+  await test('parseReviewVerdict parses APPROVE verdict', () => {
+    const { parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(parseReviewVerdict('VERDICT: APPROVE\n\nLooks good'), 'approved');
+    assert.strictEqual(parseReviewVerdict('**VERDICT: APPROVE**\n\nNice work'), 'approved');
+  });
+
+  await test('parseReviewVerdict parses REQUEST_CHANGES verdict', () => {
+    const { parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(parseReviewVerdict('VERDICT: REQUEST_CHANGES\n\nNeeds fixes'), 'changes-requested');
+    assert.strictEqual(parseReviewVerdict('VERDICT: REQUEST CHANGES\n\nFix this'), 'changes-requested');
+  });
+
+  await test('parseReviewVerdict returns null for missing/no verdict', () => {
+    const { parseReviewVerdict } = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(parseReviewVerdict(null), null);
+    assert.strictEqual(parseReviewVerdict(''), null);
+    assert.strictEqual(parseReviewVerdict('This is just a comment, no verdict'), null);
+  });
+
+  await test('updatePrAfterReview falls back to verdict parsing when live check is pending', () => {
+    const reviewFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function updatePrAfterReview('),
+      lifecycleSrc.indexOf('\nfunction ', lifecycleSrc.indexOf('function updatePrAfterReview(') + 1)
+    );
+    assert.ok(reviewFn.includes('parseReviewVerdict(resultSummary)'),
+      'Should parse verdict from resultSummary when live check returns pending');
+    assert.ok(reviewFn.includes('Parsed review verdict from agent output'),
+      'Should log when using parsed verdict');
+  });
+
+  await test('runPostCompletionHooks verifies review verdict exists before marking done', () => {
+    const hooksFn = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function runPostCompletionHooks('),
+      lifecycleSrc.indexOf('\nmodule.exports')
+    );
+    assert.ok(hooksFn.includes('parseReviewVerdict(resultSummary)'),
+      'Should check for verdict in review output');
+    assert.ok(hooksFn.includes('completed without verdict'),
+      'Should warn about missing verdict');
+    assert.ok(hooksFn.includes('No review verdict after'),
+      'Should fail after max retries with no verdict');
+  });
+
+  await test('getPrVoteInstructions warns about GitHub self-approval for github repos', () => {
+    const playbookSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    assert.ok(playbookSrc.includes('self-approval'),
+      'getPrVoteInstructions should warn about GitHub self-approval blocking');
+    assert.ok(playbookSrc.includes('--comment'),
+      'Should instruct using --comment for GitHub repos');
+    assert.ok(playbookSrc.includes('VERDICT: APPROVE'),
+      'Should instruct agents to include VERDICT: APPROVE in comment');
+  });
+
   // ── Build fix ──
 
   console.log('\n── Build Fix Flow ──');

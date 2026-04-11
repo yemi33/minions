@@ -779,6 +779,27 @@ function syncPrsFromOutput(output, agentId, meta, config) {
 
 // ─── Post-Completion Hooks ──────────────────────────────────────────────────
 
+/**
+ * Parse review verdict from agent output text.
+ * Looks for "VERDICT: APPROVE" or "VERDICT: REQUEST_CHANGES" markers that the
+ * review playbook instructs agents to include. This is the primary mechanism for
+ * GitHub repos where formal --approve/--request-changes votes are blocked by
+ * self-approval restrictions.
+ * @param {string} text - Agent output / resultSummary
+ * @returns {'approved'|'changes-requested'|null}
+ */
+function parseReviewVerdict(text) {
+  if (!text) return null;
+  // Match "VERDICT: APPROVE" or "VERDICT: REQUEST_CHANGES" (case-insensitive, optional markdown bold)
+  const verdictMatch = text.match(/VERDICT[:\s]+\*{0,2}(APPROVE|REQUEST[_\s-]?CHANGES)\*{0,2}/i);
+  if (verdictMatch) {
+    const v = verdictMatch[1].toUpperCase().replace(/[\s-]/g, '_');
+    if (v === 'APPROVE') return 'approved';
+    if (v.includes('CHANGES')) return 'changes-requested';
+  }
+  return null;
+}
+
 async function updatePrAfterReview(agentId, pr, project, config, resultSummary) {
 
   if (!pr?.id) return;
@@ -803,6 +824,15 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
       if (liveStatus && liveStatus !== 'pending') postReviewStatus = liveStatus;
     }
   } catch (e) { log('warn', `Post-review status check for ${pr.id}: ${e.message}`); }
+
+  // Fallback: if live check returned pending (e.g., GitHub self-approval blocked), parse verdict from agent output
+  if (!postReviewStatus) {
+    const verdict = parseReviewVerdict(resultSummary);
+    if (verdict) {
+      postReviewStatus = verdict;
+      log('info', `Parsed review verdict from agent output for ${pr.id}: ${verdict}`);
+    }
+  }
 
   const prPath = project ? shared.projectPrPath(project) : path.join(path.resolve(MINIONS_DIR, '..'), '.minions', 'pull-requests.json');
   let updatedTarget = null;
@@ -839,7 +869,7 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     }, { defaultValue: {} });
   }
 
-  log('info', `Updated ${pr.id} → minions review: waiting by ${reviewerName}`);
+  log('info', `Updated ${pr.id} → minions review: ${postReviewStatus || 'waiting'} by ${reviewerName}`);
   if (updatedTarget) createReviewFeedbackForAuthor(agentId, updatedTarget, config);
 }
 
@@ -1673,6 +1703,35 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Old plan-to-prd PRD check removed — moved before updateWorkItemStatus(DONE) to fix #893
   // (retryCount was being deleted by done-marking before the check could read it)
 
+  // Verify review work items include a verdict — mirrors the PRD file existence check pattern.
+  // If agent completed (exit 0) but output has no VERDICT: APPROVE/REQUEST_CHANGES, the review
+  // is incomplete. Auto-retry up to maxRetries, then fail.
+  if (effectiveSuccess && type === WORK_TYPE.REVIEW && meta?.item?.id) {
+    const verdict = parseReviewVerdict(resultSummary);
+    if (!verdict) {
+      const wiPath = resolveWorkItemPath(meta);
+      if (wiPath) {
+        mutateJsonFileLocked(wiPath, data => {
+          if (!Array.isArray(data)) return data;
+          const w = data.find(i => i.id === meta.item.id);
+          if (!w) return data;
+          const retries = w._retryCount || 0;
+          if (retries < ENGINE_DEFAULTS.maxRetries) {
+            w.status = WI_STATUS.PENDING;
+            w._retryCount = retries + 1;
+            delete w.dispatched_at;
+            log('warn', `Review ${meta.item.id} completed without verdict — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
+          } else {
+            w.status = WI_STATUS.FAILED;
+            w.failReason = 'No review verdict after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+            log('warn', `Review ${meta.item.id} failed — no verdict after ${ENGINE_DEFAULTS.maxRetries} retries`);
+          }
+          return data;
+        });
+      }
+    }
+  }
+
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
@@ -1827,6 +1886,7 @@ module.exports = {
   createReviewFeedbackForAuthor,
   updateMetrics,
   parseAgentOutput,
+  parseReviewVerdict,
   parseStructuredCompletion,
   runPostCompletionHooks,
   syncPrdFromPrs,

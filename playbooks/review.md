@@ -40,28 +40,22 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
    - Verdict: **APPROVE**
    - Note any minor non-blocking suggestions
 
-## Post Review — Two required actions, both mandatory
+## Post Review — Submit your verdict
 
-You MUST complete BOTH steps below. The review is NOT done until both are confirmed. A comment without a vote is an incomplete review.
+You MUST post a review comment with a clear verdict. The engine parses your verdict to update PR status — **a review without a verdict line is incomplete and will be retried.**
 
-### Step 1: Post a detailed review comment
-
-{{pr_comment_instructions}}
-- content: Your full review with verdict, findings, and sign-off
-- Sign: `Review by Minions ({{agent_name}} — {{agent_role}})`
-
-### Step 2: Submit a formal review vote — THIS IS REQUIRED
-
-**This is a separate action from Step 1.** Posting a comment does NOT submit a vote. You must explicitly run the vote command:
+### Post your review with verdict
 
 {{pr_vote_instructions}}
-- If your verdict is **APPROVE**: use `--approve`
-- If your verdict is **REQUEST_CHANGES**: use `--request-changes`
-- If you have minor non-blocking suggestions only: use `--approve` with a note
 
-**Do not stop after Step 1.** The task is incomplete until Step 2 is done.
+Your review body **MUST** start with one of these verdict lines (exactly as shown):
+- `VERDICT: APPROVE` — if the code is ready to merge
+- `VERDICT: REQUEST_CHANGES` — if there are issues that must be fixed
 
-After running the vote command, confirm it succeeded (check the command output for errors). If it fails, retry once.
+Follow the verdict line with your detailed review findings, then sign off:
+- Sign: `Review by Minions ({{agent_name}} — {{agent_role}})`
+
+After running the command, confirm it succeeded (check the command output for errors). If it fails, retry once.
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts (e.g., the PR shows conflicts):
@@ -71,9 +65,7 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 ## When to Stop
 
-Your task is complete only when BOTH of these are true:
-1. Review comment posted (Step 1)
-2. Formal vote submitted via `gh pr review --approve` or `--request-changes` (Step 2)
+Your task is complete when your review comment (with `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES` on the first line) has been posted successfully.
 
-Do NOT stop after only posting a comment. Do NOT continue reading unrelated files after voting.
+Do NOT stop before posting the review. Do NOT continue reading unrelated files after posting.
 
