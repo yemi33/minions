@@ -210,8 +210,10 @@ function renderPlans(plans) {
     const isDraft = p.format === 'draft' && !isCompleted;
     // For .md drafts: show Execute only if no PRD exists yet (not already executed)
 
+    const isStale = p.planStale && !isArchived;
+
     let actions = '';
-    if (needsAction) {
+    if (needsAction && !isStale) {
       const actionTarget = prdFile || p.file;
       // For awaiting-approval: show Execute (re-generate PRD from updated plan) + Approve (use current PRD as-is)
       if (effectiveStatus === 'awaiting-approval' && isDraft && prdFile) {

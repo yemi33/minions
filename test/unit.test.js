@@ -13003,7 +13003,7 @@ async function testDashboardButtonConsistency() {
 
   await test('plan card: Approve for awaiting-approval, not Execute', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
+    const actionsBlock = src.slice(src.indexOf('if (needsAction'), src.indexOf('} else if (isRevision)'));
     assert.ok(actionsBlock.includes("'Approve'"), 'Should show Approve');
     assert.ok(!actionsBlock.includes("'Execute'"), 'Should NOT show Execute in actions block');
   });
@@ -13015,7 +13015,7 @@ async function testDashboardButtonConsistency() {
 
   // Shared slices for card and modal button tests
   const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-  const cardActionsBlock = plansSrc.slice(plansSrc.indexOf('if (needsAction)'), plansSrc.indexOf('} else if (isRevision)'));
+  const cardActionsBlock = plansSrc.slice(plansSrc.indexOf('if (needsAction'), plansSrc.indexOf('} else if (isRevision)'));
   const modalFn = plansSrc.slice(plansSrc.indexOf('function _renderPlanModal'), plansSrc.indexOf('\nasync function planView'));
 
   await test('plan modal: Approve targets linked PRD file', () => {

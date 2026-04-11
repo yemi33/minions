@@ -2074,6 +2074,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
               sourcePlan: plan.source_plan || null,
               archiveReady: plan._archiveReady || false,
               archiveReadyAt: plan._archiveReadyAt || null,
+              planStale: plan.planStale || false,
             });
           } catch { /* JSON parse fallback */ }
         } else {
