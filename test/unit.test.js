@@ -8770,20 +8770,13 @@ async function testStatusMutationGuards() {
   // ─── Fix 10: dashboard kill-agent reset skips done items ──────────────────
 
   await test('dashboard kill-agent reset skips done/completedAt items', () => {
-    // Find ALL "killedAgents.add(activeEntry.agent)" occurrences — the second one is the kill-agent handler
-    const allOccurrences = [];
-    let searchFrom = 0;
-    while (true) {
-      const idx = dashboardSrc.indexOf('killedAgents.add(activeEntry.agent)', searchFrom);
-      if (idx < 0) break;
-      allOccurrences.push(idx);
-      searchFrom = idx + 1;
-    }
-    assert.ok(allOccurrences.length >= 2, 'dashboard.js must have at least 2 kill-agent sections');
-    // Check the section around the second occurrence (plan-steering kill handler)
-    const killSection = dashboardSrc.substring(allOccurrences[1] - 2000, allOccurrences[1] + 500);
-    assert.ok(killSection.includes('completedAt'),
-      'Kill-agent work item reset must check completedAt before resetting items');
+    // Find the kill-agent handler (handleAgentKill)
+    const fnStart = dashboardSrc.indexOf('async function handleAgentKill');
+    assert.ok(fnStart >= 0, 'handleAgentKill function must exist');
+    const killSection = dashboardSrc.substring(fnStart, fnStart + 6000);
+    // handleAgentKill guards by checking status === WI_STATUS.DISPATCHED, so only dispatched items are reset
+    assert.ok(killSection.includes('WI_STATUS.DISPATCHED'),
+      'handleAgentKill must only reset dispatched items (not done/completed)');
   });
 
   // ─── Fix: handleAgentKill includes central work-items.json ──────────────
