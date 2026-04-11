@@ -226,11 +226,11 @@ When a completed/approved plan's source `.md` is edited, the engine flags the PR
 - **Per-item "re-open" button**: Deterministic fallback. Sets individual done items to `"updated"` via `/api/prd-items/update`, also clears `planStale` via `/api/plans/approve`.
 
 The materializer handles the PRD item statuses:
-- `"missing"` → creates new work item
+- `"missing"` → creates new work item, or re-opens existing done work item (resets to pending with `_reopened` flag)
 - `"updated"` → re-opens existing done work item (resets to pending with `_reopened` flag, dispatches to existing branch)
 - `"done"` → untouched
 
-Only `PRD_ITEM_STATUS.UPDATED` triggers re-open — `MISSING` items with a coincidentally same-ID done WI are skipped, not re-opened. Cross-project re-opens are deferred outside the lock to avoid nested lock violations.
+Both `PRD_ITEM_STATUS.UPDATED` and `PRD_ITEM_STATUS.MISSING` trigger re-open of done work items — a PRD reset to `missing` re-opens the existing done WI for re-implementation. Cross-project re-opens are deferred outside the lock to avoid nested lock violations.
 
 Key helpers: `buildWiDescription(item, planFile)` for consistent WI description building, `queuePlanToPrd()` for atomic dedup-inside-lock dispatch (used by all plan-to-prd paths).
 

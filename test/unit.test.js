@@ -1767,12 +1767,22 @@ async function testPrdStaleInvalidation() {
       'shared.js should define PRD_ITEM_STATUS.UPDATED and PRD_MATERIALIZABLE set');
   });
 
-  await test('Re-open: only "updated" status re-opens done work items (not "missing")', () => {
+  await test('Re-open: "updated" or "missing" status re-opens done work items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('PRD_ITEM_STATUS.UPDATED') && src.includes('shouldReopen'),
-      'shouldReopen should check for PRD_ITEM_STATUS.UPDATED only');
+    assert.ok(src.includes('PRD_ITEM_STATUS.UPDATED') && src.includes('PRD_ITEM_STATUS.MISSING') && src.includes('shouldReopen'),
+      'shouldReopen should check for PRD_ITEM_STATUS.UPDATED or PRD_ITEM_STATUS.MISSING');
     assert.ok(src.includes('_reopened = true'),
       'Should mark re-opened work items with _reopened flag');
+  });
+
+  await test('Re-open clears completedAt, dispatched_at, dispatched_to on re-opened work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('delete existingWi.completedAt'),
+      'Should clear completedAt on re-open');
+    assert.ok(src.includes('delete existingWi.dispatched_at'),
+      'Should clear dispatched_at on re-open');
+    assert.ok(src.includes('delete existingWi.dispatched_to'),
+      'Should clear dispatched_to on re-open');
   });
 
   await test('Cross-project re-opens deferred outside lock (no nested locks)', () => {
