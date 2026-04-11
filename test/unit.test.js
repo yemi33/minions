@@ -4589,6 +4589,361 @@ async function testRunPostCompletionHooks() {
     assert.ok(src.includes('parseAgentOutput') || src.includes('parseStreamJsonOutput'),
       'Should parse agent stdout to extract result summary');
   });
+
+  // ── PRD file existence check for plan-to-prd (#893) ──
+
+  await test('plan-to-prd PRD check runs BEFORE updateWorkItemStatus(DONE) (#893)', () => {
+    const hookBody = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    const prdCheckIdx = hookBody.indexOf('Verify plan-to-prd actually created the PRD file');
+    const doneMarkIdx = hookBody.indexOf('updateWorkItemStatus(meta, WI_STATUS.DONE');
+    assert.ok(prdCheckIdx > 0, 'PRD file check comment must exist in runPostCompletionHooks');
+    assert.ok(doneMarkIdx > 0, 'updateWorkItemStatus(DONE) must exist in runPostCompletionHooks');
+    assert.ok(prdCheckIdx < doneMarkIdx,
+      'PRD file check must run BEFORE updateWorkItemStatus(DONE) to preserve _retryCount');
+  });
+
+  await test('plan-to-prd PRD check uses skipDoneStatus to prevent premature done (#893)', () => {
+    const hookBody = src.slice(
+      src.indexOf('Verify plan-to-prd actually created the PRD file'),
+      src.indexOf('updateWorkItemStatus(meta, WI_STATUS.DONE')
+    );
+    assert.ok(hookBody.includes('skipDoneStatus = true'),
+      'PRD check must set skipDoneStatus when PRD file is missing');
+    assert.ok(hookBody.includes('WORK_TYPE.PLAN_TO_PRD'),
+      'PRD check must be gated on WORK_TYPE.PLAN_TO_PRD');
+    assert.ok(hookBody.includes('fs.existsSync(path.join(PRD_DIR'),
+      'PRD check must use fs.existsSync with PRD_DIR');
+  });
+
+  await test('plan-to-prd PRD check clears completedAt on retry (#893)', () => {
+    const hookBody = src.slice(
+      src.indexOf('Verify plan-to-prd actually created the PRD file'),
+      src.indexOf('updateWorkItemStatus(meta, WI_STATUS.DONE')
+    );
+    assert.ok(hookBody.includes('delete w.completedAt'),
+      'PRD retry must clear completedAt to prevent isItemCompleted false positive');
+    assert.ok(hookBody.includes('delete w.dispatched_at'),
+      'PRD retry must clear dispatched_at for clean redispatch');
+  });
+
+  await test('plan-to-prd PRD check sets failedAt on final failure (#893)', () => {
+    const hookBody = src.slice(
+      src.indexOf('Verify plan-to-prd actually created the PRD file'),
+      src.indexOf('updateWorkItemStatus(meta, WI_STATUS.DONE')
+    );
+    assert.ok(hookBody.includes('w.failedAt = ts()'),
+      'PRD final failure must set failedAt timestamp');
+    assert.ok(hookBody.includes("'PRD file not written after '"),
+      'PRD final failure must include descriptive failReason');
+  });
+
+  await test('old post-done PRD check removed (was after updateWorkItemStatus) (#893)', () => {
+    const hookBody = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    // The old check had this comment — should no longer exist (only the removal notice)
+    assert.ok(!hookBody.includes('Detect plan-to-prd tasks that completed without creating a PRD file'),
+      'Old post-done PRD check must be removed (moved before updateWorkItemStatus)');
+  });
+}
+
+// ─── plan-to-prd PRD File Check Behavioral Tests (#893) ─────────────────────
+
+async function testPlanToPrdFileCheck() {
+  console.log('\n── lifecycle.js — plan-to-prd PRD file check (#893) ──');
+
+  const restore = createTestMinionsDir();
+  const lifecycle = require('../engine/lifecycle');
+  const sharedIsolated = require('../engine/shared');
+  const testMinionsDir = sharedIsolated.MINIONS_DIR;
+  const wiPath = path.join(testMinionsDir, 'work-items.json');
+  const prdDir = path.join(testMinionsDir, 'prd');
+
+  const mockProject = { name: 'TestProject', localPath: testMinionsDir, mainBranch: 'main' };
+  const mockConfig = { projects: [mockProject], agents: { agent1: { name: 'Agent1' } }, engine: {} };
+
+  // Mock projectPrPath and getProjects to avoid side effects
+  const origProjectPrPath = sharedIsolated.projectPrPath;
+  const origGetProjects = sharedIsolated.getProjects;
+  const prFile = path.join(testMinionsDir, 'pull-requests.json');
+  sharedIsolated.safeWrite(prFile, []);
+  sharedIsolated.projectPrPath = () => prFile;
+  sharedIsolated.getProjects = () => [mockProject];
+
+  function cleanup() {
+    try { sharedIsolated.projectPrPath = origProjectPrPath; } catch {}
+    try { sharedIsolated.getProjects = origGetProjects; } catch {}
+  }
+
+  await test('plan-to-prd without PRD file: work item reverted to pending, not done (#893)', async () => {
+    // Setup: work item in dispatched state
+    const workItems = [{
+      id: 'W-test-prd-1',
+      title: 'Convert plan to PRD',
+      type: 'plan-to-prd',
+      status: 'dispatched',
+      planFile: 'test-plan.md',
+      _prdFilename: 'test-project-2026-04-11.json',
+      dispatched_at: new Date().toISOString(),
+    }];
+    sharedIsolated.safeWrite(wiPath, workItems);
+
+    // No PRD file created — agent produced no output
+    const dispatchItem = {
+      id: 'D-prd-test-1',
+      type: 'plan-to-prd',
+      task: 'Convert plan to PRD',
+      agent: 'agent1',
+      meta: {
+        source: 'central-work-item',
+        item: { ...workItems[0] },
+        branch: 'work/W-test-prd-1',
+      },
+    };
+
+    await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, '', mockConfig);
+
+    const result = sharedIsolated.safeJson(wiPath) || [];
+    const wi = result.find(w => w.id === 'W-test-prd-1');
+    assert.ok(wi, 'Work item should still exist');
+    assert.strictEqual(wi.status, 'pending', 'Work item should be reverted to pending when PRD file missing');
+    assert.strictEqual(wi._retryCount, 1, 'Retry count should be incremented to 1');
+    assert.ok(!wi.completedAt, 'completedAt should be cleared on retry');
+  }, cleanup);
+
+  await test('plan-to-prd with PRD file: work item stays done (#893)', async () => {
+    // Re-init with fresh isolated modules
+    const restoreInner = createTestMinionsDir();
+    const lifecycleInner = require('../engine/lifecycle');
+    const sharedInner = require('../engine/shared');
+    const testMinDirInner = sharedInner.MINIONS_DIR;
+    const wiPathInner = path.join(testMinDirInner, 'work-items.json');
+    const prdDirInner = path.join(testMinDirInner, 'prd');
+    const prFileInner = path.join(testMinDirInner, 'pull-requests.json');
+    sharedInner.safeWrite(prFileInner, []);
+    const origPrPath = sharedInner.projectPrPath;
+    const origGetProj = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFileInner;
+    sharedInner.getProjects = () => [mockProject];
+
+    try {
+      // Setup: work item + PRD file exists
+      const workItems = [{
+        id: 'W-test-prd-2',
+        title: 'Convert plan to PRD',
+        type: 'plan-to-prd',
+        status: 'dispatched',
+        planFile: 'test-plan.md',
+        _prdFilename: 'test-project-2026-04-11.json',
+        dispatched_at: new Date().toISOString(),
+      }];
+      sharedInner.safeWrite(wiPathInner, workItems);
+
+      // Create the PRD file — agent did its job
+      sharedInner.safeWrite(path.join(prdDirInner, 'test-project-2026-04-11.json'), {
+        source_plan: 'test-plan.md',
+        missing_features: [],
+      });
+
+      const dispatchItem = {
+        id: 'D-prd-test-2',
+        type: 'plan-to-prd',
+        task: 'Convert plan to PRD',
+        agent: 'agent1',
+        meta: {
+          source: 'central-work-item',
+          item: { ...workItems[0] },
+          branch: 'work/W-test-prd-2',
+        },
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 0, '', mockConfig);
+
+      const result = sharedInner.safeJson(wiPathInner) || [];
+      const wi = result.find(w => w.id === 'W-test-prd-2');
+      assert.ok(wi, 'Work item should still exist');
+      assert.strictEqual(wi.status, 'done', 'Work item should be done when PRD file exists');
+    } finally {
+      sharedInner.projectPrPath = origPrPath;
+      sharedInner.getProjects = origGetProj;
+      restoreInner();
+    }
+  });
+
+  await test('plan-to-prd retry count advances across attempts (#893)', async () => {
+    // Re-init with fresh isolated modules
+    const restoreInner = createTestMinionsDir();
+    const lifecycleInner = require('../engine/lifecycle');
+    const sharedInner = require('../engine/shared');
+    const testMinDirInner = sharedInner.MINIONS_DIR;
+    const wiPathInner = path.join(testMinDirInner, 'work-items.json');
+    const prFileInner = path.join(testMinDirInner, 'pull-requests.json');
+    sharedInner.safeWrite(prFileInner, []);
+    const origPrPath = sharedInner.projectPrPath;
+    const origGetProj = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFileInner;
+    sharedInner.getProjects = () => [mockProject];
+
+    try {
+      // Setup: work item already retried once (_retryCount: 1)
+      const workItems = [{
+        id: 'W-test-prd-3',
+        title: 'Convert plan to PRD',
+        type: 'plan-to-prd',
+        status: 'dispatched',
+        planFile: 'test-plan.md',
+        _prdFilename: 'test-project-retry.json',
+        _retryCount: 1,
+        dispatched_at: new Date().toISOString(),
+      }];
+      sharedInner.safeWrite(wiPathInner, workItems);
+
+      const dispatchItem = {
+        id: 'D-prd-test-3',
+        type: 'plan-to-prd',
+        task: 'Convert plan to PRD',
+        agent: 'agent1',
+        meta: {
+          source: 'central-work-item',
+          item: { ...workItems[0] },
+          branch: 'work/W-test-prd-3',
+        },
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 0, '', mockConfig);
+
+      const result = sharedInner.safeJson(wiPathInner) || [];
+      const wi = result.find(w => w.id === 'W-test-prd-3');
+      assert.ok(wi, 'Work item should still exist');
+      assert.strictEqual(wi.status, 'pending', 'Should still be pending on retry 2');
+      assert.strictEqual(wi._retryCount, 2, 'Retry count should advance from 1 to 2');
+    } finally {
+      sharedInner.projectPrPath = origPrPath;
+      sharedInner.getProjects = origGetProj;
+      restoreInner();
+    }
+  });
+
+  await test('plan-to-prd fails after maxRetries exhausted (#893)', async () => {
+    // Re-init with fresh isolated modules
+    const restoreInner = createTestMinionsDir();
+    const lifecycleInner = require('../engine/lifecycle');
+    const sharedInner = require('../engine/shared');
+    const testMinDirInner = sharedInner.MINIONS_DIR;
+    const wiPathInner = path.join(testMinDirInner, 'work-items.json');
+    const prFileInner = path.join(testMinDirInner, 'pull-requests.json');
+    sharedInner.safeWrite(prFileInner, []);
+    const origPrPath = sharedInner.projectPrPath;
+    const origGetProj = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFileInner;
+    sharedInner.getProjects = () => [mockProject];
+
+    try {
+      // Setup: work item at maxRetries (3)
+      const workItems = [{
+        id: 'W-test-prd-4',
+        title: 'Convert plan to PRD',
+        type: 'plan-to-prd',
+        status: 'dispatched',
+        planFile: 'test-plan.md',
+        _prdFilename: 'test-project-fail.json',
+        _retryCount: 3,
+        dispatched_at: new Date().toISOString(),
+      }];
+      sharedInner.safeWrite(wiPathInner, workItems);
+
+      const dispatchItem = {
+        id: 'D-prd-test-4',
+        type: 'plan-to-prd',
+        task: 'Convert plan to PRD',
+        agent: 'agent1',
+        meta: {
+          source: 'central-work-item',
+          item: { ...workItems[0] },
+          branch: 'work/W-test-prd-4',
+        },
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 0, '', mockConfig);
+
+      const result = sharedInner.safeJson(wiPathInner) || [];
+      const wi = result.find(w => w.id === 'W-test-prd-4');
+      assert.ok(wi, 'Work item should still exist');
+      assert.strictEqual(wi.status, 'failed', 'Should be failed after maxRetries exhausted');
+      assert.ok(wi.failReason && wi.failReason.includes('PRD file not written'),
+        'failReason should describe the PRD file issue');
+      assert.ok(wi.failedAt, 'failedAt should be set');
+    } finally {
+      sharedInner.projectPrPath = origPrPath;
+      sharedInner.getProjects = origGetProj;
+      restoreInner();
+    }
+  });
+
+  await test('plan-to-prd fallback: finds PRD by source_plan scan (#893)', async () => {
+    // Re-init with fresh isolated modules
+    const restoreInner = createTestMinionsDir();
+    const lifecycleInner = require('../engine/lifecycle');
+    const sharedInner = require('../engine/shared');
+    const testMinDirInner = sharedInner.MINIONS_DIR;
+    const wiPathInner = path.join(testMinDirInner, 'work-items.json');
+    const prdDirInner = path.join(testMinDirInner, 'prd');
+    const prFileInner = path.join(testMinDirInner, 'pull-requests.json');
+    sharedInner.safeWrite(prFileInner, []);
+    const origPrPath = sharedInner.projectPrPath;
+    const origGetProj = sharedInner.getProjects;
+    sharedInner.projectPrPath = () => prFileInner;
+    sharedInner.getProjects = () => [mockProject];
+
+    try {
+      // Setup: work item with _prdFilename that doesn't match, but PRD exists with matching source_plan
+      const workItems = [{
+        id: 'W-test-prd-5',
+        title: 'Convert plan to PRD',
+        type: 'plan-to-prd',
+        status: 'dispatched',
+        planFile: 'test-plan-fallback.md',
+        _prdFilename: 'wrong-filename.json',
+        dispatched_at: new Date().toISOString(),
+      }];
+      sharedInner.safeWrite(wiPathInner, workItems);
+
+      // PRD file exists with different name but matching source_plan
+      sharedInner.safeWrite(path.join(prdDirInner, 'actual-prd-file.json'), {
+        source_plan: 'test-plan-fallback.md',
+        missing_features: [],
+      });
+
+      const dispatchItem = {
+        id: 'D-prd-test-5',
+        type: 'plan-to-prd',
+        task: 'Convert plan to PRD',
+        agent: 'agent1',
+        meta: {
+          source: 'central-work-item',
+          item: { ...workItems[0] },
+          branch: 'work/W-test-prd-5',
+        },
+      };
+
+      await lifecycleInner.runPostCompletionHooks(dispatchItem, 'agent1', 0, '', mockConfig);
+
+      const result = sharedInner.safeJson(wiPathInner) || [];
+      const wi = result.find(w => w.id === 'W-test-prd-5');
+      assert.ok(wi, 'Work item should still exist');
+      assert.strictEqual(wi.status, 'done', 'Should be done when PRD found via source_plan fallback scan');
+    } finally {
+      sharedInner.projectPrPath = origPrPath;
+      sharedInner.getProjects = origGetProj;
+      restoreInner();
+    }
+  });
+
+  restore();
 }
 
 // ─── checkPlanCompletion Functional Idempotency Tests ───────────────────────
@@ -7068,6 +7423,9 @@ async function main() {
     await testDashboardUIFunctions();
     await testToolsPageAssembly();
     await testPlanPrdStateFlow();
+
+    // plan-to-prd PRD file check (behavioral, #893)
+    await testPlanToPrdFileCheck();
 
     // checkPlanCompletion idempotency (functional)
     await testCheckPlanCompletionIdempotency();

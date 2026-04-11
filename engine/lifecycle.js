@@ -1499,6 +1499,54 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     // If decomposition produced nothing, fall through to mark parent as done
   }
 
+  // Verify plan-to-prd actually created the PRD file before marking done (#893)
+  // Must run BEFORE updateWorkItemStatus(DONE) — otherwise _retryCount is deleted and retries never advance
+  if (effectiveSuccess && type === WORK_TYPE.PLAN_TO_PRD && meta?.item?.id) {
+    let prdFound = false;
+    const expectedFile = meta.item._prdFilename;
+    if (expectedFile) {
+      prdFound = fs.existsSync(path.join(PRD_DIR, expectedFile));
+    }
+    if (!prdFound && meta.item.planFile) {
+      try {
+        for (const f of fs.readdirSync(PRD_DIR)) {
+          if (!f.endsWith('.json')) continue;
+          try {
+            const prd = safeJson(path.join(PRD_DIR, f));
+            if (prd && prd.source_plan === meta.item.planFile) { prdFound = true; break; }
+          } catch {}
+        }
+      } catch {}
+    }
+    if (!prdFound) {
+      skipDoneStatus = true;
+      const wiPath = resolveWorkItemPath(meta);
+      if (wiPath) {
+        try {
+          mutateJsonFileLocked(wiPath, data => {
+            if (!Array.isArray(data)) return data;
+            const w = data.find(i => i.id === meta.item.id);
+            if (!w) return data;
+            const retries = w._retryCount || 0;
+            if (retries < ENGINE_DEFAULTS.maxRetries) {
+              w.status = WI_STATUS.PENDING;
+              w._retryCount = retries + 1;
+              delete w.dispatched_at;
+              delete w.completedAt;
+              log('warn', `plan-to-prd ${meta.item.id} completed without PRD file — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
+            } else {
+              w.status = WI_STATUS.FAILED;
+              w.failReason = 'PRD file not written after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+              w.failedAt = ts();
+              log('warn', `plan-to-prd ${meta.item.id} failed — no PRD file after ${ENGINE_DEFAULTS.maxRetries} retries`);
+            }
+            return data;
+          });
+        } catch (err) { log('warn', `plan-to-prd PRD check: ${err.message}`); }
+      }
+    }
+  }
+
   if (effectiveSuccess && meta?.item?.id && !skipDoneStatus) {
     meta._agentId = agentId;
     updateWorkItemStatus(meta, WI_STATUS.DONE, '');
@@ -1622,48 +1670,8 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     }
   }
 
-  // Detect plan-to-prd tasks that completed without creating a PRD file
-  if (effectiveSuccess && type === WORK_TYPE.PLAN_TO_PRD && meta?.item?.planFile) {
-    // Check by stored filename first (deterministic), fall back to source_plan scan
-    let prdFound = false;
-    const expectedFile = meta.item._prdFilename;
-    if (expectedFile) {
-      prdFound = fs.existsSync(path.join(PRD_DIR, expectedFile));
-    }
-    if (!prdFound) {
-      try {
-        for (const f of fs.readdirSync(PRD_DIR)) {
-          if (!f.endsWith('.json')) continue;
-          try {
-            const prd = safeJson(path.join(PRD_DIR, f));
-            if (prd && prd.source_plan === meta.item.planFile) { prdFound = true; break; }
-          } catch {}
-        }
-      } catch {}
-    }
-    if (!prdFound) {
-      const wiPath = resolveWorkItemPath(meta);
-      if (wiPath) {
-        mutateJsonFileLocked(wiPath, data => {
-          if (!Array.isArray(data)) return data;
-          const w = data.find(i => i.id === meta.item.id);
-          if (!w) return data;
-          const retries = w._retryCount || 0;
-          if (retries < ENGINE_DEFAULTS.maxRetries) {
-            w.status = WI_STATUS.PENDING;
-            w._retryCount = retries + 1;
-            delete w.dispatched_at;
-            log('warn', `plan-to-prd ${meta.item.id} completed without PRD file — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
-          } else {
-            w.status = WI_STATUS.FAILED;
-            w.failReason = 'Completed without creating PRD file after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
-            log('warn', `plan-to-prd ${meta.item.id} failed — no PRD file after ${ENGINE_DEFAULTS.maxRetries} retries`);
-          }
-          return data;
-        });
-      }
-    }
-  }
+  // Old plan-to-prd PRD check removed — moved before updateWorkItemStatus(DONE) to fix #893
+  // (retryCount was being deleted by done-marking before the check could read it)
 
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
