@@ -8,6 +8,8 @@ engine/pid-*.pid
 engine/pid-*-implement
 engine/kb-sweep-pid-*.pid
 engine/cc-session.json
+engine/cc-sessions.json
+engine/kb-pins.json
 engine/metrics.json
 engine/cooldowns.json
 engine/schedule-runs.json
@@ -37,6 +39,7 @@ agents/*/status.json
 agents/*/output.log
 agents/*/output-*
 agents/*/live-output.log
+agents/*/live-output-prev.log
 agents/*/history.md
 agents/*/session.json
 agents/temp-*/
@@ -79,6 +82,7 @@ prd/guides/
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.worktrees/
 
 # Minions runtime directories and local install markers
 .minions/
@@ -90,6 +94,13 @@ reports/
 
 # Windows artifacts
 NUL
+
+# Temp/scratch files
+tmp-*.json
+tmp_*.json
+*.png
+squad*pull-requests.json
+D?squad*
 
 # Test output
 test-results/
