@@ -579,7 +579,7 @@ async function _ccDoSend(message, skipUserMsg) {
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (evt.actions && evt.actions.length > 0) {
-              for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai]); }
+              for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
             }
           } else if (evt.type === 'error') {
             _cleanupStreamDiv();
@@ -609,7 +609,7 @@ async function _ccDoSend(message, skipUserMsg) {
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (revt.actions && revt.actions.length > 0) {
-              for (var ai2 = 0; ai2 < revt.actions.length; ai2++) { await ccExecuteAction(revt.actions[ai2]); }
+              for (var ai2 = 0; ai2 < revt.actions.length; ai2++) { await ccExecuteAction(revt.actions[ai2], activeTabId); }
             }
           } else if (revt.type === 'chunk') {
             streamedText = revt.text;
@@ -688,8 +688,7 @@ async function _ccFetch(url, body) {
   return res;
 }
 
-async function ccExecuteAction(action) {
-  var msgs = document.getElementById('cc-messages');
+async function ccExecuteAction(action, targetTabId) {
   var status = document.createElement('div');
   status.style.cssText = 'padding:4px 10px;border-radius:4px;font-size:10px;align-self:flex-start;border:1px dashed var(--border);color:var(--muted)';
 
@@ -1052,8 +1051,7 @@ async function ccExecuteAction(action) {
     status.style.color = 'var(--red)';
   }
 
-  msgs.appendChild(status);
-  if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
+  ccAddMessage('assistant', status.outerHTML, false, targetTabId);
   refresh();
 }
 
