@@ -26,7 +26,19 @@ let _qaHistory = []; // multi-turn conversation history [{role:'user',text:''},{
 let _qaProcessing = false; // true while waiting for response
 let _qaAbortController = null;
 let _qaQueue = []; // queued messages while processing
+const QA_QUEUE_CAP = 10; // max queued messages
 let _qaSessionKey = ''; // key for current conversation (title or filePath)
+
+function _renderQaUserMessage(thread, message, selection) {
+  let qHtml = '<div class="modal-qa-q">' + escHtml(message);
+  if (selection) {
+    qHtml += '<span class="selection-ref">Re: "' + escHtml(selection.slice(0, 100)) + ((selection.length > 100) ? '...' : '') + '"</span>';
+  }
+  qHtml += '</div>';
+  thread.insertAdjacentHTML('beforeend', qHtml);
+  thread.scrollTop = thread.scrollHeight;
+  _showThreadWrap();
+}
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
 // Restore from localStorage
 try {
@@ -98,11 +110,19 @@ function _initQaSession() {
       });
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
-    document.getElementById('qa-clear-btn').style.display = 'block';
+    _showThreadWrap();
+    // Defer scroll — container just transitioned from display:none, layout not yet computed
+    requestAnimationFrame(function() {
+      var thread = document.getElementById('modal-qa-thread');
+      if (thread) thread.scrollTop = thread.scrollHeight;
+    });
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
-    document.getElementById('qa-clear-btn').style.display = 'none';
+    var wrap = document.getElementById('modal-qa-thread-wrap');
+    var expandBar = document.getElementById('qa-expand-bar');
+    if (wrap) wrap.style.display = 'none';
+    if (expandBar) expandBar.style.display = 'none';
   }
 }
 
@@ -111,7 +131,10 @@ function clearQaConversation() {
   _qaQueue = [];
   _qaProcessing = false;
   document.getElementById('modal-qa-thread').innerHTML = '';
-  document.getElementById('qa-clear-btn').style.display = 'none';
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = 'none';
+  if (expandBar) expandBar.style.display = 'none';
   if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
 }
 
@@ -138,28 +161,27 @@ function modalSend() {
   var thread = document.getElementById('modal-qa-thread');
   const selection = _modalDocContext.selection || '';
 
-  // Show message in thread immediately
-  let qHtml = '<div class="modal-qa-q">' + escHtml(message);
-  if (selection) {
-    qHtml += '<span class="selection-ref">Re: "' + escHtml(selection.slice(0, 100)) + ((selection.length > 100) ? '...' : '') + '"</span>';
-  }
-  qHtml += '</div>';
-  thread.innerHTML += qHtml;
-  thread.scrollTop = thread.scrollHeight;
-
   // Clear input immediately so user can type next message
   input.value = '';
   _modalDocContext.selection = '';
   document.getElementById('modal-qa-pill').style.display = 'none';
 
   if (_qaProcessing) {
-    // Queue the message — show it as "queued" in the thread
+    if (_qaQueue.length >= QA_QUEUE_CAP) {
+      showToast('cmd-toast', 'Queue full — wait for current response', false);
+      return;
+    }
+    // Queue the message — show only grey queued indicator (blue bubble shows when processing starts)
     _qaQueue.push({ message, selection });
-    const preview = message.split(/\s+/).slice(0, 6).join(' ') + (message.split(/\s+/).length > 6 ? '...' : '');
-    thread.innerHTML += '<div class="modal-qa-loading" style="color:var(--muted);font-size:10px">Queued: "' + escHtml(preview) + '" — will send after current response</div>';
+    const preview = escHtml(message.length > 60 ? message.slice(0, 57) + '...' : message);
+    thread.insertAdjacentHTML('beforeend', '<div class="qa-queued-item" style="color:var(--muted);font-size:10px;padding:4px 8px">Queued: "' + preview + '"</div>');
     thread.scrollTop = thread.scrollHeight;
+    _showThreadWrap();
     return;
   }
+
+  // Show message in thread when processing starts (not when queued)
+  _renderQaUserMessage(thread, message, selection);
 
   _processQaMessage(message, selection);
 }
@@ -180,12 +202,12 @@ async function _processQaMessage(message, selection) {
   const loadingId = 'chat-loading-' + Date.now();
   const qaQueueBadge = _qaQueue.length > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + _qaQueue.length + ' queued</span>' : '';
   _qaAbortController = new AbortController();
-  thread.innerHTML += '<div class="modal-qa-loading" id="' + loadingId + '">' +
+  thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-loading" id="' + loadingId + '">' +
     '<div class="dot-pulse"><span></span><span></span><span></span></div> ' +
     '<span id="' + loadingId + '-text">Thinking...</span> ' +
     '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)"></span>' +
     ' <button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
-    qaQueueBadge + '</div>';
+    qaQueueBadge + '</div>');
   thread.scrollTop = thread.scrollHeight;
 
   const isPlanEdit = _modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/);
@@ -225,7 +247,7 @@ async function _processQaMessage(message, selection) {
       const suffix = data.edited ? '\n\n\u2713 Document saved.' : '';
       const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
       const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;padding-right:24px">' + qaElapsed + 's</div>';
-      thread.innerHTML += '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + renderMd(data.answer + suffix) + qaTimeLabel + '</div>';
+      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + renderMd(data.answer + suffix) + qaTimeLabel + '</div>');
 
       // Track conversation history
       _qaHistory.push({ role: 'user', text: message });
@@ -269,7 +291,7 @@ async function _processQaMessage(message, selection) {
       }
     } else {
       const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
-      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedErr + 's</div></div>';
+      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedErr + 's</div></div>');
     }
   } catch (e) {
     clearInterval(qaTimer);
@@ -277,9 +299,9 @@ async function _processQaMessage(message, selection) {
     if (loadingEl) loadingEl.remove();
     const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
     if (e.name === 'AbortError') {
-      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--muted)">Stopped<div style="font-size:9px;margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
+      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--muted)">Stopped<div style="font-size:9px;margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>');
     } else {
-      thread.innerHTML += '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>';
+      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>');
     }
   }
 
@@ -317,10 +339,10 @@ async function _processQaMessage(message, selection) {
   // Process next queued message
   if (_qaQueue.length > 0) {
     const next = _qaQueue.shift();
-    const queuedEls = thread.querySelectorAll('.modal-qa-loading');
-    for (const el of queuedEls) {
-      if (el.textContent.includes('Queued')) { el.remove(); break; }
-    }
+    // Remove the queued indicator and show the blue user bubble now that it's processing
+    const queuedEl = thread.querySelector('.qa-queued-item');
+    if (queuedEl) queuedEl.remove();
+    _renderQaUserMessage(thread, next.message, next.selection);
     _processQaMessage(next.message, next.selection);
   } else if (modalIsOpen) {
     document.getElementById('modal-qa-input')?.focus();
@@ -334,4 +356,88 @@ function qaAbort() {
   }
 }
 
-window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort };
+function toggleDocChat() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (!wrap) return;
+  var visible = wrap.style.display !== 'none';
+  wrap.style.display = visible ? 'none' : '';
+  if (expandBar) expandBar.style.display = visible ? '' : 'none';
+}
+
+function _showThreadWrap() {
+  var wrap = document.getElementById('modal-qa-thread-wrap');
+  var expandBar = document.getElementById('qa-expand-bar');
+  if (wrap) wrap.style.display = '';
+  if (expandBar) expandBar.style.display = 'none';
+}
+
+// ── Drag-to-resize doc chat thread ──────────────────────────────────────────
+(function() {
+  var _dragging = false, _startY = 0, _startH = 0, _thread = null;
+  var COLLAPSE_THRESHOLD = 40;
+  var MIN_HEIGHT = 60;
+  var MAX_HEIGHT = 500;
+
+  document.addEventListener('pointerdown', function(e) {
+    var handle = e.target.closest('#qa-resize-handle');
+    if (!handle) return;
+    _thread = document.getElementById('modal-qa-thread');
+    if (!_thread) return;
+    _dragging = true;
+    _startY = e.clientY;
+    _startH = _thread.offsetHeight || 200;
+    handle.setPointerCapture(e.pointerId);
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('pointermove', function(e) {
+    if (!_dragging || !_thread) return;
+    var delta = _startY - e.clientY;
+    var newH = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, _startH + delta));
+    _thread.style.maxHeight = newH + 'px';
+  });
+
+  document.addEventListener('pointerup', function(e) {
+    if (!_dragging) return;
+    _dragging = false;
+    document.body.style.userSelect = '';
+    if (!_thread) return;
+    var delta = _startY - e.clientY;
+    var finalH = _startH + delta;
+    if (finalH < COLLAPSE_THRESHOLD) {
+      _thread.style.maxHeight = '';
+      toggleDocChat();
+    }
+    _thread = null;
+  });
+})();
+
+// ── Text selection → "Ask about this" button ─────────────────────────────────
+document.addEventListener('mouseup', function() {
+  var askBtn = document.getElementById('ask-selection-btn');
+  if (!askBtn) return;
+  // Only act inside modal body
+  var sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+    askBtn.style.display = 'none';
+    return;
+  }
+  var modalBody = document.getElementById('modal-body');
+  if (!modalBody || !modalBody.contains(sel.anchorNode)) {
+    askBtn.style.display = 'none';
+    return;
+  }
+  var text = sel.toString().trim();
+  if (!text) { askBtn.style.display = 'none'; return; }
+  _modalDocContext.selection = text;
+  // Position near the selection
+  var range = sel.getRangeAt(0);
+  var rect = range.getBoundingClientRect();
+  askBtn.style.top = (rect.bottom + 4) + 'px';
+  askBtn.style.left = rect.left + 'px';
+  askBtn.style.display = 'block';
+});
+
+window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat, _showThreadWrap };

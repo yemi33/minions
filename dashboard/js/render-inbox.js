@@ -123,6 +123,14 @@ async function modalSaveEdit() {
   const body = document.getElementById('modal-body');
   const content = body.innerText;
 
+  body.contentEditable = 'false';
+  body.style.border = '';
+  body.style.padding = '';
+  document.getElementById('modal-edit-btn').style.display = '';
+  document.getElementById('modal-save-btn').style.display = 'none';
+  document.getElementById('modal-cancel-edit-btn').style.display = 'none';
+  _modalDocContext.content = content;
+  showToast('cmd-toast', 'Team Notes saved', true);
   try {
     const res = await fetch('/api/notes-save', {
       method: 'POST',
@@ -130,18 +138,9 @@ async function modalSaveEdit() {
       body: JSON.stringify({ file: _modalEditable, content }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
-
-    body.contentEditable = 'false';
-    body.style.border = '';
-    body.style.padding = '';
-    document.getElementById('modal-edit-btn').style.display = '';
-    document.getElementById('modal-save-btn').style.display = 'none';
-    document.getElementById('modal-cancel-edit-btn').style.display = 'none';
-    _modalDocContext.content = content;
-    showToast('cmd-toast', 'Team Notes saved', true);
+    if (!res.ok) showToast('cmd-toast', 'Save failed: ' + (data.error || 'unknown'), false);
   } catch (e) {
-    showToast('cmd-toast', 'Error: ' + e.message, false);
+    showToast('cmd-toast', 'Save error: ' + e.message, false);
   }
 }
 
@@ -161,13 +160,14 @@ async function deleteInboxItem(name) {
   markDeleted('inbox:' + name);
   const card = document.querySelector('.inbox-item[data-file="notes/inbox/' + CSS.escape(name) + '"]');
   if (card) card.remove();
+  showToast('cmd-toast', 'Inbox item deleted', true);
   try {
     const res = await fetch('/api/inbox/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Delete error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
 }
 
 async function openInboxInExplorer(name) {
@@ -217,8 +217,8 @@ async function submitQuickNote() {
         if (link && !link.querySelector('.notif-badge')) showNotifBadge(link);
       }
     }
-    else { const d = await res.json().catch(() => ({})); alert('Note failed: ' + (d.error || 'unknown')); openQuickNoteModal(); }
-  } catch (e) { alert('Error saving note: ' + e.message); openQuickNoteModal(); }
+    else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Note failed: ' + (d.error || 'unknown'), false); openQuickNoteModal(); }
+  } catch (e) { showToast('cmd-toast', 'Error saving note: ' + e.message, false); openQuickNoteModal(); }
 }
 
 async function doPromoteToKB(name, category) {
@@ -234,8 +234,8 @@ async function doPromoteToKB(name, category) {
     });
     const data = await res.json();
     if (res.ok) { refreshKnowledgeBase(); }
-    else { alert('Failed: ' + (data.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    else { showToast('cmd-toast', 'Promote failed: ' + (data.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Promote error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsInbox = { renderInbox, promoteToKB, renderNotes, openNotesModal, modalToggleEdit, modalSaveEdit, modalCancelEdit, deleteInboxItem, openInboxInExplorer, openQuickNoteModal, submitQuickNote, doPromoteToKB };

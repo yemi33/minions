@@ -518,7 +518,8 @@ const ENGINE_DEFAULTS = {
   maxConcurrent: 5,
   inboxConsolidateThreshold: 5,
   agentTimeout: 18000000,  // 5h
-  heartbeatTimeout: 300000, // 5min
+  heartbeatTimeout: 300000, // 5min — base heartbeat for most work types
+  heartbeatTimeouts: {}, // per-type overrides; merged with defaults at runtime (see timeout.js)
   maxTurns: 100,
   worktreeCreateTimeout: 300000, // 5min for git worktree add on large Windows repos
   worktreeCreateRetries: 1, // retry once on transient timeout/lock races
@@ -530,6 +531,7 @@ const ENGINE_DEFAULTS = {
   allowTempAgents: false, // opt-in: spawn ephemeral agents when all permanent agents are busy
   autoDecompose: true, // auto-decompose implement:large items into sub-tasks
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
+  autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
@@ -544,9 +546,23 @@ const ENGINE_DEFAULTS = {
   lockRetries: 2, // retry lock acquisition this many times after initial timeout (total attempts = 1 + lockRetries)
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
+  buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
+  autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
+  prMergeMethod: 'squash', // merge method: squash, merge, rebase
+  ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
+  ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
+  // Teams integration — config.teams shape: { enabled, appId, appPassword, notifyEvents, ccMirror, inboxPollInterval }
+  teams: {
+    enabled: false,
+    appId: '',
+    appPassword: '',
+    notifyEvents: ['pr-merged', 'agent-completed', 'plan-completed', 'agent-failed'],
+    ccMirror: true,
+    inboxPollInterval: 15000,
+  },
 };
 
 // ─── Status & Type Constants ─────────────────────────────────────────────────
@@ -559,6 +575,9 @@ const WI_STATUS = {
 // Read-side: accept legacy aliases for backward compat with old data/clients.
 // Write-side: only WI_STATUS.DONE is written (cleanup.js migrates old values on each run).
 const DONE_STATUSES = new Set([WI_STATUS.DONE, 'in-pr', 'implemented', 'complete']);
+// Terminal statuses for plan completion — item won't progress further (done, failed, cancelled).
+// Used by checkPlanCompletion to unblock the gate when items are in an unrecoverable state.
+const PLAN_TERMINAL_STATUSES = new Set([...DONE_STATUSES, WI_STATUS.FAILED, WI_STATUS.CANCELLED]);
 const WORK_TYPE = {
   IMPLEMENT: 'implement', IMPLEMENT_LARGE: 'implement:large', FIX: 'fix', REVIEW: 'review',
   VERIFY: 'verify', PLAN: 'plan', PLAN_TO_PRD: 'plan-to-prd', DECOMPOSE: 'decompose',
@@ -578,7 +597,52 @@ const PLAN_STATUS = {
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
   REVISION_REQUESTED: 'revision-requested',
 };
-const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed' };
+const PRD_ITEM_STATUS = { MISSING: 'missing', UPDATED: 'updated', DONE: 'done' };
+const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.UPDATED]);
+const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
+// PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
+const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
+
+/** Update per-agent review metrics (prsApproved/prsRejected). Only writes for configured agents. */
+function trackReviewMetric(pr, newReviewStatus, config) {
+  if (newReviewStatus !== 'approved' && newReviewStatus !== 'changes-requested') return;
+  const authorId = (pr.agent || '').toLowerCase();
+  if (!authorId || !config?.agents?.[authorId]) return;
+  try {
+    mutateJsonFileLocked(path.join(__dirname, 'metrics.json'), (metrics) => {
+      if (!metrics[authorId]) metrics[authorId] = {};
+      if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
+      else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
+      return metrics;
+    });
+  } catch (err) { log('warn', `Metrics update: ${err.message}`); }
+}
+
+/** Queue a plan-to-prd work item with dedup check inside lock. Returns true if queued. */
+function queuePlanToPrd({ planFile, prdFile, title, description, project, createdBy, extra }) {
+  const centralWiPath = path.join(__dirname, '..', 'work-items.json');
+  let queued = false;
+  mutateJsonFileLocked(centralWiPath, items => {
+    if (!Array.isArray(items)) items = [];
+    if (items.some(w => w.type === 'plan-to-prd' && w.planFile === planFile && (w.status === 'pending' || w.status === 'dispatched'))) return items;
+    items.push({
+      id: 'W-' + uid(),
+      title,
+      type: 'plan-to-prd',
+      priority: 'high',
+      description,
+      status: 'pending',
+      created: new Date().toISOString(),
+      createdBy,
+      project,
+      planFile,
+      ...(extra || {}),
+    });
+    queued = true;
+    return items;
+  }, { defaultValue: [] });
+  return queued;
+}
 const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout' };
 const PIPELINE_STATUS = {
   PENDING: 'pending', RUNNING: 'running', COMPLETED: 'completed',
@@ -594,6 +658,33 @@ const MEETING_STATUS = {
   INVESTIGATING: 'investigating', DEBATING: 'debating', CONCLUDING: 'concluding',
   COMPLETED: 'completed', ARCHIVED: 'archived',
 };
+const AGENT_STATUS = {
+  SPAWNING: 'spawning', WORKTREE_SETUP: 'worktree-setup', READY: 'ready',
+  RUNNING: 'running', FINISHED: 'finished', FAILED: 'failed',
+  TRUST_BLOCKED: 'trust-blocked', TIMED_OUT: 'timed-out',
+};
+const FAILURE_CLASS = {
+  CONFIG_ERROR: 'config-error',           // Exit code 78, CLI not found, bad config
+  PERMISSION_BLOCKED: 'permission-blocked', // Trust gate, permission denied, auth failure
+  MERGE_CONFLICT: 'merge-conflict',       // Git merge conflict in worktree or dependency
+  BUILD_FAILURE: 'build-failure',         // Compilation, lint, or test failure
+  TIMEOUT: 'timeout',                     // Hard timeout or heartbeat timeout
+  EMPTY_OUTPUT: 'empty-output',           // Agent produced no meaningful output
+  SPAWN_ERROR: 'spawn-error',             // Process failed to start or crashed immediately
+  NETWORK_ERROR: 'network-error',         // API rate limit, DNS, connectivity
+  OUT_OF_CONTEXT: 'out-of-context',       // Context window exhausted, max turns reached
+  UNKNOWN: 'unknown',                     // Unclassified failure
+};
+const ESCALATION_POLICY = {
+  NO_RETRY: 'no-retry',         // CONFIG_ERROR, PERMISSION_BLOCKED — never retry
+  RETRY_SAME: 'retry-same',     // MERGE_CONFLICT, BUILD_FAILURE — retry same agent
+  RETRY_FRESH: 'retry-fresh',   // TIMEOUT, SPAWN_ERROR — retry with fresh session
+  HUMAN_REVIEW: 'human-review', // EMPTY_OUTPUT, OUT_OF_CONTEXT — flag for human
+  AUTO: 'auto',                 // UNKNOWN, NETWORK_ERROR — use default retry logic
+};
+
+// Structured completion protocol — fields agents must produce in ```completion blocks
+const COMPLETION_FIELDS = ['status', 'files_changed', 'tests', 'pr', 'pending', 'failure_class'];
 
 const DEFAULT_AGENT_METRICS = {
   tasksCompleted: 0, tasksErrored: 0,
@@ -836,8 +927,49 @@ function mutatePullRequests(filePath, mutator) {
  * Remove a git worktree, falling back to fs.rmSync if git fails (e.g., locked on Windows).
  * Only removes directories under worktreeRoot to prevent accidental deletion.
  * Tracks persistent failures to avoid retrying locked paths every cleanup cycle.
+ *
+ * On Windows, reserved device-name files (NUL, CON, PRN, AUX, etc.) can appear in
+ * worktree directories when shell redirections run under Git Bash/WSL. These block
+ * git worktree remove, fs.rmSync, and PowerShell Remove-Item. Two mitigations:
+ * 1. _purgeReservedFiles() deletes them via the \\?\ extended path prefix before removal
+ * 2. cmd /c rd /s /q as final fallback handles any remaining reserved names
  */
 const _removeWorktreeFailures = new Map(); // path → { count, lastAttempt }
+
+// Windows reserved device names that cannot be deleted via normal paths
+const _WIN_RESERVED_NAMES = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]);
+
+/**
+ * Recursively purge Windows reserved-name pseudo-files (NUL, CON, PRN, AUX, etc.)
+ * using the \\?\ extended path prefix that bypasses reserved-name interpretation.
+ * Called before normal deletion attempts on Windows to unblock git/fs operations.
+ */
+function _purgeReservedFiles(dirPath) {
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    try {
+      if (entry.isDirectory()) {
+        _purgeReservedFiles(fullPath);
+      } else {
+        // Match NUL, NUL.txt, con, con.log, etc.
+        const baseName = entry.name.toUpperCase().split('.')[0];
+        if (_WIN_RESERVED_NAMES.has(baseName)) {
+          // \\?\ prefix bypasses Win32 reserved-name interpretation
+          fs.unlinkSync('\\\\?\\' + fullPath);
+        }
+      }
+    } catch {
+      // Best-effort: file may already be gone or inaccessible
+    }
+  }
+}
+
 function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   const resolved = path.resolve(wtPath);
   const resolvedRoot = path.resolve(worktreeRoot) + path.sep;
@@ -848,6 +980,11 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
   // Skip paths that failed 3+ times — retry after 1 hour cooldown
   const prior = _removeWorktreeFailures.get(resolved);
   if (prior && prior.count >= 3 && Date.now() - prior.lastAttempt < 3600000) return false;
+
+  // Windows: purge reserved-name pseudo-files (NUL, CON, etc.) that block normal deletion
+  if (process.platform === 'win32') {
+    _purgeReservedFiles(resolved);
+  }
 
   try {
     exec(`git worktree remove "${wtPath}" --force`, { cwd: gitRoot, stdio: 'pipe', timeout: 15000, windowsHide: true });
@@ -860,14 +997,17 @@ function removeWorktree(wtPath, gitRoot, worktreeRoot) {
       _removeWorktreeFailures.delete(resolved);
       return true;
     } catch (rmErr) {
-      // Windows EPERM: a process may hold file handles — try rd /s /q as fallback
-      if (process.platform === 'win32' && rmErr.code === 'EPERM') {
+      // Windows: try cmd /c rd /s /q for any error — handles reserved device names,
+      // locked files, and partially-deleted directories (not just EPERM)
+      if (process.platform === 'win32') {
         try {
-          exec(`rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
+          exec(`cmd /c rd /s /q "${resolved}"`, { stdio: 'pipe', timeout: 15000, windowsHide: true });
           try { exec('git worktree prune', { cwd: gitRoot, stdio: 'pipe', timeout: 10000, windowsHide: true }); } catch {}
           _removeWorktreeFailures.delete(resolved);
           return true;
-        } catch {}
+        } catch (rdErr) {
+          log('warn', `removeWorktree: rd /s /q fallback failed for ${wtPath}: ${rdErr.message}`);
+        }
       }
       const fail = _removeWorktreeFailures.get(resolved) || { count: 0, lastAttempt: 0 };
       fail.count++;
@@ -919,8 +1059,9 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
-  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
+  PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
+  FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,
   DEFAULT_AGENTS,
   DEFAULT_CLAUDE,
@@ -941,6 +1082,8 @@ module.exports = {
   killGracefully,
   killImmediate,
   removeWorktree,
+  _purgeReservedFiles, // exported for testing
+  _WIN_RESERVED_NAMES, // exported for testing
   LOCK_STALE_MS,
   flushLogs,
   slugify,

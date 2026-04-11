@@ -137,7 +137,8 @@ const commands = {
         const agentId = item.agent;
         let agentPid = null;
 
-        const pidFile = path.join(ENGINE_DIR, `pid-${item.id}.pid`);
+        const safeId = item.id.replace(/[:\\/*?"<>|]/g, '-');
+        const pidFile = path.join(ENGINE_DIR, 'tmp', `pid-${safeId}.pid`);
         try {
           const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
           if (pidStr) agentPid = parseInt(pidStr);
@@ -359,8 +360,8 @@ const commands = {
     // Start tick loop
     const tickTimer = setInterval(() => e.tick(), interval);
 
-    // Fast poll: check steering every 3s (lightweight — just fs.stat per agent)
-    // and wakeup signals every 3s (control.json read)
+    // Fast poll: check steering every 1s (lightweight — just fs.stat per agent)
+    // and wakeup signals every 1s (control.json read)
     const { checkSteering } = require('./timeout');
     const fastPollTimer = setInterval(() => {
       try { checkSteering(); } catch {}
@@ -370,7 +371,20 @@ const commands = {
         safeWrite(CONTROL_PATH, ctrl);
         e.tick();
       }
-    }, 3000);
+    }, 1000);
+
+    // Teams inbox poll timer — process incoming Teams messages through CC
+    const teams = require('./teams');
+    const teamsInboxInterval = config.teams?.inboxPollInterval ?? shared.ENGINE_DEFAULTS.teams.inboxPollInterval;
+    const teamsInboxTimer = teams.isTeamsEnabled() ? setInterval(() => {
+      try {
+        const ctrl = getControl();
+        if (ctrl.state !== 'running') return;
+        teams.processTeamsInbox().catch(err => {
+          shared.log('warn', `Teams inbox poll error: ${err.message}`);
+        });
+      } catch {}
+    }, teamsInboxInterval) : null;
 
     console.log(`Tick interval: ${interval / 1000}s | Max concurrent: ${config.engine?.maxConcurrent || 5}`);
     console.log('Press Ctrl+C to stop');
@@ -422,6 +436,7 @@ const commands = {
       console.log(`\n${signal} received — initiating graceful shutdown...`);
       clearInterval(tickTimer);
       clearInterval(fastPollTimer);
+      if (teamsInboxTimer) clearInterval(teamsInboxTimer);
       for (const f of _watchedFiles) { try { fs.unwatchFile(f); } catch { /* cleanup */ } }
       safeWrite(CONTROL_PATH, { state: 'stopping', pid: process.pid, stopping_at: e.ts() });
       e.log('info', `Graceful shutdown initiated (${signal})`);
@@ -894,9 +909,9 @@ const commands = {
     const e = engine();
     console.log('\n=== Kill All Active Work ===\n');
     const config = getConfig();
-    const dispatch = getDispatch();
     const shared = require('./shared');
 
+    // Kill processes via PID files (expensive — outside dispatch lock)
     const pidFiles = fs.readdirSync(ENGINE_DIR).filter(f => f.startsWith('pid-'));
     for (const f of pidFiles) {
       const pid = safeRead(path.join(ENGINE_DIR, f)).trim();
@@ -904,7 +919,15 @@ const commands = {
       fs.unlinkSync(path.join(ENGINE_DIR, f));
     }
 
-    const killed = dispatch.active || [];
+    // Atomically read and clear dispatch.active (locked read-modify-write)
+    let killed = [];
+    e.mutateDispatch((dispatch) => {
+      killed = dispatch.active || [];
+      dispatch.active = [];
+      return dispatch;
+    });
+
+    // Reset work items outside the dispatch lock (work-items.json has its own lock)
     for (const item of killed) {
       if (item.meta) {
         e.updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
@@ -932,8 +955,6 @@ const commands = {
 
       console.log(`Killed dispatch: ${item.id} (${item.agent}) — work item reset to pending`);
     }
-    dispatch.active = [];
-    safeWrite(DISPATCH_PATH, dispatch);
 
     // Agent status derived from dispatch.json — clearing dispatch.active is sufficient.
     console.log('All agents reset to idle (dispatch cleared)');

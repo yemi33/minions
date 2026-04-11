@@ -92,30 +92,39 @@ For each project that has changes, create a single **aggregate PR** that combine
 
 For each project worktree:
 
-1. Push the combined branch:
+1. **Check for an existing E2E branch/PR first** — a prior verify run may have already created one:
    ```bash
    cd <worktree-path>
-   git checkout -b e2e/{{plan_slug}}
-   git push origin e2e/{{plan_slug}}
+   git fetch origin
+   # Check if the E2E branch already exists on remote
+   git ls-remote --heads origin e2e/{{plan_slug}}
    ```
+   - If the branch **already exists**: check out the existing branch (`git checkout e2e/{{plan_slug}}`), reset it to your current worktree state, and force-push to update it. Then check if a PR already exists for this branch — if so, **update that PR** instead of creating a new one.
+   - If the branch **does not exist**: create it fresh:
+     ```bash
+     git checkout -b e2e/{{plan_slug}}
+     git push origin e2e/{{plan_slug}}
+     ```
 
-2. Create a PR targeting the project's main branch using `mcp__azure-ado__repo_create_pull_request` (or `gh pr create` for GitHub):
-   - **Title:** `[E2E] <plan summary>`
-   - **Description:** Include:
-     - The plan summary
-     - List of all individual PRs merged into this branch
-     - Build/test status from Step 3
-     - Link to the testing guide
-   - **Target branch:** the project's main branch (e.g., `main` or `master`)
-   - **Do NOT auto-complete** — this is for review only
-   - **Mark as draft** if the option is available
+2. **Check for an existing E2E PR** before creating a new one:
+   - For GitHub: `gh pr list --head e2e/{{plan_slug}} --state open`
+   - For ADO: search for PRs with source branch `e2e/{{plan_slug}}`
+   - If found, **update the existing PR** description with latest build/test results. Do NOT create a duplicate.
+   - If not found, create a new PR targeting the project's main branch:
+     - **Title:** `[E2E] <plan summary>`
+     - **Description:** Include the plan summary, list of all individual PRs merged, build/test status from Step 3, and link to the testing guide
+     - **Target branch:** the project's main branch (e.g., `main` or `master`)
+     - **Do NOT auto-complete** — this is for review only
+     - **Mark as draft** if the option is available
 
-3. Add the E2E PR to the project's `.minions/pull-requests.json`:
+3. Add the E2E PR to the project's `.minions/pull-requests.json` (skip if it's already tracked):
    ```bash
    node -e "
    const fs = require('fs');
    const p = '<project-path>/.minions/pull-requests.json';
    const prs = JSON.parse(fs.readFileSync(p, 'utf8'));
+   // Skip if already tracked
+   if (prs.some(pr => pr.branch === 'e2e/{{plan_slug}}')) process.exit(0);
    prs.push({
      id: 'PR-<number>',
      title: '[E2E] <plan summary>',
@@ -153,4 +162,13 @@ Use subagents only for genuinely parallel, independent tasks (e.g., building sep
 
 ## When to Stop
 
-Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s). Stop after creating PRs.
+Your task is complete once you have: (1) merged dependency branches, (2) built and tested, (3) written the verification report to both locations, and (4) created the E2E PR(s).
+
+**IMPORTANT: Your final message MUST include the E2E PR URL(s) so the engine can track them.** Example final message:
+
+```
+Verification complete. E2E PR created: https://github.com/org/repo/pull/123
+Testing guide saved to prd/guides/verify-plan-name.md
+```
+
+Stop after confirming the PR was created.

@@ -277,8 +277,8 @@ async function _submitCreateMeeting() {
     });
     const data = await res.json();
     if (res.ok) { wakeEngine(); refresh(); }
-    else { alert('Failed: ' + (data.error || 'unknown')); openCreateMeetingModal(); }
-  } catch (e) { alert('Error: ' + e.message); openCreateMeetingModal(); }
+    else { showToast('cmd-toast', 'Failed: ' + (data.error || 'unknown'), false); openCreateMeetingModal(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); openCreateMeetingModal(); }
 }
 
 async function _submitMeetingNote(id, btn) {
@@ -287,52 +287,53 @@ async function _submitMeetingNote(id, btn) {
   const note = input.value.trim();
   input.value = '';
   if (btn) { btn.textContent = 'Adding...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Note added', true);
   try {
     const res = await fetch('/api/meetings/note', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, note })
     });
-    if (res.ok) { showToast('cmd-toast', 'Note added', true); }
-    else { input.value = note; alert('Failed to add note'); }
-  } catch (e) { input.value = note; alert('Error: ' + e.message); }
+    if (res.ok) { /* already toasted */ }
+    else { input.value = note; showToast('cmd-toast', 'Failed to add note', false); }
+  } catch (e) { input.value = note; showToast('cmd-toast', 'Error: ' + e.message, false); }
   if (btn) { btn.textContent = 'Add Note'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
 }
 
 async function _advanceMeeting(id, btn) {
   if (!confirm('Skip to next round? Agents that haven\'t finished will be skipped.')) return;
   if (btn) { btn.textContent = 'Advancing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Advanced to next round', true);
   try {
     const res = await fetch('/api/meetings/advance', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
     if (res.ok) {
-      showToast('cmd-toast', 'Advanced to next round', true);
       wakeEngine();
     } else {
       const d = await res.json().catch(function() { return {}; });
-      alert('Advance failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'Advance failed: ' + (d.error || 'unknown'), false);
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
   if (btn) { btn.textContent = 'Skip to Next Round'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
 }
 
 async function _endMeeting(id, btn) {
   if (!confirm('End this meeting? Current round will be stopped.')) return;
   if (btn) { btn.textContent = 'Ending...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Meeting ended', true);
   try {
     const res = await fetch('/api/meetings/end', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (res.ok) {
-      showToast('cmd-toast', 'Meeting ended', true);
-    } else {
+    if (res.ok) { /* already toasted */ }
+    else {
       const d = await res.json().catch(function() { return {}; });
-      alert('End failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'End failed: ' + (d.error || 'unknown'), false);
       if (btn) { btn.textContent = 'End Meeting'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
     }
-  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'End Meeting'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); if (btn) { btn.textContent = 'End Meeting'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
 
 async function _archiveMeeting(id) {
@@ -345,8 +346,8 @@ async function _archiveMeeting(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { _deletedIds.delete('mtg:' + id); const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { _deletedIds.delete('mtg:' + id); alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { _deletedIds.delete('mtg:' + id); const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { _deletedIds.delete('mtg:' + id); showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 async function _unarchiveMeeting(id) {
@@ -358,8 +359,8 @@ async function _unarchiveMeeting(id) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Unarchive failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Unarchive failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 function _viewPlanWithBack(file, meetingId) {
@@ -404,7 +405,7 @@ async function _createPlanFromMeeting(id, btn) {
   try {
     const res = await fetch('/api/meetings/' + encodeURIComponent(id));
     const data = await res.json();
-    if (!data.meeting) { resetBtn(); alert('Meeting not found'); return; }
+    if (!data.meeting) { resetBtn(); showToast('cmd-toast', 'Meeting not found', false); return; }
     const m = data.meeting;
 
     // Check if a plan already exists for this meeting
@@ -415,6 +416,7 @@ async function _createPlanFromMeeting(id, btn) {
     }
 
     if (btn) btn.textContent = 'Generating plan...';
+    showToast('cmd-toast', 'Generating plan from meeting...', true);
 
     // Use doc-chat to generate a structured plan from the meeting
     const transcript = (m.transcript || []).map(function(t) {
@@ -439,7 +441,7 @@ async function _createPlanFromMeeting(id, btn) {
       })
     });
     const genData = await genRes.json();
-    if (!genRes.ok || !genData.ok) { resetBtn(); alert('Failed to generate plan: ' + (genData.error || 'unknown')); return; }
+    if (!genRes.ok || !genData.ok) { resetBtn(); showToast('cmd-toast', 'Failed to generate plan: ' + (genData.error || 'unknown'), false); return; }
 
     const planContent = genData.answer || '';
     const title = 'Meeting follow-up: ' + (m.title || id);
@@ -464,9 +466,9 @@ async function _createPlanFromMeeting(id, btn) {
       }
     } else {
       resetBtn();
-      alert('Failed: ' + (planData.error || 'unknown'));
+      showToast('cmd-toast', 'Failed: ' + (planData.error || 'unknown'), false);
     }
-  } catch (e) { resetBtn(); alert('Error: ' + e.message); }
+  } catch (e) { resetBtn(); showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function _deleteMeeting(id) {
@@ -474,13 +476,14 @@ async function _deleteMeeting(id) {
   markDeleted('mtg:' + id);
   try { closeModal(); } catch { /* may not be open */ }
   document.querySelectorAll('[onclick*="openMeetingDetail(\'' + id + '\')"]').forEach(function(el) { el.remove(); });
+  showToast('cmd-toast', 'Meeting deleted', true);
   try {
     const res = await fetch('/api/meetings/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 window.MinionsMeetings = { renderMeetings, openMeetingDetail, openCreateMeetingModal };

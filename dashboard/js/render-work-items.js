@@ -40,7 +40,7 @@ function wiRow(item) {
     : (item.branchStrategy === 'shared-branch' && item.status === 'done')
       ? '<span style="font-size:9px;color:var(--muted)" title="Part of shared branch — aggregate PR created at verify stage">shared branch</span>'
       : '<span style="color:var(--muted)">—</span>';
-  return '<tr style="cursor:pointer" onclick="openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
+  return '<tr style="cursor:pointer" onclick="if(window.getSelection().toString().length>0)return;openWorkItemDetail(\'' + escHtml(item.id) + '\')">' +
     '<td><span class="pr-id">' + escHtml(item.id || '') + '</span></td>' +
     '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + escHtml((item.title || '').slice(0, 200)) + '">' + escHtml(item.title || '') + '</td>' +
     '<td><span style="font-size:10px;color:var(--muted)">' + escHtml(item._source || '') + '</span>' +
@@ -48,7 +48,8 @@ function wiRow(item) {
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
-      (item._pendingReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason && item.status === 'pending' && item._pendingReason !== 'already_dispatched' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
+      (item._pendingReason === 'already_dispatched' && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--blue);margin-left:4px" title="In dispatch queue, waiting to be assigned">queued</span>' : '') +
       (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escHtml(item._blockedBy) + ')' : '') + '">' + escHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
       (item.status === 'failed' ? ' ' + wiRetryBtn(item) : '') +
     '</td>' +
@@ -197,13 +198,14 @@ async function deleteWorkItem(id, source) {
   markDeleted('wi:' + id);
   var wiTable = document.getElementById('work-items-content');
   (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  showToast('cmd-toast', 'Work item deleted', true);
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Delete error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
 }
 
 async function archiveWorkItem(id, source) {
@@ -419,6 +421,7 @@ async function _submitCreateWorkItem(e) {
 }
 
 function openWorkItemDetail(id) {
+  if (window.getSelection && window.getSelection().toString().length > 0) return;
   const item = allWorkItems.find(i => i.id === id);
   if (!item) return;
 
@@ -439,7 +442,7 @@ function openWorkItemDetail(id) {
   if (item.dispatched_at) html += field('Dispatched', escHtml(new Date(item.dispatched_at).toLocaleString()) + ' to ' + escHtml(item.dispatched_to || '?'));
   if (item.completedAt) html += field('Completed', escHtml(new Date(item.completedAt).toLocaleString()));
   if (item.failReason) html += field('Failure Reason', '<span style="color:var(--red)">' + escHtml(item.failReason) + '</span>');
-  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', escHtml(item._pendingReason.replace(/_/g, ' ')));
+  if (item._pendingReason && item.status === 'pending') html += field('Pending Reason', item._pendingReason === 'already_dispatched' ? 'Queued — waiting for available agent slot' : escHtml(item._pendingReason.replace(/_/g, ' ')));
   if (item._skipReason && item.status === 'pending') html += field('Dispatch Blocked', '<span style="color:var(--yellow)">' + escHtml(item._skipReason.replace(/_/g, ' ')) + '</span>' + (item._blockedBy ? ' — blocked by <strong>' + escHtml(item._blockedBy) + '</strong>' : ''));
   if (item.depends_on?.length) html += field('Depends On', item.depends_on.map(d => '<code>' + escHtml(d) + '</code>').join(', '));
   if (item.acceptanceCriteria?.length) html += field('Acceptance Criteria', '<ul style="margin:0;padding-left:20px">' + item.acceptanceCriteria.map(c => '<li>' + escHtml(c) + '</li>').join('') + '</ul>');
@@ -452,15 +455,29 @@ function openWorkItemDetail(id) {
   var artPills = '';
   var pillStyle = 'display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;background:var(--surface2);border:1px solid var(--border);color:var(--text)';
   // Output log pill removed — raw stream-json output is not human-readable
+  var artBackFn = "pushModalBack(function(){openWorkItemDetail('" + escHtml(item.id) + "')});";
   if (arts.branch) artPills += '<span style="' + pillStyle + ';cursor:default">🌿 ' + escHtml(arts.branch) + '</span> ';
-  if (arts.plan) artPills += '<span onclick="planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
-  if (arts.prd) artPills += '<span onclick="planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
-  if (arts.sourcePlan) artPills += '<span onclick="planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
-  if (arts.notes && arts.notes.length > 0) arts.notes.forEach(function(n) {
-    var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
-    var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
-    artPills += '<span onclick="openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
-  });
+  if (arts.plan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.plan) + '\')" style="' + pillStyle + '">📋 Plan</span> ';
+  if (arts.prd) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.prd) + '\')" style="' + pillStyle + '">📄 PRD</span> ';
+  if (arts.sourcePlan) artPills += '<span onclick="' + artBackFn + 'planView(\'' + escHtml(arts.sourcePlan) + '\')" style="' + pillStyle + '">📋 Source Plan</span> ';
+  if (arts.notes && arts.notes.length > 0) {
+    arts.notes.forEach(function(n) {
+      var noteFile = (n && typeof n === 'object') ? (n.file || n) : String(n || '');
+      if (noteFile.startsWith('kb:')) {
+        var kbParts = noteFile.slice(3).split('/');
+        var kbCat = kbParts[0];
+        var kbFile = kbParts.slice(1).join('/');
+        var kbLabel = kbFile.replace(/\.md$/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'kbOpenItem(\'' + escHtml(kbCat) + '\',\'' + escHtml(kbFile) + '\')" style="' + pillStyle + '">📚 ' + escHtml(kbLabel) + '</span> ';
+      } else if (noteFile.startsWith('archive:')) {
+        var archLabel = noteFile.slice(8).replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile.slice(8)) + '\')" style="' + pillStyle + ';opacity:0.7">📄 ' + escHtml(archLabel) + ' <span style="font-size:8px">(archived)</span></span> ';
+      } else {
+        var noteLabel = noteFile.replace(/\.md$/, '').slice(0, 30);
+        artPills += '<span onclick="' + artBackFn + 'openInboxNote(\'' + escHtml(noteFile) + '\')" style="' + pillStyle + '">📝 ' + escHtml(noteLabel) + '</span> ';
+      }
+    });
+  }
   if (arts.skills && arts.skills.length > 0) arts.skills.forEach(function(s) { artPills += '<span onclick="openSkill(\'' + escHtml(s) + '\',\'minions\',\'\')" style="' + pillStyle + '">⚙ ' + escHtml(s) + '</span> '; });
   if (artPills) html += field('Artifacts', '<div style="display:flex;flex-wrap:wrap;gap:4px">' + artPills + '</div>');
 
@@ -503,15 +520,10 @@ function viewAgentOutput(logPath) {
 }
 
 function openInboxNote(filename) {
-  // Find in inboxData by filename, or open directly via fetch
   var idx = (inboxData || []).findIndex(function(item) { return item.name === filename; });
-  if (idx >= 0) {
-    openModal(idx);
-  } else {
-    // Fallback: switch to inbox page
-    closeModal();
-    switchPage('inbox');
-  }
+  if (idx >= 0) { openModal(idx); return; }
+  closeModal();
+  switchPage('inbox');
 }
 
 window.MinionsWork = { wiRow, renderWorkItems, editWorkItem, submitWorkItemEdit, deleteWorkItem, archiveWorkItem, toggleWorkItemArchive, retryWorkItem, wiPrev, wiNext, feedbackWorkItem, submitFeedback, openCreateWorkItemModal, openWorkItemDetail, openAllWorkItems, viewAgentOutput, openInboxNote };
