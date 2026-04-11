@@ -562,7 +562,7 @@ async function pollPrHumanComments(config) {
 
 async function reconcilePrs(config) {
   const projects = getProjects(config).filter(isGitHub);
-  const branchPatterns = [/^work\//i, /^feat\//i, /^user\/yemishin\//i];
+  const branchPatterns = [/^work\//i, /^feat\//i, /^fix\//i, /^e2e\//i, /^user\/yemishin\//i];
   let totalAdded = 0;
 
   for (const project of projects) {
@@ -633,8 +633,11 @@ async function reconcilePrs(config) {
         continue;
       }
 
+      // E2E branches are always Minions-generated (verify tasks) — track even without a work item ID in the branch name
+      const isE2eBranch = /^e2e\//i.test(branch);
+
       // Only auto-track PRs linked to a minions work item — skip human-authored PRs
-      if (!confirmedItemId) continue;
+      if (!confirmedItemId && !isE2eBranch) continue;
 
       const prUrl = project.prUrlBase ? project.prUrlBase + ghPr.number : ghPr.html_url || '';
 

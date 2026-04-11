@@ -911,6 +911,19 @@ function mutateWorkItems(filePath, mutator) {
 }
 
 /**
+ * Reset a done work item for re-dispatch. Clears completion/dispatch metadata.
+ * Caller must set description/title separately.
+ */
+function reopenWorkItem(wi) {
+  wi.status = WI_STATUS.PENDING;
+  wi._reopened = true;
+  delete wi.completedAt;
+  delete wi.dispatched_at;
+  delete wi.dispatched_to;
+  wi._retryCount = 0;
+}
+
+/**
  * Atomic read-modify-write for pull-requests JSON files.
  * Wraps mutateJsonFileLocked with defaultValue of [].
  * @param {string} filePath - Path to the pull-requests JSON file
@@ -1043,6 +1056,7 @@ module.exports = {
   withFileLock,
   mutateJsonFileLocked,
   mutateWorkItems,
+  reopenWorkItem,
   mutatePullRequests,
   uid,
   uniquePath,

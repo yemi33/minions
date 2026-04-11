@@ -1642,6 +1642,25 @@ async function testPrdStaleInvalidation() {
       'engine stale alert should offer a clear restart recovery action');
   });
 
+  await test('Stale banner shown on paused PRDs (not suppressed by isBlocked)', () => {
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const renderPrd = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // Both files should use showStale = (!isBlocked || isPaused) && g.planStale
+    assert.ok(html.includes('(!isBlocked || isPaused) && g.planStale'),
+      'dashboard.html should allow stale UI when paused');
+    assert.ok(renderPrd.includes('(!isBlocked || isPaused) && g.planStale'),
+      'render-prd.js should allow stale UI when paused');
+    // staleLabel and staleRecovery should use showStale, not the old !isBlocked guard
+    assert.ok(renderPrd.includes('const staleLabel = showStale'),
+      'render-prd.js staleLabel should use showStale variable');
+    assert.ok(renderPrd.includes('const staleRecovery = showStale'),
+      'render-prd.js staleRecovery should use showStale variable');
+    assert.ok(html.includes('const staleLabel = showStale'),
+      'dashboard.html staleLabel should use showStale variable');
+    assert.ok(html.includes('const staleRecovery = showStale'),
+      'dashboard.html staleRecovery should use showStale variable');
+  });
+
   await test('Dashboard shows immediate PRD retry feedback states', () => {
     const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('window._prdRequeueUi'),
@@ -1767,22 +1786,31 @@ async function testPrdStaleInvalidation() {
       'shared.js should define PRD_ITEM_STATUS.UPDATED and PRD_MATERIALIZABLE set');
   });
 
-  await test('Re-open: "updated" or "missing" status re-opens done work items', () => {
+  await test('Re-open: both "updated" and "missing" statuses re-open done work items (#906)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('PRD_ITEM_STATUS.UPDATED') && src.includes('PRD_ITEM_STATUS.MISSING') && src.includes('shouldReopen'),
-      'shouldReopen should check for PRD_ITEM_STATUS.UPDATED or PRD_ITEM_STATUS.MISSING');
-    assert.ok(src.includes('_reopened = true'),
-      'Should mark re-opened work items with _reopened flag');
+      'shouldReopen should check for both PRD_ITEM_STATUS.UPDATED and PRD_ITEM_STATUS.MISSING');
+    assert.ok(src.includes('reopenWorkItem'),
+      'Should use reopenWorkItem helper to mark and reset work items');
   });
 
-  await test('Re-open clears completedAt, dispatched_at, dispatched_to on re-opened work items', () => {
+  await test('Re-open uses shared.reopenWorkItem helper for both paths', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('delete existingWi.completedAt'),
-      'Should clear completedAt on re-open');
-    assert.ok(src.includes('delete existingWi.dispatched_at'),
-      'Should clear dispatched_at on re-open');
-    assert.ok(src.includes('delete existingWi.dispatched_to'),
-      'Should clear dispatched_to on re-open');
+    assert.ok(src.includes('shared.reopenWorkItem(existingWi)'),
+      'Same-project re-open should use shared helper');
+    assert.ok(src.includes('shared.reopenWorkItem(target)'),
+      'Cross-project re-open should use shared helper');
+  });
+
+  await test('reopenWorkItem helper clears dispatch metadata', () => {
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fn = sharedSrc.slice(sharedSrc.indexOf('function reopenWorkItem'), sharedSrc.indexOf('function reopenWorkItem') + 300);
+    assert.ok(fn.includes('WI_STATUS.PENDING'), 'Should set status to PENDING');
+    assert.ok(fn.includes('_reopened = true'), 'Should mark as reopened');
+    assert.ok(fn.includes('delete wi.completedAt'), 'Should clear completedAt');
+    assert.ok(fn.includes('delete wi.dispatched_at'), 'Should clear dispatched_at');
+    assert.ok(fn.includes('delete wi.dispatched_to'), 'Should clear dispatched_to');
+    assert.ok(fn.includes('_retryCount = 0'), 'Should reset _retryCount');
   });
 
   await test('Cross-project re-opens deferred outside lock (no nested locks)', () => {

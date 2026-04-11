@@ -1520,16 +1520,11 @@ function materializePlansAsWorkItems(config) {
 
       mutateWorkItems(wiPath, existingItems => {
         for (const item of projItems) {
-          // Re-open: 'updated' or 'missing' re-opens a done work item (PRD reset triggers re-implementation)
+          // Re-open: 'updated' or 'missing' re-opens a done work item (#906)
           const existingWi = existingItems.find(w => w.id === item.id);
           const shouldReopen = item.status === PRD_ITEM_STATUS.UPDATED || item.status === PRD_ITEM_STATUS.MISSING;
           if (existingWi && DONE_STATUSES.has(existingWi.status) && shouldReopen) {
-            existingWi.status = WI_STATUS.PENDING;
-            existingWi._reopened = true;
-            delete existingWi.completedAt;
-            delete existingWi.dispatched_at;
-            delete existingWi.dispatched_to;
-            existingWi._retryCount = 0;
+            shared.reopenWorkItem(existingWi);
             existingWi.description = buildWiDescription(item, file);
             existingWi.title = `Implement: ${item.name}`;
             created++;
@@ -1613,12 +1608,7 @@ function materializePlansAsWorkItems(config) {
         mutateWorkItems(rPath, items => {
           const target = items.find(w => w.id === itemId);
           if (target && DONE_STATUSES.has(target.status)) {
-            target.status = WI_STATUS.PENDING;
-            target._reopened = true;
-            delete target.completedAt;
-            delete target.dispatched_at;
-            delete target.dispatched_to;
-            target._retryCount = 0;
+            shared.reopenWorkItem(target);
             target.description = buildWiDescription(rItem, file);
             target.title = `Implement: ${rItem.name}`;
           }

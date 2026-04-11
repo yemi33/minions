@@ -271,10 +271,11 @@ function renderPrdProgress(prog) {
       : isPaused
         ? '<span style="color:var(--muted);font-weight:600;font-size:10px;padding:1px 6px;border:1px solid var(--muted);border-radius:3px">PAUSED</span>'
         : '';
-    const staleLabel = (!isBlocked && g.planStale)
+    const showStale = (!isBlocked || isPaused) && g.planStale;
+    const staleLabel = showStale
       ? '<span style="color:var(--orange);font-weight:700;font-size:10px;padding:1px 6px;border:1px solid var(--orange);border-radius:3px;background:rgba(210,153,34,0.12)" title="Source plan changed after this PRD was generated">STALE</span>'
       : '';
-    const staleRecovery = (!isBlocked && g.planStale)
+    const staleRecovery = showStale
       ? '<div style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid rgba(210,153,34,0.35);border-radius:4px;background:rgba(210,153,34,0.08);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span style="color:var(--orange);font-size:10px;font-weight:600">&#x26A0;&#xFE0F; Source plan was revised. This PRD may be outdated.</span>' +
           '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Compare revised plan against existing PRD and update items">Regenerate PRD</span>' +
@@ -284,7 +285,7 @@ function renderPrdProgress(prog) {
       : '';
     const isCompleted = done > 0 && done === g.items.length;
     // Hide regular action buttons when stale banner is showing — stale banner has its own actions
-    const isStale = !isBlocked && g.planStale;
+    const isStale = showStale;
     const pauseResumeBtn = isStale ? '' : isAwaitingApproval
       ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Approve</span>'
       : isPaused
