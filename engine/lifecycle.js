@@ -277,9 +277,24 @@ function checkPlanCompletion(meta, config) {
       });
     });
     log('info', `Created verification work item ${verifyId} for plan ${planFile}`);
+
+    // Teams notification for verify creation — non-blocking
+    try {
+      const teams = require('./teams');
+      teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
+    } catch {}
   }
 
   // Archive deferred until verify completes
+
+  // Teams notification for plan completion — non-blocking
+  try {
+    const teams = require('./teams');
+    teams.teamsNotifyPlanEvent({
+      name: plan.plan_summary || planFile, file: planFile, project: plan.project,
+      doneCount: doneItems.length, totalCount: planFeatureIds.size,
+    }, 'plan-completed').catch(() => {});
+  } catch {}
 
   log('info', `PRD ${planFile} completed: ${doneItems.length} done, ${failedItems.length} failed, runtime ${runtimeMin}m`);
   return true;
@@ -751,9 +766,13 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     if (!Array.isArray(prs)) return prs;
     const target = prs.find(p => p.id === pr.id);
     if (!target) return prs;
-    // Once approved, stays approved permanently — no path can downgrade
-    if (postReviewStatus && target.reviewStatus !== 'approved') {
-      target.reviewStatus = postReviewStatus;
+    // Once approved, stays approved — only changes-requested can override
+    if (postReviewStatus) {
+      if (target.reviewStatus === 'approved' && postReviewStatus !== 'changes-requested') {
+        // Keep approved — don't downgrade
+      } else {
+        target.reviewStatus = postReviewStatus;
+      }
     }
     target.lastReviewedAt = ts();
     target.minionsReview = {
@@ -1019,16 +1038,13 @@ async function handlePostMerge(pr, project, config, newStatus) {
     });
   }
 
-  const teamsUrl = process.env.TEAMS_PLAN_FLOW_URL;
-  if (teamsUrl) {
-    try {
-      await fetch(teamsUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: `PR ${pr.id} merged: ${pr.title} (${project.name}) by ${pr.agent || 'unknown'}` })
-      });
-    } catch (err) { log('warn', `Teams post-merge notify failed: ${err.message}`); }
-  }
+  // Teams PR lifecycle notification — non-blocking
+  try {
+    const teams = require('./teams');
+    const prEvent = newStatus === PR_STATUS.MERGED ? 'pr-merged' : 'pr-abandoned';
+    const prFilePath = project ? projectPrPath(project) : null;
+    teams.teamsNotifyPrEvent(pr, prEvent, project, prFilePath).catch(() => {});
+  } catch {}
 
   log('info', `Post-merge hooks completed for ${pr.id}`);
 }
@@ -1629,6 +1645,12 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   const isAutoRetry = !effectiveSuccess && meta?.item?.id && (meta.item._retryCount || 0) < ENGINE_DEFAULTS.maxRetries;
   const metricsResult = isAutoRetry ? 'retry' : finalResult;
   updateMetrics(agentId, dispatchItem, metricsResult, taskUsage, prsCreatedCount, model);
+
+  // Teams notification — non-blocking
+  try {
+    const teams = require('./teams');
+    teams.teamsNotifyCompletion(dispatchItem, finalResult, agentId).catch(() => {});
+  } catch {}
 
   return { resultSummary, taskUsage, autoRecovered, structuredCompletion };
 }

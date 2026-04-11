@@ -192,6 +192,19 @@ function doctor(minionsHome) {
     } else {
       runtimeResults.push({ name: 'Agents configured', ok: false, message: 'no agents in config.json' });
     }
+
+    // Check Teams integration
+    const teams = config.teams;
+    if (teams && teams.enabled === true) {
+      if (!teams.appId || !teams.appPassword) {
+        const missing = [!teams.appId && 'appId', !teams.appPassword && 'appPassword'].filter(Boolean).join(', ');
+        runtimeResults.push({ name: 'Teams integration', ok: 'warn', message: `enabled but missing: ${missing}` });
+      } else {
+        runtimeResults.push({ name: 'Teams integration', ok: true, message: 'configured' });
+      }
+    } else {
+      runtimeResults.push({ name: 'Teams integration', ok: 'warn', message: 'disabled — see docs/teams-setup.md' });
+    }
   } catch {
     runtimeResults.push({ name: 'Config', ok: false, message: `missing or invalid — run: minions init` });
   }

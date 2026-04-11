@@ -20,6 +20,7 @@ const _dashboardVersion = {
 };
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
+const teams = require('./engine/teams');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
@@ -38,6 +39,7 @@ function reloadConfig() {
 }
 
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
+const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
 // Resolve a plan/PRD file path: .json files live in prd/, .md files in plans/
 // Validates that the file stays within the expected directory to prevent path traversal.
@@ -2214,6 +2216,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
+      // Teams notification for plan approval — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-approved').catch(() => {}); } catch {}
+
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2422,6 +2427,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.rejectedBy = body.rejectedBy || os.userInfo().username;
       if (body.reason) plan.rejectionReason = body.reason;
       safeWrite(planPath, plan);
+
+      // Teams notification for plan rejection — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-rejected').catch(() => {}); } catch {}
+
       return jsonReply(res, 200, { ok: true, status: 'rejected' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -3442,6 +3451,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        if (!tabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
         const reply = { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume };
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
@@ -3555,6 +3569,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         const donePayload = { type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume };
         if (sessionReset) donePayload.sessionReset = true;
         res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
+
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        const _streamTabId = body.tabId || 'default';
+        if (!_streamTabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
         _ccStreamEnded = true; res.end();
       } finally {
         ccInFlightTabs.delete(tabId);
@@ -3847,6 +3868,93 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
     } catch (e) {
       return jsonReply(res, 500, { error: e.message }, req);
+    }
+  }
+
+  // ── Teams Bot Handler ─────────────────────────────────────────────────────
+
+  async function handleTeamsBot(req, res) {
+    if (!teams.isTeamsEnabled()) {
+      return jsonReply(res, 503, { error: 'Teams integration disabled' }, req);
+    }
+    const adapter = teams.createAdapter();
+    if (!adapter) {
+      return jsonReply(res, 503, { error: 'Teams adapter unavailable' }, req);
+    }
+    try {
+      await adapter.process(req, res, async (context) => {
+        const activity = context.activity;
+        const cfg = teams.getTeamsConfig();
+
+        // Save conversation reference on install/member events
+        if (activity.type === 'conversationUpdate' && activity.membersAdded?.length) {
+          const ref = context.activity.conversation?.id;
+          if (ref) {
+            const convRef = {
+              activityId: activity.id,
+              user: activity.from,
+              bot: activity.recipient,
+              conversation: activity.conversation,
+              channelId: activity.channelId,
+              locale: activity.locale,
+              serviceUrl: activity.serviceUrl,
+            };
+            teams.saveConversationRef(activity.conversation.id, convRef);
+            shared.log('info', `Teams conversationUpdate: saved ref for ${activity.conversation.id}`);
+          }
+        }
+
+        if (activity.type === 'installationUpdate') {
+          const convRef = {
+            activityId: activity.id,
+            user: activity.from,
+            bot: activity.recipient,
+            conversation: activity.conversation,
+            channelId: activity.channelId,
+            locale: activity.locale,
+            serviceUrl: activity.serviceUrl,
+          };
+          if (activity.conversation?.id) {
+            teams.saveConversationRef(activity.conversation.id, convRef);
+            shared.log('info', `Teams installationUpdate: saved ref for ${activity.conversation.id}`);
+          }
+        }
+
+        // Handle incoming messages
+        if (activity.type === 'message' && activity.text) {
+          // Filter bot's own echo messages
+          if (activity.from?.id === cfg.appId) return;
+
+          const msgId = `teams-${Date.now()}-${shared.uid()}`;
+          const convRef = {
+            activityId: activity.id,
+            user: activity.from,
+            bot: activity.recipient,
+            conversation: activity.conversation,
+            channelId: activity.channelId,
+            locale: activity.locale,
+            serviceUrl: activity.serviceUrl,
+          };
+          mutateJsonFileLocked(TEAMS_INBOX_PATH, (inbox) => {
+            if (!Array.isArray(inbox)) inbox = [];
+            inbox.push({
+              id: msgId,
+              text: activity.text,
+              from: activity.from?.name || activity.from?.id || 'unknown',
+              conversationRef: convRef,
+              receivedAt: new Date().toISOString(),
+              _processedAt: null,
+            });
+            return inbox;
+          }, { defaultValue: [] });
+          shared.log('info', `Teams message received from ${activity.from?.name || 'unknown'}: ${activity.text.slice(0, 80)}`);
+        }
+      });
+    } catch (err) {
+      shared.log('warn', `Teams bot handler error: ${err.message}`);
+      if (!res.headersSent) {
+        return jsonReply(res, 500, { error: 'Bot processing failed' }, req);
+      }
     }
   }
 
@@ -4453,6 +4561,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
+
+    // Teams Bot Framework webhook
+    { method: 'POST', path: '/api/bot', desc: 'Bot Framework webhook for Teams integration', handler: handleTeamsBot },
   ];
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────

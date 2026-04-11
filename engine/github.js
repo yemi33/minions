@@ -411,6 +411,13 @@ async function pollPrStatus(config) {
               pr.buildErrorLog = errorLog;
               log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
             }
+
+            // Teams notification for build failure — non-blocking
+            try {
+              const teams = require('./teams');
+              const prFilePath = shared.projectPrPath(project);
+              teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+            } catch {}
           }
         }
       }
