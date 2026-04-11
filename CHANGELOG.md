@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.895 (2026-04-11)
+
+### Fixes
+- revert unnecessary changes for real npm installs
+
 ## 0.1.894 (2026-04-11)
 
 ### Fixes
