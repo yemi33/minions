@@ -5964,6 +5964,19 @@ async function testAgentSteering() {
       'Resume close handler should NOT mark non-zero exit as SUCCESS');
   });
 
+  await test('steering resume suppresses [steering-failed] banner when agent produced output', () => {
+    // Bug #894: Claude CLI exits code 1 after successful single-turn --resume.
+    // Only show [steering-failed] if no stdout was produced.
+    const resumeCloseBlock = engineSrc.slice(
+      engineSrc.indexOf('resumeProc.on(\'close\''),
+      engineSrc.indexOf('resumeProc.on(\'error\'')
+    );
+    assert.ok(resumeCloseBlock.includes('!stdout.trim()'),
+      'Resume close handler should gate [steering-failed] on empty stdout');
+    assert.ok(resumeCloseBlock.includes('[steering-failed]'),
+      'Resume close handler should still have [steering-failed] for genuinely failed resumes');
+  });
+
   await test('steering spawn error marks dispatch as ERROR', () => {
     const spawnErrorBlock = engineSrc.slice(
       engineSrc.indexOf("resumeProc.on('error'"),
