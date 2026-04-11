@@ -766,16 +766,16 @@ async function prdItemRequeue(workItemId, source, prdFile) {
   }
 }
 
-async function prdRegenerate(prdFile) {
-  if (!confirm('Source plan was revised.\n\nRegenerate PRD? An agent will compare the updated plan against existing implementation and update items accordingly.\n\nDone items stay done unless modified. New items are added. Removed items are cancelled.')) return;
+async function _planApproveAction(prdFile, skipRegen, confirmMsg, successMsg) {
+  if (!confirm(confirmMsg)) return;
   try {
     const res = await fetch('/api/plans/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: prdFile })
+      body: JSON.stringify({ file: prdFile, skipRegen: skipRegen || undefined })
     });
     const d = await res.json();
     if (res.ok) {
-      showToast('cmd-toast', d.diffAwareUpdate ? 'Diff-aware PRD update queued' : 'Plan approved', true);
+      showToast('cmd-toast', successMsg || (d.diffAwareUpdate ? 'Diff-aware PRD update queued' : 'Plan approved'), true);
       refresh();
     } else {
       alert('Failed: ' + (d.error || 'unknown'));
@@ -783,21 +783,15 @@ async function prdRegenerate(prdFile) {
   } catch (e) { alert('Error: ' + e.message); }
 }
 
-async function prdResumeWithoutRegen(prdFile) {
-  if (!confirm('Resume this plan without regenerating the PRD?\n\nThe current PRD items will be used as-is. New work items will be materialized from any missing/planned items.')) return;
-  try {
-    const res = await fetch('/api/plans/approve', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: prdFile, skipRegen: true })
-    });
-    const d = await res.json();
-    if (res.ok) {
-      showToast('cmd-toast', 'Plan resumed (PRD unchanged)', true);
-      refresh();
-    } else {
-      alert('Failed: ' + (d.error || 'unknown'));
-    }
-  } catch (e) { alert('Error: ' + e.message); }
+function prdRegenerate(prdFile) {
+  _planApproveAction(prdFile, false,
+    'Source plan was revised.\n\nRegenerate PRD? An agent will compare the updated plan against existing implementation and update items accordingly.\n\nDone items stay done unless modified. New items are added. Removed items are cancelled.');
+}
+
+function prdResumeWithoutRegen(prdFile) {
+  _planApproveAction(prdFile, true,
+    'Resume this plan without regenerating the PRD?\n\nThe current PRD items will be used as-is. New work items will be materialized from any missing/planned items.',
+    'Plan resumed (PRD unchanged)');
 }
 
 function openArchive(i) {

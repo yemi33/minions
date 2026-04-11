@@ -1478,7 +1478,6 @@ function materializePlansAsWorkItems(config) {
           if (existingWi && DONE_STATUSES.has(existingWi.status) && shouldReopen) {
             existingWi.status = WI_STATUS.PENDING;
             existingWi._reopened = true;
-            const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
             existingWi.description = buildWiDescription(item, file);
             existingWi.title = `Implement: ${item.name}`;
             created++;
