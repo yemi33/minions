@@ -185,8 +185,11 @@ function checkPlanCompletion(meta, config) {
   }
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
+  // Only one verify per PRD — skip if pending/dispatched, re-open if done/failed (PRD was modified)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (!existingVerify && doneItems.length > 0) {
+  if (existingVerify && (existingVerify.status === WI_STATUS.PENDING || existingVerify.status === WI_STATUS.DISPATCHED)) {
+    log('info', `Plan ${planFile}: verify WI ${existingVerify.id} already ${existingVerify.status} — skipping`);
+  } else if (doneItems.length > 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -301,6 +304,24 @@ function checkPlanCompletion(meta, config) {
       const teams = require('./teams');
       teams.teamsNotifyPlanEvent({ name: plan.plan_summary || planFile, file: planFile }, 'verify-created').catch(() => {});
     } catch {}
+  } else if (existingVerify && DONE_STATUSES.has(existingVerify.status) && doneItems.length > 0) {
+    // PRD was modified and re-completed — re-open the existing verify instead of creating a duplicate
+    const verifyProject = existingVerify.project || projectName;
+    const vWiPath = shared.projectWorkItemsPath(
+      projects.find(p => p.name?.toLowerCase() === verifyProject?.toLowerCase()) || primaryProject
+    );
+    mutateWorkItems(vWiPath, items => {
+      const v = items.find(w => w.id === existingVerify.id);
+      if (v && DONE_STATUSES.has(v.status)) {
+        v.status = WI_STATUS.PENDING;
+        v._reopened = true;
+        delete v.completedAt;
+        delete v.dispatched_to;
+        delete v.dispatched_at;
+        v._retryCount = 0;
+      }
+    });
+    log('info', `Re-opened verification work item ${existingVerify.id} for modified plan ${planFile}`);
   }
 
   // Archive deferred until verify completes
