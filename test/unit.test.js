@@ -1525,22 +1525,20 @@ async function testPlanLifecycle() {
 async function testPrdStaleInvalidation() {
   console.log('\n── PRD Staleness — Auto-Invalidation on Plan Revision ──');
 
-  await test('engine.js materializePlansAsWorkItems handles stale awaiting-approval PRD', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('engine:plan-revision'),
-      'engine.js should queue regeneration with createdBy engine:plan-revision');
-    assert.ok(src.includes('WORK_TYPE.PLAN_TO_PRD') && src.includes('WI_STATUS.PENDING'),
-      'engine.js should check for duplicate regeneration inside lock');
-    assert.ok(src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
-      'engine.js should delete old PRD file on awaiting-approval invalidation');
-  });
-
-  await test('Stale PRD: approved/completed flagged stale, awaiting-approval auto-regenerates', () => {
+  await test('engine.js flags all revised PRDs as stale (user decides when to regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
-      'Non-awaiting PRDs should be flagged stale (user must re-execute)');
-    assert.ok(src.includes("prdStatus === 'awaiting-approval'"),
-      'Awaiting-approval PRDs should auto-regenerate');
+      'Should set planStale flag when source plan changes');
+    assert.ok(src.includes('user can regenerate from dashboard'),
+      'Should log that user can regenerate');
+  });
+
+  await test('All PRD statuses flagged stale on plan revision (no auto-regenerate)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('plan.planStale = true'),
+      'All statuses should be flagged stale');
+    assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
+      'Should NOT auto-delete/regenerate awaiting-approval PRDs');
   });
 
   await test('Stale PRD regeneration creates plan-to-prd work item', () => {
@@ -1573,12 +1571,12 @@ async function testPrdStaleInvalidation() {
     assert.strictEqual(noDuplicate, false, 'Should not detect duplicate for different plan');
   });
 
-  await test('Approved/paused/completed PRDs flagged stale on plan revision (user must resume)', () => {
+  await test('Stale flag set for all statuses with single code path', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
-      'Should set planStale flag for non-awaiting PRDs');
-    assert.ok(src.includes('user can resume from dashboard'),
-      'Should log that user must resume');
+      'Should set planStale flag');
+    assert.ok(src.includes('user can regenerate from dashboard'),
+      'Should log that user can regenerate');
   });
 
   await test('Stale PRDs do not materialize new work items', () => {
@@ -1650,12 +1648,11 @@ async function testPrdStaleInvalidation() {
       'Should have comment explaining removal');
   });
 
-  await test('Engine auto-regeneration also carries over completed items', () => {
+  await test('Engine no longer auto-regenerates — all paths flag stale for user action', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('completedItems.length'),
-      'Engine regeneration should track completed items');
-    assert.ok(src.includes('completed items to carry over'),
-      'Engine should log carry-over count');
+    // No engine:plan-revision createdBy — dispatch moved to dashboard
+    assert.ok(!src.includes("createdBy: 'engine:plan-revision'"),
+      'Engine should not dispatch plan-to-prd directly — user triggers from dashboard');
   });
 
   await test('Regeneration endpoint deduplicates queued items', () => {
@@ -1664,13 +1661,11 @@ async function testPrdStaleInvalidation() {
       'Regeneration endpoint should check for duplicate queue entries');
   });
 
-  await test('Awaiting-approval PRDs auto-regenerate (delete old + queue plan-to-prd)', () => {
+  await test('Awaiting-approval PRDs also flagged stale (no auto-delete)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    const deleteCall = src.indexOf('fs.unlinkSync(path.join(PRD_DIR, file))');
-    assert.ok(deleteCall > 0, 'Should delete old PRD file during regeneration');
-    const awaitingCheck = src.lastIndexOf("prdStatus === 'awaiting-approval'", deleteCall);
-    assert.ok(awaitingCheck >= 0 && awaitingCheck < deleteCall,
-      'PRD deletion should be inside the awaiting-approval check');
+    // The old auto-delete path is gone — all statuses just flag stale
+    assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('unlinkSync'),
+      'Should not auto-delete awaiting-approval PRDs');
   });
 
   await test('Plan revision flow: plan→review→revise→auto-regenerate→review→approve', () => {

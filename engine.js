@@ -1331,43 +1331,10 @@ function materializePlansAsWorkItems(config) {
           // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          // Approved/completed/paused PRDs: flag stale — user clicks Resume to trigger diff-aware update
-          if (prdStatus && prdStatus !== 'awaiting-approval') {
+          // Flag stale for all statuses — user decides when to regenerate/resume from dashboard
+          if (prdStatus) {
             plan.planStale = true;
-            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can resume from dashboard`);
-          }
-
-          // Awaiting-approval PRDs: auto-regenerate (no work started yet, safe to replace)
-          if (prdStatus === 'awaiting-approval') {
-            log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
-
-            const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
-            const completedItems = (plan.missing_features || [])
-              .filter(f => completedStatuses.has(f.status))
-              .map(f => ({ id: f.id, name: f.name, status: f.status }));
-
-            const completedContext = completedItems.length > 0
-              ? `\nPreviously completed items (preserve their status in the new PRD):\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
-              : '';
-
-            try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch { /* cleanup */ }
-
-            const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
-            if (planContent) {
-              const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
-              const allProjects = getProjects(config);
-              const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
-              if (targetProject) {
-                const queued = shared.queuePlanToPrd({
-                  planFile: plan.source_plan, prdFile: file,
-                  title: `Generate PRD from plan: ${plan.source_plan}`,
-                  description: `Plan file: plans/${plan.source_plan}\nSource plan was updated while PRD was awaiting approval — generating fresh PRD.${completedContext}`,
-                  project: targetProject.name, createdBy: 'engine:plan-revision',
-                });
-                if (queued) log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
-              }
-            }
-            continue; // Old PRD deleted — skip safeWrite below
+            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can regenerate from dashboard`);
           }
 
           safeWrite(path.join(PRD_DIR, file), plan);
