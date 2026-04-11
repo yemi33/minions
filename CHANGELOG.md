@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.875 (2026-04-11)
+
+### Fixes
+- reset central work-items.json on agent kill (closes #890) (#891)
+- include started_at in done/error agent status so duration renders
+
 ## 0.1.873 (2026-04-11)
 
 ### Features
