@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.894 (2026-04-11)
+
+### Fixes
+- handle dev/symlink installs and pass MINIONS_HOME to init --force
+
 ## 0.1.893 (2026-04-11)
 
 ### Fixes
