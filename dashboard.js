@@ -572,6 +572,61 @@ function parseCCActions(text) {
   return { text: displayText, actions };
 }
 
+// ── Server-side CC action execution ──────────────────────────────────────────
+// Actions are executed server-side so all clients (frontend, curl, Teams) get the same behavior.
+// The frontend still shows status toasts but no longer needs to fire the API calls.
+
+async function executeCCActions(actions) {
+  const results = [];
+  for (const action of actions) {
+    try {
+      switch (action.type) {
+        case 'dispatch': case 'fix': case 'implement': case 'explore': case 'review': case 'test': {
+          const workType = action.workType || (action.type !== 'dispatch' ? action.type : 'implement');
+          const id = 'W-' + shared.uid();
+          const project = action.project || '';
+          const targetProject = project ? PROJECTS.find(p => p.name?.toLowerCase() === project.toLowerCase()) : PROJECTS[0];
+          const wiPath = targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json');
+          shared.mutateJsonFileLocked(wiPath, items => {
+            if (!Array.isArray(items)) items = [];
+            items.push({
+              id, title: action.title || 'Untitled', type: workType,
+              priority: action.priority || 'medium', description: action.description || '',
+              status: 'pending', created: new Date().toISOString(),
+              createdBy: 'command-center', project,
+              ...(action.agents?.length ? { preferred_agent: action.agents[0] } : {}),
+            });
+            return items;
+          }, { defaultValue: [] });
+          results.push({ type: action.type, id, ok: true });
+          break;
+        }
+        case 'note': {
+          shared.writeToInbox('command-center', shared.slugify(action.title || 'note'), `# ${action.title || 'Note'}\n\n${action.content || action.description || ''}`);
+          results.push({ type: 'note', ok: true });
+          break;
+        }
+        case 'knowledge': {
+          const category = action.category || 'project-notes';
+          const slug = shared.slugify(action.title || 'entry');
+          const kbDir = path.join(MINIONS_DIR, 'knowledge', category);
+          if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
+          shared.safeWrite(path.join(kbDir, slug + '.md'), `# ${action.title}\n\n${action.content || action.description || ''}`);
+          results.push({ type: 'knowledge', ok: true });
+          break;
+        }
+        default:
+          // For action types that map 1:1 to API endpoints, flag as client-executed
+          results.push({ type: action.type, ok: true, clientExecuted: false });
+          break;
+      }
+    } catch (e) {
+      results.push({ type: action.type, error: e.message });
+    }
+  }
+  return results;
+}
+
 // ── Shared LLM call core — used by CC panel and doc modals ──────────────────
 
 // Session store for doc modals — keyed by filePath or title, persisted to disk
@@ -3424,7 +3479,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
         }
 
-        const reply = { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume };
+        const parsed = parseCCActions(result.text);
+        if (parsed.actions.length > 0) {
+          parsed.actionResults = await executeCCActions(parsed.actions);
+        }
+        const reply = { ...parsed, sessionId: ccSession.sessionId, newSession: !wasResume };
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
@@ -3534,9 +3593,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           } catch { /* non-critical */ }
         }
 
-        // Send final result with actions
+        // Send final result with actions — execute server-side first
         const { text: displayText, actions } = parseCCActions(result.text);
-        const donePayload = { type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume };
+        let actionResults;
+        if (actions.length > 0) {
+          actionResults = await executeCCActions(actions);
+        }
+        const donePayload = { type: 'done', text: displayText, actions, actionResults, sessionId: responseSessionId, newSession: !wasResume };
         if (sessionReset) donePayload.sessionReset = true;
         res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
 

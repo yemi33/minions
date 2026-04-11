@@ -579,6 +579,7 @@ async function _ccDoSend(message, skipUserMsg) {
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (evt.actions && evt.actions.length > 0) {
+              _tagServerExecuted(evt.actions, evt.actionResults);
               for (var ai = 0; ai < evt.actions.length; ai++) { await ccExecuteAction(evt.actions[ai], activeTabId); }
             }
           } else if (evt.type === 'error') {
@@ -609,6 +610,7 @@ async function _ccDoSend(message, skipUserMsg) {
               ccSaveState(); ccUpdateSessionIndicator();
             }
             if (revt.actions && revt.actions.length > 0) {
+              _tagServerExecuted(revt.actions, revt.actionResults);
               for (var ai2 = 0; ai2 < revt.actions.length; ai2++) { await ccExecuteAction(revt.actions[ai2], activeTabId); }
             }
           } else if (revt.type === 'chunk') {
@@ -688,9 +690,42 @@ async function _ccFetch(url, body) {
   return res;
 }
 
+// Tag actions that the server already executed so ccExecuteAction skips the API call
+function _tagServerExecuted(actions, actionResults) {
+  if (!actionResults || !Array.isArray(actionResults)) return;
+  for (var i = 0; i < actions.length && i < actionResults.length; i++) {
+    var r = actionResults[i];
+    if (r && r.ok) {
+      actions[i]._serverExecuted = true;
+      if (r.id) actions[i]._serverId = r.id;
+    } else if (r && r.error) {
+      actions[i]._serverExecuted = true;
+      actions[i]._serverError = r.error;
+    }
+    // clientExecuted: false means server didn't handle it — frontend must execute
+  }
+}
+
+
 async function ccExecuteAction(action, targetTabId) {
   var status = document.createElement('div');
   status.style.cssText = 'padding:4px 10px;border-radius:4px;font-size:10px;align-self:flex-start;border:1px dashed var(--border);color:var(--muted)';
+
+  // Server-executed actions: just show status, don't re-fire the API
+  if (action._serverExecuted) {
+    if (action._serverError) {
+      status.innerHTML = '&#10007; ' + escHtml(action.type) + ' failed: ' + escHtml(action._serverError);
+      status.style.color = 'var(--red)';
+    } else {
+      var label = action._serverId ? escHtml(action._serverId) : escHtml(action.title || action.type);
+      status.innerHTML = '&#10003; ' + escHtml(action.type) + ': <strong>' + label + '</strong>';
+      status.style.color = 'var(--green)';
+    }
+    ccAddMessage('assistant', status.outerHTML, false, targetTabId);
+    if (['dispatch','fix','implement','explore','review','test'].includes(action.type)) wakeEngine();
+    refresh();
+    return;
+  }
 
   try {
     switch (action.type) {
