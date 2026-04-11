@@ -414,4 +414,30 @@ function _showThreadWrap() {
   });
 })();
 
+// ── Text selection → "Ask about this" button ─────────────────────────────────
+document.addEventListener('mouseup', function() {
+  var askBtn = document.getElementById('ask-selection-btn');
+  if (!askBtn) return;
+  // Only act inside modal body
+  var sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+    askBtn.style.display = 'none';
+    return;
+  }
+  var modalBody = document.getElementById('modal-body');
+  if (!modalBody || !modalBody.contains(sel.anchorNode)) {
+    askBtn.style.display = 'none';
+    return;
+  }
+  var text = sel.toString().trim();
+  if (!text) { askBtn.style.display = 'none'; return; }
+  _modalDocContext.selection = text;
+  // Position near the selection
+  var range = sel.getRangeAt(0);
+  var rect = range.getBoundingClientRect();
+  askBtn.style.top = (rect.bottom + 4) + 'px';
+  askBtn.style.left = rect.left + 'px';
+  askBtn.style.display = 'block';
+});
+
 window.MinionsQA = { showModalQa, modalAskAboutSelection, clearQaSelection, clearQaConversation, modalSend, qaAbort, toggleDocChat, _showThreadWrap };

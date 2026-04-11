@@ -11293,6 +11293,85 @@ async function testDashboardResilience() {
       'Badge should only clear when queue is empty');
   });
 
+  // ── Text selection → doc-chat flow ──────────────────────────────────────────
+
+  await test('mouseup listener captures selection into _modalDocContext', () => {
+    assert.ok(modalQaSrc.includes("document.addEventListener('mouseup'"),
+      'Should have mouseup listener on document');
+    assert.ok(modalQaSrc.includes('_modalDocContext.selection = text') || modalQaSrc.includes('_modalDocContext.selection=text'),
+      'mouseup handler should write selected text to _modalDocContext.selection');
+  });
+
+  await test('mouseup listener only acts on selections inside modal-body', () => {
+    assert.ok(modalQaSrc.includes('modalBody.contains(sel.anchorNode)'),
+      'Should check that selection anchor is inside modal-body');
+    assert.ok(modalQaSrc.includes("getElementById('modal-body')"),
+      'Should reference modal-body element');
+  });
+
+  await test('mouseup listener shows ask-selection-btn near selection', () => {
+    assert.ok(modalQaSrc.includes("ask-selection-btn"),
+      'mouseup handler should reference the ask button');
+    assert.ok(modalQaSrc.includes('getBoundingClientRect'),
+      'Should position button using selection bounding rect');
+    assert.ok(modalQaSrc.includes("askBtn.style.display = 'block'"),
+      'Should show the button when selection is valid');
+  });
+
+  await test('mouseup listener hides button when selection is empty or outside modal', () => {
+    assert.ok(modalQaSrc.includes("askBtn.style.display = 'none'"),
+      'Should hide button on empty/collapsed selection');
+    assert.ok(modalQaSrc.includes('sel.isCollapsed'),
+      'Should check isCollapsed to detect empty selection');
+  });
+
+  await test('modalAskAboutSelection shows selection pill and focuses input', () => {
+    assert.ok(modalQaSrc.includes('modal-qa-pill'),
+      'Should show selection pill');
+    assert.ok(modalQaSrc.includes("pill.style.display = 'flex'"),
+      'Pill should be displayed as flex');
+    assert.ok(modalQaSrc.includes('input.focus()'),
+      'Should focus the input field');
+  });
+
+  await test('modalSend captures selection and clears it after send', () => {
+    const sendFn = modalQaSrc.slice(
+      modalQaSrc.indexOf('function modalSend()'),
+      modalQaSrc.indexOf('function modalSend()') + 1500
+    );
+    assert.ok(sendFn.includes("_modalDocContext.selection || ''"),
+      'modalSend should read current selection');
+    assert.ok(sendFn.includes("_modalDocContext.selection = ''"),
+      'modalSend should clear selection after capturing');
+    assert.ok(sendFn.includes("'modal-qa-pill'"),
+      'modalSend should hide selection pill');
+  });
+
+  await test('selection is sent to /api/doc-chat in request body', () => {
+    assert.ok(modalQaSrc.includes("selection: selection"),
+      '_processQaMessage should include selection in fetch body');
+  });
+
+  await test('queued messages preserve their selection', () => {
+    assert.ok(modalQaSrc.includes('_qaQueue.push({ message, selection })'),
+      'Queue should store selection with message');
+    assert.ok(modalQaSrc.includes('next.selection'),
+      'Queue drain should pass selection to _processQaMessage');
+  });
+
+  await test('backend truncates selection at 1500 chars', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('selection.slice(0, 1500)'),
+      'ccDocCall should truncate selection to 1500 chars');
+  });
+
+  await test('clearQaSelection resets selection and hides pill', () => {
+    assert.ok(modalQaSrc.includes("_modalDocContext.selection = ''") || modalQaSrc.includes("_modalDocContext.selection=''"),
+      'clearQaSelection should reset selection');
+    assert.ok(modalQaSrc.includes("modal-qa-pill"),
+      'clearQaSelection should hide pill');
+  });
+
   // ── Command center overlay dismiss ──
 
   await test('CC overlay exists for click-to-dismiss', () => {
