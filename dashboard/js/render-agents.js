@@ -14,7 +14,7 @@ function renderAgents(agents) {
       ${(function() {
         var s = a.started_at, c = a.completed_at;
         if (s && c) { var d = new Date(c) - new Date(s); if (d > 0) { var sec = Math.floor(d/1000)%60, min = Math.floor(d/60000)%60, hr = Math.floor(d/3600000); return '<div style="font-size:9px;color:var(--muted)">Last run: ' + (hr > 0 ? hr + 'h ' : '') + min + 'm ' + sec + 's</div>'; } }
-        if (s && a.status === 'working') { var r = Date.now() - new Date(s).getTime(); if (r > 0) { var sec2 = Math.floor(r/1000)%60, min2 = Math.floor(r/60000)%60, hr2 = Math.floor(r/3600000); return '<div style="font-size:9px;color:var(--yellow)">Running: ' + (hr2 > 0 ? hr2 + 'h ' : '') + min2 + 'm ' + sec2 + 's</div>'; } }
+        if (s && a.status === 'working') return '<div class="agent-runtime-tick" data-started="' + s + '" style="font-size:9px;color:var(--yellow)"></div>';
         return '';
       })()}
       ${a._blockingToolCall ? `<div style="margin-top:4px;padding:4px 8px;background:rgba(130,160,210,0.13);border:1px solid rgba(130,160,210,0.3);border-radius:4px;font-size:10px;color:var(--muted)">&#x23F3; Blocking tool call (${escHtml(a._blockingToolCall.tool)}) &mdash; silent ${Math.round(a._blockingToolCall.silentMs/60000)}min, timeout in ${Math.round(a._blockingToolCall.remainingMs/60000)}min</div>` : ''}
@@ -60,5 +60,29 @@ async function openAgentDetail(id) {
   }
 
 }
+
+// Tick running agent timers on cards every second
+var _agentRuntimeTimer = null;
+function _tickAgentRuntimes() {
+  var els = document.querySelectorAll('.agent-runtime-tick');
+  if (els.length === 0) { if (_agentRuntimeTimer) { clearInterval(_agentRuntimeTimer); _agentRuntimeTimer = null; } return; }
+  var now = Date.now();
+  els.forEach(function(el) {
+    var ms = now - new Date(el.dataset.started).getTime();
+    if (ms < 0) ms = 0;
+    var sec = Math.floor(ms / 1000) % 60, min = Math.floor(ms / 60000) % 60, hr = Math.floor(ms / 3600000);
+    el.textContent = 'Running: ' + (hr > 0 ? hr + 'h ' : '') + min + 'm ' + sec + 's';
+  });
+}
+// Start ticker after each render if working agents exist
+var _origRenderAgents = renderAgents;
+renderAgents = function(agents) {
+  _origRenderAgents(agents);
+  if (_agentRuntimeTimer) { clearInterval(_agentRuntimeTimer); _agentRuntimeTimer = null; }
+  if (agents.some(function(a) { return a.status === 'working' && a.started_at; })) {
+    _tickAgentRuntimes();
+    _agentRuntimeTimer = setInterval(_tickAgentRuntimes, 1000);
+  }
+};
 
 window.MinionsAgents = { renderAgents, openAgentDetail };
