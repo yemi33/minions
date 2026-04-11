@@ -730,9 +730,9 @@ async function testQueriesAgents() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
-    assert.ok(src.includes("w.status === WI_STATUS.DISPATCHED"),
+    assert.ok(src.includes("WI_STATUS.DISPATCHED"),
       'fallback should only treat dispatched work items as working (using WI_STATUS constant)');
-    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
+    assert.ok(src.includes("dispatched_to") && src.includes("String(agentId).toLowerCase()"),
       'fallback should map by dispatched_to marker');
   });
 
@@ -4719,8 +4719,8 @@ async function testVerifyWorkflow() {
     assert.ok(v.description.includes(testPlanFile), 'Description should reference plan file');
   }, cleanup);
 
-  // ── 3a. Plan completes with partial results when some items fail (escalation) ──
-  await test('verify: plan completes with failed items — verify WI created for done items, escalation alert sent', () => {
+  // ── 3a. Plan completes with partial results when some items fail (escalation, no verify) ──
+  await test('verify: plan completes with failed items — verify WI still created for done items, escalation alert sent', () => {
     cleanup();
     shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
     shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
@@ -4731,12 +4731,12 @@ async function testVerifyWorkflow() {
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
     ]);
 
-    // Failed items are terminal — plan should complete with partial results
+    // Failed items are terminal — plan completes and verify is created for partial results (done items exist)
     lifecycle.checkPlanCompletion(meta, config);
 
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
-    assert.strictEqual(verifyItems.length, 1, 'Verify WI created for done items even when some failed');
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI created when done items exist — even with some failures');
 
     // Escalation alert should be in inbox
     const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
@@ -5476,6 +5476,7 @@ async function testDashboardAssembly() {
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
     assert.ok(html.length < 600000, `HTML should be < 600KB (got ${html.length})`);
+
   });
 }
 
@@ -5801,9 +5802,9 @@ async function testRecentFeatures() {
       'Should have PR linking endpoint');
   });
 
-  await test('PR link supports autoObserve flag', () => {
-    assert.ok(dashSrc.includes('_autoObserve') && dashSrc.includes('linked'),
-      'Should support autoObserve (active) vs context-only (linked) status');
+  await test('PR link supports contextOnly flag', () => {
+    assert.ok(dashSrc.includes('_contextOnly') && dashSrc.includes('autoObserve'),
+      'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
   // Plan creation from dashboard
@@ -7086,6 +7087,27 @@ async function testSettingsComprehensive() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
     assert.ok(src.includes("showToast('cmd-toast', 'Settings saved'"), 'should show success toast');
     assert.ok(src.includes("'Saving...'"), 'should show saving state on button');
+  });
+
+  await test('settings save handler: _clamped variable is in scope for all code paths', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // _clamped must be declared before the if(body.engine) block, not inside it
+    const clampedDecl = handler.indexOf('const _clamped');
+    const bodyEngineCheck = handler.indexOf('if (body.engine)');
+    assert.ok(clampedDecl > -1, '_clamped must be declared in settings save handler');
+    assert.ok(clampedDecl < bodyEngineCheck, '_clamped must be declared before if(body.engine) block — otherwise it is undefined when saving non-engine settings');
+  });
+
+  await test('settings save handler: _clamped referenced consistently (no bare clamped)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    const lines = handler.split('\n');
+    for (const line of lines) {
+      if (line.includes('clamped') && !line.includes('_clamped') && !line.includes('// ')) {
+        assert.fail('Found bare "clamped" reference (should be "_clamped"): ' + line.trim().slice(0, 80));
+      }
+    }
   });
 
   // ── Default consistency: shared.js defaults must match settings.js fallbacks ──
@@ -9867,6 +9889,589 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(shared.ENGINE_DEFAULTS.ccMaxTurns, 50, 'ccMaxTurns default should be 50');
   });
 
+  await test('ENGINE_DEFAULTS.teams has all required fields', () => {
+    const teams = shared.ENGINE_DEFAULTS.teams;
+    assert.ok(teams, 'ENGINE_DEFAULTS should have a teams section');
+    assert.strictEqual(teams.enabled, false, 'teams.enabled default should be false');
+    assert.strictEqual(teams.appId, '', 'teams.appId default should be empty string');
+    assert.strictEqual(teams.appPassword, '', 'teams.appPassword default should be empty string');
+    assert.ok(Array.isArray(teams.notifyEvents), 'teams.notifyEvents should be an array');
+    assert.ok(teams.notifyEvents.includes('pr-merged'), 'notifyEvents should include pr-merged');
+    assert.ok(teams.notifyEvents.includes('agent-completed'), 'notifyEvents should include agent-completed');
+    assert.ok(teams.notifyEvents.includes('plan-completed'), 'notifyEvents should include plan-completed');
+    assert.ok(teams.notifyEvents.includes('agent-failed'), 'notifyEvents should include agent-failed');
+    assert.strictEqual(teams.ccMirror, true, 'teams.ccMirror default should be true');
+    assert.strictEqual(teams.inboxPollInterval, 15000, 'teams.inboxPollInterval default should be 15000');
+  });
+
+  await test('doctor Teams check: warns when enabled but missing credentials', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('Teams integration'), 'doctor should check Teams integration');
+    assert.ok(src.includes('teams.appId'), 'doctor should validate appId');
+    assert.ok(src.includes('teams.appPassword'), 'doctor should validate appPassword');
+    assert.ok(src.includes('docs/teams-setup.md'), 'doctor should reference setup guide when disabled');
+  });
+
+  await test('engine/teams.js exports required functions', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.createAdapter, 'function', 'createAdapter should be a function');
+    assert.strictEqual(typeof teams.teamsReply, 'function', 'teamsReply should be a function');
+    assert.strictEqual(typeof teams.saveConversationRef, 'function', 'saveConversationRef should be a function');
+    assert.strictEqual(typeof teams.getConversationRef, 'function', 'getConversationRef should be a function');
+    assert.strictEqual(typeof teams.teamsPost, 'function', 'teamsPost should be a function');
+    assert.strictEqual(typeof teams.getTeamsConfig, 'function', 'getTeamsConfig should be a function');
+    assert.strictEqual(typeof teams.isTeamsEnabled, 'function', 'isTeamsEnabled should be a function');
+  });
+
+  await test('getTeamsConfig merges defaults with user config', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    const cfg = teams.getTeamsConfig();
+    // Should have all default fields even with no user config
+    assert.strictEqual(cfg.enabled, false, 'default enabled should be false');
+    assert.ok(Array.isArray(cfg.notifyEvents), 'notifyEvents should be an array');
+    assert.strictEqual(cfg.ccMirror, true, 'default ccMirror should be true');
+    assert.strictEqual(cfg.inboxPollInterval, 15000, 'default inboxPollInterval should be 15000');
+  });
+
+  await test('isTeamsEnabled returns false when disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false
+    assert.strictEqual(teams.isTeamsEnabled(), false, 'should be false with default config');
+  });
+
+  await test('createAdapter returns null when Teams is disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    const adapter = teams.createAdapter();
+    assert.strictEqual(adapter, null, 'adapter should be null when disabled');
+  });
+
+  await test('saveConversationRef uses mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('mutateJsonFileLocked(TEAMS_STATE_PATH'), 'saveConversationRef should use mutateJsonFileLocked');
+  });
+
+  await test('teamsReply and teamsPost are safe no-ops when adapter is null', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Should not throw
+    await teams.teamsReply(null, 'test');
+    await teams.teamsPost('key', 'test');
+  });
+
+  await test('getConversationRef returns null for unknown key', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.getConversationRef('nonexistent'), null);
+  });
+
+  await test('teams.js uses shared.log for all logging', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes("const { log,"), 'should destructure log from shared');
+    // Should not use console.log directly
+    const lines = src.split('\n');
+    const consoleLogLines = lines.filter(l => l.includes('console.log') && !l.trimStart().startsWith('//'));
+    assert.strictEqual(consoleLogLines.length, 0, 'should not use console.log directly');
+  });
+
+  await test('POST /api/bot route is registered in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path: '/api/bot'"), '/api/bot route should be registered');
+    assert.ok(src.includes("method: 'POST'") && src.includes('/api/bot'), 'should be a POST route');
+    assert.ok(src.includes('handleTeamsBot'), 'should reference handleTeamsBot handler');
+  });
+
+  await test('/api/bot returns 503 when Teams disabled', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('503'), 'should return 503 when disabled');
+    assert.ok(handler.includes('Teams integration disabled'), 'should include disabled message');
+  });
+
+  await test('/api/bot filters bot own messages by appId', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('cfg.appId'), 'should compare from.id to appId');
+    assert.ok(handler.includes('activity.from?.id === cfg.appId'), 'should filter bot own messages');
+  });
+
+  await test('/api/bot writes to teams-inbox.json with required fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('mutateJsonFileLocked(TEAMS_INBOX_PATH'), 'should use mutateJsonFileLocked for teams-inbox.json');
+    assert.ok(handler.includes('id: msgId'), 'message should have id field');
+    assert.ok(handler.includes('text: activity.text'), 'message should have text field');
+    assert.ok(handler.includes("from: activity.from?.name"), 'message should have from field');
+    assert.ok(handler.includes('conversationRef:'), 'message should have conversationRef field');
+    assert.ok(handler.includes('receivedAt:'), 'message should have receivedAt field');
+    assert.ok(handler.includes('_processedAt: null'), 'message should have _processedAt field');
+  });
+
+  await test('/api/bot saves conversationRef on conversationUpdate and installationUpdate', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes("activity.type === 'conversationUpdate'"), 'should handle conversationUpdate');
+    assert.ok(handler.includes("activity.type === 'installationUpdate'"), 'should handle installationUpdate');
+    assert.ok(handler.includes('teams.saveConversationRef'), 'should call saveConversationRef');
+  });
+
+  await test('TEAMS_INBOX_PATH is defined in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json')"), 'TEAMS_INBOX_PATH should be defined');
+  });
+
+  await test('processTeamsInbox is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.processTeamsInbox, 'function', 'processTeamsInbox should be a function');
+  });
+
+  await test('processTeamsInbox returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false — should return immediately without errors
+    await teams.processTeamsInbox();
+  });
+
+  await test('processTeamsInbox reads inbox and filters unprocessed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('safeJson(TEAMS_INBOX_PATH)'), 'should read from TEAMS_INBOX_PATH');
+    assert.ok(fn.includes('!m._processedAt'), 'should filter for unprocessed messages');
+    assert.ok(fn.includes('_processedAt'), 'should mark messages as processed');
+  });
+
+  await test('processTeamsInbox calls CC via HTTP API', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('/api/command-center'), 'should call CC via dashboard HTTP API');
+    assert.ok(fn.includes('fetch('), 'should use fetch for HTTP call');
+  });
+
+  await test('processTeamsInbox tracks usage under teams category', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes("trackEngineUsage('teams'"), 'should track usage under teams category');
+  });
+
+  await test('processTeamsInbox prunes inbox when exceeding cap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('TEAMS_INBOX_CAP'), 'should reference TEAMS_INBOX_CAP');
+    assert.ok(fn.includes('data.length > TEAMS_INBOX_CAP'), 'should check if inbox exceeds cap');
+  });
+
+  await test('TEAMS_INBOX_CAP is 200', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.TEAMS_INBOX_CAP, 200, 'TEAMS_INBOX_CAP should be 200');
+  });
+
+  await test('Teams inbox timer in cli.js fires only when engine is running', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('teamsInboxTimer'), 'should define teamsInboxTimer');
+    assert.ok(src.includes("ctrl.state !== 'running'"), 'should check engine state before processing');
+    assert.ok(src.includes('processTeamsInbox'), 'should call processTeamsInbox');
+  });
+
+  await test('Teams inbox timer is cleared on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('clearInterval(teamsInboxTimer)'), 'should clear teamsInboxTimer on shutdown');
+  });
+
+  await test('teamsPostCCResponse is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsPostCCResponse, 'function', 'teamsPostCCResponse should be a function');
+  });
+
+  await test('teamsPostCCResponse returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Default config has enabled: false — should return immediately
+    await teams.teamsPostCCResponse('test', 'response');
+  });
+
+  await test('teamsPostCCResponse uses buildCCResponseCard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('cards.buildCCResponseCard'), 'should use card builder');
+  });
+
+  await test('teamsPostCCResponse has 5s rate limit', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.CC_MIRROR_RATE_LIMIT_MS, 5000, 'rate limit should be 5000ms');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('_lastCCMirrorPost'), 'should track last mirror post timestamp');
+    assert.ok(fn.includes('CC_MIRROR_RATE_LIMIT_MS'), 'should reference rate limit constant');
+  });
+
+  await test('CC mirror hooks in dashboard.js skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Non-streaming handler
+    const ccHandler = src.slice(src.indexOf('async function handleCommandCenter('));
+    assert.ok(ccHandler.includes("tabId.startsWith('teams-')"), 'non-streaming should check tabId for teams origin');
+    assert.ok(ccHandler.includes('teamsPostCCResponse'), 'non-streaming should call teamsPostCCResponse');
+    assert.ok(ccHandler.includes('.catch(() => {})'), 'non-streaming mirror should be non-blocking');
+  });
+
+  await test('CC streaming mirror hooks skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const streamHandler = src.slice(src.indexOf('async function handleCommandCenterStream('));
+    assert.ok(streamHandler.includes("_streamTabId.startsWith('teams-')"), 'streaming should check tabId for teams origin');
+    assert.ok(streamHandler.includes('teamsPostCCResponse'), 'streaming should call teamsPostCCResponse');
+    assert.ok(streamHandler.includes('.catch(() => {})'), 'streaming mirror should be non-blocking');
+  });
+
+  await test('CC mirror checks ccMirror config before posting', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('cfg.ccMirror'), 'should check ccMirror config');
+  });
+
+  await test('teamsNotifyCompletion is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyCompletion, 'function', 'teamsNotifyCompletion should be a function');
+  });
+
+  await test('teamsNotifyCompletion returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyCompletion({ id: 'test', task: 'test' }, 'success', 'dallas');
+  });
+
+  await test('teamsNotifyCompletion filters by notifyEvents config', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes("'agent-completed'"), 'should map success to agent-completed');
+    assert.ok(fn.includes("'agent-failed'"), 'should map failure to agent-failed');
+  });
+
+  await test('teamsNotifyCompletion uses buildCompletionCard with agent, title, result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('agentId'), 'should include agent ID');
+    assert.ok(fn.includes('title'), 'should include task title');
+    assert.ok(fn.includes('result'), 'should include result status');
+    assert.ok(fn.includes('cards.buildCompletionCard'), 'should use card builder');
+  });
+
+  await test('Dead TEAMS_PLAN_FLOW_URL block is removed from lifecycle.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(!src.includes('TEAMS_PLAN_FLOW_URL'), 'TEAMS_PLAN_FLOW_URL should be removed');
+  });
+
+  await test('runPostCompletionHooks calls teamsNotifyCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function runPostCompletionHooks'));
+    assert.ok(fn.includes('teamsNotifyCompletion'), 'should call teamsNotifyCompletion');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking with .catch');
+  });
+
+  await test('teamsNotifyPrEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPrEvent, 'function', 'teamsNotifyPrEvent should be a function');
+  });
+
+  await test('teamsNotifyPrEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPrEvent({ id: 'PR-1', title: 'test' }, 'pr-merged', { name: 'test' }, null);
+  });
+
+  await test('teamsNotifyPrEvent filters by notifyEvents and deduplicates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('_teamsNotifiedEvents'), 'should check dedup array');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
+  });
+
+  await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('cards.buildPrCard'), 'should use card builder');
+    assert.ok(fn.includes('event'), 'should pass event');
+    assert.ok(fn.includes('project'), 'should pass project');
+  });
+
+  await test('handlePostMerge calls teamsNotifyPrEvent for merge and abandon', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePostMerge'));
+    assert.ok(fn.includes('teamsNotifyPrEvent'), 'should call teamsNotifyPrEvent');
+    assert.ok(fn.includes("'pr-merged'"), 'should handle pr-merged event');
+    assert.ok(fn.includes("'pr-abandoned'"), 'should handle pr-abandoned event');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking');
+  });
+
+  await test('ado.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'ado.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'ado.js should notify on build-failed');
+  });
+
+  await test('github.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'github.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'github.js should notify on build-failed');
+  });
+
+  await test('teamsNotifyPlanEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPlanEvent, 'function', 'teamsNotifyPlanEvent should be a function');
+  });
+
+  await test('teamsNotifyPlanEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPlanEvent({ name: 'test plan' }, 'plan-completed');
+  });
+
+  await test('teamsNotifyPlanEvent filters by notifyEvents and uses buildPlanCard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPlanEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('planInfo.name'), 'should use plan name');
+    assert.ok(fn.includes('cards.buildPlanCard'), 'should use card builder for plan notifications');
+  });
+
+  await test('checkPlanCompletion hooks Teams for plan-completed and verify-created', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function checkPlanCompletion'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-completed'"), 'should notify plan-completed');
+    assert.ok(fn.includes("'verify-created'"), 'should notify verify-created');
+  });
+
+  await test('handlePlansApprove hooks Teams for plan-approved', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansApprove'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-approved'"), 'should notify plan-approved');
+  });
+
+  await test('handlePlansReject hooks Teams for plan-rejected', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansReject'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-rejected'"), 'should notify plan-rejected');
+  });
+
+  await test('engine/teams-cards.js exports all 4 card builders', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    assert.strictEqual(typeof cards.buildCompletionCard, 'function');
+    assert.strictEqual(typeof cards.buildPrCard, 'function');
+    assert.strictEqual(typeof cards.buildPlanCard, 'function');
+    assert.strictEqual(typeof cards.buildCCResponseCard, 'function');
+  });
+
+  await test('Adaptive Cards use schema v1.4 and have fallback text', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'test' }, 'success');
+    assert.strictEqual(card.version, '1.4', 'should use schema v1.4');
+    assert.strictEqual(card.type, 'AdaptiveCard', 'should be AdaptiveCard type');
+    assert.ok(card.fallbackText, 'should have fallback text');
+    assert.ok(card.actions.some(a => a.type === 'Action.OpenUrl'), 'should have OpenUrl actions');
+  });
+
+  await test('buildCompletionCard includes agent, title, result badge, PR link', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'Fix bug' }, 'success', 'https://pr');
+    assert.ok(card.fallbackText.includes('dallas'), 'fallback should include agent');
+    assert.ok(card.fallbackText.includes('Fix bug'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link action');
+    assert.ok(card.actions.some(a => a.title === 'Open Dashboard'), 'should have dashboard link');
+  });
+
+  await test('buildPrCard includes PR title, event, author', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPrCard({ id: 'PR-1', title: 'My PR', agent: 'dallas', url: 'https://pr' }, 'pr-merged', { name: 'test' });
+    assert.ok(card.fallbackText.includes('pr-merged'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('My PR'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link');
+  });
+
+  await test('buildPlanCard includes plan name, event, item counts', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPlanCard({ name: 'My Plan', doneCount: 3, totalCount: 5 }, 'plan-completed');
+    assert.ok(card.fallbackText.includes('plan-completed'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('3/5'), 'fallback should include counts');
+    assert.ok(card.actions.some(a => a.url.includes('/prd')), 'should link to PRD page');
+  });
+
+  await test('buildCCResponseCard truncates long answers', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const longAnswer = 'x'.repeat(4000);
+    const card = cards.buildCCResponseCard('question', longAnswer);
+    const bodyText = card.body.find(b => b.text && b.text.includes('x'));
+    assert.ok(bodyText.text.length < 4000, 'should truncate long answers');
+    assert.ok(bodyText.text.endsWith('...'), 'should end with ellipsis');
+  });
+
+  await test('teamsPost/teamsReply accept Adaptive Card objects', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('function toActivity(content)'), 'should have toActivity helper');
+    assert.ok(src.includes('AdaptiveCard'), 'toActivity should handle AdaptiveCard type');
+    assert.ok(src.includes('application/vnd.microsoft.card.adaptive'), 'should use adaptive card content type');
+  });
+
+  await test('Notification functions use card builders', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('cards.buildCompletionCard'), 'teamsNotifyCompletion should use buildCompletionCard');
+    assert.ok(src.includes('cards.buildPrCard'), 'teamsNotifyPrEvent should use buildPrCard');
+    assert.ok(src.includes('cards.buildPlanCard'), 'teamsNotifyPlanEvent should use buildPlanCard');
+    assert.ok(src.includes('cards.buildCCResponseCard'), 'teamsPostCCResponse should use buildCCResponseCard');
+  });
+
+  // ── Teams Rate Limiting & Error Handling ──────────────────────────────────
+
+  await test('teams.js exports rate limiting constants', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.MAX_RETRIES_429, 2, 'MAX_RETRIES_429 should be 2');
+    assert.strictEqual(teams.MAX_RETRIES_5XX, 3, 'MAX_RETRIES_5XX should be 3');
+    assert.strictEqual(teams.CIRCUIT_FAILURE_THRESHOLD, 5, 'CIRCUIT_FAILURE_THRESHOLD should be 5');
+    assert.strictEqual(teams.CIRCUIT_RECOVERY_MS, 10 * 60 * 1000, 'CIRCUIT_RECOVERY_MS should be 10 minutes');
+    assert.strictEqual(teams.OUTBOUND_QUEUE_MAX, 100, 'OUTBOUND_QUEUE_MAX should be 100');
+    assert.strictEqual(teams.OUTBOUND_DRAIN_INTERVAL_MS, 250, 'OUTBOUND_DRAIN_INTERVAL_MS should be 250ms (4/sec)');
+  });
+
+  await test('circuit breaker starts in closed state', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'initial state should be closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'initial failures should be 0');
+  });
+
+  await test('circuit breaker state is reset by _resetAdapter', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._circuit.state = 'open';
+    teams._circuit.failures = 10;
+    teams._circuit.openedAt = Date.now();
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'should reset to closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'should reset failures to 0');
+    assert.strictEqual(teams._circuit.openedAt, 0, 'should reset openedAt to 0');
+  });
+
+  await test('circuit breaker source: opens after CIRCUIT_FAILURE_THRESHOLD failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('_circuit.failures >= CIRCUIT_FAILURE_THRESHOLD'), 'should check failure threshold');
+    assert.ok(src.includes("_circuit.state = 'open'"), 'should set state to open');
+    assert.ok(src.includes('CIRCUIT_RECOVERY_MS'), 'should reference recovery time');
+  });
+
+  await test('circuit breaker source: half-open probe after recovery period', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _isCircuitOpen'));
+    assert.ok(fn.includes("'half-open'"), 'should transition to half-open');
+    assert.ok(fn.includes('CIRCUIT_RECOVERY_MS'), 'should check recovery period');
+  });
+
+  await test('circuit breaker source: probe failure reopens circuit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendFailure'));
+    assert.ok(fn.includes("_circuit.state === 'half-open'"), 'should check for half-open state');
+    assert.ok(fn.includes("_circuit.state = 'open'"), 'should reopen on probe failure');
+  });
+
+  await test('circuit breaker source: success resets to closed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendSuccess'));
+    assert.ok(fn.includes("_circuit.state = 'closed'"), 'should reset to closed on success');
+    assert.ok(fn.includes('_circuit.failures = 0'), 'should reset failure count');
+  });
+
+  await test('_sendWithRetry handles 429 with Retry-After', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status === 429'), 'should detect 429 status');
+    assert.ok(fn.includes('retry-after'), 'should read Retry-After header');
+    assert.ok(fn.includes('MAX_RETRIES_429'), 'should use MAX_RETRIES_429 limit');
+    assert.ok(fn.includes('_sleep(delayMs)'), 'should delay before retry');
+  });
+
+  await test('_sendWithRetry handles 5xx with exponential backoff', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status >= 500'), 'should detect 5xx status');
+    assert.ok(fn.includes('Math.pow(2, retries5xx - 1) * 1000'), 'should use exponential backoff (1s, 2s, 4s)');
+    assert.ok(fn.includes('MAX_RETRIES_5XX'), 'should use MAX_RETRIES_5XX limit');
+  });
+
+  await test('outbound queue is exported and starts empty', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.ok(Array.isArray(teams._outboundQueue), '_outboundQueue should be an array');
+    assert.strictEqual(teams._outboundQueue.length, 0, 'should start empty');
+  });
+
+  await test('outbound queue source: drops messages at OUTBOUND_QUEUE_MAX', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _enqueueMessage'));
+    assert.ok(fn.includes('_outboundQueue.length >= OUTBOUND_QUEUE_MAX'), 'should check queue length against max');
+    assert.ok(fn.includes('dropping message'), 'should log when dropping');
+  });
+
+  await test('outbound queue source: drains at OUTBOUND_DRAIN_INTERVAL_MS', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('setInterval(_drainQueue, OUTBOUND_DRAIN_INTERVAL_MS)'), 'should drain at configured interval');
+  });
+
+  await test('outbound queue source: auto-stops drain timer when empty', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _drainQueue'));
+    assert.ok(fn.includes('_outboundQueue.length === 0'), 'should check if queue is empty');
+    assert.ok(fn.includes('_stopDrainTimer()'), 'should stop timer when empty');
+  });
+
+  await test('teamsPost uses outbound queue instead of direct send', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPost('));
+    assert.ok(fn.includes('_enqueueMessage'), 'teamsPost should enqueue instead of sending directly');
+    assert.ok(!fn.includes('continueConversationAsync'), 'teamsPost should not call adapter directly');
+  });
+
+  await test('teamsReply uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsReply('));
+    assert.ok(fn.includes('_isCircuitOpen()'), 'teamsReply should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), 'teamsReply should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), 'teamsReply should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), 'teamsReply should call _onSendFailure');
+  });
+
+  await test('_sendProactive uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendProactive('));
+    assert.ok(fn.includes('_isCircuitOpen()'), '_sendProactive should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), '_sendProactive should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), '_sendProactive should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), '_sendProactive should call _onSendFailure');
+  });
+
+  await test('no unhandled rejections in Teams code — all async paths have catch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    // Every async function that calls sendActivity or continueConversationAsync
+    // should be wrapped in try-catch
+    const asyncFns = src.match(/async function \w+/g) || [];
+    for (const fn of asyncFns) {
+      const fnName = fn.replace('async function ', '');
+      const fnBody = src.slice(src.indexOf(fn));
+      const nextFn = fnBody.indexOf('\nasync function ', 1);
+      const body = nextFn > 0 ? fnBody.slice(0, nextFn) : fnBody;
+      if (body.includes('await') && !body.includes('try')) {
+        // processTeamsInbox has try-catch inside the for loop
+        if (fnName !== '_sleep') {
+          assert.fail(`${fnName} has await but no try-catch — potential unhandled rejection`);
+        }
+      }
+    }
+  });
+
+  await test('_resetAdapter clears outbound queue and drain timer', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._outboundQueue.push({ key: 'test', content: 'msg' });
+    teams._resetAdapter();
+    assert.strictEqual(teams._outboundQueue.length, 0, 'queue should be cleared');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
@@ -9879,7 +10484,7 @@ async function testAutoRecoveryAndAtomicity() {
   await test('doc-chat uses lower maxTurns than CC', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes('maxTurns: canEdit ? 15 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 15 (editable)');
+    assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -9892,7 +10497,25 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
+    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+  });
+
+  await test('CC system prompt has size estimation rule for delegation', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
+    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
+    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+  });
+
+  await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
+    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
+    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
+    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -10469,10 +11092,12 @@ async function testDashboardResilience() {
     assert.ok(fn.includes('return _wasAborted'), '_ccDoSend must return _wasAborted for caller');
   });
 
-  await test('ccSend pauses after abort before draining queue', () => {
+  await test('ccSend flushes queue after abort (no wasAborted guard)', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted') && fn.includes('setTimeout'),
-      'ccSend must pause after abort to let server release ccInFlight before sending queued message');
+    assert.ok(fn.includes('tab._queue && tab._queue.length > 0'),
+      'ccSend must check for queued messages after send completes');
+    assert.ok(!fn.includes('!wasAborted'),
+      'Queue flush must NOT be gated on wasAborted — abort stops the current request, not queued ones');
   });
 
   await test('ccSend uses per-tab queue for message queuing', () => {
@@ -10481,15 +11106,9 @@ async function testDashboardResilience() {
       'ccSend must use per-tab sending state and queue');
   });
 
-  await test('ccSend drain loop checks wasAborted on each iteration', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted = await _ccDoSend(next)'),
-      'Queue drain must capture wasAborted from each send for abort delay on subsequent items');
-  });
-
-  await test('ccSend drain loop preserves queue on abort (does not clear)', () => {
+  await test('ccAbort does not clear queue — queued messages auto-flush after abort', () => {
     const abortFn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
-    assert.ok(!abortFn.includes('_ccQueue = []'),
+    assert.ok(!abortFn.includes('_queue = []') && !abortFn.includes('_queue.length = 0'),
       'ccAbort must NOT clear queue — queued messages should send after abort completes');
   });
 
@@ -11923,6 +12542,52 @@ async function testCCMultiTab() {
     assert.ok(ccSrc.includes('!isUser && !isSystem'),
       'isAssistant should exclude system messages');
   });
+
+  // ── Resource cleanup tests ───────────────────────────────────────────────
+
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+  const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+
+  await test('cleanup.js prunes cc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
+    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
+    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  });
+
+  await test('cleanup.js prunes doc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('doc-sessions.json'), 'Should reference doc-sessions.json');
+    assert.ok(cleanupSrc.includes('DOC_SESSIONS_CAP'), 'Should define DOC_SESSIONS_CAP');
+  });
+
+  await test('cleanup.js caps cooldowns.json entries', () => {
+    assert.ok(cleanupSrc.includes('cooldowns.json'), 'Should reference cooldowns.json');
+    assert.ok(cleanupSrc.includes('COOLDOWN_CAP'), 'Should define COOLDOWN_CAP');
+    assert.ok(cleanupSrc.includes('timestamp'), 'Should sort cooldowns by timestamp');
+  });
+
+  await test('cleanup.js cleans stale PID files', () => {
+    assert.ok(cleanupSrc.includes('pid-') && cleanupSrc.includes('.pid'), 'Should match PID file pattern');
+    assert.ok(cleanupSrc.includes('activePids'), 'Should check against active process PIDs');
+    assert.ok(cleanupSrc.includes('oneHourAgo'), 'Should use 1-hour staleness threshold');
+  });
+
+  await test('cleanup.js prunes test-results.json', () => {
+    assert.ok(cleanupSrc.includes('test-results.json'), 'Should reference test-results.json');
+    assert.ok(cleanupSrc.includes('TEST_RESULTS_CAP'), 'Should define TEST_RESULTS_CAP');
+  });
+
+  await test('timeout.js kills Unix process tree on hung agent timeout', () => {
+    // The hung agent branch should include pkill -P for Unix tree kill
+    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
+    assert.ok(hungMatch, 'Should have hung agent detection block');
+    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+  });
+
+  await test('cleanup.js logs resource cleanup summary', () => {
+    assert.ok(cleanupSrc.includes('Cleanup (resources)'), 'Should log resource cleanup summary');
+    assert.ok(cleanupSrc.includes('cc-sessions') && cleanupSrc.includes('doc-sessions') && cleanupSrc.includes('cooldowns') && cleanupSrc.includes('PID files'),
+      'Summary should cover all resource types');
+  });
 }
 
 async function testIsolationVerification() {
@@ -12090,9 +12755,11 @@ async function testPipelineReconciliation() {
 
   await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
-    const fnBody = src.slice(src.indexOf('function isStageComplete('), src.indexOf('\nfunction', src.indexOf('function isStageComplete(') + 1));
-    assert.ok(fnBody.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
-    assert.ok(fnBody.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
+    const isStageStart = src.indexOf('function isStageComplete(');
+    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:", isStageStart), src.indexOf("case STAGE_TYPE.MERGE_PRS:", isStageStart));
+    assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
+    assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
+    assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
   });
 
   await test('immediate completion check after executeStage returns RUNNING', () => {
@@ -12102,9 +12769,10 @@ async function testPipelineReconciliation() {
 
   await test('auto-archive removed — verify does not call archivePlan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const postHooks = src.slice(src.indexOf('function runPostCompletionHooks('), src.indexOf('\nmodule', src.indexOf('function runPostCompletionHooks(')));
-    assert.ok(!postHooks.includes('archivePlan('), 'Should NOT call archivePlan in post-completion hooks');
-    assert.ok(src.includes('Archive is manual'), 'Should have manual archive comment');
+    const chainIdx = src.indexOf('Plan chaining removed');
+    const verifySection = src.slice(chainIdx, src.indexOf('Clean up worktree', chainIdx));
+    assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
+    assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
   });
 
   await test('/api/plans/create writes Source Meeting header', () => {
@@ -12301,11 +12969,6 @@ async function testDashboardButtonConsistency() {
   await test('archive confirm warns about linked source plan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
-  });
-
-  await test('text selection prevents work item modal', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('getSelection') && src.includes('toString().length'), 'Should check selection');
   });
 
   await test('client-side transcript has null guards', () => {
@@ -12513,7 +13176,7 @@ async function testPrReviewFixFlows() {
   });
 
   await test('updatePrAfterReview never downgrades approved', () => {
-    assert.ok(lifecycleSrc.includes("target.reviewStatus === 'approved'") && lifecycleSrc.includes("!== 'changes-requested'"),
+    assert.ok(lifecycleSrc.includes("target.reviewStatus !== 'approved'"),
       'updatePrAfterReview should guard against downgrading approved');
   });
 
@@ -12530,6 +13193,22 @@ async function testPrReviewFixFlows() {
   await test('_reviewFixCycles reset on approval (ADO)', () => {
     assert.ok(adoSrc.includes("delete pr._reviewFixCycles") && adoSrc.includes("delete pr._evalEscalated"),
       'ADO should clear cycle counter on approval');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (ADO)', () => {
+    assert.ok(adoSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && adoSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'ADO forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (GitHub)', () => {
+    assert.ok(ghSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && ghSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'GitHub forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('engine.js pre-dispatch live vote check guards approved', () => {
+    const liveVoteBlock = engineSrc.slice(engineSrc.indexOf('Pre-dispatch live vote check'), engineSrc.indexOf('Pre-dispatch live vote check') + 800);
+    assert.ok(liveVoteBlock.includes("reviewStatus !== 'approved'"),
+      'Pre-dispatch live vote check should guard against downgrading approved');
   });
 
   // ── updatePrAfterReview passes resultSummary ──

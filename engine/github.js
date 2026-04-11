@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -164,7 +164,7 @@ async function forEachActiveGhPr(config, callback) {
     if (isSlugInBackoff(slug)) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
+    const activePrs = prs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
 
     // Probe repo accessibility before iterating PRs — avoids N warnings per inaccessible repo
@@ -194,7 +194,13 @@ async function forEachActiveGhPr(config, callback) {
         // Merge back updated PRs and deduplicate
         for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
-          if (idx >= 0) currentPrs[idx] = updatedPr;
+          if (idx >= 0) {
+            // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
+            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
+              updatedPr.reviewStatus = 'approved';
+            }
+            currentPrs[idx] = updatedPr;
+          }
         }
         // Remove duplicates — prefer merged/abandoned over active
         const bestById = new Map();
@@ -214,7 +220,7 @@ async function forEachActiveGhPr(config, callback) {
   // Also poll manually-linked PRs from central pull-requests.json (extract slug from URL)
   const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
   const centralPrs = safeJson(centralPath) || [];
-  const activeCentral = centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE && pr.url);
+  const activeCentral = centralPrs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status) && pr.url);
   let centralUpdated = 0;
   for (const pr of activeCentral) {
     const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
@@ -348,21 +354,7 @@ async function pollPrStatus(config) {
         log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
         pr.reviewStatus = newReviewStatus;
         updated = true;
-        // Update author metrics when verdict changes to approved/rejected
-        if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
-          const authorId = (pr.agent || '').toLowerCase();
-          if (authorId) {
-            try {
-              const metricsPath = path.join(__dirname, 'metrics.json');
-              mutateJsonFileLocked(metricsPath, (metrics) => {
-                if (!metrics[authorId]) metrics[authorId] = {};
-                if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-                else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-                return metrics;
-              });
-            } catch (err) { log('warn', `Metrics update: ${err.message}`); }
-          }
-        }
+        shared.trackReviewMetric(pr, newReviewStatus, config);
         // Reset review→fix cycle counter on approval (loop succeeded)
         if (newReviewStatus === 'approved') {
           delete pr._reviewFixCycles;
@@ -419,6 +411,13 @@ async function pollPrStatus(config) {
               pr.buildErrorLog = errorLog;
               log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
             }
+
+            // Teams notification for build failure — non-blocking
+            try {
+              const teams = require('./teams');
+              const prFilePath = shared.projectPrPath(project);
+              teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+            } catch {}
           }
         }
       }

@@ -316,6 +316,12 @@ function checkTimeouts(config) {
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
         shared.killGracefully(procInfo.proc, 5000);
+        // On Unix, also kill child process tree (killGracefully only hits parent PID)
+        if (process.platform !== 'win32' && procInfo.proc?.pid) {
+          setTimeout(() => {
+            try { shared.exec(`pkill -KILL -P ${procInfo.proc.pid}`, { timeout: 3000 }); } catch { /* children may already be dead */ }
+          }, 6000); // after grace period
+        }
         activeProcesses.delete(item.id);
       }
       // Clear session so retry starts fresh instead of resuming the killed session
