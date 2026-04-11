@@ -411,7 +411,8 @@ function openPipelineDetail(id) {
       }
       fetch('/api/pipelines').then(function(r) { return r.json(); }).then(function(d) {
         if (_pipelinePollId !== id) return;
-        var fresh = (d.pipelines || []).find(function(x) { return x.id === id; });
+        var list = Array.isArray(d) ? d : (d.pipelines || []);
+        var fresh = list.find(function(x) { return x.id === id; });
         if (fresh) {
           // Only re-render if data changed
           var newHash = JSON.stringify({ runs: fresh.runs || [], enabled: fresh.enabled, _stoppedBy: fresh._stoppedBy, _stopReason: fresh._stopReason });
@@ -435,10 +436,11 @@ async function _refreshPipelineDetail(id) {
   try {
     var res = await fetch('/api/pipelines');
     var d = await res.json();
-    var fresh = (d.pipelines || []).find(function(x) { return x.id === id; });
+    var list = Array.isArray(d) ? d : (d.pipelines || []);
+    var fresh = list.find(function(x) { return x.id === id; });
     if (fresh) {
       _pipelinesData = _pipelinesData.map(function(x) { return x.id === id ? fresh : x; });
-      _pipelinePollHash = JSON.stringify(fresh.runs || []);
+      _pipelinePollHash = JSON.stringify({ runs: fresh.runs || [], enabled: fresh.enabled, _stoppedBy: fresh._stoppedBy, _stopReason: fresh._stopReason });
       openPipelineDetail(id);
     }
   } catch (e) { /* silent — next poll will catch up */ }
