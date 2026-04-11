@@ -149,8 +149,13 @@ const PLAN_STATUS = {
   COMPLETED, REVISION_REQUESTED
 };
 
+// PRD item statuses (for plan-to-prd flow)
+const PRD_ITEM_STATUS = { MISSING, UPDATED, DONE };
+const PRD_MATERIALIZABLE = new Set([MISSING, UPDATED]); // items the materializer acts on
+
 // PR statuses
-const PR_STATUS = { ACTIVE, MERGED, ABANDONED, CLOSED };
+const PR_STATUS = { ACTIVE, MERGED, ABANDONED, CLOSED, LINKED };
+const PR_POLLABLE_STATUSES = new Set([ACTIVE, LINKED]); // polled for status/build/comments
 
 // Dispatch results
 const DISPATCH_RESULT = { SUCCESS, ERROR, TIMEOUT };
@@ -211,6 +216,25 @@ Valid statuses: `pending`, `dispatched`, `done`, `failed`, `paused`, `queued`, `
 5. Engine spawns agents per item, merging dependency branches into worktrees before start
 6. When all items done → verify task auto-created → agent builds, tests, writes testing guide, creates E2E PR
 7. **After verify completes** → plan archived to `prd/archive/` (not before — artifacts must exist first)
+
+## Plan Resume (Diff-Aware PRD Updates)
+
+When a completed/approved plan's source `.md` is edited, the engine flags the PRD as `planStale`. The dashboard shows a stale banner with three options:
+
+- **Regenerate PRD**: Dispatches a diff-aware `plan-to-prd` agent (via `queuePlanToPrd()` in shared.js). Agent reads updated plan + existing PRD, compares, and writes updated PRD with: unchanged done items → `"done"`, modified items → `"updated"`, new items → `"missing"`, removed items → dropped. Triggered by `mode: diff-aware-update` marker in the work item description (playbook checks for this).
+- **Resume as-is**: Clears `planStale`, approves the plan. No agent dispatched — materializer uses existing PRD items as-is.
+- **Per-item "re-open" button**: Deterministic fallback. Sets individual done items to `"updated"` via `/api/prd-items/update`, also clears `planStale` via `/api/plans/approve`.
+
+The materializer handles the PRD item statuses:
+- `"missing"` → creates new work item
+- `"updated"` → re-opens existing done work item (resets to pending with `_reopened` flag, dispatches to existing branch)
+- `"done"` → untouched
+
+Only `PRD_ITEM_STATUS.UPDATED` triggers re-open — `MISSING` items with a coincidentally same-ID done WI are skipped, not re-opened. Cross-project re-opens are deferred outside the lock to avoid nested lock violations.
+
+Key helpers: `buildWiDescription(item, planFile)` for consistent WI description building, `queuePlanToPrd()` for atomic dedup-inside-lock dispatch (used by all plan-to-prd paths).
+
+Only one verify WI per PRD at a time. If a verify is already pending/dispatched, skip. If done/failed and PRD re-completes, re-open the existing verify instead of creating a duplicate.
 
 ## Verify Workflow
 
@@ -276,6 +300,20 @@ Playbooks must be **platform-agnostic** — never hardcode build commands, langu
 ## Skills
 
 Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. Agents can auto-extract skills from their output using ` ```skill ` fenced blocks — the engine picks these up and writes them to the skills directory.
+
+## PR Review Protection
+
+`reviewStatus: 'approved'` is a **permanent terminal state** — no code path may ever downgrade it. Guards exist in:
+- ADO/GitHub pollers: `if (pr.reviewStatus === 'approved') { newReviewStatus = 'approved'; }` — first check, before any vote computation
+- PR persistence (merge-back): before replacing on-disk PR with in-memory copy, preserve `approved` from disk if stale in-memory copy lost it
+- Pre-dispatch live vote check: `if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus`
+- `updatePrAfterReview` / `updatePrAfterFix`: guard before any write
+
+ADO vote re-approval: when ADO resets votes because target branch (master) moved but source branch is unchanged (`_adoSourceCommit` didn't change), the engine re-applies the approval vote via ADO API.
+
+ADO comment poller: only processes `active` (1) and `pending` (6) threads — skips resolved/closed/fixed/wontFix threads. Per-agent review metrics tracked via `trackReviewMetric()` in shared.js (only for configured agents).
+
+Context-only PRs: PRs with `_contextOnly: true` are polled (status, votes, builds) but never dispatched for review/fix. Set via dashboard "Link PR" with `autoObserve: false`. `PR_POLLABLE_STATUSES` includes both `ACTIVE` and `LINKED`.
 
 ## ADO Integration
 
@@ -389,7 +427,7 @@ When a PR's build fails, the engine writes an inbox alert to the author agent wi
 
 ## Testing
 
-- **Unit tests** (`test/unit.test.js`): Custom async runner, 980+ tests, no external deps. Uses `createTmpDir()` for isolation.
+- **Unit tests** (`test/unit.test.js`): Custom async runner, 1400+ tests, no external deps. Uses `createTmpDir()` for isolation.
 - **Integration tests** (`test/minions-tests.js`): HTTP client hitting dashboard API. Requires dashboard running.
 - **E2E tests** (`test/playwright/dashboard.spec.js`): Playwright browser tests against live dashboard.
 
@@ -414,6 +452,12 @@ When a PR's build fails, the engine writes an inbox alert to the author agent wi
 9. **Deferred archiving**: Plans are archived only after verify completes (not on plan completion). This ensures E2E PRs and testing guides exist before archiving.
 
 10. **Test before pushing**: Run `npm test` — target 0 failures. Tests use source-code string matching, so when replacing strings with constants, update the corresponding test assertions.
+
+11. **Optimistic UI updates**: All dashboard button actions show success toast BEFORE the API call, then show error toast on failure (overwrites the success). Use `showToast('cmd-toast', msg, true)` for success, `showToast('cmd-toast', msg, false)` for error. Never use `alert()` for post-API errors — use `showToast`. Keep `alert()` only for pre-API validation ("Title required").
+
+12. **Use `insertAdjacentHTML` not `innerHTML +=`**: In dashboard JS, appending to thread/list elements must use `el.insertAdjacentHTML('beforeend', html)` to avoid DOM rebuild and event listener breakage.
+
+13. **CC streaming: strip ===ACTIONS=== server-side**: The `onChunk` callback in the SSE streaming path strips `===ACTIONS===` before sending to the client. Don't add client-side stripping — the server handles it.
 
 ## After Every Code Change
 
