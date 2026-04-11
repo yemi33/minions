@@ -1097,6 +1097,95 @@ async function ccExecuteAction(action, targetTabId) {
         refresh();
         break;
       }
+      // ── High-impact gaps ──
+      case 'continue-pipeline': {
+        await _ccFetch('/api/pipelines/continue', { id: action.id });
+        status.innerHTML = '&#10003; Pipeline continued: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'work-item-feedback': {
+        await _ccFetch('/api/work-items/feedback', { id: action.id, rating: action.rating || 'up', comment: action.comment || '' });
+        status.innerHTML = '&#10003; Feedback submitted for: <strong>' + escHtml(action.id) + '</strong> (' + escHtml(action.rating || 'up') + ')';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'archive-work-item': {
+        await _ccFetch('/api/work-items/archive', { id: action.id });
+        status.innerHTML = '&#10003; Work item archived: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'reopen-prd-item': {
+        await _ccFetch('/api/prd-items/update', { id: action.id, file: action.file, status: 'updated' });
+        status.innerHTML = '&#10003; PRD item reopened: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'promote-to-kb': {
+        await _ccFetch('/api/inbox/promote-kb', { file: action.file, category: action.category || 'project-notes' });
+        status.innerHTML = '&#10003; Promoted to KB: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      // ── Lower-priority gaps ──
+      case 'revise-plan': {
+        await _ccFetch('/api/plans/revise', { file: action.file, feedback: action.feedback || action.description, requestedBy: 'command-center' });
+        status.innerHTML = '&#10003; Plan revision dispatched: <strong>' + escHtml(action.file) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
+      case 'kb-sweep': {
+        await _ccFetch('/api/knowledge/sweep', {});
+        status.innerHTML = '&#10003; KB sweep triggered';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'toggle-kb-pin': {
+        await _ccFetch('/api/kb-pins/toggle', { key: action.key });
+        status.innerHTML = '&#10003; KB pin toggled: <strong>' + escHtml(action.key) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'add-project': {
+        await _ccFetch('/api/projects/add', { localPath: action.localPath, name: action.name || '', repoHost: action.repoHost || 'github' });
+        status.innerHTML = '&#10003; Project added: <strong>' + escHtml(action.name || action.localPath) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'restart-engine': {
+        await _ccFetch('/api/engine/restart', {});
+        status.innerHTML = '&#10003; Engine restart requested';
+        status.style.color = 'var(--green)';
+        break;
+      }
+      case 'delete-pr': {
+        await _ccFetch('/api/pull-requests/delete', { id: action.id, project: action.project || '' });
+        status.innerHTML = '&#10003; PR unlinked: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'unarchive-meeting': {
+        await _ccFetch('/api/meetings/unarchive', { id: action.id });
+        status.innerHTML = '&#10003; Meeting unarchived: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        refresh();
+        break;
+      }
+      case 'reset-settings': {
+        await _ccFetch('/api/settings/reset', {});
+        status.innerHTML = '&#10003; Settings reset to defaults';
+        status.style.color = 'var(--green)';
+        break;
+      }
       default:
         status.innerHTML = '? Unknown action: ' + escHtml(action.type);
         status.style.color = 'var(--muted)';

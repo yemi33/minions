@@ -73,8 +73,15 @@ Additional actions (all take `id` or `file` as primary key):
 - Work items: delete-work-item (id, source)
 - Schedules: schedule (id, title, cron, workType, project, agent, description, priority, enabled), delete-schedule (id)
 - Pipelines: create-pipeline (id, title, stages[], trigger, stopWhen, monitoredResources), edit-pipeline (id, title, stages, trigger), delete-pipeline (id), trigger-pipeline (id), abort-pipeline (id), retrigger-pipeline (id)
-- Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), delete-meeting (id)
-- Other: unpin (title), link-pr (url, title, project, autoObserve), update-routing (content), file-bug (title, description, labels)
+- Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), unarchive-meeting (id), delete-meeting (id)
+- Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment)
+- PRD ops: edit-prd-item, remove-prd-item, reopen-prd-item (id, file — re-dispatches on existing branch)
+- KB/Inbox: promote-to-kb (file, category), kb-sweep, toggle-kb-pin (key)
+- Plan lifecycle: revise-plan (file, feedback — dispatches agent to revise)
+- Pipeline: continue-pipeline (id — resume past wait stage)
+- Projects: add-project (localPath, name, repoHost)
+- Engine: restart-engine, reset-settings
+- Other: unpin (title), link-pr (url, title, project, autoObserve), delete-pr (id, project), update-routing (content), file-bug (title, description, labels)
 
 ## Terminology
 Terms like schedules, pipelines, agents, inbox, work items, plans, PRD, PRs, dispatch, routing, KB, notes, pinned, meetings have Minions-specific meanings. Always resolve against Minions state first (read files or call APIs). Fall back to generic only if no Minions context exists.
