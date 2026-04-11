@@ -40,26 +40,28 @@ Use subagents only for genuinely parallel, independent tasks (e.g., reviewing un
    - Verdict: **APPROVE**
    - Note any minor non-blocking suggestions
 
-## Post Review — Comment AND Vote on PR
+## Post Review — Two required actions, both mandatory
 
-Do both of the following:
+You MUST complete BOTH steps below. The review is NOT done until both are confirmed. A comment without a vote is an incomplete review.
 
-### Step 1: Leave a detailed review comment
+### Step 1: Post a detailed review comment
 
 {{pr_comment_instructions}}
-- pullRequestId: `{{pr_number}}`
 - content: Your full review with verdict, findings, and sign-off
 - Sign: `Review by Minions ({{agent_name}} — {{agent_role}})`
 
-### Step 2: Set your vote on the PR
+### Step 2: Submit a formal review vote — THIS IS REQUIRED
+
+**This is a separate action from Step 1.** Posting a comment does NOT submit a vote. You must explicitly run the vote command:
 
 {{pr_vote_instructions}}
-- pullRequestId: `{{pr_number}}`
-- If your verdict is **APPROVE**: vote `10` (approved)
-- If your verdict is **REQUEST_CHANGES**: vote `-10` (rejected)
-- If you have minor non-blocking suggestions: vote `5` (approved with suggestions)
+- If your verdict is **APPROVE**: use `--approve`
+- If your verdict is **REQUEST_CHANGES**: use `--request-changes`
+- If you have minor non-blocking suggestions only: use `--approve` with a note
 
-This vote is visible to human reviewers in the PR UI and helps them understand the minions's assessment.
+**Do not stop after Step 1.** The task is incomplete until Step 2 is done.
+
+After running the vote command, confirm it succeeded (check the command output for errors). If it fails, retry once.
 
 ## Handling Merge Conflicts
 If you encounter merge conflicts (e.g., the PR shows conflicts):
@@ -69,5 +71,9 @@ If you encounter merge conflicts (e.g., the PR shows conflicts):
 
 ## When to Stop
 
-Your task is complete once you have: (1) posted your review comment on the PR, and (2) cast your vote. Do NOT continue reading unrelated files or performing additional analysis. Stop after voting.
+Your task is complete only when BOTH of these are true:
+1. Review comment posted (Step 1)
+2. Formal vote submitted via `gh pr review --approve` or `--request-changes` (Step 2)
+
+Do NOT stop after only posting a comment. Do NOT continue reading unrelated files after voting.
 
