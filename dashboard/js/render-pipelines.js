@@ -502,7 +502,7 @@ async function _continuePipeline(id, stageId, btn) {
     var res = await fetch('/api/pipelines/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, stageId: stageId }) });
     if (res.ok) {
       if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
-      // Immediate refresh — no waiting for 4s poll
+      refresh();
       await _refreshPipelineDetail(id);
     } else {
       var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false);
