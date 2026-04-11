@@ -57,6 +57,19 @@ function renderDetailContent(detail, tab) {
           html += 'Running: ' + (rHr > 0 ? rHr + 'h ' : '') + rMin + 'm ' + rSec + 's\n';
         }
       }
+      // Show last completed task duration when idle (status cleared after 5min)
+      if (detail.statusData.status === 'idle' && detail.recentDispatches && detail.recentDispatches.length > 0) {
+        var last = detail.recentDispatches[0];
+        if (last.task) html += 'Last task: ' + escHtml(last.task.slice(0, 100)) + '\n';
+        if (last.started_at && last.completed_at) {
+          var lMs = new Date(last.completed_at).getTime() - new Date(last.started_at).getTime();
+          if (lMs > 0) {
+            var lSec = Math.floor(lMs / 1000) % 60, lMin = Math.floor(lMs / 60000) % 60, lHr = Math.floor(lMs / 3600000);
+            html += 'Duration: ' + (lHr > 0 ? lHr + 'h ' : '') + lMin + 'm ' + lSec + 's\n';
+          }
+        }
+        if (last.result) html += 'Result: <span style="color:var(--' + (last.result === 'error' ? 'red' : 'green') + ')">' + escHtml(last.result) + '</span>\n';
+      }
       html += '</div>';
       if (detail.statusData.resultSummary) {
         html += '<h4>Last Result</h4><div class="section" style="border-left:3px solid var(--green);padding-left:12px">' + renderMd(detail.statusData.resultSummary) + '</div>';

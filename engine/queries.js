@@ -375,7 +375,7 @@ function getAgentDetail(id) {
       .map(d => ({
         id: d.id, task: d.task || '', type: d.type || '',
         result: d.result || '', reason: d.reason || '',
-        completed_at: d.completed_at || '',
+        started_at: d.started_at || '', completed_at: d.completed_at || '',
       }));
   } catch { /* optional */ }
 
