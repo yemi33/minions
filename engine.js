@@ -732,9 +732,16 @@ async function spawnAgent(dispatchItem, config) {
       // Write status to live output so the UI shows the agent is resuming (not stuck)
       try { fs.appendFileSync(liveOutputPath, `\n[steering] Resuming session with your message... (this may take 10-30s)\n`); } catch {}
 
-      // Wait for the old process tree to fully exit — on Windows, taskkill /F /T returns
-      // before child processes (Claude CLI) actually release their session locks
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Wait for the old process tree to fully exit before resuming.
+      // taskkill /F /T returns before child processes release session locks.
+      // Poll until the PID is gone (max 10s, check every 500ms).
+      const oldPid = procInfo.proc?.pid;
+      if (oldPid) {
+        for (let i = 0; i < 20; i++) {
+          try { process.kill(oldPid, 0); } catch { break; } // throws if PID doesn't exist = dead
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
 
       // Write new prompt with steering message
       const steerPrompt = `Message from your human teammate:\n\n${steerMsg}\n\nRespond to this, then continue working on your current task.`;
