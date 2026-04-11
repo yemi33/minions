@@ -758,13 +758,13 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/pinned', { title: action.title, content: action.content || action.description, level: action.level || '' });
         status.innerHTML = '&#x1F4CC; Pinned: <strong>' + escHtml(action.title) + '</strong> — visible to all agents';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'plan': {
         await _ccFetch('/api/plan', { title: action.title, description: action.description, project: action.project, branchStrategy: action.branchStrategy || 'parallel' });
         status.innerHTML = '&#10003; Plan queued: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
+        wakeEngine();
         break;
       }
       case 'cancel': {
@@ -792,6 +792,7 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/plans/approve', { file: action.file });
         status.innerHTML = '&#10003; Approved plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
+        wakeEngine();
         break;
       }
       case 'resume-plan': {
@@ -857,14 +858,10 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'execute-plan': {
-        await fetch('/api/plans/execute', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: action.file, project: action.project || '' })
-        });
+        await _ccFetch('/api/plans/execute', { file: action.file, project: action.project || '' });
         status.innerHTML = '&#10003; Plan execution queued: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
         wakeEngine();
-        refreshPlans();
         break;
       }
       case 'file-edit': {
@@ -957,14 +954,12 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/pinned/remove', { title: action.title });
         status.innerHTML = '&#10003; Unpinned: <strong>' + escHtml(action.title) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'archive-plan': {
         await _ccFetch('/api/plans/archive', { file: action.file });
         status.innerHTML = '&#10003; Archived plan: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'reject-plan': {
@@ -1000,14 +995,12 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/pull-requests/link', { url: action.url, title: action.title || '', project: action.project || '', autoObserve: action.autoObserve !== false });
         status.innerHTML = '&#10003; PR linked: <strong>' + escHtml(action.url) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'archive-meeting': {
         await _ccFetch('/api/meetings/archive', { id: action.id });
         status.innerHTML = '&#10003; Meeting archived: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'update-routing': {
@@ -1031,21 +1024,18 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/pipelines', { id: action.id, title: action.title, stages: action.stages || [], trigger: action.trigger || null, stopWhen: action.stopWhen || null, monitoredResources: action.monitoredResources || null });
         status.innerHTML = '&#10003; Pipeline created: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'delete-pipeline': {
         await _ccFetch('/api/pipelines/delete', { id: action.id });
         status.innerHTML = '&#10003; Pipeline deleted: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'abort-pipeline': {
         await _ccFetch('/api/pipelines/abort', { id: action.id });
         status.innerHTML = '&#10003; Pipeline aborted: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'retrigger-pipeline': {
@@ -1059,21 +1049,19 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/meetings/advance', { id: action.id });
         status.innerHTML = '&#10003; Meeting advanced: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
+        wakeEngine();
         break;
       }
       case 'end-meeting': {
         await _ccFetch('/api/meetings/end', { id: action.id });
         status.innerHTML = '&#10003; Meeting ended: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'delete-meeting': {
         await _ccFetch('/api/meetings/delete', { id: action.id });
         status.innerHTML = '&#10003; Meeting deleted: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'trigger-verify': {
@@ -1094,10 +1082,8 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/plans/unarchive', { file: action.file });
         status.innerHTML = '&#10003; Plan unarchived: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
-      // ── High-impact gaps ──
       case 'continue-pipeline': {
         await _ccFetch('/api/pipelines/continue', { id: action.id });
         status.innerHTML = '&#10003; Pipeline continued: <strong>' + escHtml(action.id) + '</strong>';
@@ -1115,7 +1101,6 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/work-items/archive', { id: action.id });
         status.innerHTML = '&#10003; Work item archived: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'reopen-prd-item': {
@@ -1129,10 +1114,8 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/inbox/promote-kb', { name: action.file, category: action.category || 'project-notes' });
         status.innerHTML = '&#10003; Promoted to KB: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
-      // ── Lower-priority gaps ──
       case 'revise-plan': {
         await _ccFetch('/api/plans/revise', { file: action.file, feedback: action.feedback || action.description, requestedBy: 'command-center' });
         status.innerHTML = '&#10003; Plan revision dispatched: <strong>' + escHtml(action.file) + '</strong>';
@@ -1150,14 +1133,12 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/kb-pins/toggle', { key: action.key });
         status.innerHTML = '&#10003; KB pin toggled: <strong>' + escHtml(action.key) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'add-project': {
         await _ccFetch('/api/projects/add', { localPath: action.localPath, name: action.name || '', repoHost: action.repoHost || 'github' });
         status.innerHTML = '&#10003; Project added: <strong>' + escHtml(action.name || action.localPath) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'restart-engine': {
@@ -1170,14 +1151,12 @@ async function ccExecuteAction(action, targetTabId) {
         await _ccFetch('/api/pull-requests/delete', { id: action.id, project: action.project || '' });
         status.innerHTML = '&#10003; PR unlinked: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'unarchive-meeting': {
         await _ccFetch('/api/meetings/unarchive', { id: action.id });
         status.innerHTML = '&#10003; Meeting unarchived: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
-        refresh();
         break;
       }
       case 'reset-settings': {
@@ -1188,7 +1167,7 @@ async function ccExecuteAction(action, targetTabId) {
       }
       default: {
         // Generic fallback: if action has an `endpoint` field, call it directly (local API only)
-        if (action.endpoint && action.endpoint.startsWith('/api/') && !action.endpoint.includes('..')) {
+        if (action.endpoint && action.endpoint.startsWith('/api/') && !action.endpoint.includes('..') && !/\%2e/i.test(action.endpoint)) {
           var genRes = await _ccFetch(action.endpoint, action.params || {});
           var genData = await genRes.json().catch(function() { return {}; });
           status.innerHTML = '&#10003; ' + escHtml(action.type) + ': ' + escHtml(genData.message || genData.id || 'done');
