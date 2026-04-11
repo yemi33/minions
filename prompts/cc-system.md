@@ -63,6 +63,12 @@ Core action types:
 
 Additional actions (all take `id` or `file` as primary key):
 - Plan lifecycle: pause-plan, approve-plan, reject-plan, archive-plan, unarchive-plan, execute-plan, regenerate-plan, trigger-verify
+- **resume-plan**: Resume a completed/paused plan with PRD updates. Updates existing items and adds new ones, then approves.
+  `{"type": "resume-plan", "file": "prd-file.json", "updates": [{"id": "P-xxx", "status": "updated", "description": "new desc"}], "newItems": [{"id": "P-yyy", "name": "New feature", "description": "...", "priority": "high", "complexity": "medium"}]}`
+  - Set `status: "updated"` on done items whose requirements changed (engine re-opens the work item on existing branch)
+  - Set `status: "missing"` on done items that need full re-implementation
+  - `newItems` are added as new PRD items with `status: "missing"`
+  - After all updates, the plan is approved and the engine materializes on next tick
 - PRD items: edit-prd-item (source, itemId, name, description, priority, complexity), remove-prd-item (source, itemId)
 - Work items: delete-work-item (id, source)
 - Schedules: schedule (id, title, cron, workType, project, agent, description, priority, enabled), delete-schedule (id)

@@ -760,6 +760,27 @@ async function ccExecuteAction(action, targetTabId) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'resume-plan': {
+        // Update PRD items first (set modified→updated, new→missing), then approve
+        if (action.updates && action.updates.length > 0) {
+          for (var ui = 0; ui < action.updates.length; ui++) {
+            var u = action.updates[ui];
+            await _ccFetch('/api/prd-items/update', { source: action.file, itemId: u.id, status: u.status, name: u.name, description: u.description });
+          }
+        }
+        if (action.newItems && action.newItems.length > 0) {
+          for (var ni = 0; ni < action.newItems.length; ni++) {
+            var n = action.newItems[ni];
+            await _ccFetch('/api/prd-items', { source: action.file, id: n.id, name: n.name, description: n.description, priority: n.priority, estimated_complexity: n.complexity });
+          }
+        }
+        await _ccFetch('/api/plans/approve', { file: action.file });
+        var resumeCount = (action.updates || []).length + (action.newItems || []).length;
+        status.innerHTML = '&#10003; Resumed plan: <strong>' + escHtml(action.file) + '</strong>' + (resumeCount > 0 ? ' (' + resumeCount + ' item(s) updated)' : '');
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
       case 'edit-prd-item': {
         await _ccFetch('/api/prd-items/update', { source: action.source, itemId: action.itemId, name: action.name, description: action.description, priority: action.priority, estimated_complexity: action.complexity });
         status.innerHTML = '&#10003; Updated PRD item: <strong>' + escHtml(action.itemId) + '</strong>';
