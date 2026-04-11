@@ -531,6 +531,14 @@ async function _ccDoSend(message, skipUserMsg) {
     });
 
     if (!res.ok) {
+      // 429 = server still processing previous request (abort race) — retry silently up to 3 times
+      if (res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
+        activeTab._429retries = (activeTab._429retries || 0) + 1;
+        _cleanupStreamDiv();
+        await new Promise(function(r) { setTimeout(r, 1500); });
+        return await _ccDoSend(message, true);
+      }
+      activeTab._429retries = 0;
       _cleanupStreamDiv();
       var errText = await res.text();
       addMsg('assistant', '<span style="color:var(--red)">' + escHtml(errText || 'CC error') + '</span>' +
@@ -648,7 +656,7 @@ async function _ccDoSend(message, skipUserMsg) {
         ' <button onclick="ccNewTab()" style="margin-top:6px;padding:4px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px">New Session</button>');
     }
   } finally {
-    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
+    if (activeTab) { activeTab._sending = false; activeTab._abortController = null; activeTab._429retries = 0; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
     ccRenderTabBar();
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
