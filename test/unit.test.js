@@ -4185,6 +4185,32 @@ async function testCheckTimeouts() {
     assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
   });
 
+  await test('checkTimeouts reads engineRestartGraceExempt from engine (#869)', () => {
+    assert.ok(src.includes('engineRestartGraceExempt'),
+      'Should read engineRestartGraceExempt set to bypass grace period for confirmed-dead agents');
+  });
+
+  await test('checkTimeouts bypasses grace period for exempt dispatch IDs (#869)', () => {
+    // The orphan detection condition must check engineRestartGraceExempt to short-circuit
+    // the grace period for agents with confirmed-dead PIDs at restart time
+    assert.ok(src.includes('engineRestartGraceExempt?.has(item.id)') || src.includes('engineRestartGraceExempt.has(item.id)'),
+      'Orphan detection should check engineRestartGraceExempt to bypass grace period');
+  });
+
+  await test('engine.js exports engineRestartGraceExempt Set (#869)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('engineRestartGraceExempt = new Set()'),
+      'engine.js should declare engineRestartGraceExempt as a Set');
+    assert.ok(engineSrc.includes('engineRestartGraceExempt,') || engineSrc.includes('engineRestartGraceExempt }'),
+      'engine.js should export engineRestartGraceExempt');
+  });
+
+  await test('cli.js records confirmed-dead PIDs in engineRestartGraceExempt (#869)', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('engineRestartGraceExempt.add(item.id)'),
+      'cli.js re-attach loop should add confirmed-dead dispatch IDs to engineRestartGraceExempt');
+  });
+
   // Smoke test: actually call checkTimeouts({}) to catch ReferenceErrors at runtime (#775)
   // Previous tests only checked source strings — this exercises the real function.
   await test('checkTimeouts({}) does not throw ReferenceError (#775 smoke test)', () => {
