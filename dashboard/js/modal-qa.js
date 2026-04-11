@@ -377,7 +377,7 @@ function _showThreadWrap() {
   var _dragging = false, _startY = 0, _startH = 0, _thread = null;
   var COLLAPSE_THRESHOLD = 40;
   var MIN_HEIGHT = 60;
-  var MAX_HEIGHT = 2000; // effectively uncapped — modal's own max-height constrains it
+  var MAX_HEIGHT = 500;
 
   document.addEventListener('pointerdown', function(e) {
     var handle = e.target.closest('#qa-resize-handle');
