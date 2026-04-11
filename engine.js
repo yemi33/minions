@@ -1325,19 +1325,72 @@ function materializePlansAsWorkItems(config) {
           // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          // Approved/paused/completed PRDs: flag stale — user must click Re-execute to regenerate
-          if (prdStatus && prdStatus !== 'awaiting-approval') {
+          // Approved/completed PRDs with existing work: auto-dispatch diff-aware plan-to-prd update
+          if (prdStatus === PLAN_STATUS.APPROVED || prdStatus === PLAN_STATUS.COMPLETED) {
+            const allWorkItems = queries.getWorkItems(config);
+            const planWis = allWorkItems.filter(w => w.sourcePlan === file && w.itemType !== 'pr' && w.itemType !== 'verify');
+            const doneWis = planWis.filter(w => DONE_STATUSES.has(w.status));
+            if (doneWis.length > 0) {
+              const allPrs = getProjects(config).flatMap(p => safeJson(projectPrPath(p)) || []);
+              const prLinks = shared.getPrLinks();
+              const implContext = (plan.missing_features || []).map(f => {
+                const wi = planWis.find(w => w.id === f.id);
+                const pr = allPrs.find(p => prLinks[p.id] === f.id || (p.prdItems || []).includes(f.id));
+                return `- **${f.id}**: ${f.name} [status: ${wi?.status || f.status}]${pr ? ` (PR: ${pr.id}, branch: \`${pr.branch}\`)` : ''}`;
+              }).join('\n');
+
+              const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
+              if (planContent) {
+                const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
+                const allProjects = getProjects(config);
+                const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
+                if (targetProject) {
+                  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
+                  let queued = false;
+                  mutateJsonFileLocked(centralWiPath, items => {
+                    if (!Array.isArray(items)) items = [];
+                    if (items.some(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED))) return items;
+                    items.push({
+                      id: 'W-' + shared.uid(),
+                      title: `Update PRD from revised plan: ${plan.source_plan}`,
+                      type: 'plan-to-prd',
+                      priority: 'high',
+                      description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${file}\n\n` +
+                        `Source plan was revised. Compare the updated plan against existing implementation and update the PRD.\n\n` +
+                        `**Existing implementation state:**\n${implContext}\n\n` +
+                        `**Rules for updating:**\n` +
+                        `- Items that are done and unchanged in the plan → keep status "done" (preserve their ID)\n` +
+                        `- Items that are done but modified in the plan (new requirements) → set status "updated" (engine will re-open)\n` +
+                        `- New items in the plan → set status "missing" (engine will materialize)\n` +
+                        `- Items removed from the plan → drop from PRD (engine will cancel pending WIs)\n` +
+                        `- Preserve all existing item IDs for unchanged/modified items — do NOT generate new IDs for them`,
+                      status: 'pending',
+                      created: ts(),
+                      createdBy: 'engine:plan-revision',
+                      project: targetProject.name,
+                      planFile: plan.source_plan,
+                      _existingPrdFile: file,
+                    });
+                    queued = true;
+                    return items;
+                  }, { defaultValue: [] });
+                  if (queued) log('info', `Queued diff-aware plan-to-prd update for ${plan.source_plan} (${doneWis.length} done, ${planWis.length} total items)`);
+                }
+              }
+            } else {
+              plan.planStale = true;
+              log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}, no done items) — user can re-execute from dashboard`);
+            }
+          } else if (prdStatus === PLAN_STATUS.PAUSED) {
             plan.planStale = true;
-            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can re-execute from dashboard`);
-            // Falls through to safeWrite below (writes planStale + sourcePlanModifiedAt together)
+            log('info', `PRD ${file} flagged as stale (plan revised while paused) — user can re-execute from dashboard`);
           }
 
           // Awaiting-approval PRDs: auto-regenerate (no work started yet, safe to replace)
           if (prdStatus === 'awaiting-approval') {
             log('info', `PRD ${file} invalidated (was awaiting-approval) — queuing regeneration from revised plan`);
 
-            // Collect completed items to carry over to new PRD
-            const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
+            const completedStatuses = new Set(['done', 'in-pr', 'implemented']);
             const completedItems = (plan.missing_features || [])
               .filter(f => completedStatuses.has(f.status))
               .map(f => ({ id: f.id, name: f.name, status: f.status }));
@@ -1346,10 +1399,8 @@ function materializePlansAsWorkItems(config) {
               ? `\nPreviously completed items (preserve their status in the new PRD):\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
               : '';
 
-            // Delete old PRD — agent will write replacement at same path
             try { fs.unlinkSync(path.join(PRD_DIR, file)); } catch { /* cleanup */ }
 
-            // Queue plan-to-prd regeneration
             const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
             if (planContent) {
               const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
@@ -1357,12 +1408,11 @@ function materializePlansAsWorkItems(config) {
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
                 const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-                const centralItems = safeJson(centralWiPath) || [];
-                const alreadyQueued = centralItems.some(w =>
-                  w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
-                );
-                if (!alreadyQueued) {
-                  centralItems.push({
+                let queued = false;
+                mutateJsonFileLocked(centralWiPath, items => {
+                  if (!Array.isArray(items)) items = [];
+                  if (items.some(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED))) return items;
+                  items.push({
                     id: 'W-' + shared.uid(),
                     title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
                     type: 'plan-to-prd',
@@ -1374,9 +1424,10 @@ function materializePlansAsWorkItems(config) {
                     project: targetProject.name,
                     planFile: plan.source_plan,
                   });
-                  safeWrite(centralWiPath, centralItems);
-                  log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
-                }
+                  queued = true;
+                  return items;
+                }, { defaultValue: [] });
+                if (queued) log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
               }
             }
             continue; // Old PRD deleted — skip safeWrite below

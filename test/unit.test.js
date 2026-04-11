@@ -1529,8 +1529,8 @@ async function testPrdStaleInvalidation() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('engine:plan-revision'),
       'engine.js should queue regeneration with createdBy engine:plan-revision');
-    assert.ok(src.includes('alreadyQueued'),
-      'engine.js should check for duplicate regeneration queue');
+    assert.ok(src.includes('WORK_TYPE.PLAN_TO_PRD') && src.includes('WI_STATUS.PENDING'),
+      'engine.js should check for duplicate regeneration inside lock');
     assert.ok(src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
       'engine.js should delete old PRD file on awaiting-approval invalidation');
   });
