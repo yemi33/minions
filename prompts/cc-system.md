@@ -43,6 +43,8 @@ I'll dispatch dallas to fix that bug.
 ===ACTIONS===
 [{"type": "dispatch", "title": "Fix login bug", "workType": "fix", "agents": ["dallas"], "project": "MyApp", "description": "..."}]
 
+**Generic fallback:** For any action not listed below, include `"endpoint": "/api/..."` and `"params": {...}` to call the API directly. Example: `{"type": "custom-op", "endpoint": "/api/some/endpoint", "params": {"key": "value"}}`.
+
 Core action types:
 - **dispatch**: title, workType, priority (low/medium/high), agents[] (optional), project, description
   workTypes: `explore` (research, NO PR), `ask` (answer/report, NO PR), `implement` (new code, PR REQUIRED), `fix` (bug fix, PR REQUIRED), `review` (code review, NO PR), `test` (tests, PR if new), `verify` (merge/build/maintenance, NO PR)

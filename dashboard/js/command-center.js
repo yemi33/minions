@@ -1119,14 +1119,14 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'reopen-prd-item': {
-        await _ccFetch('/api/prd-items/update', { id: action.id, file: action.file, status: 'updated' });
+        await _ccFetch('/api/prd-items/update', { source: action.file, itemId: action.id, status: 'updated' });
         status.innerHTML = '&#10003; PRD item reopened: <strong>' + escHtml(action.id) + '</strong>';
         status.style.color = 'var(--green)';
         wakeEngine();
         break;
       }
       case 'promote-to-kb': {
-        await _ccFetch('/api/inbox/promote-kb', { file: action.file, category: action.category || 'project-notes' });
+        await _ccFetch('/api/inbox/promote-kb', { name: action.file, category: action.category || 'project-notes' });
         status.innerHTML = '&#10003; Promoted to KB: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
         refresh();
@@ -1186,9 +1186,21 @@ async function ccExecuteAction(action, targetTabId) {
         status.style.color = 'var(--green)';
         break;
       }
-      default:
-        status.innerHTML = '? Unknown action: ' + escHtml(action.type);
-        status.style.color = 'var(--muted)';
+      default: {
+        // Generic fallback: if action has an `endpoint` field, call it directly (local API only)
+        if (action.endpoint && action.endpoint.startsWith('/api/') && !action.endpoint.includes('..')) {
+          var genRes = await _ccFetch(action.endpoint, action.params || {});
+          var genData = await genRes.json().catch(function() { return {}; });
+          status.innerHTML = '&#10003; ' + escHtml(action.type) + ': ' + escHtml(genData.message || genData.id || 'done');
+          status.style.color = 'var(--green)';
+        } else if (action.endpoint) {
+          status.innerHTML = '&#10007; Blocked: endpoint must be a local /api/ path';
+          status.style.color = 'var(--red)';
+        } else {
+          status.innerHTML = '? Unknown action: <strong>' + escHtml(action.type) + '</strong>';
+          status.style.color = 'var(--muted)';
+        }
+      }
     }
   } catch (e) {
     status.innerHTML = '&#10007; Action failed: ' + escHtml(e.message);
