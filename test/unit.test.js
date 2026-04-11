@@ -2315,9 +2315,10 @@ async function testStateIntegrity() {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    const cliSrcDisp = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
 
     // Extract all mutateDispatch callback bodies from each file
-    for (const [name, src] of [['engine.js', engineSrc], ['dispatch.js', dispatchSrc], ['cleanup.js', cleanupSrc]]) {
+    for (const [name, src] of [['engine.js', engineSrc], ['dispatch.js', dispatchSrc], ['cleanup.js', cleanupSrc], ['cli.js', cliSrcDisp]]) {
       // Find all mutateDispatch( occurrences (skip the definition itself)
       const pattern = /mutateDispatch\(\((\w+)\)\s*=>\s*\{/g;
       let match;
@@ -2344,6 +2345,22 @@ async function testStateIntegrity() {
         }
       }
     }
+  });
+
+  await test('cli.js kill handler clears dispatch.active via mutateDispatch, not safeWrite', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    // Find the kill() handler body
+    const killIdx = src.indexOf('kill()');
+    assert.ok(killIdx > 0, 'cli.js must have a kill() handler');
+    const killSection = src.substring(killIdx, killIdx + 2000);
+    // Must NOT use safeWrite for dispatch.json
+    assert.ok(!killSection.includes('safeWrite(DISPATCH_PATH'),
+      'kill handler must not use safeWrite(DISPATCH_PATH) — use mutateDispatch for concurrency safety');
+    // Must use mutateDispatch to clear active
+    assert.ok(killSection.includes('mutateDispatch'),
+      'kill handler must use mutateDispatch to clear active dispatches under file lock');
+    assert.ok(killSection.includes('d.active = []') || killSection.includes('.active = []'),
+      'kill handler must clear active array inside mutateDispatch callback');
   });
 
   await test('spawnAgent null return is handled in dispatch loop', () => {

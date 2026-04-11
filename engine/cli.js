@@ -18,6 +18,9 @@ function engine() {
   return _engine;
 }
 
+let _dispatchModule = null;
+function dispatchModule() { if (!_dispatchModule) _dispatchModule = require('./dispatch'); return _dispatchModule; }
+
 function handleCommand(cmd, args) {
   if (!cmd) {
     commands.start();
