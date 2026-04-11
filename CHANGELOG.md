@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.1.852 (2026-04-11)
+
+### Features
+-  execute CC actions server-side (dispatch, note, knowledge)
+- per-type heartbeat timeouts for read-heavy work types (#652)
+- Replace raw status strings with WI_STATUS constants in dashboard.js (#657)
+- fix dispatch.json race condition in CLI kill-all (#653)
+-  optimistic UI updates for all remaining dashboard pages
+-  optimistic UI updates for all dashboard actions
+-  per-item Re-open button on done PRD items (deterministic fallback)
+-  stale PRD shows Regenerate PRD + Resume as-is buttons
+
+### Fixes
+- PID file leak in indirect spawn + kb-sweep race condition (#821)
+-  KB create modal stays open on API error for retry
+-  steering resume failure no longer silently marked as SUCCESS
+-  cli.js reads PID files from wrong directory on reattach
+-  revert modal CSS changes from 227779d that broke plan modal layout
+-  restore text selection → doc-chat flow + regression tests
+-  use structured marker for diff-aware PRD update detection
+-  match playbook trigger phrase for diff-aware PRD updates
+-  engine only flags stale on plan revision, never auto-regenerates
+-  only 'updated' re-opens done work items, remove 'planned' status
+-  revert doc-chat MAX_HEIGHT to 500px
+-  hide plan card action buttons when stale banner is showing
+-  hide conflicting action buttons when stale PRD banner is showing
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
+### Other
+- docs: update CLAUDE.md with plan resume, PR protection, dashboard UX patterns
+- perf: reduce steering detection latency from 3s to 1s
+- remove: /api/prd/regenerate endpoint (destructive delete + fresh gen)
+- refactor: migrate handlePrdRegenerate and handlePlansExecute to queuePlanToPrd
+- refactor: add PRD_ITEM_STATUS/PRD_MATERIALIZABLE constants, extract queuePlanToPrd
+- refactor: remove dead criteria variable, DRY plan resume functions
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
