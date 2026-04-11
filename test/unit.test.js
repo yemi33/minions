@@ -8769,7 +8769,7 @@ async function testStatusMutationGuards() {
 
   // ─── Fix 10: dashboard kill-agent reset skips done items ──────────────────
 
-  await test('dashboard kill-agent reset skips done/completedAt items', () => {
+  await test('dashboard kill-agent reset only resets dispatched items', () => {
     // Find the kill-agent handler (handleAgentKill)
     const fnStart = dashboardSrc.indexOf('async function handleAgentKill');
     assert.ok(fnStart >= 0, 'handleAgentKill function must exist');
