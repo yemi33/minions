@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -108,27 +108,28 @@ async function fetchGhBuildErrorLog(slug, failedRuns) {
     for (const run of (failedRuns || []).slice(0, 3)) {
       if (!run?.id) continue;
 
-      // Try annotations first — these contain structured compiler/lint errors
+      // Try annotations for structured compiler/lint errors
+      let hasUsefulAnnotations = false;
       try {
         const annotations = await ghApi(`/check-runs/${run.id}/annotations`, slug);
         if (Array.isArray(annotations) && annotations.length > 0) {
-          const formatted = annotations
-            .filter(a => a.annotation_level === 'failure' || a.annotation_level === 'warning')
-            .map(a => `${a.path || ''}:${a.start_line || ''} [${a.annotation_level}] ${a.message || ''}`)
-            .join('\n');
-          if (formatted) {
+          const failures = annotations.filter(a => a.annotation_level === 'failure');
+          if (failures.length > 0) {
+            const formatted = failures
+              .map(a => `${a.path || ''}:${a.start_line || ''} [${a.annotation_level}] ${a.message || ''}`)
+              .join('\n');
             logParts.push(`--- ${run.name || 'Check'} (annotations) ---\n${formatted}`);
-            continue; // annotations are sufficient for this run
+            hasUsefulAnnotations = true;
           }
         }
       } catch { /* fall through to job log */ }
 
-      // Fallback: fetch the full Actions job log
+      // Always fetch job log — annotations alone often lack test failure details
       try {
         const cmd = `gh api "repos/${slug}/actions/jobs/${run.id}/logs" 2>&1`;
         const result = await execAsync(cmd, { timeout: 15000, encoding: 'utf-8' });
         if (result && !result.includes('Not Found')) {
-          logParts.push(`--- ${run.name || 'Check'} ---\n${result}`);
+          logParts.push(`--- ${run.name || 'Check'} (log) ---\n${result}`);
         }
       } catch { /* skip individual log fetch failures */ }
     }
@@ -163,7 +164,7 @@ async function forEachActiveGhPr(config, callback) {
     if (isSlugInBackoff(slug)) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
+    const activePrs = prs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
 
     // Probe repo accessibility before iterating PRs — avoids N warnings per inaccessible repo
@@ -193,7 +194,13 @@ async function forEachActiveGhPr(config, callback) {
         // Merge back updated PRs and deduplicate
         for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
-          if (idx >= 0) currentPrs[idx] = updatedPr;
+          if (idx >= 0) {
+            // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
+            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
+              updatedPr.reviewStatus = 'approved';
+            }
+            currentPrs[idx] = updatedPr;
+          }
         }
         // Remove duplicates — prefer merged/abandoned over active
         const bestById = new Map();
@@ -213,7 +220,7 @@ async function forEachActiveGhPr(config, callback) {
   // Also poll manually-linked PRs from central pull-requests.json (extract slug from URL)
   const centralPath = path.join(MINIONS_DIR, 'pull-requests.json');
   const centralPrs = safeJson(centralPath) || [];
-  const activeCentral = centralPrs.filter(pr => pr.status === PR_STATUS.ACTIVE && pr.url);
+  const activeCentral = centralPrs.filter(pr => PR_POLLABLE_STATUSES.has(pr.status) && pr.url);
   let centralUpdated = 0;
   for (const pr of activeCentral) {
     const ghMatch = pr.url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
@@ -228,7 +235,9 @@ async function forEachActiveGhPr(config, callback) {
         if (pr.title.includes('polling...') || pr.agent === 'human' || pr.description === undefined) {
           const prData = await ghApi(`/pulls/${prNum}`, slug);
           if (prData) {
-            if (pr.title.includes('polling...')) pr.title = (prData.title || pr.title).slice(0, 120);
+            if (pr.title.includes('polling...') || /[{}"\[\]]/.test(pr.title) || /^[0-9a-f-]{8,}$/i.test(pr.title)) {
+              pr.title = (prData.title || pr.title).slice(0, 120);
+            }
             if (pr.description === undefined) pr.description = (prData.body || '').slice(0, 500);
             if (pr.agent === 'human' && prData.user?.login) pr.agent = prData.user.login;
             if (!pr.branch && prData.head?.ref) pr.branch = prData.head.ref;
@@ -327,8 +336,10 @@ async function pollPrStatus(config) {
       }
 
       let newReviewStatus = pr.reviewStatus || 'pending';
-      if (states.some(s => s === 'CHANGES_REQUESTED')) {
-        // Don't re-trigger if fix agent already responded — wait for re-review
+      // Once approved, it stays approved permanently
+      if (pr.reviewStatus === 'approved') {
+        newReviewStatus = 'approved';
+      } else if (states.some(s => s === 'CHANGES_REQUESTED')) {
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
           newReviewStatus = 'waiting';
         } else {
@@ -337,28 +348,17 @@ async function pollPrStatus(config) {
       }
       else if (states.some(s => s === 'APPROVED')) newReviewStatus = 'approved';
       else if (states.length > 0) newReviewStatus = 'pending';
-      // If all reviews were COMMENTED (filtered out), states is empty but reviews exist.
-      // Set to 'waiting' instead of leaving as 'pending' to prevent infinite review re-dispatch.
       else if (states.length === 0 && reviews.length > 0 && newReviewStatus === 'pending') newReviewStatus = 'waiting';
 
       if (pr.reviewStatus !== newReviewStatus) {
         log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
         pr.reviewStatus = newReviewStatus;
         updated = true;
-        // Update author metrics when verdict changes to approved/rejected
-        if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
-          const authorId = (pr.agent || '').toLowerCase();
-          if (authorId) {
-            try {
-              const metricsPath = path.join(__dirname, 'metrics.json');
-              mutateJsonFileLocked(metricsPath, (metrics) => {
-                if (!metrics[authorId]) metrics[authorId] = {};
-                if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-                else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-                return metrics;
-              });
-            } catch (err) { log('warn', `Metrics update: ${err.message}`); }
-          }
+        shared.trackReviewMetric(pr, newReviewStatus, config);
+        // Reset review→fix cycle counter on approval (loop succeeded)
+        if (newReviewStatus === 'approved') {
+          delete pr._reviewFixCycles;
+          delete pr._evalEscalated;
         }
       }
     }
@@ -392,6 +392,9 @@ async function pollPrStatus(config) {
           pr.buildStatus = buildStatus;
           if (buildFailReason) pr.buildFailReason = buildFailReason;
           else delete pr.buildFailReason;
+          // Build transitioned — clear grace period and auto-complete flag
+          delete pr._buildFixPushedAt;
+          if (buildStatus === 'failing') delete pr._autoCompleted; // allow re-merge after fix
           if (buildStatus !== 'failing') {
             delete pr._buildFailNotified;
             delete pr.buildErrorLog;
@@ -408,7 +411,42 @@ async function pollPrStatus(config) {
               pr.buildErrorLog = errorLog;
               log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
             }
+
+            // Teams notification for build failure — non-blocking
+            try {
+              const teams = require('./teams');
+              const prFilePath = shared.projectPrPath(project);
+              teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+            } catch {}
           }
+        }
+      }
+    }
+
+    // Merge conflict detection
+    if (prData.state === 'open' && prData.mergeable === false) {
+      if (!pr._mergeConflict) {
+        pr._mergeConflict = true;
+        log('info', `PR ${pr.id} has merge conflicts — will dispatch fix if not already in progress`);
+        updated = true;
+      }
+    } else if (pr._mergeConflict) {
+      delete pr._mergeConflict;
+      updated = true;
+    }
+
+    // Auto-complete: merge PR when builds green + review approved
+    if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
+      const autoComplete = config.engine?.autoCompletePrs === true; // opt-in
+      if (autoComplete) {
+        try {
+          const mergeMethod = ['squash', 'merge', 'rebase'].includes(config.engine?.prMergeMethod) ? config.engine.prMergeMethod : 'squash';
+          await execAsync(`gh pr merge ${prNum} --${mergeMethod} --repo ${slug} --delete-branch`, { timeout: 30000, encoding: 'utf-8' });
+          pr._autoCompleted = true;
+          log('info', `Auto-completed PR ${pr.id}: builds green + review approved → merged (${mergeMethod})`);
+          updated = true;
+        } catch (e) {
+          log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
         }
       }
     }
@@ -436,12 +474,27 @@ async function pollPrHumanComments(config) {
       ...(Array.isArray(reviewComments) ? reviewComments : []).map(c => ({ ...c, _type: 'review' }))
     ];
 
-    // Filter out bot comments and minions's own comments
-    const humanComments = allComments.filter(c => {
-      if (c.user?.type === 'Bot') return false;
-      if (/\bMinions\s*\(/i.test(c.body || '')) return false;
-      return true;
-    });
+    // Separate: agent comments (included in context, don't trigger fix) vs human comments (trigger fix)
+    // All non-bot, non-CI comments go into context. Only non-agent comments trigger pendingFix.
+    const ignoredAuthors = new Set((config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase()));
+    function _isBot(c) {
+      if (c.user?.type === 'Bot') return true;
+      const login = (c.user?.login || '').toLowerCase();
+      if (ignoredAuthors.has(login)) return true;
+      if (/\b(bot|codecov|sonar|dependabot|renovate|github-actions|azure-pipelines)\b/i.test(login)) return true;
+      const body = c.body || '';
+      if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(body)) return true;
+      if (/!\[.*\]\(https?:\/\/.*badge/i.test(body)) return true;
+      return false;
+    }
+    function _isAgentComment(c) {
+      const body = c.body || '';
+      if (/\bMinions\s*\(/i.test(body)) return true;
+      if (/\bby\s+Minions\b/i.test(body)) return true;
+      if (/\[minions\]/i.test(body)) return true;
+      return false;
+    }
+    const humanComments = allComments.filter(c => !_isBot(c));
 
     const cutoffStr = pr.humanFeedback?.lastProcessedCommentDate || pr.created || '1970-01-01';
     const cutoffMs = new Date(cutoffStr).getTime() || 0;
@@ -452,21 +505,29 @@ async function pollPrHumanComments(config) {
 
     for (const c of humanComments) {
       const date = c.created_at || c.updated_at || '';
+      const isAgent = _isAgentComment(c);
       const entry = {
         commentId: c.id,
         author: c.user?.login || 'Human',
         content: c.body || '',
-        date
+        date,
+        _isAgent: isAgent
       };
       allCommentEntries.push(entry);
 
-      // Any new comment triggers a fix — no @minions filter needed
+      // Only non-agent new comments trigger a fix (agent reviews trigger via vote, not comment)
       const dateMs = date ? new Date(date).getTime() : 0;
-      if (dateMs && dateMs > cutoffMs) {
+      if (dateMs && dateMs > cutoffMs && !isAgent) {
         newComments.push(entry);
       }
     }
 
+    // Update cutoff even if only agent comments are new (so we don't re-scan them)
+    const allNewDates = allCommentEntries.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    if (allNewDates.length > 0 && newComments.length === 0) {
+      pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
+      return false; // agent comments only — don't trigger fix
+    }
     if (newComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent
@@ -557,9 +618,13 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
+        const existing = currentPrs.find(p => p.id === prId);
+        // Backfill prNumber for existing records missing it
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = ghPr.number;
+        }
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = currentPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -575,6 +640,7 @@ async function reconcilePrs(config) {
 
       currentPrs.push({
         id: prId,
+        prNumber: ghPr.number,
         title: (ghPr.title || `PR #${ghPr.number}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || ghPr.user?.login || 'unknown').toLowerCase(),
         branch,
@@ -589,6 +655,14 @@ async function reconcilePrs(config) {
       projectAdded++;
 
       log('info', `GitHub PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
+    }
+
+    // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
+    for (const pr of currentPrs) {
+      if (pr.prNumber == null) {
+        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        if (derived) pr.prNumber = derived;
+      }
     }
 
     // Backfill prdItems from pr-links for any PR with empty array

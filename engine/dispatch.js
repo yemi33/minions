@@ -11,7 +11,7 @@ const { setCooldownFailure } = require('./cooldown');
 
 const { safeJson, safeWrite, safeReadDir, mutateJsonFileLocked, mutateWorkItems,
   mutatePullRequests, getProjects, projectWorkItemsPath, projectPrPath, log, ts, dateStamp,
-  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS } = shared;
+  WI_STATUS, DISPATCH_RESULT, ENGINE_DEFAULTS, AGENT_STATUS, FAILURE_CLASS } = shared;
 const { getConfig, getDispatch, DISPATCH_PATH, INBOX_DIR } = queries;
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -19,6 +19,8 @@ const MINIONS_DIR = shared.MINIONS_DIR;
 // Lazy require to break circular dependency with engine.js
 let _lifecycle = null;
 function lifecycle() { if (!_lifecycle) _lifecycle = require('./lifecycle'); return _lifecycle; }
+let _recovery = null;
+function recovery() { if (!_recovery) _recovery = require('./recovery'); return _recovery; }
 
 // ─── Dispatch Mutation ───────────────────────────────────────────────────────
 
@@ -69,7 +71,12 @@ function addToDispatch(item) {
 
 // ─── Retryable Failure Classification ────────────────────────────────────────
 
-function isRetryableFailureReason(reason = '') {
+function isRetryableFailureReason(reason = '', failureClass = '') {
+  // FAILURE_CLASS-based classification takes precedence when available
+  if (failureClass) {
+    const neverRetry = new Set([FAILURE_CLASS.CONFIG_ERROR, FAILURE_CLASS.PERMISSION_BLOCKED]);
+    if (neverRetry.has(failureClass)) return false;
+  }
   const r = String(reason || '').toLowerCase();
   if (!r) return true; // unknown error from tool exit — keep retryable
   const nonRetryable = [
@@ -89,7 +96,7 @@ function isRetryableFailureReason(reason = '') {
 // ─── Complete Dispatch ───────────────────────────────────────────────────────
 
 function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', resultSummary = '', opts = {}) {
-  const { processWorkItemFailure = true } = opts;
+  const { processWorkItemFailure = true, failureClass } = opts;
   let item = null;
 
   mutateDispatch((dispatch) => {
@@ -108,6 +115,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     item.result = result;
     if (reason) item.reason = reason;
     if (resultSummary) item.resultSummary = resultSummary;
+    if (failureClass && result === DISPATCH_RESULT.ERROR) item.failureClass = failureClass;
     delete item.prompt;
     if (dispatch.completed.length >= 100) {
       dispatch.completed = dispatch.completed.slice(-100);
@@ -120,7 +128,7 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
     log('info', `Completed dispatch: ${id} (${result}${reason ? ': ' + reason : ''})`);
 
     // Update source work item status on failure + auto-retry with backoff
-    const retryableFailure = isRetryableFailureReason(reason);
+    const retryableFailure = isRetryableFailureReason(reason, failureClass);
     if (result === DISPATCH_RESULT.ERROR && item.meta?.dispatchKey && retryableFailure) setCooldownFailure(item.meta.dispatchKey);
 
     if (processWorkItemFailure && result === DISPATCH_RESULT.ERROR && item.meta?.item?.id) {
@@ -130,8 +138,10 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
         if (wi) retries = wi._retryCount || 0;
       } catch (e) { log('warn', 'read retry count: ' + e.message); }
       const maxRetries = ENGINE_DEFAULTS.maxRetries;
-      if (retryableFailure && retries < maxRetries) {
-        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}`);
+      // Use per-class retry limits from recovery.js when failureClass is available
+      const classAllowsRetry = failureClass ? recovery().shouldRetry(failureClass, retries) : (retries < maxRetries);
+      if (retryableFailure && classAllowsRetry) {
+        log('info', `Dispatch error for ${item.meta.item.id} — auto-retry ${retries + 1}/${maxRetries}${failureClass ? ' [' + failureClass + ']' : ''}`);
         lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
         // Remove this dispatch key from completed so dedupe doesn't block immediate redispatch.
         if (item.meta?.dispatchKey) {
@@ -227,6 +237,29 @@ function writeInboxAlert(slug, content) {
   } catch (e) { log('warn', 'write inbox alert: ' + e.message); }
 }
 
+// ─── Agent Worker Status ────────────────────────────────────────────────────
+
+/**
+ * Update the worker-state fields on an active dispatch entry.
+ * Uses mutateDispatch() for atomic read-modify-write.
+ * @param {string} dispatchId — dispatch entry ID
+ * @param {string} status — one of AGENT_STATUS values
+ * @param {string} [detail] — optional human-readable detail string
+ */
+function updateAgentStatus(dispatchId, status, detail) {
+  if (!dispatchId || !status) return;
+  mutateDispatch((dispatch) => {
+    const entry = (dispatch.active || []).find(d => d.id === dispatchId)
+      || (dispatch.pending || []).find(d => d.id === dispatchId);
+    if (entry) {
+      entry.workerState = status;
+      entry.workerStateAt = ts();
+      if (detail !== undefined) entry.workerStateDetail = detail;
+    }
+    return dispatch;
+  });
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -235,4 +268,5 @@ module.exports = {
   isRetryableFailureReason,
   completeDispatch,
   writeInboxAlert,
+  updateAgentStatus,
 };

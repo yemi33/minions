@@ -60,21 +60,26 @@ async function getAdoToken() {
   return null;
 }
 
-async function adoFetch(url, token, _retryCount = 0) {
+async function adoFetch(url, token, opts = {}) {
+  const _retryCount = typeof opts === 'number' ? opts : (opts._retryCount || 0); // backward compat
+  const method = (typeof opts === 'object' && opts.method) || 'GET';
+  const body = (typeof opts === 'object' && opts.body) || undefined;
   const MAX_RETRIES = 1;
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }
+    method,
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(30000),
+    body,
   });
-  if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
-    // Invalidate cached token — it's likely expired
     _adoTokenCache = { token: null, expiresAt: 0 };
     if (_retryCount < MAX_RETRIES) {
       const freshToken = await getAdoToken();
       if (freshToken) {
         log('info', 'ADO token expired mid-session — refreshed and retrying');
-        return adoFetch(url, freshToken, _retryCount + 1);
+        return adoFetch(url, freshToken, { ...opts, _retryCount: _retryCount + 1 });
       }
     }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
@@ -85,7 +90,8 @@ async function adoFetch(url, token, _retryCount = 0) {
 /** Fetch raw text from ADO API (for build logs which aren't JSON). */
 async function adoFetchText(url, token) {
   const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${token}` }
+    headers: { 'Authorization': `Bearer ${token}` },
+    signal: AbortSignal.timeout(30000),
   });
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   return res.text();
@@ -99,16 +105,36 @@ const BUILD_ERROR_LOG_MAX_LINES = 150;
  * for failed tasks, and fetches their logs.
  * Returns truncated log text or null if unavailable.
  */
-async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token) {
+async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, seenBuildIds) {
   try {
-    // Extract buildId from the targetUrl (e.g. .../_build/results?buildId=12345)
-    const targetUrl = failedStatus?.targetUrl || '';
-    const buildIdMatch = targetUrl.match(/buildId=(\d+)/);
-    if (!buildIdMatch) {
-      log('debug', `No buildId in targetUrl: ${targetUrl.slice(0, 120)}`);
+    // Use pre-resolved buildId if available (from builds API query), else parse from targetUrl
+    let buildId = failedStatus?._buildId || null;
+    if (!buildId) {
+      const targetUrl = failedStatus?.targetUrl || '';
+      const buildIdMatch = targetUrl.match(/buildId=(\d+)/);
+      if (buildIdMatch) buildId = buildIdMatch[1];
+    }
+    if (!buildId) {
+      // Fallback: query recent failed builds for this PR's source branch
+      try {
+        const branch = pr?.branch || pr?.sourceRefName?.replace('refs/heads/', '');
+        if (branch) {
+          const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=refs/heads/${encodeURIComponent(branch)}&statusFilter=completed&resultFilter=failed&$top=3&api-version=7.1`;
+          const builds = await adoFetch(buildsUrl, token);
+          const fresh = (builds?.value || []).find(b => !seenBuildIds?.has(String(b.id)));
+          if (fresh?.id) {
+            buildId = String(fresh.id);
+            log('debug', `Found buildId ${buildId} via branch query for ${branch}`);
+          }
+        }
+      } catch (e) { log('debug', `Branch-based build lookup failed: ${e.message}`); }
+    }
+    if (!buildId) {
+      log('debug', `No buildId from targetUrl or branch query: ${targetUrl.slice(0, 120)}`);
       return null;
     }
-    const buildId = buildIdMatch[1];
+    if (seenBuildIds?.has(buildId)) return null; // already fetched this build
+    if (seenBuildIds) seenBuildIds.add(buildId);
 
     // Fetch build timeline to find failed tasks
     const timelineUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/timeline?api-version=7.1`;
@@ -121,9 +147,9 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token) {
     );
     if (failedRecords.length === 0) return null;
 
-    // Fetch logs for failed tasks (cap at 3 to limit API calls)
+    // Fetch logs for failed tasks (cap at 10 to cover multi-stage pipelines)
     const logParts = [];
-    for (const record of failedRecords.slice(0, 3)) {
+    for (const record of failedRecords.slice(0, 10)) {
       try {
         const logUrl = `${orgBase}/${project.adoProject}/_apis/build/builds/${buildId}/logs/${record.log.id}?api-version=7.1`;
         const text = await adoFetchText(logUrl, token);
@@ -163,7 +189,7 @@ async function forEachActivePr(config, token, callback) {
     if (!project.adoOrg || !project.adoProject || !project.repositoryId) continue;
 
     const prs = getPrs(project);
-    const activePrs = prs.filter(pr => pr.status === PR_STATUS.ACTIVE);
+    const activePrs = prs.filter(pr => shared.PR_POLLABLE_STATUSES.has(pr.status));
     if (activePrs.length === 0) continue;
 
     let projectUpdated = 0;
@@ -186,11 +212,18 @@ async function forEachActivePr(config, token, callback) {
 
     if (projectUpdated > 0) {
       mutateJsonFileLocked(shared.projectPrPath(project), (currentPrs) => {
-        // Only merge back PRs that the callback actually modified — not the entire
-        // stale snapshot, which would overwrite concurrent writes from other code paths
+        // Merge back updated PRs — preserve disk values that may have been changed
+        // by other writers between poll start and this write
         for (const updatedPr of activePrs) {
           const idx = currentPrs.findIndex(p => p.id === updatedPr.id);
-          if (idx >= 0) currentPrs[idx] = updatedPr;
+          if (idx >= 0) {
+            // Never downgrade reviewStatus from 'approved' — it's a permanent terminal state
+            // The disk version may have been set to 'approved' by another writer after we read
+            if (currentPrs[idx].reviewStatus === 'approved' && updatedPr.reviewStatus !== 'approved') {
+              updatedPr.reviewStatus = 'approved';
+            }
+            currentPrs[idx] = updatedPr;
+          }
           // Don't push if not found — it was deleted by another writer, respect that
         }
         // Remove duplicates — prefer merged/abandoned over active
@@ -262,7 +295,8 @@ async function pollPrStatus(config) {
     }
 
     // Track head commit changes to detect new pushes (used for review re-dispatch gating)
-    const headCommit = prData.lastMergeSourceCommit?.commitId || prData.sourceRefName || '';
+    // Use lastMergeCommit (the merge commit), not lastMergeSourceCommit (source branch tip)
+    const headCommit = prData.lastMergeCommit?.commitId || prData.lastMergeSourceCommit?.commitId || '';
     if (headCommit && pr._adoHeadCommit !== headCommit) {
       if (pr._adoHeadCommit) { // skip first detection — only track changes
         pr.lastPushedAt = ts();
@@ -270,16 +304,37 @@ async function pollPrStatus(config) {
       pr._adoHeadCommit = headCommit;
       updated = true;
     }
+    // Track source commit separately — detects actual author pushes vs target branch updates
+    const sourceCommit = prData.lastMergeSourceCommit?.commitId || '';
+    if (sourceCommit && pr._adoSourceCommit !== sourceCommit) {
+      pr._adoSourceCommit = sourceCommit;
+      updated = true;
+    }
 
     const reviewers = prData.reviewers || [];
     const votes = reviewers.map(r => r.vote).filter(v => v !== undefined);
     let newReviewStatus = pr.reviewStatus || 'pending';
-    if (votes.length > 0) {
+    // Once approved, it stays approved permanently
+    if (pr.reviewStatus === 'approved') {
+      newReviewStatus = 'approved';
+      // Re-approve: ADO resets votes when target branch (master) advances, even though
+      // the source branch is unchanged. Re-apply the approval vote via API.
+      if (!votes.some(v => v >= 5) && sourceCommit && pr._adoSourceCommit === sourceCommit) {
+        try {
+          const identityData = await adoFetch(`${orgBase}/_apis/connectionData?api-version=7.1`, token).catch(() => null);
+          const myId = identityData?.authenticatedUser?.id;
+          if (myId) {
+            await adoFetch(`${repoBase}/reviewers/${myId}?api-version=7.1`, token, {
+              method: 'PUT', body: JSON.stringify({ vote: 10 })
+            });
+            log('info', `PR ${pr.id}: re-applied approval vote (ADO reset due to target branch update)`);
+          }
+        } catch (e) { log('warn', `PR ${pr.id}: failed to re-apply approval: ${e.message}`); }
+      }
+    } else if (votes.length > 0) {
       if (votes.some(v => v === -10)) {
-        // Don't re-trigger 'changes-requested' if fix agent already responded (waiting state).
-        // Only re-trigger if there's been a new push since the fix (reviewer re-reviewed).
         if (pr.reviewStatus === 'waiting' && pr.minionsReview?.fixedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.minionsReview.fixedAt)) {
-          newReviewStatus = 'waiting'; // fix was submitted, same vote still present — wait for re-review
+          newReviewStatus = 'waiting';
         } else {
           newReviewStatus = 'changes-requested';
         }
@@ -306,57 +361,55 @@ async function pollPrStatus(config) {
       log('info', `PR ${pr.id} reviewStatus: ${pr.reviewStatus} → ${newReviewStatus}`);
       pr.reviewStatus = newReviewStatus;
       updated = true;
-      // Update author metrics when verdict changes to approved/rejected
-      if (newReviewStatus === 'approved' || newReviewStatus === 'changes-requested') {
-        const authorId = (pr.agent || '').toLowerCase();
-        if (authorId) {
-          try {
-            const metricsPath = path.join(__dirname, 'metrics.json');
-            mutateJsonFileLocked(metricsPath, (metrics) => {
-              if (!metrics[authorId]) metrics[authorId] = {};
-              if (newReviewStatus === 'approved') metrics[authorId].prsApproved = (metrics[authorId].prsApproved || 0) + 1;
-              else metrics[authorId].prsRejected = (metrics[authorId].prsRejected || 0) + 1;
-              return metrics;
-            });
-          } catch (err) { log('warn', `Metrics update: ${err.message}`); }
-        }
+      shared.trackReviewMetric(pr, newReviewStatus, config);
+      if (newReviewStatus === 'approved') {
+        delete pr._reviewFixCycles;
+        delete pr._evalEscalated;
       }
     }
 
     if (newStatus !== PR_STATUS.ACTIVE) return updated;
 
-    const statusData = await adoFetch(`${repoBase}/statuses?api-version=7.1`, token);
-
-    const latest = new Map();
-    for (const s of statusData.value || []) {
-      const key = (s.context?.genre || '') + '/' + (s.context?.name || '');
-      if (!latest.has(key)) latest.set(key, s);
-    }
-
-    const buildStatuses = [...latest.values()].filter(s => {
-      const ctx = ((s.context?.genre || '') + '/' + (s.context?.name || '')).toLowerCase();
-      return /\bcodecoverage\b/.test(ctx) || /\bbuild\b/.test(ctx) ||
-             /\bdeploy\b/.test(ctx) || /(?:^|\/)ci(?:\/|$)/.test(ctx);
-    });
-
+    // Query builds API directly — status checks (/statuses) are unreliable (stale codecoverage postbacks)
+    // Use the merge commit hash to find builds for this PR
+    const mergeCommitId = prData.lastMergeCommit?.commitId;
     let buildStatus = 'none';
     let buildFailReason = '';
+    let buildStatuses = []; // for error log fetching
 
-    if (buildStatuses.length > 0) {
-      const states = buildStatuses.map(s => s.state).filter(Boolean);
-      const hasFailed = states.some(s => s === 'failed' || s === 'error');
-      const allDone = states.every(s => s === 'succeeded' || s === 'notApplicable');
-      const hasQueued = buildStatuses.some(s => !s.state);
+    if (mergeCommitId) {
+      try {
+        // Find builds for this PR — filter by source branch to avoid scanning all org builds
+        const sourceBranch = prData.sourceRefName || '';
+        const branchFilter = sourceBranch ? `&branchName=${sourceBranch}` : '';
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?$top=10${branchFilter}&api-version=7.1`;
+        const buildsData = await adoFetch(buildsUrl, token);
+        // Match by exact merge commit — only current builds, not stale
+        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
-      if (hasFailed) {
-        buildStatus = 'failing';
-        const failed = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
-        buildFailReason = failed?.description || failed?.context?.name || 'Build failed';
-      } else if (allDone && !hasQueued) {
-        buildStatus = 'passing';
-      } else {
-        buildStatus = 'running';
-      }
+        if (prBuilds.length > 0) {
+          // partiallySucceeded = warnings, not failures — counts as passing
+          const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
+          const allDone = prBuilds.every(b => b.status === 'completed');
+          const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
+          const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
+
+          if (hasFailed && allDone) {
+            buildStatus = 'failing';
+            const failed = prBuilds.find(b => b.result === 'failed');
+            buildFailReason = failed?.definition?.name || 'Build failed';
+            // Build fake status objects for error log fetching
+            buildStatuses = prBuilds.filter(b => b.result === 'failed').map(b => ({
+              state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
+              _buildId: String(b.id),
+            }));
+          } else if (allDone && allPassed) {
+            buildStatus = 'passing';
+          } else if (hasRunning) {
+            buildStatus = 'running';
+          }
+        }
+      } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
     }
 
     if (pr.buildStatus !== buildStatus) {
@@ -364,6 +417,9 @@ async function pollPrStatus(config) {
       pr.buildStatus = buildStatus;
       if (buildFailReason) pr.buildFailReason = buildFailReason;
       else delete pr.buildFailReason;
+      // Build transitioned — clear grace period and auto-complete flag
+      delete pr._buildFixPushedAt;
+      if (buildStatus === 'failing') delete pr._autoCompleted;
       if (buildStatus !== 'failing') {
         delete pr._buildFailNotified;
         delete pr.buildErrorLog;
@@ -374,13 +430,62 @@ async function pollPrStatus(config) {
 
       // Fetch actual compiler/build error logs when transitioning to failing
       if (buildStatus === 'failing') {
-        const failedStatusObj = buildStatuses.find(s => s.state === 'failed' || s.state === 'error');
-        const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token);
-        if (errorLog) {
-          pr.buildErrorLog = errorLog;
-          log('info', `PR ${pr.id}: fetched ${errorLog.split('\n').length} lines of build error log`);
+        const failedStatusObjs = buildStatuses.filter(s => s.state === 'failed' || s.state === 'error').slice(0, 10);
+        const logParts = [];
+        const seenBuildIds = new Set();
+        for (const failedStatusObj of failedStatusObjs) {
+          const errorLog = await fetchAdoBuildErrorLog(orgBase, project, failedStatusObj, token, pr, seenBuildIds);
+          if (errorLog) logParts.push(errorLog);
+        }
+        if (logParts.length > 0) {
+          pr.buildErrorLog = logParts.join('\n\n');
+          log('info', `PR ${pr.id}: fetched error logs from ${logParts.length} failing pipeline(s)`);
+        }
+
+        // Teams notification for build failure — non-blocking
+        try {
+          const teams = require('./teams');
+          const prFilePath = shared.projectPrPath(project);
+          teams.teamsNotifyPrEvent(pr, 'build-failed', project, prFilePath).catch(() => {});
+        } catch {}
+      }
+    }
+
+    // Auto-complete: set auto-complete on PR when builds green + review approved
+    if (pr.status === PR_STATUS.ACTIVE && pr.reviewStatus === 'approved' && pr.buildStatus === 'passing' && !pr._autoCompleted) {
+      const autoComplete = config.engine?.autoCompletePrs === true; // opt-in
+      if (autoComplete) {
+        try {
+          const mergeStrategy = config.engine?.prMergeMethod === 'merge' ? 1 : config.engine?.prMergeMethod === 'rebase' ? 2 : 3; // 3 = squash
+          const identityUrl = `${orgBase}/_apis/connectionData?api-version=7.1`;
+          const identity = await adoFetch(identityUrl, token).catch(() => null);
+          const autoCompleteUrl = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests/${prNum}?api-version=7.1`;
+          await adoFetch(autoCompleteUrl, token, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              autoCompleteSetBy: { id: identity?.authenticatedUser?.id },
+              completionOptions: { mergeStrategy, deleteSourceBranch: true, transitionWorkItems: true }
+            })
+          });
+          pr._autoCompleted = true;
+          log('info', `Auto-complete set on PR ${pr.id}: builds green + review approved`);
+          updated = true;
+        } catch (e) {
+          log('warn', `Auto-complete failed for PR ${pr.id}: ${e.message}`);
         }
       }
+    }
+
+    // Merge conflict detection
+    if (prData.mergeStatus === 'conflicts') {
+      if (!pr._mergeConflict) {
+        pr._mergeConflict = true;
+        log('info', `PR ${pr.id} has merge conflicts — will dispatch fix if not already in progress`);
+        updated = true;
+      }
+    } else if (pr._mergeConflict) {
+      delete pr._mergeConflict;
+      updated = true;
     }
 
     return updated;
@@ -419,29 +524,46 @@ async function pollPrHumanComments(config) {
     // Collect ALL human comments on the PR for full context
     const allHumanComments = [];
     const newHumanComments = [];
+    const ignoredAuthors = (config.engine?.ignoredCommentAuthors || []).map(a => a.toLowerCase());
 
     for (const thread of threads) {
+      // Skip resolved/closed threads — only process active (1) and pending (6)
+      if (thread.status && thread.status !== 'active' && thread.status !== 1 && thread.status !== 6) continue;
       for (const comment of (thread.comments || [])) {
         if (!comment.content || comment.commentType === 'system') continue;
-        if (/\bMinions\s*\(/i.test(comment.content)) continue; // skip minions's own comments
+        const content = comment.content;
+        // Skip bots, CI noise, and ignored authors
+        const authorName = (comment.author?.displayName || '').toLowerCase();
+        if (ignoredAuthors.some(a => authorName.includes(a))) continue;
+        if (/\b(bot|service|build|pipeline|codecov|sonar)\b/i.test(authorName)) continue;
+        if (/^#{1,3}\s*(Coverage|Build|Test|Deploy|Pipeline)\s*(Report|Status|Result|Summary)/i.test(content)) continue;
+        // Detect agent comments (included in context, but don't trigger fix)
+        const isAgent = /\bMinions\s*\(/i.test(content) || /\bby\s+Minions\b/i.test(content) || /\[minions\]/i.test(content);
 
         const entry = {
           threadId: thread.id,
           commentId: comment.id,
           author: comment.author?.displayName || 'Human',
           content: comment.content,
-          date: comment.publishedDate
+          date: comment.publishedDate,
+          _isAgent: isAgent
         };
         allHumanComments.push(entry);
 
-        // Track which comments are new (for triggering — any new comment triggers a fix)
+        // Only non-agent new comments trigger a fix (agent reviews trigger via vote)
         const commentMs = comment.publishedDate ? new Date(comment.publishedDate).getTime() : 0;
-        if (commentMs && commentMs > cutoffMs) {
+        if (commentMs && commentMs > cutoffMs && !isAgent) {
           newHumanComments.push(entry);
         }
       }
     }
 
+    // Update cutoff even if only agent comments are new
+    const allNewDates = allHumanComments.filter(c => (new Date(c.date).getTime() || 0) > cutoffMs).map(c => c.date);
+    if (allNewDates.length > 0 && newHumanComments.length === 0) {
+      pr.humanFeedback = { ...(pr.humanFeedback || {}), lastProcessedCommentDate: allNewDates.sort().pop() };
+      return false;
+    }
     if (newHumanComments.length === 0) return false;
 
     // Sort all comments chronologically and build full context for the fix agent
@@ -535,10 +657,14 @@ async function reconcilePrs(config) {
       const confirmedItemId = linkedItem ? linkedItemId : null;
 
       if (existingIds.has(prId)) {
+        const existing = existingPrs.find(p => p.id === prId);
+        // Backfill prNumber for existing records missing it
+        if (existing && existing.prNumber == null) {
+          existing.prNumber = adoPr.pullRequestId;
+        }
         // PR already tracked — write link to pr-links.json if we can extract an ID
         if (confirmedItemId) {
           addPrLink(prId, confirmedItemId);
-          const existing = existingPrs.find(p => p.id === prId);
           if (existing && !(existing.prdItems || []).includes(confirmedItemId)) {
             existing.prdItems = Array.isArray(existing.prdItems) ? existing.prdItems : [];
             existing.prdItems.push(confirmedItemId);
@@ -556,6 +682,7 @@ async function reconcilePrs(config) {
       const prUrl = project.prUrlBase ? project.prUrlBase + adoPr.pullRequestId : '';
       existingPrs.push({
         id: prId,
+        prNumber: adoPr.pullRequestId,
         title: (adoPr.title || `PR #${adoPr.pullRequestId}`).slice(0, 120),
         agent: (linkedItem?.dispatched_to || adoPr.createdBy?.displayName || 'unknown').toLowerCase(),
         branch,
@@ -569,6 +696,14 @@ async function reconcilePrs(config) {
       existingIds.add(prId);
       projectAdded++;
       log('info', `PR reconciliation: added ${prId} (branch: ${branch}, linked to ${confirmedItemId}) to ${project.name}`);
+    }
+
+    // Backfill prNumber from pr.id for any PR missing it (e.g. created before prNumber was stored)
+    for (const pr of existingPrs) {
+      if (pr.prNumber == null) {
+        const derived = parseInt((pr.id || '').replace(/^PR-/, ''), 10);
+        if (derived) pr.prNumber = derived;
+      }
     }
 
     // Backfill prdItems from pr-links for any PR with empty array

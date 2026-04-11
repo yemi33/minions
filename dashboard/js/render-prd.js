@@ -30,12 +30,14 @@ function renderPrd(prd, prog) {
     const prdStatus = existing[0]?.status || '';
     const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'dispatched' : prdStatus || 'active';
 
+    const headerStale = existing[0]?.planStale || prdItems.some(i => i.planStale);
     let actions = '';
-    if (prdFile) {
+    if (prdFile && !headerStale) {
       if (effectiveStatus === 'awaiting-approval') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
       } else if (effectiveStatus === 'completed') {
-        actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>' +
+        const hasVerifyWi = allWi.some(w => w.itemType === 'verify' && w.sourcePlan === prdFile);
+        actions = (hasVerifyWi ? '' : ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="triggerVerify(\'' + escHtml(prdFile) + '\',this)">Verify</button>') +
           ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;margin-left:4px" onclick="planArchive(\'' + escHtml(prdFile) + '\',this)">Archive</button>';
       } else if (effectiveStatus === 'dispatched') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--yellow);border-color:var(--yellow);margin-left:4px" onclick="planPause(\'' + escHtml(prdFile) + '\',this)">Pause</button>';
@@ -63,6 +65,13 @@ function renderPrd(prd, prog) {
     badge.innerHTML = '<span style="font-weight:600;font-size:11px;color:var(--text)">' + existing.length + ' PRDs</span> ' + parts.join(' · ');
   }
   section.innerHTML = '';
+}
+
+function _renderPrLink(pr, opts) {
+  var size = (opts && opts.size) || '10px';
+  var statusColor = pr.status === 'merged' ? 'var(--green)' : pr.status === 'abandoned' ? 'var(--red)' : 'var(--blue)';
+  var statusIcon = pr.status === 'merged' ? '✓' : pr.status === 'abandoned' ? '✗' : '○';
+  return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:' + size + ';color:' + statusColor + ';text-decoration:underline;cursor:pointer;margin-left:4px" title="' + escHtml((pr.title || '') + ' (' + (pr.status || 'active') + ')') + '">' + statusIcon + ' ' + escHtml(pr.id) + '</a>';
 }
 
 function renderPrdProgress(prog) {
@@ -139,7 +148,7 @@ function renderPrdProgress(prog) {
   const grouped = {};
   for (const i of (prog.items || [])) {
     const key = i.source || '_ungrouped';
-    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
+    if (!grouped[key]) grouped[key] = { summary: i.planSummary || i.source || 'Items', _projects: [], file: i.source || '', items: [], archived: !!i._archived, planStatus: i.planStatus || 'active', sourcePlan: i.sourcePlan || '', branchStrategy: i.branchStrategy || 'parallel', planStale: i.planStale || false, lastSyncedFromPlan: i.lastSyncedFromPlan || null, prdUpdatedAt: i.prdUpdatedAt || null, completedAt: i.prdCompletedAt || '' };
     grouped[key].items.push(i);
     // Collect all unique projects across items in this group
     for (const p of (i.projects || [])) { if (p && !grouped[key]._projects.includes(p)) grouped[key]._projects.push(p); }
@@ -148,9 +157,7 @@ function renderPrdProgress(prog) {
   }
 
   const renderItem = (i) => {
-    const prLinks = (i.prs || []).map(pr =>
-      '<a class="pr-title" href="' + escHtml(pr.url || '#') + '" target="_blank" style="font-size:10px;margin-left:4px" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>'
-    ).join(' ');
+    const prLinks = (i.prs || []).map(function(pr) { return _renderPrLink(pr); }).join(' ');
     const projBadges = (i.projects || []).map(p =>
       '<span class="prd-project-badge">' + escHtml(p) + '</span>'
     ).join(' ');
@@ -165,9 +172,16 @@ function renderPrdProgress(prog) {
     const agentLabel = wiAgent ? '<span style="font-size:9px;color:var(--muted)" title="' + escHtml(wiAgent.name || wi.dispatched_to) + '">' +
       (wiAgent.emoji || '') + ' ' + escHtml(wiAgent.name || wi.dispatched_to) + '</span>' : '';
 
-    // Requeue button for failed items
-    const canRequeue = wi && (wi.status === 'failed' || i.status === 'failed');
-    const requeueState = wi ? getPrdRequeueState(wi.id) : null;
+    // Branch label — show the target branch for this item
+    const wiBranch = wi ? (wi.branch || wi.featureBranch || (wi._artifacts && wi._artifacts.branch) || '') : '';
+    const branchLabel = wiBranch
+      ? '<span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:3px;border:1px solid var(--border);font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle" title="Branch: ' + escHtml(wiBranch) + '">&#x1F33F; ' + escHtml(wiBranch) + '</span>'
+      : '';
+
+    // Requeue button for failed items or PRD items with no work item (orphaned/deleted)
+    const canRequeue = (wi && (wi.status === 'failed' || i.status === 'failed')) ||
+      (!wi && i.status && i.status !== 'missing' && i.status !== 'done' && i.status !== 'planned');
+    const requeueState = getPrdRequeueState(wi ? wi.id : i.id);
     let requeueBtn = '';
     if (requeueState && requeueState.status === 'pending') {
       requeueBtn = '<span style="color:var(--yellow);cursor:wait;font-size:9px;padding:1px 5px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px" title="Retry request in progress">requeuing…</span>';
@@ -176,8 +190,14 @@ function renderPrdProgress(prog) {
     } else if (requeueState && requeueState.status === 'error') {
       requeueBtn = '<span style="color:var(--red);cursor:default;font-size:9px;padding:1px 5px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(requeueState.message || 'Retry failed') + '">retry failed</span>';
     } else if (canRequeue) {
-      requeueBtn = '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi.id) + '\',\'' + escHtml(wi._source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>';
+      requeueBtn = '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi ? wi.id : i.id) + '\',\'' + escHtml(wi ? (wi._source || '') : '') + '\',\'' + escHtml(i.source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>';
     }
+
+    // Re-open button for done items — sets PRD item to "updated" so engine re-dispatches
+    const isDone = i.status === 'done' || (wi && wi.status === 'done');
+    const reopenBtn = isDone
+      ? '<span onclick="event.stopPropagation();prdItemReopen(\'' + escHtml(i.source || '') + '\',\'' + escHtml(i.id) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Re-open: set to updated so engine re-dispatches on existing branch">re-open</span>'
+      : '';
 
     return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status, i.id) +
@@ -186,8 +206,10 @@ function renderPrdProgress(prog) {
       wiLabel +
       agentLabel +
       requeueBtn +
+      reopenBtn +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
+      branchLabel +
       '<span class="prd-item-priority ' + (i.priority || '') + '">' + escHtml(i.priority || '') + '</span>' +
       '<span onclick="event.stopPropagation();prdItemRemove(\'' + src + '\',\'' + iid + '\')" style="color:var(--red);cursor:pointer;font-size:10px;padding:0 4px" title="Remove item">x</span>' +
       (i.description ? '<div style="width:100%;font-size:11px;color:var(--muted);padding:2px 0 2px 42px;line-height:1.4">' + renderMd(i.description) + '</div>' : '') +
@@ -255,19 +277,22 @@ function renderPrdProgress(prog) {
     const staleRecovery = (!isBlocked && g.planStale)
       ? '<div style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid rgba(210,153,34,0.35);border-radius:4px;background:rgba(210,153,34,0.08);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span style="color:var(--orange);font-size:10px;font-weight:600">&#x26A0;&#xFE0F; Source plan was revised. This PRD may be outdated.</span>' +
-          '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Regenerate PRD from latest plan">Regenerate now</span>' +
+          '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Compare revised plan against existing PRD and update items">Regenerate PRD</span>' +
+          '<span onclick="event.stopPropagation();prdResumeWithoutRegen(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:10px;padding:2px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px" title="Resume without regenerating — use current PRD as-is">Resume as-is</span>' +
           '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan || g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;padding:2px 8px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:4px" title="Review latest plan changes">Review plan</span>' +
         '</div>'
       : '';
     const isCompleted = done > 0 && done === g.items.length;
-    const pauseResumeBtn = isAwaitingApproval
+    // Hide regular action buttons when stale banner is showing — stale banner has its own actions
+    const isStale = !isBlocked && g.planStale;
+    const pauseResumeBtn = isStale ? '' : isAwaitingApproval
       ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Approve</span>'
       : isPaused
         ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
-        : isCompleted
+        : isCompleted && !(window._lastWorkItems || []).some(w => w.itemType === 'verify' && w.sourcePlan === g.file)
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
-          : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
-    const archiveBtn = (isCompleted || isPaused) ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.3);border-radius:3px">Archive</span>' : '';
+          : isCompleted ? '' : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
+    const archiveBtn = (!isStale && (isCompleted || isPaused)) ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.3);border-radius:3px">Archive</span>' : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
       ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
@@ -276,6 +301,9 @@ function renderPrdProgress(prog) {
     return '<div style="font-size:11px;font-weight:600;color:var(--blue);margin-bottom:4px;padding:6px 8px;background:var(--surface2);border-radius:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
       (g._projects.length > 0 ? g._projects.map(function(p) { return '<span class="prd-project-badge">' + escHtml(p) + '</span>'; }).join(' ') : '') +
       '<span style="color:var(--text)">' + escHtml(summary || g.file) + '</span>' +
+      (g.branchStrategy === 'shared-branch'
+        ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(210,153,34,0.15);color:var(--yellow);font-weight:400" title="All items commit to a single shared feature branch">&#x1F333; shared branch</span>'
+        : '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(56,139,253,0.12);color:var(--blue);font-weight:400" title="Each item gets its own branch (work/P-xxx) and PR">&#x1F500; parallel branches</span>') +
       pausedLabel +
       staleLabel +
       '<span style="font-weight:700;font-size:11px;color:' + (done === g.items.length && g.items.length > 0 ? 'var(--green)' : 'var(--text)') + '">' + (g.items.length > 0 ? Math.round((done / g.items.length) * 100) : 0) + '%</span>' +
@@ -374,8 +402,8 @@ function renderPrdProgress(prog) {
             (agentDisplay ? '<span style="font-size:8px;color:var(--muted)">' + agentDisplay + '</span>' : '') +
             (function() {
               const w = wi[i.id];
-              if (!w) return '';
-              const rq = getPrdRequeueState(w.id);
+              const rqId = w ? w.id : i.id;
+              const rq = getPrdRequeueState(rqId);
               if (rq && rq.status === 'pending') {
                 return '<span style="font-size:8px;color:var(--yellow);cursor:wait;padding:1px 4px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.35);border-radius:3px">requeuing…</span>';
               }
@@ -385,14 +413,21 @@ function renderPrdProgress(prog) {
               if (rq && rq.status === 'error') {
                 return '<span style="font-size:8px;color:var(--red);cursor:default;padding:1px 4px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.35);border-radius:3px" title="' + escHtml(rq.message || 'Retry failed') + '">failed</span>';
               }
-              if (i.status !== 'failed') return '';
-              return '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(w.id) + '\',\'' + escHtml(w._source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>';
+              // Show retry for failed items, or PRD items with no work item (orphaned/deleted)
+              const canRetry = (w && i.status === 'failed') ||
+                (!w && i.status && i.status !== 'missing' && i.status !== 'done' && i.status !== 'planned');
+              if (!canRetry) return '';
+              return '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(rqId) + '\',\'' + escHtml(w ? (w._source || '') : '') + '\',\'' + escHtml(i.source || '') + '\')" style="font-size:8px;color:var(--green);cursor:pointer;padding:1px 4px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">retry</span>';
             })() +
             (deps ? '<span style="font-size:8px;color:var(--muted)" title="Depends on: ' + escHtml(deps) + '">deps: ' + escHtml(deps) + '</span>' : '') +
+            (function() {
+              var w = wi[i.id];
+              var b = w ? (w.branch || w.featureBranch || (w._artifacts && w._artifacts.branch) || '') : '';
+              if (!b) return '';
+              return '<span style="font-size:8px;color:var(--muted);font-family:monospace;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:middle" title="Branch: ' + escHtml(b) + '">&#x1F33F; ' + escHtml(b) + '</span>';
+            })() +
           '</div>' +
-          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) {
-            return '<a href="' + escHtml(pr.url || '#') + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="font-size:9px;color:var(--green);text-decoration:underline;cursor:pointer" title="' + escHtml(pr.title || '') + '">' + escHtml(pr.id) + '</a>';
-          }).join(' ') + '</div>' : '') +
+          ((i.prs || []).length ? '<div style="margin-top:3px">' + (i.prs || []).map(function(pr) { return _renderPrLink(pr, { size: '9px' }); }).join(' ') + '</div>' : '') +
           (i.status === 'decomposed' ? (function() {
             var children = (window._lastWorkItems || []).filter(function(w) { return w.parent_id === i.id; });
             if (!children.length) return '';
@@ -678,20 +713,22 @@ async function prdItemEdit(source, itemId) {
 
 async function prdItemSave(source, itemId) {
   var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  const body = {
+    source, itemId,
+    name: document.getElementById('prd-edit-name').value,
+    description: document.getElementById('prd-edit-desc').value,
+    priority: document.getElementById('prd-edit-priority').value,
+    estimated_complexity: document.getElementById('prd-edit-complexity').value,
+  };
+  closeModal(); showToast('cmd-toast', 'Item updated', true);
   try {
     const res = await fetch('/api/prd-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source, itemId,
-        name: document.getElementById('prd-edit-name').value,
-        description: document.getElementById('prd-edit-desc').value,
-        priority: document.getElementById('prd-edit-priority').value,
-        estimated_complexity: document.getElementById('prd-edit-complexity').value,
-      })
+      body: JSON.stringify(body)
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item updated', true); }
-    else { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Save failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function prdItemRemove(source, itemId) {
@@ -708,13 +745,15 @@ async function prdItemRemove(source, itemId) {
   } catch (e) { alert('Error: ' + e.message); refresh(); }
 }
 
-async function prdItemRequeue(workItemId, source) {
+async function prdItemRequeue(workItemId, source, prdFile) {
   setPrdRequeueState(workItemId, { status: 'pending', message: '' });
   rerenderPrdFromCache();
   try {
+    const payload = { id: workItemId, source };
+    if (prdFile) payload.prdFile = prdFile;
     const res = await fetch('/api/work-items/retry', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: workItemId, source })
+      body: JSON.stringify(payload)
     });
     if (res.ok) {
       setPrdRequeueState(workItemId, { status: 'queued', until: Date.now() + 10000 });
@@ -736,21 +775,53 @@ async function prdItemRequeue(workItemId, source) {
   }
 }
 
-async function prdRegenerate(prdFile) {
-  if (!confirm('This PRD is stale because the source plan changed.\n\nRegenerate now from the latest plan?\n\nThis resets PRD status to awaiting-approval and queues a fresh plan-to-prd conversion.')) return;
+async function prdItemReopen(source, itemId) {
+  if (!confirm('Re-open this item? It will be set to "updated" and the engine will re-dispatch it on the existing branch.')) return;
+  showToast('cmd-toast', 'Item re-opened — will dispatch on next tick', true);
   try {
-    const res = await fetch('/api/prd/regenerate', {
+    const res = await fetch('/api/prd-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: prdFile })
+      body: JSON.stringify({ source, itemId, status: 'updated' })
     });
-    const d = await res.json();
     if (res.ok) {
-      showToast('cmd-toast', 'PRD regeneration queued', true);
+      await fetch('/api/plans/approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: source, skipRegen: true })
+      });
       refresh();
     } else {
-      alert('Failed: ' + (d.error || 'unknown'));
+      const d = await res.json().catch(() => ({}));
+      alert('Re-open failed: ' + (d.error || 'unknown'));
     }
   } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function _planApproveAction(prdFile, skipRegen, confirmMsg, successMsg) {
+  if (!confirm(confirmMsg)) return;
+  showToast('cmd-toast', successMsg || (skipRegen ? 'Plan resumed' : 'PRD regeneration queued'), true);
+  try {
+    const res = await fetch('/api/plans/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: prdFile, skipRegen: skipRegen || undefined })
+    });
+    if (res.ok) {
+      refresh();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false);
+    }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+}
+
+function prdRegenerate(prdFile) {
+  _planApproveAction(prdFile, false,
+    'Source plan was revised.\n\nRegenerate PRD? An agent will compare the updated plan against existing implementation and update items accordingly.\n\nDone items stay done unless modified. New items are added. Removed items are cancelled.');
+}
+
+function prdResumeWithoutRegen(prdFile) {
+  _planApproveAction(prdFile, true,
+    'Resume this plan without regenerating the PRD?\n\nThe current PRD items will be used as-is. New work items will be materialized from any missing/planned items.',
+    'Plan resumed (PRD unchanged)');
 }
 
 function openArchive(i) {
@@ -825,4 +896,4 @@ function openArchive(i) {
   document.getElementById('modal').classList.add('open');
 }
 
-window.MinionsPrd = { renderPrd, renderPrdProgress, openArchivedPrdModal, showArchivedPrdDetail, prdItemEdit, prdItemSave, prdItemRemove, prdItemRequeue, prdRegenerate, openArchive };
+window.MinionsPrd = { renderPrd, renderPrdProgress, openArchivedPrdModal, showArchivedPrdDetail, prdItemEdit, prdItemSave, prdItemRemove, prdItemRequeue, prdItemReopen, prdRegenerate, openArchive };

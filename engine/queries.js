@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS } = shared;
+  WI_STATUS, ENGINE_DEFAULTS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -265,14 +265,21 @@ function getAgentStatus(agentId) {
 
   // Fallback: derive active state from work-item markers.
   // This protects UI status when dispatch.json briefly desyncs from work-item files.
+  // Guard: only trust dispatched state within 2x heartbeatTimeout to prevent stale
+  // dispatched items from permanently showing an agent as working after a dead process.
   try {
     const config = getConfig();
+    const heartbeatTimeout = config.engine?.heartbeatTimeout || ENGINE_DEFAULTS.heartbeatTimeout;
+    const staleThresholdMs = heartbeatTimeout * 2;
+    const now = Date.now();
     const allItems = getWorkItems(config);
     const latestInFlight = allItems
-      .filter(w =>
-        (w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase() &&
-        w.status === WI_STATUS.DISPATCHED
-      )
+      .filter(w => {
+        if ((w.dispatched_to || '').toLowerCase() !== String(agentId).toLowerCase()) return false;
+        if (w.status !== WI_STATUS.DISPATCHED) return false;
+        const ageMs = w.dispatched_at ? now - new Date(w.dispatched_at).getTime() : Infinity;
+        return ageMs < staleThresholdMs;
+      })
       .sort((a, b) => (b.dispatched_at || '').localeCompare(a.dispatched_at || ''))[0];
     if (latestInFlight) {
       return {
@@ -592,10 +599,12 @@ function getKnowledgeBaseEntries() {
       const title = titleMatch ? titleMatch[1].trim() : f.replace(/\.md$/, '');
       const agentMatch = f.match(/^\d{4}-\d{2}-\d{2}-(\w+)-/);
       const dateMatch = f.match(/^(\d{4}-\d{2}-\d{2})/);
+      const sourceMatch = content.match(/^source:\s*(.+)/m);
       entries.push({
         cat, file: f, title,
         agent: agentMatch ? agentMatch[1] : '',
         date: dateMatch ? dateMatch[1] : '',
+        source: sourceMatch ? sourceMatch[1].trim() : '',
         preview: content.slice(0, 200),
         size: content.length,
       });
@@ -719,6 +728,9 @@ function getWorkItems(config) {
   }
   const _agentDirCache = {};
   const _inboxFiles = safeReadDir(INBOX_DIR);
+  const _archiveFiles = safeReadDir(ARCHIVE_DIR);
+  // Use cached KB entries (includes source frontmatter field)
+  const _kbEntries = getKnowledgeBaseEntries();
   for (const item of allItems) {
     const arts = {};
     const agentId = item.dispatched_to || item.agent;
@@ -732,12 +744,25 @@ function getWorkItems(config) {
         const matchLog = _agentDirCache[agentId].find(f => f.includes(dispatchId));
         if (matchLog) arts.outputLog = agentId + '/' + matchLog;
       }
-      // Inbox notes — match by agent ID + work item ID in filename
-      const matchNotes = _inboxFiles.filter(f => f.includes(agentId) && f.includes(item.id || '___'));
-      if (matchNotes.length > 0) arts.notes = matchNotes;
+      // Notes: inbox → KB (via source field) → archive (fallback if KB was swept)
+      const itemId = item.id || '___';
+      const matchInbox = _inboxFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+      const matchKb = _kbEntries.filter(kb => kb.source && kb.source.includes(agentId) && kb.source.includes(itemId));
+      const allNotes = [
+        ...matchInbox,
+        ...matchKb.map(kb => 'kb:' + kb.cat + '/' + kb.file),
+      ];
+      // Archive fallback — only if nothing found in inbox or KB
+      if (allNotes.length === 0) {
+        const matchArchive = _archiveFiles.filter(f => f.includes(agentId) && f.includes(itemId));
+        for (const f of matchArchive) allNotes.push('archive:' + f);
+      }
+      if (allNotes.length > 0) arts.notes = allNotes;
     }
     if (item.branch || item.featureBranch) arts.branch = item.branch || item.featureBranch;
     if (item.sourcePlan) arts.sourcePlan = item.sourcePlan;
+    if (item._planFileName) arts.plan = item._planFileName;
+    else if (item.planFile) arts.plan = item.planFile;
     if (item._pr) arts.pr = item._pr;
     if (Object.keys(arts).length > 0) item._artifacts = arts;
   }
@@ -846,6 +871,7 @@ function getPrdInfo(config) {
               ...f, _source: pf, _planStatus: plan.status || 'active',
               _planSummary: plan.plan_summary || pf, _planProject: plan.project || '',
               _archived: archived, _sourcePlan: plan.source_plan || '',
+              _branchStrategy: plan.branch_strategy || 'parallel',
               _planStale: planStale || plan.planStale || false, _lastSyncedFromPlan: plan.lastSyncedFromPlan || null,
               _prdUpdatedAt: new Date(stat.mtimeMs).toISOString(),
               _prdCompletedAt: plan.completedAt || '',
@@ -927,7 +953,9 @@ function getPrdInfo(config) {
   for (const item of items) {
     const wi = wiById[item.id];
     // Work item status is source of truth when available (PRD JSON may lag behind)
-    const rawStatus = wi ? (wi.status || item.status) : item.status;
+    // If PRD says dispatched/failed but no work item exists, treat as pending (orphaned — #779)
+    const rawStatus = wi ? (wi.status || item.status)
+      : ((item.status === WI_STATUS.DISPATCHED || item.status === WI_STATUS.FAILED) ? WI_STATUS.PENDING : item.status);
     item.status = statusDisplay[rawStatus] || rawStatus || 'missing';
     // Attach execution metadata for display (agent, PR link, fail reason)
     if (wi) {
@@ -960,9 +988,10 @@ function getPrdInfo(config) {
     items: items.map(i => ({
       id: i.id, name: i.name || i.title, priority: i.priority,
       complexity: i.estimated_complexity || i.size, status: i.status || 'missing',
-      description: (i.description || '').slice(0, 200), projects: i.projects || [],
+      description: i.description || '', projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
+      branchStrategy: i._branchStrategy || 'parallel',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null, prdCompletedAt: i._prdCompletedAt || '',
       agent: i._agent || '', failReason: i._failReason || '',
     })),

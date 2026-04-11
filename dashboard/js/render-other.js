@@ -73,8 +73,10 @@ function renderMetrics(metrics) {
 
   let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th><th>Avg Runtime</th></tr></thead><tbody>';
   for (const [id, m] of rows) {
-    const rate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
-    const rateColor = m.prsCreated > 0 ? (m.prsApproved / m.prsCreated >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+    const totalTasks = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
+    const ratio = totalTasks > 0 ? m.tasksCompleted / totalTasks : 0;
+    const rate = totalTasks > 0 ? Math.round(ratio * 100) + '%' : '-';
+    const rateColor = totalTasks > 0 ? (ratio >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
     html += '<tr>' +
       '<td style="font-weight:600">' + escHtml(id) + '</td>' +
       '<td style="color:var(--green)">' + (m.tasksCompleted || 0) + '</td>' +
@@ -214,7 +216,7 @@ function renderTokenUsage(metrics) {
   var agentsWithUsage = tokenRows.filter(function(a) { return (a[1].totalCostUsd || 0) > 0; });
   if (agentsWithUsage.length > 0) {
     html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Agent Usage</div>';
-    html += '<table class="token-agent-table"><thead><tr><th>Agent</th><th>Model</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/task</th></tr></thead><tbody>';
+    html += '<table class="token-agent-table"><thead><tr><th style="width:20%">Agent</th><th style="width:10%">Model</th><th style="width:14%">Cost</th><th style="width:14%">Input</th><th style="width:14%">Output</th><th style="width:14%">Cache</th><th style="width:14%">$/task</th></tr></thead><tbody>';
     for (const [id, m] of agentsWithUsage.sort((a, b) => (b[1].totalCostUsd || 0) - (a[1].totalCostUsd || 0))) {
       const tasks = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
       const perTask = tasks > 0 ? fmtCost((m.totalCostUsd || 0) / tasks) : '-';
@@ -237,7 +239,7 @@ function renderTokenUsage(metrics) {
   if (engineEntries.length > 0) {
     const labels = { 'consolidation': 'Consolidation', 'command-center': 'Command Center', 'doc-chat': 'Doc Chat', 'kb-sweep': 'KB Sweep', 'schedule-parse': 'Schedule Parse' };
     html += '<div style="font-size:10px;color:var(--muted);margin:12px 0 4px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Engine Usage</div>';
-    html += '<table class="token-agent-table"><thead><tr><th>Operation</th><th>Calls</th><th>Cost</th><th>Input</th><th>Output</th><th>Cache</th><th>$/call</th></tr></thead><tbody>';
+    html += '<table class="token-agent-table"><thead><tr><th style="width:20%">Operation</th><th style="width:10%">Calls</th><th style="width:14%">Cost</th><th style="width:14%">Input</th><th style="width:14%">Output</th><th style="width:14%">Cache</th><th style="width:14%">$/call</th></tr></thead><tbody>';
     for (const [cat, e] of engineEntries.sort((a, b) => (b[1].costUsd || 0) - (a[1].costUsd || 0))) {
       const perCall = (e.calls || 0) > 0 ? fmtCost((e.costUsd || 0) / e.calls) : '-';
       html += '<tr>' +

@@ -32,7 +32,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-meetings', 'render-pinned',
+    'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
