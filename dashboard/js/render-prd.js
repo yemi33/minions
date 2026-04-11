@@ -30,8 +30,9 @@ function renderPrd(prd, prog) {
     const prdStatus = existing[0]?.status || '';
     const effectiveStatus = allDone && !hasActive ? 'completed' : hasActive ? 'dispatched' : prdStatus || 'active';
 
+    const headerStale = existing[0]?.planStale || prdItems.some(i => i.planStale);
     let actions = '';
-    if (prdFile) {
+    if (prdFile && !headerStale) {
       if (effectiveStatus === 'awaiting-approval') {
         actions = ' <button class="pr-pager-btn" style="font-size:9px;padding:1px 6px;color:var(--green);border-color:var(--green);margin-left:4px" onclick="planApprove(\'' + escHtml(prdFile) + '\',this)">Approve</button>';
       } else if (effectiveStatus === 'completed') {
@@ -275,14 +276,16 @@ function renderPrdProgress(prog) {
         '</div>'
       : '';
     const isCompleted = done > 0 && done === g.items.length;
-    const pauseResumeBtn = isAwaitingApproval
+    // Hide regular action buttons when stale banner is showing — stale banner has its own actions
+    const isStale = !isBlocked && g.planStale;
+    const pauseResumeBtn = isStale ? '' : isAwaitingApproval
       ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Approve</span>'
       : isPaused
         ? '<span onclick="event.stopPropagation();planApprove(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Resume</span>'
         : isCompleted && !(window._lastWorkItems || []).some(w => w.itemType === 'verify' && w.sourcePlan === g.file)
           ? '<span onclick="event.stopPropagation();triggerVerify(\'' + escHtml(g.file) + '\',this)" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px">Verify</span>'
           : isCompleted ? '' : '<span onclick="event.stopPropagation();planPause(\'' + escHtml(g.file) + '\',this)" style="color:var(--yellow);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(210,153,34,0.1);border:1px solid rgba(210,153,34,0.3);border-radius:3px">Pause</span>';
-    const archiveBtn = (isCompleted || isPaused) ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.3);border-radius:3px">Archive</span>' : '';
+    const archiveBtn = (!isStale && (isCompleted || isPaused)) ? '<span onclick="event.stopPropagation();planArchive(\'' + escHtml(g.file) + '\',this)" style="color:var(--muted);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(139,148,158,0.1);border:1px solid rgba(139,148,158,0.3);border-radius:3px">Archive</span>' : '';
     const deleteBtn = '<span onclick="event.stopPropagation();planDelete(\'' + escHtml(g.file) + '\')" style="color:var(--red);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(248,81,73,0.1);border:1px solid rgba(248,81,73,0.3);border-radius:3px">Delete</span>';
     const sourcePlanLink = g.sourcePlan
       ? '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 6px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="View source plan">&#x1F4C4; Plan</span>'
