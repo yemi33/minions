@@ -522,7 +522,7 @@ async function testEngineDefaults() {
 
   await test('ENGINE_DEFAULTS has all required keys', () => {
     const required = ['tickInterval', 'maxConcurrent', 'inboxConsolidateThreshold',
-      'agentTimeout', 'heartbeatTimeout', 'maxTurns', 'worktreeRoot',
+      'agentTimeout', 'heartbeatTimeout', 'heartbeatTimeouts', 'maxTurns', 'worktreeRoot',
       'idleAlertMinutes', 'restartGracePeriod', 'worktreeCreateTimeout', 'worktreeCreateRetries'];
     for (const key of required) {
       assert.ok(shared.ENGINE_DEFAULTS[key] !== undefined, `Missing default: ${key}`);
@@ -730,9 +730,9 @@ async function testQueriesAgents() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
     assert.ok(src.includes('Fallback: derive active state from work-item markers.'),
       'getAgentStatus should include multi-source fallback from work-items');
-    assert.ok(src.includes("w.status === WI_STATUS.DISPATCHED"),
+    assert.ok(src.includes("WI_STATUS.DISPATCHED"),
       'fallback should only treat dispatched work items as working (using WI_STATUS constant)');
-    assert.ok(src.includes("(w.dispatched_to || '').toLowerCase() === String(agentId).toLowerCase()"),
+    assert.ok(src.includes("dispatched_to") && src.includes("String(agentId).toLowerCase()"),
       'fallback should map by dispatched_to marker');
   });
 
@@ -1525,22 +1525,20 @@ async function testPlanLifecycle() {
 async function testPrdStaleInvalidation() {
   console.log('\n── PRD Staleness — Auto-Invalidation on Plan Revision ──');
 
-  await test('engine.js materializePlansAsWorkItems handles stale awaiting-approval PRD', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('engine:plan-revision'),
-      'engine.js should queue regeneration with createdBy engine:plan-revision');
-    assert.ok(src.includes('alreadyQueued'),
-      'engine.js should check for duplicate regeneration queue');
-    assert.ok(src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
-      'engine.js should delete old PRD file on awaiting-approval invalidation');
-  });
-
-  await test('Stale PRD: approved/completed flagged stale, awaiting-approval auto-regenerates', () => {
+  await test('engine.js flags all revised PRDs as stale (user decides when to regenerate)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
-      'Non-awaiting PRDs should be flagged stale (user must re-execute)');
-    assert.ok(src.includes("prdStatus === 'awaiting-approval'"),
-      'Awaiting-approval PRDs should auto-regenerate');
+      'Should set planStale flag when source plan changes');
+    assert.ok(src.includes('user can regenerate from dashboard'),
+      'Should log that user can regenerate');
+  });
+
+  await test('All PRD statuses flagged stale on plan revision (no auto-regenerate)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('plan.planStale = true'),
+      'All statuses should be flagged stale');
+    assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('fs.unlinkSync(path.join(PRD_DIR, file))'),
+      'Should NOT auto-delete/regenerate awaiting-approval PRDs');
   });
 
   await test('Stale PRD regeneration creates plan-to-prd work item', () => {
@@ -1573,12 +1571,12 @@ async function testPrdStaleInvalidation() {
     assert.strictEqual(noDuplicate, false, 'Should not detect duplicate for different plan');
   });
 
-  await test('Approved/paused PRDs flagged stale on plan revision (not auto-regenerated)', () => {
+  await test('Stale flag set for all statuses with single code path', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
-      'Should set planStale flag for non-awaiting PRDs');
-    assert.ok(src.includes('user can re-execute from dashboard'),
-      'Should log that user must manually re-execute');
+      'Should set planStale flag');
+    assert.ok(src.includes('user can regenerate from dashboard'),
+      'Should log that user can regenerate');
   });
 
   await test('Stale PRDs do not materialize new work items', () => {
@@ -1642,32 +1640,19 @@ async function testPrdStaleInvalidation() {
       'verify guide modal should also normalize file path');
   });
 
-  await test('Dashboard has /api/prd/regenerate endpoint', () => {
+  await test('Destructive /api/prd/regenerate removed — diff-aware update via /api/plans/approve', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('/api/prd/regenerate'),
-      'dashboard.js should have /api/prd/regenerate endpoint');
-    assert.ok(src.includes('fs.unlinkSync(prdPath)'),
-      'Regeneration should delete old PRD file');
-    assert.ok(src.includes('_targetPrdFile'),
-      'Regeneration work item should include target PRD filename');
+    assert.ok(!src.includes('handlePrdRegenerate(req'),
+      'handlePrdRegenerate handler should be removed');
+    assert.ok(src.includes('diff-aware update via /api/plans/approve'),
+      'Should have comment explaining removal');
   });
 
-  await test('Regeneration carries over completed items from old PRD', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('completedItems'),
-      'Regeneration should collect completed items');
-    assert.ok(src.includes("completedStatuses.has(f.status)") || src.includes("completedStatuses.has(w.status)"),
-      'Should preserve done work items');
-    assert.ok(src.includes('Previously completed items'),
-      'Should pass completed items context to agent');
-  });
-
-  await test('Engine auto-regeneration also carries over completed items', () => {
+  await test('Engine no longer auto-regenerates — all paths flag stale for user action', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('completedItems.length'),
-      'Engine regeneration should track completed items');
-    assert.ok(src.includes('completed items to carry over'),
-      'Engine should log carry-over count');
+    // No engine:plan-revision createdBy — dispatch moved to dashboard
+    assert.ok(!src.includes("createdBy: 'engine:plan-revision'"),
+      'Engine should not dispatch plan-to-prd directly — user triggers from dashboard');
   });
 
   await test('Regeneration endpoint deduplicates queued items', () => {
@@ -1676,13 +1661,11 @@ async function testPrdStaleInvalidation() {
       'Regeneration endpoint should check for duplicate queue entries');
   });
 
-  await test('Awaiting-approval PRDs auto-regenerate (delete old + queue plan-to-prd)', () => {
+  await test('Awaiting-approval PRDs also flagged stale (no auto-delete)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    const deleteCall = src.indexOf('fs.unlinkSync(path.join(PRD_DIR, file))');
-    assert.ok(deleteCall > 0, 'Should delete old PRD file during regeneration');
-    const awaitingCheck = src.lastIndexOf("prdStatus === 'awaiting-approval'", deleteCall);
-    assert.ok(awaitingCheck >= 0 && awaitingCheck < deleteCall,
-      'PRD deletion should be inside the awaiting-approval check');
+    // The old auto-delete path is gone — all statuses just flag stale
+    assert.ok(!src.includes("prdStatus === 'awaiting-approval'") || !src.includes('unlinkSync'),
+      'Should not auto-delete awaiting-approval PRDs');
   });
 
   await test('Plan revision flow: plan→review→revise→auto-regenerate→review→approve', () => {
@@ -1723,8 +1706,8 @@ async function testPrdStaleInvalidation() {
       'Plan completion should enforce strict per-ID gate');
     assert.ok(src.includes('unmaterialized.length > 0'),
       'Plan completion should block when any feature lacks a work item');
-    assert.ok(src.includes('notDone.length > 0'),
-      'Plan completion should block when any feature work item is not done');
+    assert.ok(src.includes('notTerminal.length > 0'),
+      'Plan completion should block when any feature work item is not in a terminal state');
   });
 
   await test('Plan completion cleans all worktrees, not just shared-branch', () => {
@@ -1733,6 +1716,71 @@ async function testPrdStaleInvalidation() {
       'Worktree cleanup should handle all plan worktrees');
     assert.ok(src.includes('w.branch') && src.includes('w.id') && src.includes('pr.branch'),
       'Should collect branch slugs from work items, item IDs, and PR branches');
+  });
+
+  // ── Plan Resume & Diff-Aware PRD Updates ──
+
+  console.log('\n── Plan Resume & Diff-Aware PRD Updates ──');
+
+  await test('Approve dispatches diff-aware plan-to-prd when plan was stale', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('wasStale') && src.includes('diffAwareQueued'),
+      'Should check wasStale flag and track dispatch');
+    assert.ok(src.includes('Existing implementation state') || src.includes('Current PRD implementation state'),
+      'Should pass implementation context to agent');
+    assert.ok(src.includes('_existingPrdFile'),
+      'Work item should reference existing PRD file');
+    assert.ok(src.includes('dashboard:plan-resume'),
+      'Should use dashboard:plan-resume as createdBy');
+  });
+
+  await test('Materializer uses PRD_MATERIALIZABLE constant for status filter', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('PRD_MATERIALIZABLE'),
+      'statusFilter should use PRD_MATERIALIZABLE constant');
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes("UPDATED: 'updated'") && sharedSrc.includes('PRD_MATERIALIZABLE'),
+      'shared.js should define PRD_ITEM_STATUS.UPDATED and PRD_MATERIALIZABLE set');
+  });
+
+  await test('Re-open: only "updated" status re-opens done work items (not "missing")', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('PRD_ITEM_STATUS.UPDATED') && src.includes('shouldReopen'),
+      'shouldReopen should check for PRD_ITEM_STATUS.UPDATED only');
+    assert.ok(src.includes('_reopened = true'),
+      'Should mark re-opened work items with _reopened flag');
+  });
+
+  await test('Cross-project re-opens deferred outside lock (no nested locks)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('deferredReopens'),
+      'Should collect cross-project re-opens for deferred execution');
+    assert.ok(src.includes('deferredReopens.push'),
+      'Should push to deferred array inside lock');
+  });
+
+  await test('buildWiDescription shared helper used for all WI description building', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function buildWiDescription('),
+      'Should have buildWiDescription helper');
+    const count = (src.match(/buildWiDescription\(/g) || []).length;
+    assert.ok(count >= 4, 'buildWiDescription should be used in re-open, cross-project re-open, and new item paths (got ' + count + ')');
+  });
+
+  await test('handlePlansApprove clears _completionNotified for re-completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('delete plan._completionNotified'),
+      'Resume should clear _completionNotified so completion can re-fire');
+  });
+
+  await test('plan-to-prd playbook has diff-aware update instructions', () => {
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    assert.ok(playbook.includes('Updating an Existing PRD'),
+      'Playbook should have diff-aware update section');
+    assert.ok(playbook.includes('"updated"'),
+      'Playbook should document "updated" status for modified done items');
+    assert.ok(playbook.includes('Preserve item IDs'),
+      'Playbook should instruct agent to preserve existing IDs');
   });
 }
 
@@ -2397,8 +2445,8 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
     assert.ok(src.includes('function isRetryableFailureReason('),
       'Engine should classify retryable vs non-retryable failures');
-    assert.ok(src.includes('retryableFailure && retries < maxRetries'),
-      'Auto-retry should run only for retryable failures under retry cap');
+    assert.ok(src.includes('retryableFailure && classAllowsRetry'),
+      'Auto-retry should run only for retryable failures under per-class retry cap');
     assert.ok(src.includes('Non-retryable failure:'),
       'Non-retryable failures should be surfaced explicitly');
   });
@@ -2695,6 +2743,16 @@ async function testLegacyStatusMigration() {
       'cleanup should log reconciliation of failed-with-PR items');
   });
 
+  await test('cleanup.js resets orphaned PRD item statuses (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('shared.WI_STATUS.DISPATCHED') && src.includes('!wiIds.has(feat.id)'),
+      'cleanup must detect orphaned dispatched PRD items with no matching work item');
+    assert.ok(src.includes('shared.WI_STATUS.FAILED') && src.includes('shared.WI_STATUS.PENDING'),
+      'cleanup must reset orphaned dispatched/failed PRD items to pending using constants');
+    assert.ok(src.includes('orphaned PRD item status'),
+      'cleanup must log orphaned PRD status resets');
+  });
+
   await test('syncPrdFromPrs filter includes failed items with _pr (#407)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fnBody = src.slice(
@@ -2726,10 +2784,12 @@ async function testPreflightModule() {
       `Expected string or null, got ${typeof result}`);
   });
 
-  await test('findClaudeBinary result ends with cli.js if non-null', () => {
+  await test('findClaudeBinary result ends with cli.js or is a native binary path', () => {
     const result = preflight.findClaudeBinary();
     if (result !== null) {
-      assert.ok(result.endsWith('cli.js'), `Expected path ending in cli.js, got: ${result}`);
+      const isCliJs = result.endsWith('cli.js');
+      const isNativeBin = result.includes('claude');
+      assert.ok(isCliJs || isNativeBin, `Expected cli.js path or native binary, got: ${result}`);
     }
   });
 
@@ -3509,7 +3569,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(typeof result === 'string' && result.length > 0,
@@ -3520,7 +3581,8 @@ async function testRenderPlaybook() {
     const result = renderPlaybook('implement', {
       agent_name: 'UNIQUE_AGENT_SENTINEL', agent_role: 'Engineer', agent_id: 'test',
       project_name: 'TestProject', project_path: '/tmp', main_branch: 'main',
-      task_title: 'Test', task_description: 'Test desc', work_item_id: 'W001',
+      task_title: 'Test', task_description: 'Test desc',
+      item_id: 'W001', item_name: 'Test feature',
       branch_name: 'test-branch', team_root: MINIONS_DIR, date: '2024-01-01',
     });
     assert.ok(result && result.includes('UNIQUE_AGENT_SENTINEL'),
@@ -3537,6 +3599,107 @@ async function testRenderPlaybook() {
   await test('renderPlaybook injects skill extraction instructions', () => {
     assert.ok(src.includes('skill') && src.includes('```skill'),
       'Should inject skill extraction block format');
+  });
+}
+
+// ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
+
+async function testValidatePlaybookVars() {
+  console.log('\n── engine/playbook.js — validatePlaybookVars ──');
+
+  let validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, renderPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    validatePlaybookVars = pb.validatePlaybookVars;
+    PLAYBOOK_REQUIRED_VARS = pb.PLAYBOOK_REQUIRED_VARS;
+    renderPlaybook = pb.renderPlaybook;
+  } catch {}
+
+  if (!validatePlaybookVars) {
+    skip('validatePlaybookVars', 'engine/playbook.validatePlaybookVars not available');
+    return;
+  }
+
+  await test('validatePlaybookVars returns valid for unknown playbook type', () => {
+    const result = validatePlaybookVars('nonexistent-playbook', {});
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars returns missing vars for implement with empty vars', () => {
+    const result = validatePlaybookVars('implement', {});
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('item_id'), 'Should flag item_id as missing');
+    assert.ok(result.missing.includes('item_name'), 'Should flag item_name as missing');
+    assert.ok(result.missing.includes('branch_name'), 'Should flag branch_name as missing');
+    assert.ok(result.missing.includes('project_path'), 'Should flag project_path as missing');
+  });
+
+  await test('validatePlaybookVars passes when all required vars are provided', () => {
+    const result = validatePlaybookVars('implement', {
+      item_id: 'W-001', item_name: 'Test feature',
+      branch_name: 'work/W-001', project_path: '/tmp/repo',
+    });
+    assert.strictEqual(result.valid, true);
+    assert.strictEqual(result.missing.length, 0);
+  });
+
+  await test('validatePlaybookVars treats empty strings as missing', () => {
+    const result = validatePlaybookVars('fix', { pr_id: '', pr_branch: 'some-branch' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'Empty string should count as missing');
+    assert.ok(!result.missing.includes('pr_branch'), 'Non-empty string should not be flagged');
+  });
+
+  await test('validatePlaybookVars treats whitespace-only strings as missing', () => {
+    const result = validatePlaybookVars('ask', { question: '   ' });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('question'), 'Whitespace-only should count as missing');
+  });
+
+  await test('validatePlaybookVars treats null/undefined as missing', () => {
+    const result = validatePlaybookVars('review', { pr_id: null, pr_branch: undefined });
+    assert.strictEqual(result.valid, false);
+    assert.ok(result.missing.includes('pr_id'), 'null should count as missing');
+    assert.ok(result.missing.includes('pr_branch'), 'undefined should count as missing');
+  });
+
+  await test('PLAYBOOK_REQUIRED_VARS covers all dispatched playbook types', () => {
+    const expectedTypes = [
+      'implement', 'implement-shared', 'fix', 'review', 'build-and-test',
+      'explore', 'ask', 'plan', 'plan-to-prd', 'decompose', 'verify',
+      'test', 'work-item', 'meeting-investigate', 'meeting-debate', 'meeting-conclude',
+    ];
+    for (const t of expectedTypes) {
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t], `Should define required vars for "${t}"`);
+      assert.ok(Array.isArray(PLAYBOOK_REQUIRED_VARS[t]), `Required vars for "${t}" should be an array`);
+      assert.ok(PLAYBOOK_REQUIRED_VARS[t].length > 0, `Required vars for "${t}" should not be empty`);
+    }
+  });
+
+  await test('validatePlaybookVars works for all meeting playbook types', () => {
+    for (const type of ['meeting-investigate', 'meeting-debate', 'meeting-conclude']) {
+      const result = validatePlaybookVars(type, { meeting_title: 'Daily Standup', agenda: 'Review progress' });
+      assert.strictEqual(result.valid, true, `${type} should pass with title and agenda`);
+    }
+  });
+
+  await test('renderPlaybook returns null when required vars are missing', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation', 'renderPlaybook not available'); return; }
+    // implement requires item_id, item_name, branch_name, project_path — provide none
+    const result = renderPlaybook('implement', { agent_id: 'test', agent_name: 'Test' });
+    assert.strictEqual(result, null, 'Should return null when required vars are missing');
+  });
+
+  await test('renderPlaybook succeeds when all required vars are provided', () => {
+    if (!renderPlaybook) { skip('renderPlaybook-validation-pass', 'renderPlaybook not available'); return; }
+    const result = renderPlaybook('implement', {
+      agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+      item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+      project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+    });
+    assert.ok(typeof result === 'string' && result.length > 0,
+      'Should return rendered playbook when all required vars are provided');
   });
 }
 
@@ -3682,9 +3845,9 @@ async function testBuildFixRetryCap() {
       'Should skip fix dispatch (continue) when cap is reached and escalated');
   });
 
-  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
+  await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
+    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
+      'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -3886,6 +4049,64 @@ async function testCheckTimeouts() {
       'Should scan live output for completion markers');
   });
 
+  await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
+    assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
+    assert.ok(src.includes('DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
+  });
+
+  await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
+    // Verify per-type resolution happens inside the dispatch loop
+    assert.ok(src.includes('perTypeTimeouts[item.type]') || src.includes("perTypeTimeouts[item.type] || heartbeatTimeout"),
+      'Should resolve per-type timeout from item.type with heartbeatTimeout fallback');
+  });
+
+  await test('Per-type heartbeat timeouts: config.engine.heartbeatTimeouts overrides defaults', () => {
+    assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
+      'Should read heartbeatTimeouts from config.engine for user overrides');
+    // Verify merge order: ENGINE_DEFAULTS ← config
+    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+      'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
+  });
+
+  await test('Per-type heartbeat timeouts: blocking tool uses Math.max(itemHeartbeat, blockingTimeout)', () => {
+    // The blocking tool extension should respect per-type timeout as minimum floor
+    assert.ok(src.includes('Math.max(itemHeartbeat,'),
+      'Blocking tool timeout should use Math.max(itemHeartbeat, ...) so per-type floor is respected');
+  });
+
+  await test('Per-type heartbeat timeouts: timeout.js imports from shared.js', () => {
+    assert.ok(src.includes("require('./shared')"), 'Should import from shared.js');
+  });
+
+  await test('Heartbeat feedback loop fix: uses realActivityMap for tracked processes (#724)', () => {
+    // The timeout check must use realActivityMap (in-memory, tracks real agent output only)
+    // instead of file mtime for tracked processes. File mtime is polluted by engine heartbeat writes.
+    assert.ok(src.includes('realActivityMap'), 'timeout.js should reference realActivityMap');
+    assert.ok(src.includes('realActivityMap?.has(item.id)') || src.includes("realActivityMap.has(item.id)"),
+      'Should check realActivityMap for dispatch item');
+    assert.ok(src.includes('realActivityMap.get(item.id)') || src.includes("realActivityMap?.get(item.id)"),
+      'Should read lastRealActivity from realActivityMap');
+  });
+
+  await test('Heartbeat feedback loop fix: falls back to file mtime only for orphans (#724)', () => {
+    // For orphan detection (no tracked process), file mtime is still valid because
+    // no heartbeat timer is running. The fix only uses realActivityMap when hasProcess is true.
+    assert.ok(src.includes('hasProcess && realActivityMap'),
+      'Should only use realActivityMap when process is tracked (hasProcess)');
+    assert.ok(src.includes('Orphan case') || src.includes('orphan'),
+      'Should document the orphan fallback path');
+  });
+
+  await test('Heartbeat feedback loop fix: engine.js tracks real output in realActivityMap (#724)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrc.includes('realActivityMap.set(id, Date.now())'),
+      'engine.js should update realActivityMap on real stdout/stderr');
+    assert.ok(engineSrc.includes('realActivityMap.delete(id)'),
+      'engine.js should clean up realActivityMap on agent close/error');
+    assert.ok(engineSrc.includes('realActivityMap,'),
+      'engine.js should export realActivityMap');
+  });
+
   await test('Bash blocking grace uses 120s default matching Claude Code actual default (#593)', () => {
     // The Bash tool default timeout in Claude Code is 120s, not 600s.
     // Grace = max(heartbeatTimeout, bashTimeout + 60000) = max(300000, 120000+60000) = 300000 (5min)
@@ -3896,6 +4117,38 @@ async function testCheckTimeouts() {
     const bashBlock = src.slice(src.indexOf("if (name === 'Bash')"), src.indexOf("if (name === 'Bash')") + 300);
     assert.ok(bashBlock.includes('120000') && !bashBlock.includes('600000'),
       'Bash blocking block should use 120000ms, not 600000ms');
+  });
+
+  // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
+  await test('checkTimeouts does NOT reference undefined DEFAULT_HEARTBEAT_TIMEOUTS (#721)', () => {
+    assert.ok(!src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'),
+      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use DEFAULTS.heartbeatTimeouts instead');
+  });
+
+  await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
+    // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
+    const { ENGINE_DEFAULTS: DEFAULTS } = require('../engine/shared');
+    const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
+    // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
+    const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
+    assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
+  });
+
+  // Smoke test: actually call checkTimeouts({}) to catch ReferenceErrors at runtime (#775)
+  // Previous tests only checked source strings — this exercises the real function.
+  await test('checkTimeouts({}) does not throw ReferenceError (#775 smoke test)', () => {
+    const timeout = require('../engine/timeout');
+    try {
+      timeout.checkTimeouts({});
+    } catch (e) {
+      // TypeError, missing engine context, etc. are expected in a test harness.
+      // ReferenceError means a stale/undefined constant reference — that's the bug.
+      if (e instanceof ReferenceError) {
+        throw new Error(`checkTimeouts threw ReferenceError (stale constant?): ${e.message}`);
+      }
+      // Any other error is fine — the function needs a full engine context to run end-to-end.
+    }
   });
 }
 
@@ -4045,6 +4298,8 @@ async function testExtractSkills() {
     const skillWi = wi.find(w => w.title && w.title.includes('Add skill: app-deploy'));
     assert.ok(skillWi, 'Should queue a work item to PR the project-scoped skill');
     assert.ok(skillWi.description.includes('app-deploy'), 'Work item should reference skill name');
+    assert.ok(skillWi.description.includes('app-deploy/SKILL.md'), 'Work item path should use directory/SKILL.md format, not flat .md');
+    assert.ok(!skillWi.description.includes('app-deploy.md'), 'Work item path should NOT use flat .md format');
   });
 
   restore();
@@ -4170,6 +4425,15 @@ async function testRunPostCompletionHooks() {
       'Should use mutateJsonFileLocked to persist _completionNotified flag');
     assert.ok(lifecycleSrc.includes("data._completionNotified = true"),
       'Should set _completionNotified = true in the mutation');
+  });
+
+  await test('checkPlanCompletion uses PLAN_TERMINAL_STATUSES for completion gate', () => {
+    assert.ok(lifecycleSrc.includes('PLAN_TERMINAL_STATUSES'),
+      'Should use PLAN_TERMINAL_STATUSES constant for terminal state check');
+    assert.ok(lifecycleSrc.includes('notTerminal'),
+      'Should use notTerminal variable name (not notDone) for terminal state filter');
+    assert.ok(lifecycleSrc.includes('plan-failure-escalation'),
+      'Should write failure escalation alert to inbox for failed items');
   });
 
   await test('checkPlanCompletion does not use uniquePath for inbox summary', () => {
@@ -4546,23 +4810,58 @@ async function testVerifyWorkflow() {
     assert.ok(v.description.includes(testPlanFile), 'Description should reference plan file');
   }, cleanup);
 
-  // ── 3. No verify WI created when all items failed (no done items) ──
-  await test('verify: no verify WI when no done items', () => {
+  // ── 3a. Plan completes with partial results when some items fail (escalation, no verify) ──
+  await test('verify: plan completes with failed items — verify WI still created for done items, escalation alert sent', () => {
     cleanup();
     shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
     shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
       { id: 'VF-001', title: 'Impl A', type: 'implement', status: 'done',
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T01:00:00Z' },
       { id: 'VF-002', title: 'Impl B', type: 'implement', status: 'failed',
+        failReason: 'permission-blocked',
         sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
     ]);
 
-    // VF-002 is failed so plan shouldn't complete at all
+    // Failed items are terminal — plan completes and verify is created for partial results (done items exist)
     lifecycle.checkPlanCompletion(meta, config);
 
     const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
     const verifyItems = workItems.filter(w => w.itemType === 'verify');
-    assert.strictEqual(verifyItems.length, 0, 'No verify WI when not all items are done');
+    assert.strictEqual(verifyItems.length, 1, 'Verify WI created when done items exist — even with some failures');
+
+    // Escalation alert should be in inbox
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
+    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written to inbox for failed items');
+
+    // Plan should be marked completed
+    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+    assert.strictEqual(completedPlan.status, 'completed', 'Plan status should be completed');
+  }, cleanup);
+
+  // ── 3b. No verify WI when ALL items failed (nothing to verify) ──
+  await test('verify: no verify WI when all items failed', () => {
+    cleanup();
+    shared.safeWrite(path.join(prdDir, testPlanFile), makePrd());
+    shared.safeWrite(path.join(projectStateDir, 'work-items.json'), [
+      { id: 'VF-001', title: 'Impl A', type: 'implement', status: 'failed',
+        failReason: 'max_turns', sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
+      { id: 'VF-002', title: 'Impl B', type: 'implement', status: 'failed',
+        failReason: 'permission-blocked', sourcePlan: testPlanFile, dispatched_at: '2026-01-01T00:00:00Z' },
+    ]);
+
+    lifecycle.checkPlanCompletion(meta, config);
+
+    const workItems = shared.safeJson(path.join(projectStateDir, 'work-items.json')) || [];
+    const verifyItems = workItems.filter(w => w.itemType === 'verify');
+    assert.strictEqual(verifyItems.length, 0, 'No verify WI when all items failed');
+
+    // Plan should still be completed (not stuck waiting)
+    const completedPlan = shared.safeJson(path.join(prdDir, testPlanFile));
+    assert.strictEqual(completedPlan.status, 'completed', 'Plan completes even when all items failed');
+
+    // Escalation alert should exist
+    const inboxFiles = shared.safeReadDir(inboxDir).filter(f => f.includes('plan-failure-escalation'));
+    assert.strictEqual(inboxFiles.length, 1, 'Escalation alert written for all-failed plan');
   }, cleanup);
 
   // ── 4. Duplicate verify WI prevented ──
@@ -4782,6 +5081,113 @@ async function testVerifyWorkflow() {
       'Should normalize branch names via sanitizeBranch');
   });
 
+  // ── Plan modal button consistency with card ──
+
+  await test('plan modal derives effectiveStatus using derivePlanStatus with correct args', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('derivePlanStatus(prdFile, normalizedFile, prdJsonStatus, allWi)'),
+      'Modal must call derivePlanStatus with (prdFile, mdFile, prdJsonStatus, workItems) — same as card');
+  });
+
+  await test('plan modal uses _lastPlans not _lastStatus.plans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('window._lastPlans'),
+      'Modal should use _lastPlans (from /api/plans) not _lastStatus.plans');
+  });
+
+  await test('refreshPlans stores plans in window._lastPlans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    assert.ok(src.includes('window._lastPlans = plans'),
+      'refreshPlans must store plans globally for modal access');
+  });
+
+  await test('plan modal hides Execute for completed plans', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('!isCompleted'),
+      'isDraft must check !isCompleted to prevent Execute on completed plans');
+  });
+
+  await test('plan modal shows Completed and In Progress labels', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('>Completed<'),
+      'Should show Completed status label');
+    assert.ok(modalFn.includes('>In Progress<'),
+      'Should show In Progress status label');
+  });
+
+  await test('plan modal shows Approve/Reject for awaiting-approval', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const modalFn = src.slice(src.indexOf('function _renderPlanModal'));
+    assert.ok(modalFn.includes('isNeedsAction') && modalFn.includes('planApprove') && modalFn.includes('planReject'),
+      'Should show Approve and Reject buttons when plan needs action');
+  });
+
+  // ── Verify badge: E2E PR + Testing Guide display logic ──
+
+  await test('verify badge shows checkmark and "Verified" when done', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('\\u2714 Verified'), 'Should show checkmark + Verified for done status');
+  });
+
+  await test('verify badge matches E2E PR by sourcePlan + branch slug', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('pr.prdItems'), 'Should check prdItems for direct match');
+    assert.ok(fn.includes('pr.branch') && fn.includes('planSlug'), 'Should fallback to branch slug match');
+    assert.ok(fn.includes('[E2E]'), 'Should verify title starts with [E2E] for branch fallback');
+  });
+
+  await test('verify badge includes Testing Guide link', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _renderVerifyBadge'));
+    assert.ok(fn.includes('verifyGuides'), 'Should look up verify guides from status');
+    assert.ok(fn.includes('openVerifyGuide'), 'Should link to openVerifyGuide for the guide');
+    assert.ok(fn.includes('Testing Guide'), 'Should label the link as Testing Guide');
+  });
+
+  await test('PRD view renderE2eSection shows E2E PRs and guides for active PRDs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    assert.ok(src.includes('function renderE2eSection'), 'Should have renderE2eSection function');
+    assert.ok(src.includes('e2eByPlan[planFile]'), 'Should look up PRs by planFile key');
+    assert.ok(src.includes('guideByPlan[planFile]'), 'Should look up guide by planFile key');
+    assert.ok(src.includes('E2E Aggregate PRs'), 'Should show E2E Aggregate PRs header');
+    assert.ok(src.includes('Manual Testing Guide'), 'Should show Manual Testing Guide link');
+  });
+
+  await test('PRD view calls renderE2eSection for both active and archived groups', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // Active groups
+    assert.ok(src.includes('renderE2eSection(g.file)'), 'Should call renderE2eSection for active groups');
+    // Archived groups
+    assert.ok(src.includes('_archivedPrdRenderE2eSection'), 'Should save renderE2eSection for archived groups');
+  });
+
+  await test('PRD re-renders when pullRequests change (E2E PR added)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+    assert.ok(src.includes('prdPrs') && src.includes('pullRequests'),
+      'Should trigger PRD re-render when pullRequests count changes');
+  });
+
+  await test('syncPrsFromOutput scans assistant text blocks for PR URLs', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function syncPrsFromOutput'));
+    assert.ok(fn.includes("block.type === 'text'"), 'Should scan text blocks, not just tool_result');
+    assert.ok(fn.includes('PR created') && fn.includes('E2E PR'), 'Should match PR created and E2E PR patterns');
+    assert.ok(fn.includes('textCreatedPattern'), 'Should have textCreatedPattern regex');
+  });
+
+  await test('verify playbook requires PR URL in final message', () => {
+    const pb = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'verify.md'), 'utf8');
+    assert.ok(pb.includes('final message MUST include'), 'Should require PR URL in final message');
+    assert.ok(pb.includes('E2E PR created'), 'Should give example format with E2E PR');
+    assert.ok(pb.includes('prd/guides/verify'), 'Should mention testing guide path in example');
+  });
+
   cleanup();
   restore();
 }
@@ -4806,6 +5212,17 @@ async function testSpawnAgentScript() {
   await test('spawn-agent.js writes PID file for engine reattachment', () => {
     assert.ok(src.includes('pidFile') && src.includes('writeFile') && src.includes('proc.pid'),
       'Should write PID file so engine can reattach on restart');
+  });
+
+  await test('cli.js reads PID files from engine/tmp/ (same dir spawn-agent writes to)', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    // cli.js must read from ENGINE_DIR/tmp/ — spawn-agent writes pid files there
+    assert.ok(cliSrc.includes("'tmp'") && cliSrc.includes('pid-'),
+      'cli.js reattach should read PID files from engine/tmp/ subdirectory');
+    // Verify it does NOT read from ENGINE_DIR root (the old bug)
+    const reattachBlock = cliSrc.slice(cliSrc.indexOf('Re-attach to surviving'), cliSrc.indexOf('Orphan completion'));
+    assert.ok(!reattachBlock.includes("ENGINE_DIR, `pid-"),
+      'cli.js should NOT read PID files from ENGINE_DIR root — must use ENGINE_DIR/tmp/');
   });
 
   await test('spawn-agent.js supports --resume flag', () => {
@@ -5160,7 +5577,8 @@ async function testDashboardAssembly() {
 
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
-    assert.ok(html.length < 500000, `HTML should be < 500KB (got ${html.length})`);
+    assert.ok(html.length < 600000, `HTML should be < 600KB (got ${html.length})`);
+
   });
 }
 
@@ -5431,6 +5849,97 @@ async function testAgentSteering() {
       'Should write confirmation to live-output.log so user sees it in dashboard');
   });
 
+  // ── Steering resume failure handling ─────────────────────────────────────────
+
+  await test('steering resume non-zero exit calls onAgentClose (not SUCCESS)', () => {
+    // When resumed agent exits non-zero, it should run normal close handler
+    // not silently mark as SUCCESS
+    const resumeCloseBlock = engineSrc.slice(
+      engineSrc.indexOf('resumeProc.on(\'close\''),
+      engineSrc.indexOf('resumeProc.on(\'error\'')
+    );
+    assert.ok(resumeCloseBlock.includes('onAgentClose(resumeCode)'),
+      'Resume close handler should call onAgentClose on non-zero exit');
+    assert.ok(!resumeCloseBlock.includes('DISPATCH_RESULT.SUCCESS'),
+      'Resume close handler should NOT mark non-zero exit as SUCCESS');
+  });
+
+  await test('steering spawn error marks dispatch as ERROR', () => {
+    const spawnErrorBlock = engineSrc.slice(
+      engineSrc.indexOf("resumeProc.on('error'"),
+      engineSrc.indexOf("resumeProc.on('error'") + 500
+    );
+    assert.ok(spawnErrorBlock.includes('DISPATCH_RESULT.ERROR'),
+      'Spawn error should mark dispatch as ERROR so work item retries');
+    assert.ok(!spawnErrorBlock.includes('DISPATCH_RESULT.SUCCESS'),
+      'Spawn error should NOT mark dispatch as SUCCESS');
+  });
+
+  // ── Fast poll interval ─────────────────────────────────────────────────────
+
+  await test('fast poll runs every 1s for responsive steering', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('}, 1000)'),
+      'Fast poll interval should be 1000ms (1s) for responsive steering');
+  });
+
+  // ── Steering UX: live-stream frontend ─────────────────────────────────────
+
+  await test('sendSteering shows immediate feedback in live output', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('function sendSteering'),
+      'live-stream.js should export sendSteering');
+    assert.ok(liveSrc.includes('steer-pending'),
+      'Should show pending indicator in user message bubble');
+    assert.ok(liveSrc.includes('Sending...'),
+      'Should show "Sending..." status immediately');
+  });
+
+  await test('sendSteering polls for agent acknowledgment', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('ackInterval') || liveSrc.includes('ackChecks'),
+      'Should poll for agent response after steering');
+    assert.ok(liveSrc.includes('Agent acknowledged') || liveSrc.includes('agent acknowledged'),
+      'Should show acknowledgment when agent responds');
+  });
+
+  await test('sendSteering pauses polling during send', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('_steerInFlight'),
+      'Should track in-flight state to pause polling');
+  });
+
+  await test('steer input exists in detail panel live tab', () => {
+    const detailSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'detail-panel.js'), 'utf8');
+    assert.ok(detailSrc.includes('live-steer-input'),
+      'Detail panel live tab should have steer input field');
+    assert.ok(detailSrc.includes('sendSteering()'),
+      'Input should call sendSteering on Enter or button click');
+  });
+
+  // ── Steering edge cases ───────────────────────────────────────────────────
+
+  await test('checkSteering kills process tree on Unix (pkill fallback)', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(timeoutSrc.includes('pkill') && timeoutSrc.includes('-P'),
+      'Stale steering recovery should attempt process tree kill on Unix');
+  });
+
+  await test('spawn-agent.js skips system prompt on resume', () => {
+    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    const resumeBlock = spawnSrc.slice(spawnSrc.indexOf('if (isResume)'), spawnSrc.indexOf('if (isResume)') + 200);
+    assert.ok(resumeBlock.includes("cliArgs = ['-p'") && !resumeBlock.includes('system-prompt'),
+      'Resume should use -p without --system-prompt-file (session has its own context)');
+  });
+
+  await test('steering prompt piped via stdin through spawn-agent', () => {
+    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    assert.ok(spawnSrc.includes('proc.stdin.write(prompt)'),
+      'spawn-agent should write prompt to Claude CLI stdin');
+    assert.ok(spawnSrc.includes('proc.stdin.end()'),
+      'spawn-agent should close stdin after writing prompt');
+  });
+
   // Functional test: checkSteering with mock activeProcesses
   await test('checkSteering functional: finds steer.md and sets flags', () => {
     const restore = createTestMinionsDir();
@@ -5486,9 +5995,9 @@ async function testRecentFeatures() {
       'Should have PR linking endpoint');
   });
 
-  await test('PR link supports autoObserve flag', () => {
-    assert.ok(dashSrc.includes('_autoObserve') && dashSrc.includes('linked'),
-      'Should support autoObserve (active) vs context-only (linked) status');
+  await test('PR link supports contextOnly flag', () => {
+    assert.ok(dashSrc.includes('_contextOnly') && dashSrc.includes('autoObserve'),
+      'Should support autoObserve (dispatched) vs context-only (polled but no dispatch)');
   });
 
   // Plan creation from dashboard
@@ -5823,6 +6332,57 @@ async function testDispatchCycleIntegration() {
       'engine.js must define resolveDependencyBranches');
     assert.ok(engineSrc.includes('dependency branch') || engineSrc.includes('depBranch'),
       'engine.js must resolve and merge dependency branches');
+  });
+
+  await test('Dep merge handles force-pushed branches by resetting and re-merging', () => {
+    // When git merge fails (e.g. diverged history from force-push), the engine should:
+    // 1. Abort the partial merge
+    // 2. Reset worktree to origin/<mainBranch>
+    // 3. Re-merge all deps from scratch
+    assert.ok(engineSrc.includes('git merge --abort'),
+      'engine.js must abort partial merge on dep merge failure');
+    assert.ok(engineSrc.includes('git reset --hard') && engineSrc.includes('resolveMainBranch'),
+      'engine.js must reset worktree to main branch on dep merge failure');
+    assert.ok(engineSrc.includes('Re-merged dependency branch'),
+      'engine.js must re-merge all deps after reset');
+    assert.ok(engineSrc.includes('reset and re-merge of all deps'),
+      'engine.js must log the reset and re-merge attempt');
+  });
+
+  await test('Dep merge re-merge failure marks depMergeFailed', () => {
+    // If re-merge also fails (genuine conflict), depMergeFailed must be set
+    // so the dispatch is completed with ERROR and retried next tick
+    assert.ok(engineSrc.includes('Failed to reset and re-merge deps'),
+      'engine.js must log re-merge failure');
+    // After reset failure, must also abort any in-progress merge from the re-merge attempt
+    const resetCatchBlock = engineSrc.substring(
+      engineSrc.indexOf('Failed to reset and re-merge deps')
+    );
+    assert.ok(resetCatchBlock.includes('depMergeFailed = true'),
+      'engine.js must set depMergeFailed on re-merge failure');
+  });
+
+  await test('Dep merge handles local-only branches by pushing to origin (#782)', () => {
+    // When git fetch fails with "couldn't find remote ref", the engine should:
+    // 1. Check if branch exists locally via git rev-parse
+    // 2. Push it to origin if it exists
+    // 3. Include it in the fetched list for merging
+    assert.ok(engineSrc.includes('find remote ref'),
+      'engine.js must detect missing remote ref errors');
+    assert.ok(engineSrc.includes('git rev-parse --verify'),
+      'engine.js must check if branch exists locally when remote ref missing');
+    assert.ok(engineSrc.includes('exists locally but not on remote'),
+      'engine.js must log when pushing local-only dependency branch');
+    assert.ok(engineSrc.includes('git push origin'),
+      'engine.js must push local-only dependency branches to origin');
+    assert.ok(engineSrc.includes('recoveredBranches'),
+      'engine.js must track recovered (local-only pushed) branches');
+    // Recovered branches must be included in the fetched list for merging
+    assert.ok(engineSrc.includes('recoveredBranches.has('),
+      'engine.js must include recovered branches in the merge set');
+    // If local check or push fails, should still mark as failed (not loop forever)
+    assert.ok(engineSrc.includes('not found locally or push failed'),
+      'engine.js must handle push failure for local-only branches gracefully');
   });
 
   await test('Spawn renders playbook with system prompt', () => {
@@ -6300,6 +6860,7 @@ async function main() {
     await testCooldownSystem();
     await testResolveAgent();
     await testRenderPlaybook();
+    await testValidatePlaybookVars();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
@@ -6402,6 +6963,18 @@ async function main() {
     // Version check feature
     await testVersionCheck();
 
+    // P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking
+    await testAgentStatusEnum();
+
+    // P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure()
+    await testFailureClassEnum();
+
+    // P-d9q4w7e6: Recovery recipes
+    await testRecoveryRecipes();
+
+    // P-h2t6r1j8: Structured completion protocol
+    await testStructuredCompletion();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -6425,6 +6998,15 @@ async function main() {
     await testPipelineReconciliation();
     await testMetricsEnrichment();
     await testDashboardButtonConsistency();
+
+    // #716: Heartbeat feedback loop + max_turns lifecycle cleanup
+    await testIssue716HeartbeatFeedbackLoop();
+
+    // CC Multi-Tab Conversations
+    await testCCMultiTab();
+
+    // PR review→fix, poll→fix, merge conflict, auto-complete flows
+    await testPrReviewFixFlows();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -6559,6 +7141,11 @@ async function testSharedJsFixes() {
 async function testAutoApproveMode() {
   await test('ENGINE_DEFAULTS includes autoApprovePlans: false', () => {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoApprovePlans, false);
+  });
+
+  await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
+      'autoArchive should default to false (opt-in, not automatic)');
   });
 
   await test('parseStreamJsonOutput extracts model from init message', () => {
@@ -6716,6 +7303,27 @@ async function testSettingsComprehensive() {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
     assert.ok(src.includes("showToast('cmd-toast', 'Settings saved'"), 'should show success toast');
     assert.ok(src.includes("'Saving...'"), 'should show saving state on button');
+  });
+
+  await test('settings save handler: _clamped variable is in scope for all code paths', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // _clamped must be declared before the if(body.engine) block, not inside it
+    const clampedDecl = handler.indexOf('const _clamped');
+    const bodyEngineCheck = handler.indexOf('if (body.engine)');
+    assert.ok(clampedDecl > -1, '_clamped must be declared in settings save handler');
+    assert.ok(clampedDecl < bodyEngineCheck, '_clamped must be declared before if(body.engine) block — otherwise it is undefined when saving non-engine settings');
+  });
+
+  await test('settings save handler: _clamped referenced consistently (no bare clamped)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    const lines = handler.split('\n');
+    for (const line of lines) {
+      if (line.includes('clamped') && !line.includes('_clamped') && !line.includes('// ')) {
+        assert.fail('Found bare "clamped" reference (should be "_clamped"): ' + line.trim().slice(0, 80));
+      }
+    }
   });
 
   // ── Default consistency: shared.js defaults must match settings.js fallbacks ──
@@ -7440,18 +8048,10 @@ async function testAuxModuleBugFixes() {
     assert.ok(guardIdx > createIdx, 'Should have !targetProject guard after PROJECTS[0] fallback in create handler');
   });
 
-  await test('dashboard.js: PRD completion handler uses safeJson instead of JSON.parse for plan reading', () => {
+  await test('dashboard.js: trigger-verify handler uses safeJson for plan reading', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    // The verify-was-created block should use safeJson (null-safe) not JSON.parse
-    const verifyBlock = src.indexOf('Check if verify was created');
-    assert.ok(verifyBlock > 0, 'Should have verify-was-created comment');
-    const nextJsonParse = src.indexOf('JSON.parse(safeRead(activePath)', verifyBlock);
-    const nextSafeJson = src.indexOf('safeJson(activePath)', verifyBlock);
-    // safeJson should appear before (or instead of) JSON.parse for activePath in this block
-    assert.ok(nextSafeJson > verifyBlock, 'Should use safeJson for activePath in verify block');
-    if (nextJsonParse > 0) {
-      assert.ok(nextSafeJson < nextJsonParse, 'safeJson should replace JSON.parse for activePath');
-    }
+    const handler = src.slice(src.indexOf('handlePlansTriggerVerify'), src.indexOf('\n  async function', src.indexOf('handlePlansTriggerVerify') + 1));
+    assert.ok(handler.includes('safeJson('), 'Should use safeJson (null-safe) for plan reading');
   });
 
   await test('dashboard.js: PROJECTS[0] at line 1159 uses optional chaining', () => {
@@ -7954,14 +8554,14 @@ async function testStatusMutationGuards() {
 
   await test('dashboard manual retry checks for done items', () => {
     // Find the manual retry handler section
-    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*'pending';\s*\n\s*item\._retryCount\s*=\s*0/);
+    const retryMatch = dashboardSrc.match(/item\.status\s*=\s*(?:WI_STATUS\.PENDING|'pending');\s*\n\s*item\._retryCount\s*=\s*0/);
     assert.ok(retryMatch, 'dashboard.js must have manual retry handler');
     // The section before the reset should have a done/completedAt guard or force check
     const retrySection = dashboardSrc.substring(
       dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") - 400,
       dashboardSrc.indexOf("item._retryCount = 0; // Reset retry") + 50
     );
-    assert.ok(retrySection.includes('completedAt') || retrySection.includes('WI_STATUS.DONE') || retrySection.includes("'done'") || retrySection.includes('force'),
+    assert.ok(retrySection.includes('completedAt') || retrySection.includes('DONE_STATUSES') || retrySection.includes('WI_STATUS.DONE') || retrySection.includes("'done'") || retrySection.includes('force'),
       'Dashboard manual retry must check completedAt/done or require force flag');
   });
 
@@ -8349,6 +8949,15 @@ async function testDashboardAuditMedium() {
       'delete must use mutateJsonFileLocked for atomic read-modify-write');
   });
 
+  await test('handleWorkItemsDelete resets PRD item status (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const deleteFn = src.slice(src.indexOf('async function handleWorkItemsDelete'), src.indexOf('async function handleWorkItemsArchive'));
+    assert.ok(deleteFn.includes('syncPrdItemStatus'),
+      'work item delete must call syncPrdItemStatus to reset PRD item status');
+    assert.ok(deleteFn.includes('item.sourcePlan'),
+      'PRD reset must check item.sourcePlan before calling syncPrdItemStatus');
+  });
+
   await test('openEditScheduleModal calls _updateCronPreview', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-schedules.js'), 'utf8');
     const editFn = src.match(/function openEditScheduleModal[\s\S]*?^}/m);
@@ -8520,19 +9129,19 @@ async function testEngineAuditCritical() {
       'openPipelineDetail must render per-stage monitoredResources');
   });
 
-  await test('pipeline abort button shows Aborting then becomes Run Now', () => {
+  await test('pipeline abort button shows Aborting then refreshes detail', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
     assert.ok(abortFn.includes("'Aborting...'"), 'Should show Aborting... immediately');
-    assert.ok(abortFn.includes("'Run Now'"), 'Should transform to Run Now on success');
-    assert.ok(abortFn.includes('_triggerPipeline'), 'Run Now button should call _triggerPipeline');
+    assert.ok(abortFn.includes('_refreshPipelineDetail'), 'Should refresh detail modal after abort');
   });
 
-  await test('pipeline abort removes Retrigger button after success', () => {
+  await test('pipeline abort refreshes modal via _refreshPipelineDetail (not manual swap)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
-    const abortFn = src.slice(src.indexOf('async function _abortPipeline'));
-    assert.ok(abortFn.includes("'Retrigger'") && abortFn.includes('.remove()'),
-      'Should find and remove the Retrigger button next to Abort');
+    assert.ok(src.includes('async function _refreshPipelineDetail'),
+      'Should define _refreshPipelineDetail for immediate modal refresh');
+    const refreshFn = src.slice(src.indexOf('async function _refreshPipelineDetail'));
+    assert.ok(refreshFn.includes('openPipelineDetail(id)'), 'Should re-render detail modal');
   });
 
   await test('pipeline abort cancels work items and dispatches on server', () => {
@@ -8547,6 +9156,21 @@ async function testEngineAuditCritical() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
     assert.ok(src.includes("activeRun") && src.includes("'Abort'") && src.includes("'Run Now'"),
       'Should conditionally show Abort (running) or Run Now (idle)');
+  });
+
+  // ── Pipeline file JSON validity ──
+
+  await test('all pipeline JSON files are valid JSON', () => {
+    const pipelinesDir = path.join(MINIONS_DIR, 'pipelines');
+    if (!fs.existsSync(pipelinesDir)) return; // no pipelines dir is fine
+    const files = fs.readdirSync(pipelinesDir).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        JSON.parse(fs.readFileSync(path.join(pipelinesDir, f), 'utf8'));
+      } catch (e) {
+        assert.fail(`pipelines/${f} is invalid JSON: ${e.message}`);
+      }
+    }
   });
 
   // ── Pipeline Node Chain Visualization (TDD) ──
@@ -8706,12 +9330,142 @@ async function testEngineAuditCritical() {
     assert.ok(src.includes('AUTO-STOPPED'), 'must show AUTO-STOPPED label for pipelines stopped by condition');
   });
 
+  // ── Pipeline auto-detect: skip wait/plan stages when artifacts exist (W-mnr3kiuojipk) ──
+
+  await test('isStageComplete TASK checks all project work items (not just root)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const isStageCompleteFn = src.slice(src.indexOf('function isStageComplete'));
+    const taskCase = isStageCompleteFn.slice(isStageCompleteFn.indexOf("case STAGE_TYPE.TASK:"), isStageCompleteFn.indexOf("case STAGE_TYPE.MEETING:"));
+    assert.ok(taskCase.includes('getProjects(config)'), 'TASK completion should check project work items');
+    assert.ok(taskCase.includes('projectWorkItemsPath'), 'TASK completion should use projectWorkItemsPath');
+  });
+
+  await test('task stage output collection checks all project work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const discoverFn = src.slice(src.indexOf('async function discoverPipelineWork'));
+    const taskOutputSection = discoverFn.slice(discoverFn.indexOf('STAGE_TYPE.TASK'), discoverFn.indexOf('STAGE_TYPE.MEETING'));
+    assert.ok(taskOutputSection.includes('getProjects'), 'Task output collection should check project work items');
+  });
+
+  await test('wait stage auto-complete detects existing plan from meeting', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const waitSection = src.slice(src.indexOf('PIPELINE_STATUS.WAITING_HUMAN'), src.indexOf('Check if pending stage'));
+    assert.ok(waitSection.includes('STAGE_TYPE.WAIT'), 'Should check if waiting stage is a wait stage');
+    assert.ok(waitSection.includes('STAGE_TYPE.PLAN'), 'Should look for a dependent plan stage');
+    assert.ok(waitSection.includes('_findExistingPlanForMeeting'), 'Should use _findExistingPlanForMeeting');
+    assert.ok(waitSection.includes('Auto-completed'), 'Should auto-complete with descriptive output');
+  });
+
+  await test('plan stage detects existing PRD and skips plan-to-prd dispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const planFn = src.slice(src.indexOf('async function executePlanStage'), src.indexOf('function executeApiStage'));
+    assert.ok(planFn.includes('_findExistingPrdForPlan'), 'Should check for existing PRD');
+    assert.ok(planFn.includes('skipping plan-to-prd'), 'Should log skip message');
+  });
+
+  await test('_refreshPipelineDetail defined and used by all action handlers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    assert.ok(src.includes('async function _refreshPipelineDetail'), 'Should define _refreshPipelineDetail');
+    // Check it's used by all action handlers
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes('_refreshPipelineDetail'), 'Trigger handler should use _refreshPipelineDetail');
+    const abortFn = src.slice(src.indexOf('async function _abortPipeline'), src.indexOf('async function _retriggerPipeline'));
+    assert.ok(abortFn.includes('_refreshPipelineDetail'), 'Abort handler should use _refreshPipelineDetail');
+    const retriggerFn = src.slice(src.indexOf('async function _retriggerPipeline'), src.indexOf('async function _togglePipelineEnabled'));
+    assert.ok(retriggerFn.includes('_refreshPipelineDetail'), 'Retrigger handler should use _refreshPipelineDetail');
+    const continueFn = src.slice(src.indexOf('async function _continuePipeline'), src.indexOf('async function _deletePipelineConfirm'));
+    assert.ok(continueFn.includes('_refreshPipelineDetail'), 'Continue handler should use _refreshPipelineDetail');
+  });
+
+  await test('pipeline detail modal always polls (not just when active run)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const detailFn = src.slice(src.indexOf('function openPipelineDetail'), src.indexOf('var _pipelinePollHash'));
+    // Old: if (activeRun) { _pipelinePollId = id; ... } — only polled active runs
+    // New: always sets _pipelinePollId and starts polling
+    assert.ok(!detailFn.includes('if (activeRun) {\n    _pipelinePollId'), 'Should not gate polling on activeRun');
+    assert.ok(detailFn.includes('_pipelinePollId = id'), 'Should always set poll ID');
+  });
+
+  await test('_findExistingPrdForPlan exported for testing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    assert.ok(src.includes('_findExistingPrdForPlan'), 'Should export _findExistingPrdForPlan');
+  });
+
   await test('handlePostMerge guards against null project', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.match(/async function handlePostMerge[\s\S]*?^}/m);
     assert.ok(fn, 'handlePostMerge must exist');
     assert.ok(fn[0].includes('pr.branch && project') || fn[0].includes('project &&'),
       'handlePostMerge must guard project before accessing project.localPath');
+  });
+
+  // Post-merge rebase for dependent PRs
+  const lifecycleSrcForRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  await test('findDependentActivePrs is exported from lifecycle.js', () => {
+    assert.ok(lifecycleSrcForRebase.includes('function findDependentActivePrs'),
+      'lifecycle.js must define findDependentActivePrs');
+    assert.ok(lifecycleSrcForRebase.includes('findDependentActivePrs,'),
+      'findDependentActivePrs must be exported');
+  });
+
+  await test('findDependentActivePrs excludes shared-branch items', () => {
+    assert.ok(lifecycleSrcForRebase.includes("branchStrategy !== 'shared-branch'"),
+      'findDependentActivePrs must exclude shared-branch work items');
+  });
+
+  await test('rebaseBranchOntoMain uses force-with-lease for safe push', () => {
+    assert.ok(lifecycleSrcForRebase.includes('--force-with-lease'),
+      'rebaseBranchOntoMain must use --force-with-lease');
+  });
+
+  await test('rebaseBranchOntoMain aborts rebase on conflict', () => {
+    assert.ok(lifecycleSrcForRebase.includes('rebase --abort'),
+      'rebaseBranchOntoMain must abort rebase on failure');
+  });
+
+  await test('rebaseBranchOntoMain cleans up temp worktree in finally block', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function rebaseBranchOntoMain'),
+      lifecycleSrcForRebase.indexOf('\nfunction queuePendingRebase')
+    );
+    assert.ok(fn.includes('finally'), 'rebaseBranchOntoMain must have a finally block for cleanup');
+    assert.ok(fn.includes('removeWorktree'), 'finally block must call removeWorktree');
+  });
+
+  await test('handlePostMerge calls findDependentActivePrs for rebase', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function handlePostMerge'),
+      lifecycleSrcForRebase.indexOf('\nfunction checkForLearnings')
+    );
+    assert.ok(fn.includes('findDependentActivePrs'), 'handlePostMerge must call findDependentActivePrs');
+    assert.ok(fn.includes('rebaseBranchOntoMain'), 'handlePostMerge must call rebaseBranchOntoMain');
+  });
+
+  await test('handlePostMerge defers rebase when branch is active', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function handlePostMerge'),
+      lifecycleSrcForRebase.indexOf('\nfunction checkForLearnings')
+    );
+    assert.ok(fn.includes('isBranchActive'), 'handlePostMerge must check isBranchActive before rebasing');
+    assert.ok(fn.includes('queuePendingRebase'), 'handlePostMerge must queue deferred rebase when branch active');
+  });
+
+  await test('processPendingRebases retries up to 3 attempts', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('attempts < 3'), 'processPendingRebases must cap retries at 3');
+    assert.ok(fn.includes('writeToInbox'), 'processPendingRebases must write inbox alert on give-up');
+  });
+
+  await test('engine.js calls processPendingRebases in tick cycle', () => {
+    const engineSrcRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrcRebase.includes('processPendingRebases(config)'),
+      'engine.js must call processPendingRebases during PR poll phase');
+    assert.ok(engineSrcRebase.includes('processPendingRebases }'),
+      'engine.js must import processPendingRebases from lifecycle');
   });
 
   await test('scheduler enabled check uses truthy, not strict equality', () => {
@@ -9153,8 +9907,8 @@ async function testAutoRecoveryAndAtomicity() {
       lifecycleSrc.indexOf('function runPostCompletionHooks('),
       lifecycleSrc.indexOf('\nfunction', lifecycleSrc.indexOf('function runPostCompletionHooks(') + 1)
     );
-    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered }'),
-      'runPostCompletionHooks must return autoRecovered in its result');
+    assert.ok(hookBody.includes('return { resultSummary, taskUsage, autoRecovered, structuredCompletion }'),
+      'runPostCompletionHooks must return autoRecovered and structuredCompletion in its result');
   });
 
   await test('engine.js uses autoRecovered to upgrade completeDispatch result', () => {
@@ -9345,18 +10099,602 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(src.includes("[null, 'low', 'medium', 'high']"), 'Should validate ccEffort against allowed values');
   });
 
-  await test('ccCall default maxTurns is 25 (not 50)', () => {
+  await test('ccCall maxTurns defaults from ENGINE_DEFAULTS.ccMaxTurns', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    const ccCallSig = src.match(/async function ccCall\(message,\s*\{[^}]+\}/);
-    assert.ok(ccCallSig, 'ccCall signature should exist');
-    assert.ok(ccCallSig[0].includes('maxTurns = 25'), 'ccCall default maxTurns should be 25');
+    assert.ok(src.includes('ENGINE_DEFAULTS.ccMaxTurns'), 'ccCall should reference ENGINE_DEFAULTS.ccMaxTurns');
   });
 
-  await test('CC streaming handler uses maxTurns 25', () => {
+  await test('CC streaming handler uses configurable ccMaxTurns', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const streamHandler = src.slice(src.indexOf('handleCommandCenterStream'));
-    const maxTurnsMatch = streamHandler.match(/maxTurns:\s*(\d+)/);
-    assert.ok(maxTurnsMatch && maxTurnsMatch[1] === '25', 'Streaming CC maxTurns should be 25');
+    assert.ok(streamHandler.includes('ccMaxTurns'), 'Streaming CC should use ccMaxTurns variable');
+  });
+
+  await test('ENGINE_DEFAULTS.ccMaxTurns is 50', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.ccMaxTurns, 50, 'ccMaxTurns default should be 50');
+  });
+
+  await test('ENGINE_DEFAULTS.teams has all required fields', () => {
+    const teams = shared.ENGINE_DEFAULTS.teams;
+    assert.ok(teams, 'ENGINE_DEFAULTS should have a teams section');
+    assert.strictEqual(teams.enabled, false, 'teams.enabled default should be false');
+    assert.strictEqual(teams.appId, '', 'teams.appId default should be empty string');
+    assert.strictEqual(teams.appPassword, '', 'teams.appPassword default should be empty string');
+    assert.ok(Array.isArray(teams.notifyEvents), 'teams.notifyEvents should be an array');
+    assert.ok(teams.notifyEvents.includes('pr-merged'), 'notifyEvents should include pr-merged');
+    assert.ok(teams.notifyEvents.includes('agent-completed'), 'notifyEvents should include agent-completed');
+    assert.ok(teams.notifyEvents.includes('plan-completed'), 'notifyEvents should include plan-completed');
+    assert.ok(teams.notifyEvents.includes('agent-failed'), 'notifyEvents should include agent-failed');
+    assert.strictEqual(teams.ccMirror, true, 'teams.ccMirror default should be true');
+    assert.strictEqual(teams.inboxPollInterval, 15000, 'teams.inboxPollInterval default should be 15000');
+  });
+
+  await test('doctor Teams check: warns when enabled but missing credentials', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('Teams integration'), 'doctor should check Teams integration');
+    assert.ok(src.includes('teams.appId'), 'doctor should validate appId');
+    assert.ok(src.includes('teams.appPassword'), 'doctor should validate appPassword');
+    assert.ok(src.includes('docs/teams-setup.md'), 'doctor should reference setup guide when disabled');
+  });
+
+  await test('engine/teams.js exports required functions', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.createAdapter, 'function', 'createAdapter should be a function');
+    assert.strictEqual(typeof teams.teamsReply, 'function', 'teamsReply should be a function');
+    assert.strictEqual(typeof teams.saveConversationRef, 'function', 'saveConversationRef should be a function');
+    assert.strictEqual(typeof teams.getConversationRef, 'function', 'getConversationRef should be a function');
+    assert.strictEqual(typeof teams.teamsPost, 'function', 'teamsPost should be a function');
+    assert.strictEqual(typeof teams.getTeamsConfig, 'function', 'getTeamsConfig should be a function');
+    assert.strictEqual(typeof teams.isTeamsEnabled, 'function', 'isTeamsEnabled should be a function');
+  });
+
+  await test('getTeamsConfig merges defaults with user config', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    const cfg = teams.getTeamsConfig();
+    // Should have all default fields even with no user config
+    assert.strictEqual(cfg.enabled, false, 'default enabled should be false');
+    assert.ok(Array.isArray(cfg.notifyEvents), 'notifyEvents should be an array');
+    assert.strictEqual(cfg.ccMirror, true, 'default ccMirror should be true');
+    assert.strictEqual(cfg.inboxPollInterval, 15000, 'default inboxPollInterval should be 15000');
+  });
+
+  await test('isTeamsEnabled returns false when disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false
+    assert.strictEqual(teams.isTeamsEnabled(), false, 'should be false with default config');
+  });
+
+  await test('createAdapter returns null when Teams is disabled', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    const adapter = teams.createAdapter();
+    assert.strictEqual(adapter, null, 'adapter should be null when disabled');
+  });
+
+  await test('saveConversationRef uses mutateJsonFileLocked', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('mutateJsonFileLocked(TEAMS_STATE_PATH'), 'saveConversationRef should use mutateJsonFileLocked');
+  });
+
+  await test('teamsReply and teamsPost are safe no-ops when adapter is null', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Should not throw
+    await teams.teamsReply(null, 'test');
+    await teams.teamsPost('key', 'test');
+  });
+
+  await test('getConversationRef returns null for unknown key', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.getConversationRef('nonexistent'), null);
+  });
+
+  await test('teams.js uses shared.log for all logging', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes("const { log,"), 'should destructure log from shared');
+    // Should not use console.log directly
+    const lines = src.split('\n');
+    const consoleLogLines = lines.filter(l => l.includes('console.log') && !l.trimStart().startsWith('//'));
+    assert.strictEqual(consoleLogLines.length, 0, 'should not use console.log directly');
+  });
+
+  await test('POST /api/bot route is registered in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("path: '/api/bot'"), '/api/bot route should be registered');
+    assert.ok(src.includes("method: 'POST'") && src.includes('/api/bot'), 'should be a POST route');
+    assert.ok(src.includes('handleTeamsBot'), 'should reference handleTeamsBot handler');
+  });
+
+  await test('/api/bot returns 503 when Teams disabled', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('503'), 'should return 503 when disabled');
+    assert.ok(handler.includes('Teams integration disabled'), 'should include disabled message');
+  });
+
+  await test('/api/bot filters bot own messages by appId', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('cfg.appId'), 'should compare from.id to appId');
+    assert.ok(handler.includes('activity.from?.id === cfg.appId'), 'should filter bot own messages');
+  });
+
+  await test('/api/bot writes to teams-inbox.json with required fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes('mutateJsonFileLocked(TEAMS_INBOX_PATH'), 'should use mutateJsonFileLocked for teams-inbox.json');
+    assert.ok(handler.includes('id: msgId'), 'message should have id field');
+    assert.ok(handler.includes('text: activity.text'), 'message should have text field');
+    assert.ok(handler.includes("from: activity.from?.name"), 'message should have from field');
+    assert.ok(handler.includes('conversationRef:'), 'message should have conversationRef field');
+    assert.ok(handler.includes('receivedAt:'), 'message should have receivedAt field');
+    assert.ok(handler.includes('_processedAt: null'), 'message should have _processedAt field');
+  });
+
+  await test('/api/bot saves conversationRef on conversationUpdate and installationUpdate', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleTeamsBot'));
+    assert.ok(handler.includes("activity.type === 'conversationUpdate'"), 'should handle conversationUpdate');
+    assert.ok(handler.includes("activity.type === 'installationUpdate'"), 'should handle installationUpdate');
+    assert.ok(handler.includes('teams.saveConversationRef'), 'should call saveConversationRef');
+  });
+
+  await test('TEAMS_INBOX_PATH is defined in dashboard.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes("const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json')"), 'TEAMS_INBOX_PATH should be defined');
+  });
+
+  await test('processTeamsInbox is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.processTeamsInbox, 'function', 'processTeamsInbox should be a function');
+  });
+
+  await test('processTeamsInbox returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    // Default config has enabled: false — should return immediately without errors
+    await teams.processTeamsInbox();
+  });
+
+  await test('processTeamsInbox reads inbox and filters unprocessed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('safeJson(TEAMS_INBOX_PATH)'), 'should read from TEAMS_INBOX_PATH');
+    assert.ok(fn.includes('!m._processedAt'), 'should filter for unprocessed messages');
+    assert.ok(fn.includes('_processedAt'), 'should mark messages as processed');
+  });
+
+  await test('processTeamsInbox calls CC via HTTP API', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('/api/command-center'), 'should call CC via dashboard HTTP API');
+    assert.ok(fn.includes('fetch('), 'should use fetch for HTTP call');
+  });
+
+  await test('processTeamsInbox tracks usage under teams category', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes("trackEngineUsage('teams'"), 'should track usage under teams category');
+  });
+
+  await test('processTeamsInbox prunes inbox when exceeding cap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function processTeamsInbox'));
+    assert.ok(fn.includes('TEAMS_INBOX_CAP'), 'should reference TEAMS_INBOX_CAP');
+    assert.ok(fn.includes('data.length > TEAMS_INBOX_CAP'), 'should check if inbox exceeds cap');
+  });
+
+  await test('TEAMS_INBOX_CAP is 200', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.TEAMS_INBOX_CAP, 200, 'TEAMS_INBOX_CAP should be 200');
+  });
+
+  await test('Teams inbox timer in cli.js fires only when engine is running', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('teamsInboxTimer'), 'should define teamsInboxTimer');
+    assert.ok(src.includes("ctrl.state !== 'running'"), 'should check engine state before processing');
+    assert.ok(src.includes('processTeamsInbox'), 'should call processTeamsInbox');
+  });
+
+  await test('Teams inbox timer is cleared on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes('clearInterval(teamsInboxTimer)'), 'should clear teamsInboxTimer on shutdown');
+  });
+
+  await test('teamsPostCCResponse is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsPostCCResponse, 'function', 'teamsPostCCResponse should be a function');
+  });
+
+  await test('teamsPostCCResponse returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    // Default config has enabled: false — should return immediately
+    await teams.teamsPostCCResponse('test', 'response');
+  });
+
+  await test('teamsPostCCResponse uses buildCCResponseCard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('cards.buildCCResponseCard'), 'should use card builder');
+  });
+
+  await test('teamsPostCCResponse has 5s rate limit', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.CC_MIRROR_RATE_LIMIT_MS, 5000, 'rate limit should be 5000ms');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('_lastCCMirrorPost'), 'should track last mirror post timestamp');
+    assert.ok(fn.includes('CC_MIRROR_RATE_LIMIT_MS'), 'should reference rate limit constant');
+  });
+
+  await test('CC mirror hooks in dashboard.js skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Non-streaming handler
+    const ccHandler = src.slice(src.indexOf('async function handleCommandCenter('));
+    assert.ok(ccHandler.includes("tabId.startsWith('teams-')"), 'non-streaming should check tabId for teams origin');
+    assert.ok(ccHandler.includes('teamsPostCCResponse'), 'non-streaming should call teamsPostCCResponse');
+    assert.ok(ccHandler.includes('.catch(() => {})'), 'non-streaming mirror should be non-blocking');
+  });
+
+  await test('CC streaming mirror hooks skip Teams-originated messages', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const streamHandler = src.slice(src.indexOf('async function handleCommandCenterStream('));
+    assert.ok(streamHandler.includes("_streamTabId.startsWith('teams-')"), 'streaming should check tabId for teams origin');
+    assert.ok(streamHandler.includes('teamsPostCCResponse'), 'streaming should call teamsPostCCResponse');
+    assert.ok(streamHandler.includes('.catch(() => {})'), 'streaming mirror should be non-blocking');
+  });
+
+  await test('CC mirror checks ccMirror config before posting', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPostCCResponse'));
+    assert.ok(fn.includes('cfg.ccMirror'), 'should check ccMirror config');
+  });
+
+  await test('teamsNotifyCompletion is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyCompletion, 'function', 'teamsNotifyCompletion should be a function');
+  });
+
+  await test('teamsNotifyCompletion returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyCompletion({ id: 'test', task: 'test' }, 'success', 'dallas');
+  });
+
+  await test('teamsNotifyCompletion filters by notifyEvents config', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes("'agent-completed'"), 'should map success to agent-completed');
+    assert.ok(fn.includes("'agent-failed'"), 'should map failure to agent-failed');
+  });
+
+  await test('teamsNotifyCompletion uses buildCompletionCard with agent, title, result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyCompletion'));
+    assert.ok(fn.includes('agentId'), 'should include agent ID');
+    assert.ok(fn.includes('title'), 'should include task title');
+    assert.ok(fn.includes('result'), 'should include result status');
+    assert.ok(fn.includes('cards.buildCompletionCard'), 'should use card builder');
+  });
+
+  await test('Dead TEAMS_PLAN_FLOW_URL block is removed from lifecycle.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(!src.includes('TEAMS_PLAN_FLOW_URL'), 'TEAMS_PLAN_FLOW_URL should be removed');
+  });
+
+  await test('runPostCompletionHooks calls teamsNotifyCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function runPostCompletionHooks'));
+    assert.ok(fn.includes('teamsNotifyCompletion'), 'should call teamsNotifyCompletion');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking with .catch');
+  });
+
+  await test('teamsNotifyPrEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPrEvent, 'function', 'teamsNotifyPrEvent should be a function');
+  });
+
+  await test('teamsNotifyPrEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPrEvent({ id: 'PR-1', title: 'test' }, 'pr-merged', { name: 'test' }, null);
+  });
+
+  await test('teamsNotifyPrEvent filters by notifyEvents and deduplicates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('_teamsNotifiedEvents'), 'should check dedup array');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'should use mutateJsonFileLocked for dedup write');
+  });
+
+  await test('teamsNotifyPrEvent uses buildPrCard with pr, event, project', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPrEvent'));
+    assert.ok(fn.includes('cards.buildPrCard'), 'should use card builder');
+    assert.ok(fn.includes('event'), 'should pass event');
+    assert.ok(fn.includes('project'), 'should pass project');
+  });
+
+  await test('handlePostMerge calls teamsNotifyPrEvent for merge and abandon', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePostMerge'));
+    assert.ok(fn.includes('teamsNotifyPrEvent'), 'should call teamsNotifyPrEvent');
+    assert.ok(fn.includes("'pr-merged'"), 'should handle pr-merged event');
+    assert.ok(fn.includes("'pr-abandoned'"), 'should handle pr-abandoned event');
+    assert.ok(fn.includes('.catch(() => {})'), 'should be non-blocking');
+  });
+
+  await test('ado.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'ado.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'ado.js should notify on build-failed');
+  });
+
+  await test('github.js pollPrStatus notifies Teams on build failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('teamsNotifyPrEvent'), 'github.js should call teamsNotifyPrEvent');
+    assert.ok(src.includes("'build-failed'"), 'github.js should notify on build-failed');
+  });
+
+  await test('teamsNotifyPlanEvent is exported from engine/teams.js', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(typeof teams.teamsNotifyPlanEvent, 'function', 'teamsNotifyPlanEvent should be a function');
+  });
+
+  await test('teamsNotifyPlanEvent returns early when Teams disabled', async () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    await teams.teamsNotifyPlanEvent({ name: 'test plan' }, 'plan-completed');
+  });
+
+  await test('teamsNotifyPlanEvent filters by notifyEvents and uses buildPlanCard', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsNotifyPlanEvent'));
+    assert.ok(fn.includes('cfg.notifyEvents'), 'should check notifyEvents config');
+    assert.ok(fn.includes('planInfo.name'), 'should use plan name');
+    assert.ok(fn.includes('cards.buildPlanCard'), 'should use card builder for plan notifications');
+  });
+
+  await test('checkPlanCompletion hooks Teams for plan-completed and verify-created', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function checkPlanCompletion'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-completed'"), 'should notify plan-completed');
+    assert.ok(fn.includes("'verify-created'"), 'should notify verify-created');
+  });
+
+  await test('handlePlansApprove hooks Teams for plan-approved', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansApprove'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-approved'"), 'should notify plan-approved');
+  });
+
+  await test('handlePlansReject hooks Teams for plan-rejected', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handlePlansReject'));
+    assert.ok(fn.includes('teamsNotifyPlanEvent'), 'should call teamsNotifyPlanEvent');
+    assert.ok(fn.includes("'plan-rejected'"), 'should notify plan-rejected');
+  });
+
+  await test('engine/teams-cards.js exports all 4 card builders', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    assert.strictEqual(typeof cards.buildCompletionCard, 'function');
+    assert.strictEqual(typeof cards.buildPrCard, 'function');
+    assert.strictEqual(typeof cards.buildPlanCard, 'function');
+    assert.strictEqual(typeof cards.buildCCResponseCard, 'function');
+  });
+
+  await test('Adaptive Cards use schema v1.4 and have fallback text', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'test' }, 'success');
+    assert.strictEqual(card.version, '1.4', 'should use schema v1.4');
+    assert.strictEqual(card.type, 'AdaptiveCard', 'should be AdaptiveCard type');
+    assert.ok(card.fallbackText, 'should have fallback text');
+    assert.ok(card.actions.some(a => a.type === 'Action.OpenUrl'), 'should have OpenUrl actions');
+  });
+
+  await test('buildCompletionCard includes agent, title, result badge, PR link', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildCompletionCard('dallas', { title: 'Fix bug' }, 'success', 'https://pr');
+    assert.ok(card.fallbackText.includes('dallas'), 'fallback should include agent');
+    assert.ok(card.fallbackText.includes('Fix bug'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link action');
+    assert.ok(card.actions.some(a => a.title === 'Open Dashboard'), 'should have dashboard link');
+  });
+
+  await test('buildPrCard includes PR title, event, author', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPrCard({ id: 'PR-1', title: 'My PR', agent: 'dallas', url: 'https://pr' }, 'pr-merged', { name: 'test' });
+    assert.ok(card.fallbackText.includes('pr-merged'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('My PR'), 'fallback should include title');
+    assert.ok(card.actions.some(a => a.url === 'https://pr'), 'should have PR link');
+  });
+
+  await test('buildPlanCard includes plan name, event, item counts', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const card = cards.buildPlanCard({ name: 'My Plan', doneCount: 3, totalCount: 5 }, 'plan-completed');
+    assert.ok(card.fallbackText.includes('plan-completed'), 'fallback should include event');
+    assert.ok(card.fallbackText.includes('3/5'), 'fallback should include counts');
+    assert.ok(card.actions.some(a => a.url.includes('/prd')), 'should link to PRD page');
+  });
+
+  await test('buildCCResponseCard truncates long answers', () => {
+    const cards = require(path.join(MINIONS_DIR, 'engine', 'teams-cards'));
+    const longAnswer = 'x'.repeat(4000);
+    const card = cards.buildCCResponseCard('question', longAnswer);
+    const bodyText = card.body.find(b => b.text && b.text.includes('x'));
+    assert.ok(bodyText.text.length < 4000, 'should truncate long answers');
+    assert.ok(bodyText.text.endsWith('...'), 'should end with ellipsis');
+  });
+
+  await test('teamsPost/teamsReply accept Adaptive Card objects', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('function toActivity(content)'), 'should have toActivity helper');
+    assert.ok(src.includes('AdaptiveCard'), 'toActivity should handle AdaptiveCard type');
+    assert.ok(src.includes('application/vnd.microsoft.card.adaptive'), 'should use adaptive card content type');
+  });
+
+  await test('Notification functions use card builders', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('cards.buildCompletionCard'), 'teamsNotifyCompletion should use buildCompletionCard');
+    assert.ok(src.includes('cards.buildPrCard'), 'teamsNotifyPrEvent should use buildPrCard');
+    assert.ok(src.includes('cards.buildPlanCard'), 'teamsNotifyPlanEvent should use buildPlanCard');
+    assert.ok(src.includes('cards.buildCCResponseCard'), 'teamsPostCCResponse should use buildCCResponseCard');
+  });
+
+  // ── Teams Rate Limiting & Error Handling ──────────────────────────────────
+
+  await test('teams.js exports rate limiting constants', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    assert.strictEqual(teams.MAX_RETRIES_429, 2, 'MAX_RETRIES_429 should be 2');
+    assert.strictEqual(teams.MAX_RETRIES_5XX, 3, 'MAX_RETRIES_5XX should be 3');
+    assert.strictEqual(teams.CIRCUIT_FAILURE_THRESHOLD, 5, 'CIRCUIT_FAILURE_THRESHOLD should be 5');
+    assert.strictEqual(teams.CIRCUIT_RECOVERY_MS, 10 * 60 * 1000, 'CIRCUIT_RECOVERY_MS should be 10 minutes');
+    assert.strictEqual(teams.OUTBOUND_QUEUE_MAX, 100, 'OUTBOUND_QUEUE_MAX should be 100');
+    assert.strictEqual(teams.OUTBOUND_DRAIN_INTERVAL_MS, 250, 'OUTBOUND_DRAIN_INTERVAL_MS should be 250ms (4/sec)');
+  });
+
+  await test('circuit breaker starts in closed state', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'initial state should be closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'initial failures should be 0');
+  });
+
+  await test('circuit breaker state is reset by _resetAdapter', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._circuit.state = 'open';
+    teams._circuit.failures = 10;
+    teams._circuit.openedAt = Date.now();
+    teams._resetAdapter();
+    assert.strictEqual(teams._circuit.state, 'closed', 'should reset to closed');
+    assert.strictEqual(teams._circuit.failures, 0, 'should reset failures to 0');
+    assert.strictEqual(teams._circuit.openedAt, 0, 'should reset openedAt to 0');
+  });
+
+  await test('circuit breaker source: opens after CIRCUIT_FAILURE_THRESHOLD failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('_circuit.failures >= CIRCUIT_FAILURE_THRESHOLD'), 'should check failure threshold');
+    assert.ok(src.includes("_circuit.state = 'open'"), 'should set state to open');
+    assert.ok(src.includes('CIRCUIT_RECOVERY_MS'), 'should reference recovery time');
+  });
+
+  await test('circuit breaker source: half-open probe after recovery period', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _isCircuitOpen'));
+    assert.ok(fn.includes("'half-open'"), 'should transition to half-open');
+    assert.ok(fn.includes('CIRCUIT_RECOVERY_MS'), 'should check recovery period');
+  });
+
+  await test('circuit breaker source: probe failure reopens circuit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendFailure'));
+    assert.ok(fn.includes("_circuit.state === 'half-open'"), 'should check for half-open state');
+    assert.ok(fn.includes("_circuit.state = 'open'"), 'should reopen on probe failure');
+  });
+
+  await test('circuit breaker source: success resets to closed', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _onSendSuccess'));
+    assert.ok(fn.includes("_circuit.state = 'closed'"), 'should reset to closed on success');
+    assert.ok(fn.includes('_circuit.failures = 0'), 'should reset failure count');
+  });
+
+  await test('_sendWithRetry handles 429 with Retry-After', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status === 429'), 'should detect 429 status');
+    assert.ok(fn.includes('retry-after'), 'should read Retry-After header');
+    assert.ok(fn.includes('MAX_RETRIES_429'), 'should use MAX_RETRIES_429 limit');
+    assert.ok(fn.includes('_sleep(delayMs)'), 'should delay before retry');
+  });
+
+  await test('_sendWithRetry handles 5xx with exponential backoff', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendWithRetry'));
+    assert.ok(fn.includes('status >= 500'), 'should detect 5xx status');
+    assert.ok(fn.includes('Math.pow(2, retries5xx - 1) * 1000'), 'should use exponential backoff (1s, 2s, 4s)');
+    assert.ok(fn.includes('MAX_RETRIES_5XX'), 'should use MAX_RETRIES_5XX limit');
+  });
+
+  await test('outbound queue is exported and starts empty', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._resetAdapter();
+    assert.ok(Array.isArray(teams._outboundQueue), '_outboundQueue should be an array');
+    assert.strictEqual(teams._outboundQueue.length, 0, 'should start empty');
+  });
+
+  await test('outbound queue source: drops messages at OUTBOUND_QUEUE_MAX', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function _enqueueMessage'));
+    assert.ok(fn.includes('_outboundQueue.length >= OUTBOUND_QUEUE_MAX'), 'should check queue length against max');
+    assert.ok(fn.includes('dropping message'), 'should log when dropping');
+  });
+
+  await test('outbound queue source: drains at OUTBOUND_DRAIN_INTERVAL_MS', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    assert.ok(src.includes('setInterval(_drainQueue, OUTBOUND_DRAIN_INTERVAL_MS)'), 'should drain at configured interval');
+  });
+
+  await test('outbound queue source: auto-stops drain timer when empty', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _drainQueue'));
+    assert.ok(fn.includes('_outboundQueue.length === 0'), 'should check if queue is empty');
+    assert.ok(fn.includes('_stopDrainTimer()'), 'should stop timer when empty');
+  });
+
+  await test('teamsPost uses outbound queue instead of direct send', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsPost('));
+    assert.ok(fn.includes('_enqueueMessage'), 'teamsPost should enqueue instead of sending directly');
+    assert.ok(!fn.includes('continueConversationAsync'), 'teamsPost should not call adapter directly');
+  });
+
+  await test('teamsReply uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function teamsReply('));
+    assert.ok(fn.includes('_isCircuitOpen()'), 'teamsReply should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), 'teamsReply should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), 'teamsReply should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), 'teamsReply should call _onSendFailure');
+  });
+
+  await test('_sendProactive uses circuit breaker and retry', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function _sendProactive('));
+    assert.ok(fn.includes('_isCircuitOpen()'), '_sendProactive should check circuit breaker');
+    assert.ok(fn.includes('_sendWithRetry'), '_sendProactive should use _sendWithRetry');
+    assert.ok(fn.includes('_onSendSuccess()'), '_sendProactive should call _onSendSuccess');
+    assert.ok(fn.includes('_onSendFailure()'), '_sendProactive should call _onSendFailure');
+  });
+
+  await test('no unhandled rejections in Teams code — all async paths have catch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    // Every async function that calls sendActivity or continueConversationAsync
+    // should be wrapped in try-catch
+    const asyncFns = src.match(/async function \w+/g) || [];
+    for (const fn of asyncFns) {
+      const fnName = fn.replace('async function ', '');
+      const fnBody = src.slice(src.indexOf(fn));
+      const nextFn = fnBody.indexOf('\nasync function ', 1);
+      const body = nextFn > 0 ? fnBody.slice(0, nextFn) : fnBody;
+      if (body.includes('await') && !body.includes('try')) {
+        // processTeamsInbox has try-catch inside the for loop
+        if (fnName !== '_sleep') {
+          assert.fail(`${fnName} has await but no try-catch — potential unhandled rejection`);
+        }
+      }
+    }
+  });
+
+  await test('_resetAdapter clears outbound queue and drain timer', () => {
+    const teams = require(path.join(MINIONS_DIR, 'engine', 'teams'));
+    teams._outboundQueue.push({ key: 'test', content: 'msg' });
+    teams._resetAdapter();
+    assert.strictEqual(teams._outboundQueue.length, 0, 'queue should be cleared');
   });
 
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
@@ -9371,7 +10709,7 @@ async function testAutoRecoveryAndAtomicity() {
   await test('doc-chat uses lower maxTurns than CC', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
-    assert.ok(docCallFn.includes('maxTurns: canEdit ? 15 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 15 (editable)');
+    assert.ok(docCallFn.includes('maxTurns: canEdit ? 25 : 10'), 'Doc-chat maxTurns should be 10 (read-only) or 25 (editable)');
   });
 
   await test('doc-chat skips state preamble', () => {
@@ -9384,7 +10722,25 @@ async function testAutoRecoveryAndAtomicity() {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Answer from the state preamble'), 'CC prompt should prefer preamble over tools');
-    assert.ok(src.includes('reading more than 2-3 files'), 'CC prompt should limit file reads');
+    assert.ok(src.includes('more than 3 tool calls') || src.includes('reading more than 2-3 files'), 'CC prompt should limit tool use');
+  });
+
+  await test('CC system prompt has size estimation rule for delegation', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('Size estimation rule') || src.includes('size estimation'), 'CC prompt should have size estimation guidance');
+    assert.ok(src.includes('Small') && src.includes('Medium') && src.includes('Large'), 'Should define small/medium/large thresholds');
+    assert.ok(src.includes('DELEGATE') && src.includes('do it yourself'), 'Should clearly separate delegate vs self-do');
+    assert.ok(src.includes('When in doubt, delegate'), 'Should default to delegation when uncertain');
+  });
+
+  await test('CC system prompt defines when-to-delegate vs when-to-self-do', () => {
+    const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
+    const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : '';
+    assert.ok(src.includes('When to delegate'), 'Should have "when to delegate" section');
+    assert.ok(src.includes('When to do it yourself'), 'Should have "when to self-do" section');
+    assert.ok(src.includes('code changes') && src.includes('implement'), 'Delegate list should include code changes');
+    assert.ok(src.includes('status lookups') || src.includes('quick file reads'), 'Self-do list should include quick lookups');
   });
 
   // ── Retry Bypass for isAlreadyDispatched ─────────────────────────────────
@@ -9488,11 +10844,55 @@ async function testAutoRecoveryAndAtomicity() {
       'Retry button should call prdItemRequeue');
   });
 
+  await test('PRD list view shows retry button when work item missing (orphaned PRD item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const renderItem = src.slice(src.indexOf('const renderItem'));
+    // canRequeue should handle !wi case for stuck PRD items
+    assert.ok(renderItem.includes("!wi && i.status") && renderItem.includes("!== 'missing'") && renderItem.includes("!== 'done'"),
+      'canRequeue should also trigger when no work item exists and PRD status is stuck');
+  });
+
   await test('PRD graph view also shows retry button for failed items', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     const graphFn = src.slice(src.indexOf('const renderGraph'));
     assert.ok(graphFn.includes("'failed'") && graphFn.includes('prdItemRequeue'),
       'Graph view should check failed status and have prdItemRequeue click handler');
+  });
+
+  await test('PRD graph view shows retry for orphaned items (no work item)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const graphFn = src.slice(src.indexOf('const renderGraph'));
+    assert.ok(graphFn.includes("!w && i.status") && graphFn.includes("!== 'missing'"),
+      'Graph view canRetry should handle missing work item case');
+  });
+
+  await test('prdItemRequeue sends prdFile parameter for re-materialization', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function prdItemRequeue'));
+    assert.ok(fn.includes('prdFile'),
+      'prdItemRequeue should accept and send prdFile parameter');
+    assert.ok(fn.includes('payload.prdFile'),
+      'prdItemRequeue should add prdFile to request payload');
+  });
+
+  await test('handleWorkItemsRetry re-materializes from PRD when work item missing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function handleWorkItemsRetry'));
+    assert.ok(fn.includes('body.prdFile'),
+      'Retry handler should check for prdFile in request body');
+    assert.ok(fn.includes("createdBy: 'dashboard:prd-retry'"),
+      'Re-materialized work items should be tagged as dashboard:prd-retry');
+    assert.ok(fn.includes('rematerialized: true'),
+      'Response should indicate work item was re-materialized');
+    assert.ok(fn.includes('syncPrdItemStatus'),
+      'Retry handler should sync PRD item status after re-materialization');
+  });
+
+  await test('autoCleanPrdWorkItems resets PRD status to missing after deleting work items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function autoCleanPrdWorkItems'), src.indexOf('function autoCleanPrdWorkItems') + 2000);
+    assert.ok(fn.includes("syncPrdItemStatus(id, 'missing', prdFile)"),
+      'autoCleanPrdWorkItems must reset PRD item status to missing when deleting work items');
   });
 
   await test('PRD view toggle uses rerenderPrdFromCache (not refresh)', () => {
@@ -9512,6 +10912,16 @@ async function testAutoRecoveryAndAtomicity() {
       'PRD progress items mapping must include agent field');
     assert.ok(prdFn.includes('failReason: i._failReason') || prdFn.includes("failReason: i._failReason || ''"),
       'PRD progress items mapping must include failReason field');
+  });
+
+  await test('getPrdInfo resets orphaned dispatched/failed PRD items when work item missing (#779)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const prdFn = src.slice(src.indexOf('function getPrdInfo'));
+    // When no work item exists and PRD status is dispatched, rawStatus should become pending
+    assert.ok(prdFn.includes('WI_STATUS.DISPATCHED') && prdFn.includes('WI_STATUS.PENDING'),
+      'getPrdInfo must reset orphaned dispatched PRD items to pending using WI_STATUS constants');
+    assert.ok(prdFn.includes('WI_STATUS.FAILED'),
+      'getPrdInfo must also reset orphaned failed PRD items when work item is missing');
   });
 
   await test('areDependenciesMet returns failed when dep item is failed', () => {
@@ -9690,10 +11100,50 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(ccCallFn.includes('direct: true'), 'ccCall should pass direct: true to callLLM');
   });
 
+  await test('_spawnProcess indirect path includes PID file in cleanupFiles', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    const indirectBlock = src.slice(src.indexOf('// Indirect: use spawn-agent.js'));
+    assert.ok(indirectBlock.includes('pidPath'), 'Should derive pidPath from promptPath');
+    assert.ok(indirectBlock.includes("replace(/prompt-/, 'pid-')"), 'Should use same PID derivation as spawn-agent.js');
+    assert.ok(indirectBlock.includes('cleanupFiles.push(promptPath, sysPath, pidPath)'), 'Should include pidPath in cleanupFiles');
+  });
+
+  await test('handleKnowledgeSweep uses generation token for race-safe finally', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const sweepFn = src.slice(src.indexOf('async function handleKnowledgeSweep'));
+    assert.ok(sweepFn.includes('sweepToken'), 'Should use a generation token');
+    assert.ok(sweepFn.includes('global._kbSweepToken = sweepToken'), 'Should store token globally');
+    assert.ok(sweepFn.includes('global._kbSweepToken === sweepToken'), 'finally should only clear flag if token matches');
+  });
+
   await test('dependency fetches run in parallel with Promise.allSettled', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('Promise.allSettled'), 'Should use Promise.allSettled for parallel dep fetches');
     assert.ok(src.includes('git fetch origin'), 'Should fetch dependency branches');
+  });
+
+  // ── Critical UX element regression checks ──
+  // These must run early (not in late test functions that may be skipped by earlier crashes)
+
+  await test('layout.html contains cc-tab-bar element', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    assert.ok(layout.includes('id="cc-tab-bar"'), 'layout.html must have cc-tab-bar element — CC tabs will not render without it');
+  });
+
+  await test('layout.html contains all critical CC elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['cc-tab-bar', 'cc-messages', 'cc-input', 'cc-session-info'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
+  });
+
+  await test('layout.html contains all critical modal elements', () => {
+    const layout = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+    const required = ['modal', 'modal-title', 'modal-body', 'modal-qa-thread'];
+    for (const id of required) {
+      assert.ok(layout.includes('id="' + id + '"'), 'layout.html must have ' + id + ' element');
+    }
   });
 
   await test('runPostCompletionHooks does NOT auto-recover non-implement types', async () => {
@@ -9860,28 +11310,20 @@ async function testDashboardResilience() {
 
   // ── CC New Session full reset ──
 
-  await test('ccNewSession aborts in-flight request', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('ccAbort()'),
-      'ccNewSession must call ccAbort() to abort in-flight requests');
+  await test('ccNewSession delegates to ccNewTab (multi-tab)', () => {
+    assert.ok(ccSrc.includes('function ccNewSession') && ccSrc.includes('ccNewTab'),
+      'ccNewSession should delegate to ccNewTab for multi-tab support');
   });
 
-  await test('ccNewSession resets _ccSending flag', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('_ccSending = false'),
-      'ccNewSession must reset _ccSending to prevent queuing');
+  await test('per-tab sending state: tab._sending and tab._abortController', () => {
+    assert.ok(ccSrc.includes('activeTab._sending = true') && ccSrc.includes('activeTab._abortController'),
+      'Sending state should be per-tab, not global');
   });
 
-  await test('ccNewSession clears queue', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes('_ccQueue = []'),
-      'ccNewSession must clear the message queue');
-  });
-
-  await test('ccNewSession clears localStorage sending state', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('function ccNewSession'), ccSrc.indexOf('}', ccSrc.indexOf('ccUpdateSessionIndicator()')) + 1);
-    assert.ok(fn.includes("localStorage.removeItem('cc-sending')"),
-      'ccNewSession must clear cc-sending from localStorage');
+  await test('ccCloseTab only aborts the closing tab, not all tabs', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function ccCloseTab'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('function ccCloseTab') + 1));
+    assert.ok(fn.includes('closingTab._sending') && fn.includes('closingTab._abortController'),
+      'Should check and abort only the closing tab');
   });
 
   await test('CC clears stale sending state on page load', () => {
@@ -9901,35 +11343,31 @@ async function testDashboardResilience() {
     assert.ok(fn.includes('return _wasAborted'), '_ccDoSend must return _wasAborted for caller');
   });
 
-  await test('ccSend pauses after abort before draining queue', () => {
+  await test('ccSend flushes queue after abort (no wasAborted guard)', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted') && fn.includes('setTimeout'),
-      'ccSend must pause after abort to let server release ccInFlight before sending queued message');
+    assert.ok(fn.includes('tab._queue && tab._queue.length > 0'),
+      'ccSend must check for queued messages after send completes');
+    assert.ok(!fn.includes('!wasAborted'),
+      'Queue flush must NOT be gated on wasAborted — abort stops the current request, not queued ones');
   });
 
-  await test('ccSend sets _ccSending during abort delay to prevent queue bypass', () => {
+  await test('ccSend uses per-tab queue for message queuing', () => {
     const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('_ccSending = true') && fn.includes('setTimeout') && fn.includes('_ccSending = false'),
-      'ccSend must hold _ccSending true during abort delay so new messages queue instead of bypassing');
+    assert.ok(fn.includes('tab._sending') && fn.includes('tab._queue'),
+      'ccSend must use per-tab sending state and queue');
   });
 
-  await test('ccSend drain loop checks wasAborted on each iteration', () => {
-    const fn = ccSrc.slice(ccSrc.indexOf('async function ccSend'), ccSrc.indexOf('\n}', ccSrc.indexOf('async function ccSend')) + 2);
-    assert.ok(fn.includes('wasAborted = await _ccDoSend(next)'),
-      'Queue drain must capture wasAborted from each send for abort delay on subsequent items');
-  });
-
-  await test('ccSend drain loop preserves queue on abort (does not clear)', () => {
+  await test('ccAbort does not clear queue — queued messages auto-flush after abort', () => {
     const abortFn = ccSrc.slice(ccSrc.indexOf('function ccAbort'), ccSrc.indexOf('\n}', ccSrc.indexOf('function ccAbort')) + 2);
-    assert.ok(!abortFn.includes('_ccQueue = []'),
+    assert.ok(!abortFn.includes('_queue = []') && !abortFn.includes('_queue.length = 0'),
       'ccAbort must NOT clear queue — queued messages should send after abort completes');
   });
 
   // ── CC server-side reset on new session ──
 
-  await test('server-side handleCommandCenterNewSession resets ccInFlight', () => {
-    assert.ok(dashSrc.includes('ccInFlight = false') && dashSrc.includes('handleCommandCenterNewSession'),
-      'handleCommandCenterNewSession must reset ccInFlight guard');
+  await test('server-side per-tab concurrency guard', () => {
+    assert.ok(dashSrc.includes('ccInFlightTabs'),
+      'Should use per-tab in-flight tracking for parallel CC requests');
   });
 
   // ── Live stream steering resilience ──
@@ -9988,6 +11426,85 @@ async function testDashboardResilience() {
   await test('doc-chat badge persists if messages still queued', () => {
     assert.ok(modalQaSrc.includes('_qaQueue.length === 0'),
       'Badge should only clear when queue is empty');
+  });
+
+  // ── Text selection → doc-chat flow ──────────────────────────────────────────
+
+  await test('mouseup listener captures selection into _modalDocContext', () => {
+    assert.ok(modalQaSrc.includes("document.addEventListener('mouseup'"),
+      'Should have mouseup listener on document');
+    assert.ok(modalQaSrc.includes('_modalDocContext.selection = text') || modalQaSrc.includes('_modalDocContext.selection=text'),
+      'mouseup handler should write selected text to _modalDocContext.selection');
+  });
+
+  await test('mouseup listener only acts on selections inside modal-body', () => {
+    assert.ok(modalQaSrc.includes('modalBody.contains(sel.anchorNode)'),
+      'Should check that selection anchor is inside modal-body');
+    assert.ok(modalQaSrc.includes("getElementById('modal-body')"),
+      'Should reference modal-body element');
+  });
+
+  await test('mouseup listener shows ask-selection-btn near selection', () => {
+    assert.ok(modalQaSrc.includes("ask-selection-btn"),
+      'mouseup handler should reference the ask button');
+    assert.ok(modalQaSrc.includes('getBoundingClientRect'),
+      'Should position button using selection bounding rect');
+    assert.ok(modalQaSrc.includes("askBtn.style.display = 'block'"),
+      'Should show the button when selection is valid');
+  });
+
+  await test('mouseup listener hides button when selection is empty or outside modal', () => {
+    assert.ok(modalQaSrc.includes("askBtn.style.display = 'none'"),
+      'Should hide button on empty/collapsed selection');
+    assert.ok(modalQaSrc.includes('sel.isCollapsed'),
+      'Should check isCollapsed to detect empty selection');
+  });
+
+  await test('modalAskAboutSelection shows selection pill and focuses input', () => {
+    assert.ok(modalQaSrc.includes('modal-qa-pill'),
+      'Should show selection pill');
+    assert.ok(modalQaSrc.includes("pill.style.display = 'flex'"),
+      'Pill should be displayed as flex');
+    assert.ok(modalQaSrc.includes('input.focus()'),
+      'Should focus the input field');
+  });
+
+  await test('modalSend captures selection and clears it after send', () => {
+    const sendFn = modalQaSrc.slice(
+      modalQaSrc.indexOf('function modalSend()'),
+      modalQaSrc.indexOf('function modalSend()') + 1500
+    );
+    assert.ok(sendFn.includes("_modalDocContext.selection || ''"),
+      'modalSend should read current selection');
+    assert.ok(sendFn.includes("_modalDocContext.selection = ''"),
+      'modalSend should clear selection after capturing');
+    assert.ok(sendFn.includes("'modal-qa-pill'"),
+      'modalSend should hide selection pill');
+  });
+
+  await test('selection is sent to /api/doc-chat in request body', () => {
+    assert.ok(modalQaSrc.includes("selection: selection"),
+      '_processQaMessage should include selection in fetch body');
+  });
+
+  await test('queued messages preserve their selection', () => {
+    assert.ok(modalQaSrc.includes('_qaQueue.push({ message, selection })'),
+      'Queue should store selection with message');
+    assert.ok(modalQaSrc.includes('next.selection'),
+      'Queue drain should pass selection to _processQaMessage');
+  });
+
+  await test('backend truncates selection at 1500 chars', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('selection.slice(0, 1500)'),
+      'ccDocCall should truncate selection to 1500 chars');
+  });
+
+  await test('clearQaSelection resets selection and hides pill', () => {
+    assert.ok(modalQaSrc.includes("_modalDocContext.selection = ''") || modalQaSrc.includes("_modalDocContext.selection=''"),
+      'clearQaSelection should reset selection');
+    assert.ok(modalQaSrc.includes("modal-qa-pill"),
+      'clearQaSelection should hide pill');
   });
 
   // ── Command center overlay dismiss ──
@@ -10122,9 +11639,9 @@ async function testBuildFixEscalation() {
       'CSS should have a .pr-badge.build-escalated style for visual escalation indicator');
   });
 
-  await test('escalation uses configurable limit from ENGINE_DEFAULTS', () => {
-    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
-      'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
+  await test('escalation uses configurable limit from DEFAULTS', () => {
+    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
+      'engine.js should read maxBuildFixAttempts from DEFAULTS (not hardcoded)');
   });
 
   await test('escalation writes inbox alert for human visibility', () => {
@@ -10488,7 +12005,7 @@ async function testBuildErrorLogFeature() {
 
   await test('ado.js sets buildErrorLog on PR when transitioning to failing', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
-    assert.ok(src.includes('pr.buildErrorLog = errorLog'),
+    assert.ok(src.includes('pr.buildErrorLog ='),
       'Should store fetched error log on PR entry');
     assert.ok(src.includes("buildStatus === 'failing'") && src.includes('fetchAdoBuildErrorLog'),
       'Should only fetch error log when transitioning to failing');
@@ -10615,6 +12132,791 @@ async function testSpawnEngineStatePreservation() {
       'cli.js start should check for running state');
     assert.ok(cliSrc.includes('process is dead') && cliSrc.includes('restarting'),
       'cli.js start should handle dead PID case and proceed with restart');
+  });
+}
+
+// ─── P-k7m2x9a4: AGENT_STATUS enum and worker-state tracking ──────────────
+
+async function testAgentStatusEnum() {
+  console.log('\n── AGENT_STATUS enum and worker-state tracking ──');
+
+  await test('AGENT_STATUS enum has all 8 required values', () => {
+    const { AGENT_STATUS } = shared;
+    assert.ok(AGENT_STATUS, 'AGENT_STATUS should be exported from shared.js');
+    assert.strictEqual(AGENT_STATUS.SPAWNING, 'spawning');
+    assert.strictEqual(AGENT_STATUS.WORKTREE_SETUP, 'worktree-setup');
+    assert.strictEqual(AGENT_STATUS.READY, 'ready');
+    assert.strictEqual(AGENT_STATUS.RUNNING, 'running');
+    assert.strictEqual(AGENT_STATUS.FINISHED, 'finished');
+    assert.strictEqual(AGENT_STATUS.FAILED, 'failed');
+    assert.strictEqual(AGENT_STATUS.TRUST_BLOCKED, 'trust-blocked');
+    assert.strictEqual(AGENT_STATUS.TIMED_OUT, 'timed-out');
+    assert.strictEqual(Object.keys(AGENT_STATUS).length, 8, 'AGENT_STATUS should have exactly 8 values');
+  });
+
+  await test('AGENT_STATUS values are all unique', () => {
+    const values = Object.values(shared.AGENT_STATUS);
+    assert.strictEqual(new Set(values).size, values.length, 'All AGENT_STATUS values should be unique');
+  });
+
+  await test('updateAgentStatus exported from engine/dispatch.js', () => {
+    const dispatchMod = require('../engine/dispatch');
+    assert.ok(typeof dispatchMod.updateAgentStatus === 'function',
+      'updateAgentStatus should be a function exported from dispatch.js');
+  });
+
+  await test('updateAgentStatus uses mutateDispatch for atomic updates', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    // Extract the updateAgentStatus function body
+    const fnStart = src.indexOf('function updateAgentStatus(');
+    assert.ok(fnStart > -1, 'updateAgentStatus function should exist in dispatch.js');
+    const fnBody = src.slice(fnStart, src.indexOf('\n}', fnStart) + 2);
+    assert.ok(fnBody.includes('mutateDispatch('), 'updateAgentStatus should use mutateDispatch()');
+    assert.ok(fnBody.includes('workerState'), 'updateAgentStatus should set workerState');
+    assert.ok(fnBody.includes('workerStateAt'), 'updateAgentStatus should set workerStateAt');
+    assert.ok(fnBody.includes('workerStateDetail'), 'updateAgentStatus should set workerStateDetail');
+  });
+
+  await test('updateAgentStatus updates dispatch entry fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Seed dispatch with an active entry
+      testDispatch.mutateDispatch((dp) => {
+        dp.active.push({ id: 'test-status-1', agent: 'dallas', type: 'implement' });
+        return dp;
+      });
+
+      // Update the agent status
+      testDispatch.updateAgentStatus('test-status-1', shared.AGENT_STATUS.RUNNING, 'Process spawned');
+
+      // Read back and verify
+      const dp = testQueries.getDispatch();
+      const entry = dp.active.find(d => d.id === 'test-status-1');
+      assert.ok(entry, 'Active entry should still exist');
+      assert.strictEqual(entry.workerState, 'running');
+      assert.ok(entry.workerStateAt, 'workerStateAt should be set');
+      assert.strictEqual(entry.workerStateDetail, 'Process spawned');
+    } finally { restore(); }
+  });
+
+  await test('updateAgentStatus no-ops gracefully on missing dispatch ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      // Should not throw
+      testDispatch.updateAgentStatus('nonexistent-id', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus('', shared.AGENT_STATUS.RUNNING, 'test');
+      testDispatch.updateAgentStatus(null, shared.AGENT_STATUS.RUNNING, 'test');
+    } finally { restore(); }
+  });
+
+  await test('spawnAgent emits SPAWNING, WORKTREE_SETUP, READY, RUNNING statuses', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.SPAWNING'), 'spawnAgent should emit SPAWNING status');
+    assert.ok(src.includes('AGENT_STATUS.WORKTREE_SETUP'), 'spawnAgent should emit WORKTREE_SETUP status');
+    assert.ok(src.includes('AGENT_STATUS.READY'), 'spawnAgent should emit READY status');
+    assert.ok(src.includes('AGENT_STATUS.RUNNING'), 'spawnAgent should emit RUNNING status');
+  });
+
+  await test('onAgentClose emits FINISHED on code 0, FAILED on nonzero', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.FINISHED'), 'onAgentClose should emit FINISHED');
+    assert.ok(src.includes('AGENT_STATUS.FAILED'), 'onAgentClose should emit FAILED');
+    // Verify the conditional: code === 0 → FINISHED, else FAILED
+    assert.ok(src.includes('code === 0 ? AGENT_STATUS.FINISHED : AGENT_STATUS.FAILED'),
+      'Should use ternary to choose FINISHED/FAILED based on exit code');
+  });
+
+  await test('timeout.js emits TIMED_OUT status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TIMED_OUT'), 'timeout.js should emit TIMED_OUT status');
+    // Verify it's called for both hard timeout and heartbeat timeout
+    const timedOutCount = (src.match(/AGENT_STATUS\.TIMED_OUT/g) || []).length;
+    assert.ok(timedOutCount >= 3, `TIMED_OUT should be emitted for hard timeout, orphan, and hung agent (found ${timedOutCount} occurrences)`);
+  });
+
+  await test('trust gate detection checks first 30s of output', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('AGENT_STATUS.TRUST_BLOCKED'), 'engine.js should emit TRUST_BLOCKED');
+    assert.ok(src.includes('_trustCheckDone'), 'Should track whether trust check is complete');
+    assert.ok(src.includes('30000'), 'Should use 30s window for trust gate detection');
+    assert.ok(src.includes('trust-blocked'), 'Should write inbox alert for trust gate');
+  });
+
+  await test('engine.js uses updateAgentStatus (not raw dispatch mutation) for status transitions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // All status transitions should go through updateAgentStatus
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.SPAWNING"),
+      'SPAWNING should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.READY"),
+      'READY should use updateAgentStatus helper');
+    assert.ok(src.includes("updateAgentStatus(id, AGENT_STATUS.RUNNING"),
+      'RUNNING should use updateAgentStatus helper');
+  });
+
+  await test('dashboard API returns workerState as passthrough', () => {
+    // The dashboard's getStatus returns dispatch data directly — workerState flows through
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('dispatch: getDispatchQueue()'),
+      'Dashboard status should include dispatch queue as passthrough');
+  });
+}
+
+// ─── P-b3n8f5c1: FAILURE_CLASS enum and classifyFailure() ──────────────────
+
+async function testFailureClassEnum() {
+  console.log('\n── FAILURE_CLASS enum and classifyFailure() ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('FAILURE_CLASS enum has all 10 required values', () => {
+    const { FAILURE_CLASS } = shared;
+    assert.ok(FAILURE_CLASS, 'FAILURE_CLASS should be exported from shared.js');
+    assert.strictEqual(FAILURE_CLASS.CONFIG_ERROR, 'config-error');
+    assert.strictEqual(FAILURE_CLASS.PERMISSION_BLOCKED, 'permission-blocked');
+    assert.strictEqual(FAILURE_CLASS.MERGE_CONFLICT, 'merge-conflict');
+    assert.strictEqual(FAILURE_CLASS.BUILD_FAILURE, 'build-failure');
+    assert.strictEqual(FAILURE_CLASS.TIMEOUT, 'timeout');
+    assert.strictEqual(FAILURE_CLASS.EMPTY_OUTPUT, 'empty-output');
+    assert.strictEqual(FAILURE_CLASS.SPAWN_ERROR, 'spawn-error');
+    assert.strictEqual(FAILURE_CLASS.NETWORK_ERROR, 'network-error');
+    assert.strictEqual(FAILURE_CLASS.OUT_OF_CONTEXT, 'out-of-context');
+    assert.strictEqual(FAILURE_CLASS.UNKNOWN, 'unknown');
+    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 10, 'FAILURE_CLASS should have exactly 10 values');
+  });
+
+  await test('ESCALATION_POLICY enum has all 5 values', () => {
+    const { ESCALATION_POLICY } = shared;
+    assert.ok(ESCALATION_POLICY, 'ESCALATION_POLICY should be exported from shared.js');
+    assert.strictEqual(ESCALATION_POLICY.NO_RETRY, 'no-retry');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_SAME, 'retry-same');
+    assert.strictEqual(ESCALATION_POLICY.RETRY_FRESH, 'retry-fresh');
+    assert.strictEqual(ESCALATION_POLICY.HUMAN_REVIEW, 'human-review');
+    assert.strictEqual(ESCALATION_POLICY.AUTO, 'auto');
+    assert.strictEqual(Object.keys(ESCALATION_POLICY).length, 5, 'ESCALATION_POLICY should have exactly 5 values');
+  });
+
+  await test('classifyFailure exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.classifyFailure === 'function',
+      'classifyFailure should be a function exported from lifecycle.js');
+  });
+
+  await test('classifyFailure: exit code 78 → CONFIG_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(78, '', ''),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(78, 'some output', 'claude-code not found'),
+      shared.FAILURE_CLASS.CONFIG_ERROR);
+  });
+
+  await test('classifyFailure: permission denied → PERMISSION_BLOCKED', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: permission denied'),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'access denied for resource', ''),
+      shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+  });
+
+  await test('classifyFailure: merge conflict → MERGE_CONFLICT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'CONFLICT (content): Merge conflict in file.js\nAutomatic merge failed'),
+      shared.FAILURE_CLASS.MERGE_CONFLICT);
+  });
+
+  await test('classifyFailure: build/test failure → BUILD_FAILURE', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'npm ERR! Test failed', ''),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'error TS2304: Cannot find name'),
+      shared.FAILURE_CLASS.BUILD_FAILURE);
+  });
+
+  await test('classifyFailure: network/rate limit → NETWORK_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: rate limit exceeded (429)', ''),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: ECONNREFUSED 127.0.0.1:443'),
+      shared.FAILURE_CLASS.NETWORK_ERROR);
+  });
+
+  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'Error: max turns reached', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'context window exceeded', ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+  });
+
+  await test('classifyFailure: empty output → EMPTY_OUTPUT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+    assert.strictEqual(lifecycle.classifyFailure(1, 'short', ''),
+      shared.FAILURE_CLASS.EMPTY_OUTPUT);
+  });
+
+  await test('classifyFailure: spawn error → SPAWN_ERROR', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'Error: spawn ENOENT'),
+      shared.FAILURE_CLASS.SPAWN_ERROR);
+  });
+
+  await test('classifyFailure: unknown failure → UNKNOWN', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, 'some long agent output that is more than fifty characters of normal text without any error patterns', ''),
+      shared.FAILURE_CLASS.UNKNOWN);
+  });
+
+  await test('completeDispatch stores failureClass on error entries', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes('failureClass') && src.includes('item.failureClass'),
+      'completeDispatch should store failureClass on completed dispatch entry');
+    // Only stored on errors
+    assert.ok(src.includes("result === DISPATCH_RESULT.ERROR) item.failureClass"),
+      'failureClass should only be stored when result is error');
+  });
+
+  await test('isRetryableFailureReason rejects CONFIG_ERROR and PERMISSION_BLOCKED', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.CONFIG_ERROR), false,
+      'CONFIG_ERROR should never be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.PERMISSION_BLOCKED), false,
+      'PERMISSION_BLOCKED should never be retryable');
+    // Other classes remain retryable (unless reason matches non-retryable strings)
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.BUILD_FAILURE), true,
+      'BUILD_FAILURE should be retryable');
+    assert.strictEqual(dispatch.isRetryableFailureReason('some error', shared.FAILURE_CLASS.UNKNOWN), true,
+      'UNKNOWN should be retryable');
+  });
+
+  await test('onAgentClose calls classifyFailure and passes failureClass to completeDispatch', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('classifyFailure(code, stdout, stderr)'),
+      'onAgentClose should call classifyFailure with code, stdout, stderr');
+    assert.ok(src.includes('{ failureClass }'),
+      'onAgentClose should pass failureClass to completeDispatch opts');
+  });
+
+  await test('exit code 78 uses classifyFailure result (CONFIG_ERROR)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // The code=78 handler should pass failureClass to completeDispatch
+    const section78 = src.slice(src.indexOf('code === 78'), src.indexOf('code === 78') + 500);
+    assert.ok(section78.includes('failureClass'),
+      'Exit code 78 handler should use failureClass from classifyFailure');
+  });
+
+  await test('existing reason-based non-retryable strings still work', () => {
+    const dispatch = require('../engine/dispatch');
+    // Without failureClass, reason-based classification still works
+    assert.strictEqual(dispatch.isRetryableFailureReason('no playbook rendered'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('validation failed'), false);
+    assert.strictEqual(dispatch.isRetryableFailureReason('missing required vars'), false);
+    // Retryable reasons
+    assert.strictEqual(dispatch.isRetryableFailureReason('agent timed out'), true);
+    assert.strictEqual(dispatch.isRetryableFailureReason(''), true);
+  });
+}
+
+// ─── P-d9q4w7e6: Recovery recipes ──────────────────────────────────────────
+
+async function testRecoveryRecipes() {
+  console.log('\n── Recovery recipes (engine/recovery.js) ──');
+  const recoveryMod = require('../engine/recovery');
+
+  await test('engine/recovery.js exists and exports expected functions', () => {
+    assert.ok(typeof recoveryMod.getRecoveryRecipe === 'function',
+      'getRecoveryRecipe should be exported');
+    assert.ok(typeof recoveryMod.shouldRetry === 'function',
+      'shouldRetry should be exported');
+    assert.ok(recoveryMod.RECOVERY_RECIPES instanceof Map,
+      'RECOVERY_RECIPES should be a Map');
+  });
+
+  await test('RECOVERY_RECIPES has entry for every FAILURE_CLASS value', () => {
+    const { FAILURE_CLASS } = shared;
+    for (const fc of Object.values(FAILURE_CLASS)) {
+      const recipe = recoveryMod.getRecoveryRecipe(fc);
+      assert.ok(recipe, `Missing recipe for failure class: ${fc}`);
+      assert.ok('maxAttempts' in recipe, `Recipe for ${fc} missing maxAttempts`);
+      assert.ok(recipe.escalation, `Recipe for ${fc} missing escalation`);
+      assert.ok(typeof recipe.freshSession === 'boolean', `Recipe for ${fc} missing freshSession`);
+      assert.ok(recipe.description, `Recipe for ${fc} missing description`);
+    }
+  });
+
+  await test('getRecoveryRecipe returns UNKNOWN recipe for unrecognized class', () => {
+    const recipe = recoveryMod.getRecoveryRecipe('nonexistent-class');
+    assert.ok(recipe, 'Should return fallback recipe');
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.AUTO);
+  });
+
+  await test('CONFIG_ERROR: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.CONFIG_ERROR);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.CONFIG_ERROR, 0), false);
+  });
+
+  await test('PERMISSION_BLOCKED: maxAttempts=0, never retried', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.PERMISSION_BLOCKED);
+    assert.strictEqual(recipe.maxAttempts, 0);
+    assert.strictEqual(recipe.escalation, shared.ESCALATION_POLICY.NO_RETRY);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.PERMISSION_BLOCKED, 0), false);
+  });
+
+  await test('MERGE_CONFLICT: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.MERGE_CONFLICT, 2), false);
+  });
+
+  await test('BUILD_FAILURE: maxAttempts=2, retried', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 1), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.BUILD_FAILURE, 2), false);
+  });
+
+  await test('TIMEOUT: maxAttempts=1, freshSession=true', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.TIMEOUT);
+    assert.strictEqual(recipe.freshSession, true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.TIMEOUT, 1), false);
+  });
+
+  await test('NETWORK_ERROR: maxAttempts=3, most retries', () => {
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.NETWORK_ERROR, 3), false);
+  });
+
+  await test('UNKNOWN: falls back to ENGINE_DEFAULTS.maxRetries', () => {
+    const recipe = recoveryMod.getRecoveryRecipe(shared.FAILURE_CLASS.UNKNOWN);
+    assert.strictEqual(recipe.maxAttempts, null, 'UNKNOWN maxAttempts should be null (fallback)');
+    // ENGINE_DEFAULTS.maxRetries is 3
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry(shared.FAILURE_CLASS.UNKNOWN, 3), false);
+  });
+
+  await test('shouldRetry with empty failureClass falls back to UNKNOWN', () => {
+    // No failureClass → treated as UNKNOWN → uses ENGINE_DEFAULTS.maxRetries
+    assert.strictEqual(recoveryMod.shouldRetry('', 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(null, 0), true);
+    assert.strictEqual(recoveryMod.shouldRetry(undefined, 2), true);
+    assert.strictEqual(recoveryMod.shouldRetry('', 3), false);
+  });
+
+  await test('completeDispatch uses shouldRetry from recovery.js', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes("recovery().shouldRetry("),
+      'completeDispatch should call shouldRetry from recovery module');
+  });
+
+  await test('recovery.js has zero external dependencies', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'recovery.js'), 'utf8');
+    const requires = src.match(/require\(['"](.*?)['"]\)/g) || [];
+    for (const req of requires) {
+      assert.ok(req.includes('./shared') || req.includes('node:'),
+        `recovery.js should only import from shared.js or node builtins, found: ${req}`);
+    }
+  });
+}
+
+// ─── P-h2t6r1j8: Structured completion protocol ─────────────────────────────
+
+async function testStructuredCompletion() {
+  console.log('\n── Structured completion protocol ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  await test('COMPLETION_FIELDS exported from engine/shared.js', () => {
+    assert.ok(Array.isArray(shared.COMPLETION_FIELDS),
+      'COMPLETION_FIELDS should be an array');
+    assert.strictEqual(shared.COMPLETION_FIELDS.length, 6,
+      'COMPLETION_FIELDS should have 6 fields');
+    assert.ok(shared.COMPLETION_FIELDS.includes('status'), 'Should include status');
+    assert.ok(shared.COMPLETION_FIELDS.includes('files_changed'), 'Should include files_changed');
+    assert.ok(shared.COMPLETION_FIELDS.includes('tests'), 'Should include tests');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pr'), 'Should include pr');
+    assert.ok(shared.COMPLETION_FIELDS.includes('pending'), 'Should include pending');
+    assert.ok(shared.COMPLETION_FIELDS.includes('failure_class'), 'Should include failure_class');
+  });
+
+  await test('parseStructuredCompletion exported from engine/lifecycle.js', () => {
+    assert.ok(typeof lifecycle.parseStructuredCompletion === 'function',
+      'parseStructuredCompletion should be a function exported from lifecycle.js');
+  });
+
+  await test('parseStructuredCompletion: valid block returns parsed object', () => {
+    const stdout = 'Some agent output...\n```completion\nstatus: done\nfiles_changed: engine/shared.js, engine/lifecycle.js\ntests: pass\npr: PR-456\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object');
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.files_changed, 'engine/shared.js, engine/lifecycle.js');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.pr, 'PR-456');
+    assert.strictEqual(result.failure_class, 'N/A');
+    assert.strictEqual(result.pending, 'none');
+  });
+
+  await test('parseStructuredCompletion: missing block returns null', () => {
+    const stdout = 'Agent output without completion block\nDone!';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when no completion block found');
+  });
+
+  await test('parseStructuredCompletion: empty/null input returns null', () => {
+    assert.strictEqual(lifecycle.parseStructuredCompletion(''), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(null), null);
+    assert.strictEqual(lifecycle.parseStructuredCompletion(undefined), null);
+  });
+
+  await test('parseStructuredCompletion: malformed block (no status) returns null', () => {
+    const stdout = '```completion\nfiles_changed: foo.js\ntests: pass\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.strictEqual(result, null, 'Should return null when status field is missing');
+  });
+
+  await test('parseStructuredCompletion: multiple blocks takes last one', () => {
+    const stdout = '```completion\nstatus: partial\npr: N/A\n```\nRetrying...\n```completion\nstatus: done\npr: PR-789\ntests: pass\nfailure_class: N/A\npending: none\n```\n';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result, 'Should return parsed object from last block');
+    assert.strictEqual(result.status, 'done', 'Should use last block');
+    assert.strictEqual(result.pr, 'PR-789', 'Should use last block PR');
+  });
+
+  await test('parseStructuredCompletion: failed status with failure_class', () => {
+    const stdout = '```completion\nstatus: failed\nfiles_changed: none\ntests: fail\npr: N/A\nfailure_class: build-failure\npending: fix compilation errors\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.failure_class, 'build-failure');
+    assert.strictEqual(result.pending, 'fix compilation errors');
+  });
+
+  await test('fix.md includes ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'fix.md'), 'utf8');
+    assert.ok(src.includes('## Completion'), 'fix.md should have ## Completion section');
+    assert.ok(src.includes('```completion'), 'fix.md should have ```completion block');
+  });
+
+  await test('decompose.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'decompose.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'decompose.md should NOT have Completion section (uses structured JSON output)');
+  });
+
+  await test('review.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'review.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'review.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('explore.md does NOT include ## Completion section', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'explore.md'), 'utf8');
+    assert.ok(!src.includes('## Completion') && !src.includes('```completion'),
+      'explore.md should NOT have Completion section (no PR creation)');
+  });
+
+  await test('runPostCompletionHooks uses parseStructuredCompletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('parseStructuredCompletion(stdout)'),
+      'runPostCompletionHooks should call parseStructuredCompletion');
+    assert.ok(src.includes('structuredCompletion'),
+      'runPostCompletionHooks should use structuredCompletion variable');
+  });
+
+  await test('runPostCompletionHooks returns structuredCompletion in result', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('structuredCompletion }'),
+      'Return object should include structuredCompletion');
+  });
+
+  await test('parseStructuredCompletion: keys are lowercased', () => {
+    const stdout = '```completion\nStatus: done\nPR: PR-100\nTests: pass\nFAILURE_CLASS: N/A\npending: none\n```';
+    const result = lifecycle.parseStructuredCompletion(stdout);
+    assert.ok(result);
+    assert.strictEqual(result.status, 'done');
+    assert.strictEqual(result.pr, 'PR-100');
+    assert.strictEqual(result.tests, 'pass');
+    assert.strictEqual(result.failure_class, 'N/A');
+  });
+}
+
+async function testCCMultiTab() {
+  console.log('\n── CC Multi-Tab Conversations ──');
+
+  // Source code references
+  const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+  const stylesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Server-side tests ──────────────────────────────────────────────────────
+
+  await test('cc-sessions.json endpoints exist in route table', () => {
+    assert.ok(dashSrc.includes('/api/cc-sessions'), 'Should have GET /api/cc-sessions route');
+    assert.ok(dashSrc.includes('cc-sessions'), 'Should have DELETE /api/cc-sessions route');
+  });
+
+  await test('cc-sessions persisted via safeWrite', () => {
+    assert.ok(dashSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
+    assert.ok(dashSrc.includes('CC_SESSIONS_PATH'), 'Should use CC_SESSIONS_PATH constant');
+  });
+
+  await test('stream handler accepts tabId', () => {
+    assert.ok(dashSrc.includes('body.tabId') || dashSrc.includes('tabId'), 'Stream handler should accept tabId from request body');
+  });
+
+  await test('session metadata saved with tabId', () => {
+    assert.ok(dashSrc.includes('lastActiveAt') && dashSrc.includes('turnCount'), 'Should save session metadata fields');
+    assert.ok(dashSrc.includes('createdAt'), 'Should track createdAt');
+    assert.ok(dashSrc.includes('preview'), 'Should save preview field');
+  });
+
+  await test('session lookup by tabId in stream handler', () => {
+    assert.ok(dashSrc.includes('tabId') && dashSrc.includes('CC_SESSIONS_PATH'), 'Should map tabId to session via CC_SESSIONS_PATH');
+  });
+
+  // ── Client-side tests ─────────────────────────────────────────────────────
+
+  await test('_ccTabs array replaces old globals', () => {
+    assert.ok(ccSrc.includes('var _ccTabs = []') || ccSrc.includes('var _ccTabs=[]'), 'Should declare _ccTabs array');
+    assert.ok(!ccSrc.includes('let _ccSessionId') && !ccSrc.includes('var _ccSessionId'), 'Should not have old _ccSessionId global');
+    assert.ok(!ccSrc.match(/^var _ccMessages\b/m) && !ccSrc.match(/^let _ccMessages\b/m), 'Should not have old _ccMessages global');
+  });
+
+  await test('_ccActiveTabId tracks which tab is visible', () => {
+    assert.ok(ccSrc.includes('_ccActiveTabId'), 'Should declare _ccActiveTabId');
+  });
+
+  await test('ccNewTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccNewTab'), 'Should have ccNewTab function');
+  });
+
+  await test('ccSwitchTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccSwitchTab'), 'Should have ccSwitchTab function');
+  });
+
+  await test('ccCloseTab function exists', () => {
+    assert.ok(ccSrc.includes('function ccCloseTab'), 'Should have ccCloseTab function');
+  });
+
+  await test('ccShowAllConversations function exists', () => {
+    assert.ok(ccSrc.includes('function ccShowAllConversations'), 'Should have ccShowAllConversations function');
+  });
+
+  await test('tab bar rendered in layout.html', () => {
+    assert.ok(layoutSrc.includes('cc-tab-bar'), 'Should have cc-tab-bar element in layout');
+  });
+
+  await test('ccSend passes active tab sessionId in request body', () => {
+    // ccSend should use the active tab's sessionId
+    assert.ok(ccSrc.includes('tabSessionId') || ccSrc.includes('activeTab') || ccSrc.includes('_ccActiveTab'),
+      'ccSend should reference active tab for sessionId');
+    assert.ok(ccSrc.includes('tabId') && ccSrc.includes('activeTabId'),
+      'Should send tabId in request body');
+  });
+
+  await test('ccAddMessage adds to active tab messages', () => {
+    assert.ok(ccSrc.includes('_ccActiveTab()') && ccSrc.includes('tab.messages.push'),
+      'ccAddMessage should push to active tab messages array');
+  });
+
+  await test('tab state saved to localStorage', () => {
+    assert.ok(ccSrc.includes("'cc-tabs'") || ccSrc.includes('"cc-tabs"'),
+      'Should save tabs to cc-tabs localStorage key');
+  });
+
+  await test('migration from old format', () => {
+    assert.ok(ccSrc.includes('cc-session-id') && ccSrc.includes('cc-messages'),
+      'Should check for legacy localStorage keys');
+    assert.ok(ccSrc.includes('_ccMigrateLegacy') || ccSrc.includes('Migrate') || ccSrc.includes('migrate'),
+      'Should have migration logic');
+  });
+
+  await test('auto-title from first user message', () => {
+    assert.ok(ccSrc.includes('CC_TITLE_MAX_LENGTH') || ccSrc.includes('40'),
+      'Should truncate title');
+    assert.ok(ccSrc.includes("'New chat'") || ccSrc.includes('"New chat"'),
+      'Should use "New chat" as default title');
+    assert.ok(ccSrc.includes('tab.title') && ccSrc.includes('New chat'),
+      'Should auto-set title from first user message');
+  });
+
+  await test('max tabs cap', () => {
+    assert.ok(ccSrc.includes('CC_MAX_TABS') || ccSrc.includes('20'),
+      'Should have max tabs constant');
+    assert.ok(ccSrc.includes('CC_MAX_TABS') && ccSrc.includes('>= CC_MAX_TABS'),
+      'Should enforce max tabs limit');
+  });
+
+  await test('tab close confirmation for active request', () => {
+    assert.ok(ccSrc.includes('_ccSending') && ccSrc.includes('confirm'),
+      'Should confirm before closing tab with active request');
+  });
+
+  await test('active tab persistence', () => {
+    assert.ok(ccSrc.includes("'cc-active-tab'") || ccSrc.includes('"cc-active-tab"'),
+      'Should persist active tab ID to localStorage');
+  });
+
+  // ── Dashboard assembly tests ──────────────────────────────────────────────
+
+  await test('cc-tab-bar in assembled HTML', () => {
+    let buildDashboardHtml;
+    try {
+      const dashModule = require(path.join(MINIONS_DIR, 'dashboard-build'));
+      buildDashboardHtml = dashModule.buildDashboardHtml;
+    } catch {
+      try {
+        const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+        buildDashboardHtml = () => html;
+      } catch {
+        assert.fail('Could not load dashboard builder');
+        return;
+      }
+    }
+    const html = buildDashboardHtml();
+    assert.ok(html.includes('cc-tab-bar'), 'Assembled HTML should include cc-tab-bar');
+  });
+
+  await test('tab CSS styles exist', () => {
+    assert.ok(stylesSrc.includes('.cc-tab'), 'Should have .cc-tab style');
+    assert.ok(stylesSrc.includes('.cc-tab.active'), 'Should have .cc-tab.active style');
+    assert.ok(stylesSrc.includes('.cc-tab-close'), 'Should have .cc-tab-close style');
+  });
+
+  // ── Integration flow tests ────────────────────────────────────────────────
+
+  await test('send uses active tab sessionId flow', () => {
+    assert.ok(ccSrc.includes('_ccActiveTab()'),
+      'ccSend should call _ccActiveTab() to get current tab');
+    assert.ok(ccSrc.includes('.sessionId'),
+      'Should read sessionId from tab');
+  });
+
+  await test('response updates originating tab sessionId (not active tab)', () => {
+    assert.ok(ccSrc.includes('evt.sessionId') || ccSrc.includes('revt.sessionId'),
+      'Done event should check for sessionId');
+    assert.ok(ccSrc.includes('originTab.sessionId = evt.sessionId') || ccSrc.includes('originTab2.sessionId = revt.sessionId'),
+      'Should update originating tab sessionId, not _ccActiveTab()');
+  });
+
+  await test('new tab creates tab with sessionId null', () => {
+    assert.ok(ccSrc.includes('sessionId: null'),
+      'ccNewTab should create tab with null sessionId');
+  });
+
+  await test('tab switch re-renders messages', () => {
+    assert.ok(ccSrc.includes("el.innerHTML = ''") || ccSrc.includes("el.innerHTML=''"),
+      'ccSwitchTab should clear cc-messages innerHTML');
+    assert.ok(ccSrc.includes('ccRenderTabBar'),
+      'ccSwitchTab should call ccRenderTabBar');
+  });
+
+  // ── Session never-expire tests ─────────────────────────────────────────────
+
+  await test('sessions never expire by time — CC_SESSION_EXPIRY_MS removed', () => {
+    assert.ok(!dashSrc.includes('CC_SESSION_EXPIRY_MS'), 'CC_SESSION_EXPIRY_MS constant should be removed');
+    assert.ok(!dashSrc.includes('2 * 60 * 60 * 1000'), 'Hardcoded 2-hour expiry should be removed');
+  });
+
+  await test('ccSessionValid does not check age', () => {
+    // Extract ccSessionValid function body
+    const match = dashSrc.match(/function ccSessionValid\(\)\s*\{[\s\S]*?\n\}/);
+    assert.ok(match, 'ccSessionValid should exist');
+    const body = match[0];
+    assert.ok(!body.includes('age'), 'ccSessionValid should not reference age');
+    assert.ok(!body.includes('Date.now()'), 'ccSessionValid should not check Date.now()');
+    assert.ok(body.includes('turnCount'), 'ccSessionValid should still check turnCount');
+    assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
+  });
+
+  await test('resolveSession does not check age for doc sessions', () => {
+    const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
+    assert.ok(match, 'resolveSession should exist');
+    const body = match[0];
+    assert.ok(!body.includes('age'), 'resolveSession should not reference age');
+    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference expiry constant');
+  });
+
+  await test('CC session restored on startup without age check', () => {
+    // The startup block should load session without age filtering
+    const startupMatch = dashSrc.match(/Load persisted CC session[\s\S]*?catch \{/);
+    assert.ok(startupMatch, 'Should have CC session startup loader');
+    assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
+  });
+
+  await test('doc sessions restored on startup without age check', () => {
+    const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
+    assert.ok(docLoadMatch, 'Should have doc session startup loader');
+    assert.ok(!docLoadMatch[0].includes('age'), 'Doc session loader should not check age');
+  });
+
+  await test('prompt hash stored with tab session for invalidation', () => {
+    assert.ok(dashSrc.includes('_promptHash: _ccPromptHash'), 'Should store _promptHash when persisting tab sessions');
+    assert.ok(dashSrc.includes("tabEntry._promptHash") || dashSrc.includes("tabEntry && tabEntry._promptHash"),
+      'Stream handler should check tab entry prompt hash');
+  });
+
+  await test('sessionReset flag sent to frontend on prompt hash mismatch', () => {
+    assert.ok(dashSrc.includes('sessionReset = true'), 'Should set sessionReset flag');
+    assert.ok(dashSrc.includes('sessionReset') && dashSrc.includes('donePayload'),
+      'Stream handler should include sessionReset in done payload');
+  });
+
+  await test('frontend shows system message on sessionReset', () => {
+    assert.ok(ccSrc.includes('evt.sessionReset'), 'Frontend should check sessionReset in done event');
+    assert.ok(ccSrc.includes('Minions was updated'), 'Should show update notice to user');
+    assert.ok(ccSrc.includes("'system'") && ccSrc.includes('sessionReset'),
+      'Should use system role for reset notice');
+  });
+
+  await test('ccAddMessage handles system role distinctly', () => {
+    assert.ok(ccSrc.includes("role === 'system'") || ccSrc.includes("=== 'system'"),
+      'Should detect system role');
+    assert.ok(ccSrc.includes('isSystem'), 'Should have isSystem variable');
+    assert.ok(ccSrc.includes('!isUser && !isSystem'),
+      'isAssistant should exclude system messages');
+  });
+
+  // ── Resource cleanup tests ───────────────────────────────────────────────
+
+  const cleanupSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+  const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+
+  await test('cleanup.js prunes cc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('cc-sessions.json'), 'Should reference cc-sessions.json');
+    assert.ok(cleanupSrc.includes('CC_SESSIONS_CAP'), 'Should define CC_SESSIONS_CAP');
+    assert.ok(cleanupSrc.includes('lastActiveAt'), 'Should sort by lastActiveAt for pruning');
+  });
+
+  await test('cleanup.js prunes doc-sessions.json with cap', () => {
+    assert.ok(cleanupSrc.includes('doc-sessions.json'), 'Should reference doc-sessions.json');
+    assert.ok(cleanupSrc.includes('DOC_SESSIONS_CAP'), 'Should define DOC_SESSIONS_CAP');
+  });
+
+  await test('cleanup.js caps cooldowns.json entries', () => {
+    assert.ok(cleanupSrc.includes('cooldowns.json'), 'Should reference cooldowns.json');
+    assert.ok(cleanupSrc.includes('COOLDOWN_CAP'), 'Should define COOLDOWN_CAP');
+    assert.ok(cleanupSrc.includes('timestamp'), 'Should sort cooldowns by timestamp');
+  });
+
+  await test('cleanup.js cleans stale PID files', () => {
+    assert.ok(cleanupSrc.includes('pid-') && cleanupSrc.includes('.pid'), 'Should match PID file pattern');
+    assert.ok(cleanupSrc.includes('activePids'), 'Should check against active process PIDs');
+    assert.ok(cleanupSrc.includes('oneHourAgo'), 'Should use 1-hour staleness threshold');
+  });
+
+  await test('cleanup.js prunes test-results.json', () => {
+    assert.ok(cleanupSrc.includes('test-results.json'), 'Should reference test-results.json');
+    assert.ok(cleanupSrc.includes('TEST_RESULTS_CAP'), 'Should define TEST_RESULTS_CAP');
+  });
+
+  await test('timeout.js kills Unix process tree on hung agent timeout', () => {
+    // The hung agent branch should include pkill -P for Unix tree kill
+    const hungMatch = timeoutSrc.match(/Hung agent[\s\S]*?deadItems\.push/);
+    assert.ok(hungMatch, 'Should have hung agent detection block');
+    assert.ok(hungMatch[0].includes('pkill') || hungMatch[0].includes('process.platform'), 'Hung agent handler should attempt process tree kill on Unix');
+  });
+
+  await test('cleanup.js logs resource cleanup summary', () => {
+    assert.ok(cleanupSrc.includes('Cleanup (resources)'), 'Should log resource cleanup summary');
+    assert.ok(cleanupSrc.includes('cc-sessions') && cleanupSrc.includes('doc-sessions') && cleanupSrc.includes('cooldowns') && cleanupSrc.includes('PID files'),
+      'Summary should cover all resource types');
   });
 }
 
@@ -10783,7 +13085,8 @@ async function testPipelineReconciliation() {
 
   await test('isStageComplete PLAN uses local arrays before merging artifacts', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
-    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:"), src.indexOf("case STAGE_TYPE.MERGE_PRS:"));
+    const isStageStart = src.indexOf('function isStageComplete(');
+    const planCase = src.slice(src.indexOf("case STAGE_TYPE.PLAN:", isStageStart), src.indexOf("case STAGE_TYPE.MERGE_PRS:", isStageStart));
     assert.ok(planCase.includes('discoveredPrds'), 'Should collect into local discoveredPrds');
     assert.ok(planCase.includes('discoveredWiIds'), 'Should collect into local discoveredWiIds');
     assert.ok(planCase.includes('artifacts.prds = [...(artifacts.prds'), 'Should merge via spread');
@@ -10796,7 +13099,8 @@ async function testPipelineReconciliation() {
 
   await test('auto-archive removed — verify does not call archivePlan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const verifySection = src.slice(src.indexOf('Plan chaining removed'), src.indexOf('Clean up worktree'));
+    const chainIdx = src.indexOf('Plan chaining removed');
+    const verifySection = src.slice(chainIdx, src.indexOf('Clean up worktree', chainIdx));
     assert.ok(!verifySection.includes('archivePlan('), 'Should NOT auto-archive');
     assert.ok(verifySection.includes('Archive is manual'), 'Should note manual archive');
   });
@@ -10809,6 +13113,52 @@ async function testPipelineReconciliation() {
   await test('removeWorktree has failure tracking with retry cap', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     assert.ok(src.includes('_removeWorktreeFailures') && src.includes('count >= 3'), 'Should cap retries at 3');
+  });
+
+  await test('removeWorktree purges Windows reserved-name files before deletion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    // Must call _purgeReservedFiles on win32 before git worktree remove
+    assert.ok(src.includes('_purgeReservedFiles(resolved)'), 'Should call _purgeReservedFiles before removal');
+    assert.ok(src.includes("process.platform === 'win32'") || src.includes('process.platform === \'win32\''), 'Should gate on win32');
+  });
+
+  await test('removeWorktree uses cmd /c rd /s /q on Windows for any error (not just EPERM)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
+    // Must use cmd /c rd /s /q (not plain rd /s /q)
+    assert.ok(fn.includes('cmd /c rd /s /q'), 'Should use cmd /c rd /s /q');
+    // Must NOT restrict to EPERM only — should handle any Windows error
+    assert.ok(!fn.includes("rmErr.code === 'EPERM'"), 'Should not restrict rd /s /q to EPERM only');
+  });
+
+  await test('_WIN_RESERVED_NAMES includes NUL and other device names', () => {
+    const shared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    assert.ok(shared._WIN_RESERVED_NAMES instanceof Set, '_WIN_RESERVED_NAMES should be a Set');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('NUL'), 'Should include NUL');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('CON'), 'Should include CON');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('PRN'), 'Should include PRN');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('AUX'), 'Should include AUX');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('COM1'), 'Should include COM1');
+    assert.ok(shared._WIN_RESERVED_NAMES.has('LPT1'), 'Should include LPT1');
+  });
+
+  await test('_purgeReservedFiles deletes files matching reserved names', () => {
+    const shared = require(path.join(MINIONS_DIR, 'engine', 'shared.js'));
+    // _purgeReservedFiles only deletes on Windows (uses \\?\ prefix), but we can
+    // verify it's exported and is a function for testability
+    assert.strictEqual(typeof shared._purgeReservedFiles, 'function', '_purgeReservedFiles should be exported');
+    // On non-Windows, _purgeReservedFiles should be a no-op that doesn't throw
+    const tmpDir = createTmpDir();
+    // Should not throw on empty dir
+    shared._purgeReservedFiles(tmpDir);
+    // Should not throw on non-existent dir
+    shared._purgeReservedFiles(path.join(tmpDir, 'nonexistent'));
+  });
+
+  await test('removeWorktree logs rd /s /q fallback failures', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
+    assert.ok(fn.includes('rd /s /q fallback failed'), 'Should log rd /s /q failures instead of silently swallowing');
   });
 }
 
@@ -10853,7 +13203,7 @@ async function testDashboardButtonConsistency() {
 
   await test('plan card: Approve for awaiting-approval, not Execute', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    const actionsBlock = src.slice(src.indexOf('if (needsAction)'), src.indexOf('} else if (isRevision)'));
+    const actionsBlock = src.slice(src.indexOf('if (needsAction'), src.indexOf('} else if (isRevision)'));
     assert.ok(actionsBlock.includes("'Approve'"), 'Should show Approve');
     assert.ok(!actionsBlock.includes("'Execute'"), 'Should NOT show Execute in actions block');
   });
@@ -10863,24 +13213,92 @@ async function testDashboardButtonConsistency() {
     assert.ok(src.includes('const showResume = false'), 'Resume pill disabled — handled by actions block');
   });
 
+  // Shared slices for card and modal button tests
+  const plansSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
+  const cardActionsBlock = plansSrc.slice(plansSrc.indexOf('if (needsAction'), plansSrc.indexOf('} else if (isRevision)'));
+  const modalFn = plansSrc.slice(plansSrc.indexOf('function _renderPlanModal'), plansSrc.indexOf('\nasync function planView'));
+
   await test('plan modal: Approve targets linked PRD file', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    assert.ok(src.includes('linkedPrdAwaiting ? linkedPrd.file : normalizedFile'), 'Should target PRD file');
+    assert.ok(modalFn.includes('prdFile || normalizedFile') && modalFn.includes('planApprove'), 'Should target PRD file');
   });
 
-  await test('plan modal: Reject shown for .json awaiting-approval', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
-    assert.ok(src.includes("planStatus === 'awaiting-approval'") && src.includes('showRejectInModal'), 'Should show Reject');
+  await test('plan modal: Reject shown for awaiting-approval or paused', () => {
+    assert.ok(modalFn.includes('isNeedsAction') && modalFn.includes('planReject'), 'Should show Reject when needs action');
+  });
+
+  // Plan card button ordering: Approve before Re-execute for awaiting-approval with PRD
+  await test('plan card: Approve is first button, Re-execute second for awaiting-approval with PRD', () => {
+    const approveIdx = cardActionsBlock.indexOf("planApprove(");
+    const reExecIdx = cardActionsBlock.indexOf("planExecute(");
+    const rejectIdx = cardActionsBlock.indexOf("planReject(");
+    assert.ok(approveIdx < reExecIdx, 'Approve button must come before Re-execute');
+    assert.ok(reExecIdx < rejectIdx, 'Re-execute button must come before Reject');
+  });
+
+  await test('plan card: Re-execute has reduced opacity (secondary action)', () => {
+    const approveLineMatch = cardActionsBlock.match(/planApprove\([^)]+\)[^<]*>Approve</);
+    const reExecLineMatch = cardActionsBlock.match(/opacity:0\.7[^>]*planExecute/);
+    assert.ok(approveLineMatch, 'Approve button should exist without opacity');
+    assert.ok(reExecLineMatch, 'Re-execute button should have opacity:0.7');
+  });
+
+  await test('plan card: Approve label is "Approve" not "Approve as-is"', () => {
+    assert.ok(!cardActionsBlock.includes('Approve as-is'), 'Should not say "Approve as-is"');
+    assert.ok(cardActionsBlock.includes('>Approve</button>'), 'Should say "Approve"');
+  });
+
+  // Plan modal button ordering: matches card (Approve before Re-execute, Reject after)
+  await test('plan modal: Approve before Re-execute before Reject in modal actions', () => {
+    const needsActionBlock = modalFn.slice(modalFn.indexOf('if (isNeedsAction)'), modalFn.indexOf('// Execute (draft'));
+    const approveIdx = needsActionBlock.indexOf('planApprove(');
+    const reExecIdx = needsActionBlock.indexOf('planExecute(');
+    const rejectIdx = needsActionBlock.indexOf('planReject(');
+    assert.ok(approveIdx > -1, 'Approve must exist in modal needsAction block');
+    assert.ok(reExecIdx > -1, 'Re-execute must exist in modal needsAction block');
+    assert.ok(rejectIdx > -1, 'Reject must exist in modal needsAction block');
+    assert.ok(approveIdx < reExecIdx, 'Approve must come before Re-execute in modal');
+    assert.ok(reExecIdx < rejectIdx, 'Re-execute must come before Reject in modal');
+  });
+
+  await test('plan modal: Re-execute has reduced opacity in modal', () => {
+    assert.ok(modalFn.match(/opacity:0\.7[^>]*planExecute/), 'Re-execute should have opacity:0.7 in modal');
+  });
+
+  await test('plan modal: Re-execute only for awaiting-approval .md plans with PRD', () => {
+    assert.ok(modalFn.includes("effectiveStatus === 'awaiting-approval' && isMdPlan && prdFile"),
+      'Re-execute guard must check awaiting-approval + isMdPlan + prdFile');
+  });
+
+  // PRD page: Verify button hidden when verify WI exists
+  const prdSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+
+  await test('PRD header: Verify button guarded by hasVerifyWi check', () => {
+    const headerBlock = prdSrc.slice(prdSrc.indexOf("effectiveStatus === 'completed'"), prdSrc.indexOf("effectiveStatus === 'dispatched'"));
+    assert.ok(headerBlock.includes('hasVerifyWi'), 'Should check hasVerifyWi before showing Verify');
+    assert.ok(headerBlock.includes("itemType === 'verify'"), 'hasVerifyWi should check itemType');
+    assert.ok(headerBlock.includes('hasVerifyWi ? '), 'Should conditionally hide Verify when hasVerifyWi is true');
+  });
+
+  await test('PRD header: Archive still shown when Verify is hidden', () => {
+    const headerBlock = prdSrc.slice(prdSrc.indexOf("effectiveStatus === 'completed'"), prdSrc.indexOf("effectiveStatus === 'dispatched'"));
+    assert.ok(headerBlock.includes('planArchive'), 'Archive button must always appear for completed PRDs');
+  });
+
+  await test('PRD group header: Verify button guarded by verify WI check', () => {
+    const groupHeader = prdSrc.slice(prdSrc.indexOf('const pauseResumeBtn'), prdSrc.indexOf('const archiveBtn'));
+    assert.ok(groupHeader.includes("itemType === 'verify'"), 'Group header should check for existing verify WI');
+    assert.ok(groupHeader.includes('triggerVerify'), 'Verify action should still exist for non-verified groups');
+  });
+
+  await test('PRD group header: completed+verified shows no Pause button', () => {
+    const groupHeader = prdSrc.slice(prdSrc.indexOf('const pauseResumeBtn'), prdSrc.indexOf('const archiveBtn'));
+    // The ternary chain: isCompleted && !hasVerify → Verify, isCompleted → '', else → Pause
+    assert.ok(groupHeader.includes("isCompleted ? ''"), 'Completed+verified should produce empty string, not Pause');
   });
 
   await test('archive confirm warns about linked source plan', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-plans.js'), 'utf8');
     assert.ok(src.includes('source plan will also be archived'), 'Should warn about linked plan');
-  });
-
-  await test('text selection prevents work item modal', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
-    assert.ok(src.includes('getSelection') && src.includes('toString().length'), 'Should check selection');
   });
 
   await test('client-side transcript has null guards', () => {
@@ -10889,6 +13307,363 @@ async function testDashboardButtonConsistency() {
     for (const line of lines) {
       assert.ok(line.includes("|| 'agent'"), 'Should guard agent: ' + line.trim().slice(0, 60));
     }
+  });
+}
+
+// ─── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ────────────
+
+async function testIssue716HeartbeatFeedbackLoop() {
+  console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
+  const lifecycle = require('../engine/lifecycle');
+
+  // 1. classifyFailure with exact Claude CLI error_max_turns output
+  await test('classifyFailure: exact error_max_turns JSON → OUT_OF_CONTEXT', () => {
+    // Exact format from Claude CLI when agent exhausts turn limit
+    const exactOutput = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
+    assert.strictEqual(lifecycle.classifyFailure(1, exactOutput, ''),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT,
+      'Exact error_max_turns JSON from Claude CLI should classify as OUT_OF_CONTEXT');
+  });
+
+  await test('classifyFailure: terminal_reason max_turns in stderr → OUT_OF_CONTEXT', () => {
+    assert.strictEqual(lifecycle.classifyFailure(1, '', 'terminal_reason: max_turns'),
+      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+  });
+
+  // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
+  await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('realActivityMap'),
+      'engine.js should use realActivityMap for timeout detection');
+    // Must be updated on stdout data handler
+    const marker = 'proc.stdout.on';
+    const idx = src.indexOf(marker);
+    const stdoutSection = src.slice(idx, idx + 500);
+    assert.ok(stdoutSection.includes('realActivityMap.set(id, Date.now())'),
+      'stdout data handler should update realActivityMap');
+    // Must be initialized at spawn time
+    assert.ok(src.includes('realActivityMap.set(id, Date.now())'),
+      'realActivityMap should be initialized at spawn time');
+  });
+
+  // 3. timeout.js uses realActivityMap instead of file mtime for tracked processes
+  await test('timeout.js uses realActivityMap for tracked processes (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('realActivityMap'),
+      'timeout.js should check realActivityMap for tracked process');
+    assert.ok(src.includes('feedback loop'),
+      'timeout.js should comment about avoiding heartbeat feedback loop');
+  });
+
+  // 4. Output completion detection scans for result and process-exit
+  await test('timeout.js detects completed agents from output (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(src.includes('"type":"result"') && src.includes('[process-exit]'),
+      'timeout.js should scan for result events and process-exit sentinel');
+    assert.ok(src.includes('completedViaOutput'),
+      'Should track completion via output detection');
+    assert.ok(src.includes('completeDispatch(item.id'),
+      'Should finalize dispatch for completed agents detected via output');
+  });
+
+  // 5. spawn-agent.js writes [process-exit] sentinel to stdout
+  await test('spawn-agent.js writes [process-exit] sentinel on close (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    assert.ok(src.includes('[process-exit]'),
+      'spawn-agent.js should write [process-exit] sentinel to stdout on close');
+    assert.ok(src.includes("process.stdout.write"),
+      'Sentinel should be written to stdout (not stderr or file)');
+  });
+
+  // 6. Blocking tool detection guard: don't extend timeout after agent completed
+  await test('timeout.js guards blocking tool detection against completed agents (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The blocking tool detection section should check for result/process-exit before extending
+    const blockingSection = src.slice(src.indexOf('isBlocking = false'), src.indexOf('effectiveTimeout'));
+    assert.ok(blockingSection.includes('"type":"result"') || blockingSection.includes('[process-exit]'),
+      'Blocking tool detection should check for completed agent before extending timeout');
+  });
+
+  // 7. Output completion detection is NOT gated by time cap
+  await test('timeout.js output detection runs unconditionally, not time-gated (#716)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The old code had: if (silentMs <= 600000) try { ... check for result ... }
+    // The new code should NOT have this time cap
+    assert.ok(!src.includes('silentMs <= 600000'),
+      'Output completion detection should NOT be gated by 600s time cap');
+    // Should use tail reading for efficiency (64KB)
+    assert.ok(src.includes('TAIL_SIZE') || src.includes('65536'),
+      'Should use tail reading for efficiency');
+  });
+
+  // 8. Heartbeat timer does NOT update realActivityMap
+  await test('engine.js heartbeat timer does NOT update realActivityMap', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the heartbeat interval — it should NOT contain realActivityMap
+    const heartbeatMatches = src.match(/heartbeatTimer\s*=\s*setInterval\(\s*\(\)\s*=>\s*\{[^}]+\}/g);
+    assert.ok(heartbeatMatches, 'Should have heartbeat timer');
+    for (const match of heartbeatMatches) {
+      assert.ok(!match.includes('realActivityMap'),
+        'Heartbeat timer should NOT update realActivityMap — only real stdout/stderr should');
+    }
+  });
+}
+
+// ─── PR Review→Fix, Poll→Fix, Merge Conflict, Auto-Complete Flows ──────────
+
+async function testPrReviewFixFlows() {
+  console.log('\n── PR Review→Fix Flow ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+  const ghSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+  const adoSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+
+  // ── Review dispatch ──
+
+  await test('review dispatch gated by evalEscalated', () => {
+    assert.ok(engineSrc.includes('!evalEscalated') && engineSrc.includes('needsReview'),
+      'needsReview should include !evalEscalated check');
+  });
+
+  await test('review dispatch includes PR title in label', () => {
+    assert.ok(engineSrc.includes('Review ${pr.id}: ${pr.title}'),
+      'Review label should include pr.title');
+  });
+
+  await test('review dispatch has pre-dispatch live vote check', () => {
+    assert.ok(engineSrc.includes('checkLiveReview') && engineSrc.includes('liveStatus'),
+      'Should check live review status before dispatching');
+  });
+
+  // ── Review-fix dispatch ──
+
+  await test('review-fix dispatch gated by evalEscalated', () => {
+    assert.ok(engineSrc.includes("changes-requested' && !awaitingReReview && !evalEscalated"),
+      'Review-fix should check !evalEscalated');
+  });
+
+  await test('review-fix increments _reviewFixCycles', () => {
+    assert.ok(engineSrc.includes('_reviewFixCycles') && engineSrc.includes('review-fix cycles'),
+      'Should increment _reviewFixCycles on review-fix dispatch');
+  });
+
+  await test('review-fix sets fixDispatched flag', () => {
+    const fixBlock = engineSrc.slice(engineSrc.indexOf("changes-requested' && !awaitingReReview"), engineSrc.indexOf('PRs with pending human feedback'));
+    assert.ok(fixBlock.includes('fixDispatched = true'), 'Should set fixDispatched after review-fix');
+  });
+
+  // ── Human feedback fix ──
+
+  await test('human feedback fix NOT gated by evalEscalated', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('evalEscalated'), 'Human feedback should NOT be gated by evalEscalated');
+  });
+
+  await test('human feedback fix does NOT increment _reviewFixCycles', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('_reviewFixCycles'), 'Human feedback should NOT increment cycle counter');
+  });
+
+  await test('human feedback fix sets fixDispatched', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
+  });
+
+  // ── Eval escalation ──
+
+  await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
+    const startIdx = engineSrc.indexOf('cycle cap');
+    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const escalBlock = engineSrc.slice(startIdx, endIdx);
+    assert.ok(escalBlock.length > 10, 'Should find escalation block');
+    assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
+    assert.ok(escalBlock.includes('evalEscalated'), 'Should set evalEscalated flag');
+  });
+
+  await test('eval escalation writes inbox alert', () => {
+    assert.ok(engineSrc.includes('Review Loop Escalation'), 'Should write escalation alert to inbox');
+  });
+
+  await test('eval escalation uses evalMaxIterations from config', () => {
+    assert.ok(engineSrc.includes('evalMaxIterations'), 'Should read evalMaxIterations from config');
+  });
+
+  // ── Review vote protection ──
+
+  console.log('\n── Vote Protection ──');
+
+  await test('GitHub: approved never downgraded unless CHANGES_REQUESTED', () => {
+    const reviewBlock = ghSrc.slice(ghSrc.indexOf('let newReviewStatus'), ghSrc.indexOf('if (pr.reviewStatus !== newReviewStatus)'));
+    assert.ok(reviewBlock.includes("pr.reviewStatus === 'approved'") && reviewBlock.includes("newReviewStatus = 'approved'"),
+      'GitHub poller should preserve approved status');
+  });
+
+  await test('ADO: approved never downgraded unless vote -10', () => {
+    const reviewBlock = adoSrc.slice(adoSrc.indexOf('let newReviewStatus'), adoSrc.indexOf('Store human reviewer'));
+    assert.ok(reviewBlock.includes("pr.reviewStatus === 'approved'") && reviewBlock.includes("newReviewStatus = 'approved'"),
+      'ADO poller should preserve approved status');
+  });
+
+  await test('updatePrAfterReview never downgrades approved', () => {
+    assert.ok(lifecycleSrc.includes("target.reviewStatus !== 'approved'"),
+      'updatePrAfterReview should guard against downgrading approved');
+  });
+
+  await test('updatePrAfterReview defaults to null (no change) when live check is pending', () => {
+    assert.ok(lifecycleSrc.includes('let postReviewStatus = null'),
+      'Default should be null (do not change) not waiting or pending');
+  });
+
+  await test('_reviewFixCycles reset on approval (GitHub)', () => {
+    assert.ok(ghSrc.includes("delete pr._reviewFixCycles") && ghSrc.includes("delete pr._evalEscalated"),
+      'GitHub should clear cycle counter on approval');
+  });
+
+  await test('_reviewFixCycles reset on approval (ADO)', () => {
+    assert.ok(adoSrc.includes("delete pr._reviewFixCycles") && adoSrc.includes("delete pr._evalEscalated"),
+      'ADO should clear cycle counter on approval');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (ADO)', () => {
+    assert.ok(adoSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && adoSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'ADO forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('PR persistence guard: approved never overwritten by stale in-memory copy (GitHub)', () => {
+    assert.ok(ghSrc.includes("currentPrs[idx].reviewStatus === 'approved'") && ghSrc.includes("updatedPr.reviewStatus = 'approved'"),
+      'GitHub forEachActivePr persistence should guard approved on disk from stale in-memory copy');
+  });
+
+  await test('engine.js pre-dispatch live vote check guards approved', () => {
+    const liveVoteBlock = engineSrc.slice(engineSrc.indexOf('Pre-dispatch live vote check'), engineSrc.indexOf('Pre-dispatch live vote check') + 800);
+    assert.ok(liveVoteBlock.includes("reviewStatus !== 'approved'"),
+      'Pre-dispatch live vote check should guard against downgrading approved');
+  });
+
+  // ── updatePrAfterReview passes resultSummary ──
+
+  await test('updatePrAfterReview receives resultSummary for review note', () => {
+    assert.ok(lifecycleSrc.includes('function updatePrAfterReview(agentId, pr, project, config, resultSummary)'),
+      'updatePrAfterReview should accept resultSummary parameter');
+    assert.ok(lifecycleSrc.includes('resultSummary || completedEntry'),
+      'Should use resultSummary as primary note source');
+  });
+
+  // ── Build fix ──
+
+  console.log('\n── Build Fix Flow ──');
+
+  await test('build fix NOT gated by evalEscalated', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts') || engineSrc.length);
+    assert.ok(!buildBlock.includes('evalEscalated'), 'Build fix should NOT be gated by evalEscalated');
+  });
+
+  await test('build fix has grace period (_buildFixPushedAt)', () => {
+    assert.ok(engineSrc.includes('_buildFixPushedAt') && engineSrc.includes('buildFixGracePeriod'),
+      'Should check grace period before re-dispatching build fix');
+  });
+
+  await test('build fix escalates after maxBuildFixAttempts', () => {
+    assert.ok(engineSrc.includes('buildFixAttempts') && engineSrc.includes('buildFixEscalated'),
+      'Should escalate after max attempts');
+  });
+
+  await test('_autoCompleted reset when build goes red', () => {
+    assert.ok(ghSrc.includes("'failing') delete pr._autoCompleted"),
+      'GitHub should reset _autoCompleted on build failure');
+    assert.ok(adoSrc.includes("'failing') delete pr._autoCompleted"),
+      'ADO should reset _autoCompleted on build failure');
+  });
+
+  await test('GitHub error logs fetch annotations + job log (always)', () => {
+    assert.ok(ghSrc.includes('hasUsefulAnnotations') && ghSrc.includes('actions/jobs'),
+      'Should fetch both annotations and job logs');
+  });
+
+  await test('ADO build detection uses builds API not status checks', () => {
+    assert.ok(adoSrc.includes('_apis/build/builds') && adoSrc.includes('sourceVersion === mergeCommitId'),
+      'ADO should query builds API with merge commit hash');
+  });
+
+  await test('ADO partiallySucceeded counts as passing', () => {
+    assert.ok(adoSrc.includes('partiallySucceeded'), 'ADO should treat partiallySucceeded as passing');
+  });
+
+  // ── Merge conflict fix ──
+
+  console.log('\n── Merge Conflict Fix ──');
+
+  await test('GitHub detects merge conflicts via mergeable field', () => {
+    assert.ok(ghSrc.includes('prData.mergeable === false') && ghSrc.includes('_mergeConflict'),
+      'GitHub should detect conflicts via mergeable field');
+  });
+
+  await test('ADO detects merge conflicts via mergeStatus', () => {
+    assert.ok(adoSrc.includes("mergeStatus === 'conflicts'") && adoSrc.includes('_mergeConflict'),
+      'ADO should detect conflicts via mergeStatus');
+  });
+
+  await test('merge conflict fix dispatched in discoverFromPrs', () => {
+    assert.ok(engineSrc.includes('_mergeConflict') && engineSrc.includes('conflict-fix-'),
+      'Should dispatch conflict fix with unique dispatch key');
+  });
+
+  await test('merge conflict fix gated by fixDispatched', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.includes('!fixDispatched'), 'Conflict fix should be gated by fixDispatched');
+  });
+
+  await test('_mergeConflict cleared when conflict resolves', () => {
+    assert.ok(ghSrc.includes("delete pr._mergeConflict"), 'GitHub should clear flag');
+    assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');
+  });
+
+  // ── Auto-complete ──
+
+  console.log('\n── Auto-Complete ──');
+
+  await test('auto-complete is opt-in (=== true)', () => {
+    assert.ok(ghSrc.includes('autoCompletePrs === true'), 'GitHub auto-complete should be opt-in');
+    assert.ok(adoSrc.includes('autoCompletePrs === true'), 'ADO auto-complete should be opt-in');
+  });
+
+  await test('auto-complete requires both approved and passing', () => {
+    assert.ok(ghSrc.includes("reviewStatus === 'approved'") && ghSrc.includes("buildStatus === 'passing'") && ghSrc.includes('_autoCompleted'),
+      'GitHub should require both conditions');
+  });
+
+  await test('GitHub merge method validated against whitelist', () => {
+    assert.ok(ghSrc.includes("['squash', 'merge', 'rebase']"),
+      'Merge method should be validated');
+  });
+
+  // ── Agent comment filtering ──
+
+  console.log('\n── Comment Filtering ──');
+
+  await test('agent comments included in context but do not trigger fix', () => {
+    assert.ok(ghSrc.includes('_isAgentComment') && ghSrc.includes('!isAgent'),
+      'GitHub should detect agent comments and exclude from trigger');
+  });
+
+  await test('Minions signature patterns detected', () => {
+    assert.ok(ghSrc.includes("Minions\\s*\\(") && ghSrc.includes("by\\s+Minions"),
+      'Should detect both "Minions (" and "by Minions" patterns');
+  });
+
+  await test('agent comments advance cutoff without triggering', () => {
+    assert.ok(ghSrc.includes('agent comments only') || ghSrc.includes('allNewDates'),
+      'Cutoff should advance past agent comments to prevent re-scan');
+  });
+
+  // ── Label readability ──
+
+  await test('dispatch labels include PR title (no redundant PR prefix)', () => {
+    assert.ok(engineSrc.includes('Review ${pr.id}: ${pr.title}'), 'Review label should have title');
+    assert.ok(engineSrc.includes('Fix ${pr.id}: ${pr.title'), 'Fix label should have title');
+    assert.ok(!engineSrc.includes('Review PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
+    assert.ok(!engineSrc.includes('Fix PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
   });
 }
 

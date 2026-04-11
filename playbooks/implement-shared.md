@@ -78,3 +78,18 @@ git push origin {{branch_name}}
 ## When to Stop
 
 Your task is complete once you have: (1) confirmed build and tests pass, and (2) pushed to the shared branch. Do NOT create a PR — the engine creates one when all plan items are done. Stop after pushing.
+
+## Completion
+
+After finishing, output a structured completion block so the engine can parse your results:
+
+```completion
+status: done | partial | failed
+files_changed: <comma-separated list of key files changed>
+tests: pass | fail | skipped | N/A
+pr: N/A
+failure_class: N/A
+pending: <any remaining work, or none>
+```
+
+Replace the values with your actual results. This block MUST appear in your final output.

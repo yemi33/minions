@@ -20,7 +20,17 @@ function getPipelines() {
   if (!fs.existsSync(PIPELINES_DIR)) return [];
   return safeReadDir(PIPELINES_DIR)
     .filter(f => f.endsWith('.json'))
-    .map(f => safeJson(path.join(PIPELINES_DIR, f)))
+    .map(f => {
+      const filePath = path.join(PIPELINES_DIR, f);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!parsed) log('warn', `getPipelines: ${f} parsed to null — skipping`);
+        return parsed;
+      } catch (e) {
+        log('warn', `getPipelines: ${f} is invalid JSON — skipping (${e.message})`);
+        return null;
+      }
+    })
     .filter(Boolean);
 }
 
@@ -320,6 +330,17 @@ function _findExistingPlanForMeeting(meetingIds, plansDir) {
   return slugMatch;
 }
 
+// Check if a PRD already exists for a given plan file (plan already converted)
+function _findExistingPrdForPlan(planFile, prdDir) {
+  if (!fs.existsSync(prdDir)) return null;
+  const prdFiles = safeReadDir(prdDir).filter(f => f.endsWith('.json'));
+  for (const pf of prdFiles) {
+    const prd = safeJson(path.join(prdDir, pf));
+    if (prd?.source_plan === planFile) return pf;
+  }
+  return null;
+}
+
 async function executePlanStage(stage, stageState, run, config) {
   const plansDir = path.join(__dirname, '..', 'plans');
   if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
@@ -334,6 +355,18 @@ async function executePlanStage(stage, stageState, run, config) {
     const existingPlanFile = _findExistingPlanForMeeting(meetingIds, plansDir);
     if (existingPlanFile) {
       log('info', `Pipeline ${run.pipelineId}: reconciling plan stage — adopting existing plan "${existingPlanFile}"`);
+
+      // Check if a PRD already exists for this plan (skip plan-to-prd entirely)
+      const prdDir = path.join(__dirname, '..', 'prd');
+      const existingPrdFile = _findExistingPrdForPlan(existingPlanFile, prdDir);
+      if (existingPrdFile) {
+        log('info', `Pipeline ${run.pipelineId}: PRD "${existingPrdFile}" already exists for plan "${existingPlanFile}" — skipping plan-to-prd`);
+        return {
+          status: PIPELINE_STATUS.RUNNING,
+          artifacts: { plans: [existingPlanFile], workItems: [], prds: [existingPrdFile], prs: [] },
+        };
+      }
+
       // Adopt or create plan-to-prd WI atomically under lock
       let adoptedWiId = wiId;
       mutateWorkItems(wiPath, workItems => {
@@ -563,12 +596,17 @@ function isStageComplete(stage, stageState, run, config) {
 
   switch (stage.type) {
     case STAGE_TYPE.TASK: {
+      // Check root + all project work-items.json (WIs may be moved to project paths)
       const wiPath = path.join(__dirname, '..', 'work-items.json');
       const workItems = safeJson(wiPath) || [];
+      const allProjectWi = shared.getProjects(config).reduce((acc, p) => {
+        return acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []);
+      }, []);
+      const all = [...workItems, ...allProjectWi];
       const ids = artifacts.workItems || [];
       if (ids.length === 0) return false;
       return ids.every(id => {
-        const wi = workItems.find(w => w.id === id);
+        const wi = all.find(w => w.id === id);
         return !wi || wi.status === WI_STATUS.DONE || wi.status === WI_STATUS.FAILED; // missing = treat as done
       });
     }
@@ -725,8 +763,10 @@ async function discoverPipelineWork(config) {
           if (stage.type === STAGE_TYPE.TASK) {
             const wiPath = path.join(__dirname, '..', 'work-items.json');
             const workItems = safeJson(wiPath) || [];
+            const projWi = shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectWorkItemsPath(p)) || []), []);
+            const allWi = [...workItems, ...projWi];
             output = (stageState.artifacts?.workItems || []).map(id => {
-              const wi = workItems.find(w => w.id === id);
+              const wi = allWi.find(w => w.id === id);
               return wi?.resultSummary || wi?.title || id;
             }).join('\n');
           } else if (stage.type === STAGE_TYPE.MEETING) {
@@ -771,7 +811,34 @@ async function discoverPipelineWork(config) {
         }
       }
 
-      if (stageState.status === PIPELINE_STATUS.WAITING_HUMAN) { allComplete = false; continue; }
+      if (stageState.status === PIPELINE_STATUS.WAITING_HUMAN) {
+        // Auto-complete wait stages when the preceding meeting already produced a plan
+        // Common pattern: meeting → wait → plan — if plan exists, nothing to wait for
+        if (stage.type === STAGE_TYPE.WAIT) {
+          const nextPlanStage = stages.find(s =>
+            s.type === STAGE_TYPE.PLAN && (s.dependsOn || []).includes(stage.id)
+          );
+          if (nextPlanStage) {
+            const meetingIds = _findMeetingsInRun(activeRun);
+            if (meetingIds.length > 0) {
+              const plansDir = path.join(__dirname, '..', 'plans');
+              if (fs.existsSync(plansDir)) {
+                const existingPlan = _findExistingPlanForMeeting(meetingIds, plansDir);
+                if (existingPlan) {
+                  updateRunStage(pipeline.id, activeRun.runId, stage.id, {
+                    status: PIPELINE_STATUS.COMPLETED, completedAt: ts(),
+                    output: `Auto-completed: plan "${existingPlan}" already exists for meeting`,
+                  });
+                  stageState.status = PIPELINE_STATUS.COMPLETED;
+                  log('info', `Pipeline ${pipeline.id}: wait stage ${stage.id} auto-completed — plan "${existingPlan}" already exists`);
+                  continue; // re-evaluate as completed on next iteration
+                }
+              }
+            }
+          }
+        }
+        allComplete = false; continue;
+      }
 
       // Check if pending stage is ready to start
       if (stageState.status === PIPELINE_STATUS.PENDING) {
@@ -852,4 +919,5 @@ module.exports = {
   getPipelineRuns, getActiveRun, startRun, updateRunStage, completeRun,
   discoverPipelineWork,
   evaluateCondition, // exported for testing
+  _findMeetingsInRun, _findExistingPlanForMeeting, _findExistingPrdForPlan, // exported for testing
 };

@@ -29,7 +29,9 @@ Use subagents only for genuinely parallel, independent tasks. For sequential wor
 
 1. You are already in the correct worktree on branch `{{pr_branch}}`. Do NOT create additional worktrees.
 
-2. Fix each issue listed above
+2. For each issue listed above, use your judgment:
+   - **Fix it** if the feedback is valid and improves the code
+   - **Explain your rationale** if you believe the current approach is correct — reply on the review thread explaining why, with specific reasoning (e.g., performance, consistency with codebase patterns, intentional design choice). Do NOT silently ignore feedback — always respond.
 
 3. Handle merge conflicts if any:
    - If `git pull` or the PR shows conflicts, resolve them in the worktree
@@ -62,7 +64,30 @@ Do NOT remove the worktree — the engine handles cleanup automatically.
 - content: Explain what was fixed, reference each review finding, include build/test status
 - Sign: `Fixed by Minions ({{agent_name}} — {{agent_role}})`
 
+## Resolve Review Comments
+
+After pushing, respond to each review comment/thread:
+- **If you fixed it**: Reply confirming the fix, then resolve the thread
+- **If you chose not to fix it**: Reply with your rationale explaining why the current approach is preferred — leave the thread open for the reviewer to decide
+- **GitHub**: Reply to each review comment, resolve conversations you've fixed
+- **ADO**: Reply to each thread, set status to `fixed` or `closed` for fixes; leave `active` for rationale replies
+
 ## When to Stop
 
-Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, and (3) commented on the PR. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
+Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, (3) commented on the PR, and (4) resolved addressed review threads. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
+
+## Completion
+
+After finishing, output a structured completion block so the engine can parse your results:
+
+```completion
+status: done | partial | failed
+files_changed: <comma-separated list of key files changed>
+tests: pass | fail | skipped | N/A
+pr: PR-<number> or N/A
+failure_class: N/A
+pending: <any remaining work, or none>
+```
+
+Replace the values with your actual results. This block MUST appear in your final output.
 

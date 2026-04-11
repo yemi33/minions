@@ -47,12 +47,14 @@ async function openSettings() {
       settingsToggle('Eval Loop', 'set-evalLoop', e.evalLoop !== false, 'Auto-review implementations and iterate fix cycles until pass') +
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
+      settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
       settingsField('Max Build Fix Attempts', 'set-maxBuildFixAttempts', e.maxBuildFixAttempts || 3, '', 'Max auto-fix dispatches per PR before escalating to human (1-10)') +
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
+      settingsField('Ignored Comment Authors', 'set-ignoredCommentAuthors', (e.ignoredCommentAuthors || []).join(', '), '', 'Comma-separated usernames — comments auto-closed, never trigger fixes') +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Max Turns by Task Type</h3>' +
@@ -205,9 +207,11 @@ async function saveSettings() {
       evalLoop: document.getElementById('set-evalLoop').checked,
       autoDecompose: document.getElementById('set-autoDecompose').checked,
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
+      autoArchive: document.getElementById('set-autoArchive').checked,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
+      ignoredCommentAuthors: document.getElementById('set-ignoredCommentAuthors').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
       ccModel: document.getElementById('set-ccModel').value,
       ccEffort: document.getElementById('set-ccEffort').value || null,
@@ -252,10 +256,16 @@ async function saveSettings() {
     });
     if (!rRes.ok) { const d = await rRes.json(); throw new Error(d.error); }
 
-    status.textContent = 'Saved. Engine picks up changes on next tick.';
-    status.style.color = 'var(--green)';
+    if (result.clamped && result.clamped.length > 0) {
+      status.textContent = 'Saved — some values adjusted: ' + result.clamped.join(', ');
+      status.style.color = 'var(--yellow)';
+      showToast('cmd-toast', 'Settings saved (some values clamped to allowed range)', false);
+    } else {
+      status.textContent = 'Saved. Engine picks up changes on next tick.';
+      status.style.color = 'var(--green)';
+      showToast('cmd-toast', 'Settings saved', true);
+    }
     if (saveBtn) { saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Saved'; saveBtn.style.color = 'var(--green)'; saveBtn.style.borderColor = 'var(--green)'; }
-    showToast('cmd-toast', 'Settings saved', true);
     setTimeout(function() {
       if (saveBtn) { saveBtn.disabled = false; saveBtn.style.opacity = ''; saveBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg> Save'; }
     }, 2000);

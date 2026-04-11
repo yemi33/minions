@@ -45,18 +45,19 @@ async function submitPinnedNote(e) {
   showToast('cmd-toast', 'Note pinned', true);
   try {
     const res = await fetch('/api/pinned', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, content, level }) });
-    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); alert('Pin failed: ' + (d.error || 'unknown')); openPinNoteModal(); }
-  } catch (e) { alert('Error: ' + e.message); openPinNoteModal(); }
+    if (res.ok) { refresh(); } else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Pin failed: ' + (d.error || 'unknown'), false); openPinNoteModal(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); openPinNoteModal(); }
 }
 
 async function removePinnedNote(title) {
   if (!confirm('Unpin "' + title + '"?')) return;
   markDeleted('pin:' + title);
   const btn = (window.event)?.target; if (btn) { const card = btn.closest('.pinned-card') || btn.parentElement?.parentElement; if (card) card.remove(); }
+  showToast('cmd-toast', 'Note unpinned', true);
   try {
     const res = await fetch('/api/pinned/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) });
-    if (!res.ok) { alert('Unpin failed'); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { showToast('cmd-toast', 'Unpin failed', false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 function openPinnedView(idx) {
