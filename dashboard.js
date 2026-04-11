@@ -1416,7 +1416,7 @@ const server = http.createServer(async (req, res) => {
       const planFile = 'manual-' + shared.uid() + '.json';
       const plan = {
         version: 'manual-' + new Date().toISOString().slice(0, 10),
-        project: body.project || (PROJECTS[0]?.name || 'Unknown'),
+        project: body.project || (PROJECTS.length > 0 ? PROJECTS[0].name : 'Unknown'),
         generated_by: 'dashboard',
         generated_at: new Date().toISOString().slice(0, 10),
         plan_summary: body.name,

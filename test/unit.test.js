@@ -8054,9 +8054,9 @@ async function testAuxModuleBugFixes() {
     assert.ok(handler.includes('safeJson('), 'Should use safeJson (null-safe) for plan reading');
   });
 
-  await test('dashboard.js: PROJECTS[0] at line 1159 uses optional chaining', () => {
+  await test('dashboard.js: PROJECTS[0] accesses have explicit length guards', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('PROJECTS[0]?.name'), 'Should use optional chaining for PROJECTS[0].name');
+    assert.ok(src.includes('PROJECTS.length > 0') || src.includes('PROJECTS[0]?.'), 'Should guard PROJECTS[0] access with length check or optional chaining');
   });
 
   // Bug #38: notes.md truncation on section boundary
@@ -8555,6 +8555,7 @@ async function testStatusMutationGuards() {
   await test('dashboard manual retry checks for done items', () => {
     // Find the manual retry handler section
     const retryMatch = dashboardSrc.match(/item\.status\s*=\s*(?:WI_STATUS\.PENDING|'pending');\s*\n\s*item\._retryCount\s*=\s*0/);
+
     assert.ok(retryMatch, 'dashboard.js must have manual retry handler');
     // The section before the reset should have a done/completedAt guard or force check
     const retrySection = dashboardSrc.substring(
