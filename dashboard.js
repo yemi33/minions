@@ -3524,7 +3524,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
-            try { res.write('data: ' + JSON.stringify({ type: 'chunk', text }) + '\n\n'); } catch {}
+            const actIdx = text.indexOf('===ACTIONS===');
+            const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
+            try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
           },
           onToolUse: (name, input) => {
             try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
