@@ -1072,8 +1072,8 @@ async function ccExecuteAction(action, targetTabId) {
         break;
       }
       case 'regenerate-plan': {
-        await _ccFetch('/api/plans/regenerate', { source: action.file });
-        status.innerHTML = '&#10003; Plan regenerated: <strong>' + escHtml(action.file) + '</strong>';
+        await _ccFetch('/api/plans/approve', { file: action.file, forceRegen: true });
+        status.innerHTML = '&#10003; PRD regeneration queued: <strong>' + escHtml(action.file) + '</strong>';
         status.style.color = 'var(--green)';
         wakeEngine();
         break;

@@ -2292,7 +2292,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       // Diff-aware PRD update: if plan was stale (source .md revised), dispatch plan-to-prd
       // to compare the revised plan against existing PRD and produce an updated version
       let diffAwareQueued = false;
-      if (plan.source_plan && plan.missing_features && wasStale && !body.skipRegen) {
+      if (plan.source_plan && plan.missing_features && (wasStale || body.forceRegen) && !body.skipRegen) {
         const config = queries.getConfig();
         const allWorkItems = queries.getWorkItems(config);
         const planWis = allWorkItems.filter(w => w.sourcePlan === body.file && w.itemType !== 'pr' && w.itemType !== 'verify');
