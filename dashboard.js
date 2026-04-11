@@ -1210,6 +1210,14 @@ const server = http.createServer(async (req, res) => {
         if (cleaned) safeWrite(cooldownPath, cooldowns);
       } catch (e) { console.error('cooldown cleanup:', e.message); }
 
+      // Reset PRD item status so it doesn't stay 'dispatched' with no work item (#779)
+      if (item && item.sourcePlan) {
+        try {
+          const lifecycle = require('./engine/lifecycle');
+          lifecycle.syncPrdItemStatus(id, WI_STATUS.PENDING, item.sourcePlan);
+        } catch (e) { console.error('PRD status reset on delete:', e.message); }
+      }
+
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, id, dispatchRemoved });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }

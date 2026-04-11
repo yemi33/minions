@@ -953,7 +953,9 @@ function getPrdInfo(config) {
   for (const item of items) {
     const wi = wiById[item.id];
     // Work item status is source of truth when available (PRD JSON may lag behind)
-    const rawStatus = wi ? (wi.status || item.status) : item.status;
+    // If PRD says dispatched/failed but no work item exists, treat as pending (orphaned — #779)
+    const rawStatus = wi ? (wi.status || item.status)
+      : ((item.status === WI_STATUS.DISPATCHED || item.status === WI_STATUS.FAILED) ? WI_STATUS.PENDING : item.status);
     item.status = statusDisplay[rawStatus] || rawStatus || 'missing';
     // Attach execution metadata for display (agent, PR link, fail reason)
     if (wi) {

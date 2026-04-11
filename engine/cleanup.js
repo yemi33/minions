@@ -582,6 +582,41 @@ function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'migrate PRD legacy statuses: ' + e.message); }
 
+  // Reset orphaned PRD item statuses — dispatched/failed with no matching work item (#779)
+  cleaned.orphanedPrdStatuses = 0;
+  try {
+    const wiIds = new Set();
+    for (const project of projects) {
+      const items = safeJson(projectWorkItemsPath(project)) || [];
+      for (const wi of items) { if (wi?.id) wiIds.add(wi.id); }
+    }
+    try {
+      const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+      for (const wi of centralWi) { if (wi?.id) wiIds.add(wi.id); }
+    } catch { /* optional */ }
+
+    let orphanPrdEntries;
+    try { orphanPrdEntries = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); }
+    catch { orphanPrdEntries = []; }
+    for (const pf of orphanPrdEntries) {
+      const prdPath = path.join(PRD_DIR, pf);
+      const prd = safeJson(prdPath);
+      if (!prd?.missing_features) continue;
+      let reset = 0;
+      for (const feat of prd.missing_features) {
+        if ((feat.status === shared.WI_STATUS.DISPATCHED || feat.status === shared.WI_STATUS.FAILED) && !wiIds.has(feat.id)) {
+          feat.status = shared.WI_STATUS.PENDING;
+          reset++;
+        }
+      }
+      if (reset > 0) {
+        safeWrite(prdPath, prd);
+        log('info', `Reset ${reset} orphaned PRD item status(es) → pending in ${pf}`);
+        cleaned.orphanedPrdStatuses += reset;
+      }
+    }
+  } catch (e) { log('warn', 'orphan PRD status reset: ' + e.message); }
+
   // 10. Prune CC tab sessions — cap at 50 entries, remove oldest beyond cap
   cleaned.ccSessions = 0;
   try {
@@ -606,7 +641,7 @@ function runCleanup(config, verbose = false) {
       const entries = Object.entries(docSessions);
       const DOC_SESSIONS_CAP = 100;
       if (entries.length > DOC_SESSIONS_CAP) {
-        entries.sort((a, b) => new Date(b[1].lastActiveAt || 0) - new Date(a[1].lastActiveAt || 0));
+        entries.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
         const keep = Object.fromEntries(entries.slice(0, DOC_SESSIONS_CAP));
         cleaned.docSessions = entries.length - DOC_SESSIONS_CAP;
         safeWrite(docSessionsPath, keep);
