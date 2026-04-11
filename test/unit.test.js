@@ -6195,6 +6195,29 @@ async function testDispatchCycleIntegration() {
       'engine.js must set depMergeFailed on re-merge failure');
   });
 
+  await test('Dep merge handles local-only branches by pushing to origin (#782)', () => {
+    // When git fetch fails with "couldn't find remote ref", the engine should:
+    // 1. Check if branch exists locally via git rev-parse
+    // 2. Push it to origin if it exists
+    // 3. Include it in the fetched list for merging
+    assert.ok(engineSrc.includes('find remote ref'),
+      'engine.js must detect missing remote ref errors');
+    assert.ok(engineSrc.includes('git rev-parse --verify'),
+      'engine.js must check if branch exists locally when remote ref missing');
+    assert.ok(engineSrc.includes('exists locally but not on remote'),
+      'engine.js must log when pushing local-only dependency branch');
+    assert.ok(engineSrc.includes('git push origin'),
+      'engine.js must push local-only dependency branches to origin');
+    assert.ok(engineSrc.includes('recoveredBranches'),
+      'engine.js must track recovered (local-only pushed) branches');
+    // Recovered branches must be included in the fetched list for merging
+    assert.ok(engineSrc.includes('recoveredBranches.has('),
+      'engine.js must include recovered branches in the merge set');
+    // If local check or push fails, should still mark as failed (not loop forever)
+    assert.ok(engineSrc.includes('not found locally or push failed'),
+      'engine.js must handle push failure for local-only branches gracefully');
+  });
+
   await test('Spawn renders playbook with system prompt', () => {
     assert.ok(engineSrc.includes('function renderPlaybook'),
       'engine.js must define renderPlaybook');
