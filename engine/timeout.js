@@ -113,11 +113,12 @@ function checkSteering(config) {
 
     log('info', `Steering: killing ${info.agentId} (${id}) for session resume with human message`);
 
-    shared.killImmediate(info.proc);
-
+    // Set steering state BEFORE kill — close event may fire synchronously on some platforms
     info._steeringMessage = message;
     info._steeringSessionId = sessionId;
     info._steeringAt = Date.now();
+
+    shared.killImmediate(info.proc);
   }
 }
 
