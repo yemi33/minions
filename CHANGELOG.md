@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.893 (2026-04-11)
+
+### Fixes
+- suppress conflict-fix re-dispatch during ADO mergeStatus recompute lag (#921)
+
 ## 0.1.892 (2026-04-11)
 
 ### Features
