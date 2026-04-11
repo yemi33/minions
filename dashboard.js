@@ -2186,6 +2186,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.approvedAt = new Date().toISOString();
       plan.approvedBy = body.approvedBy || os.userInfo().username;
       delete plan.pausedAt;
+      delete plan._completionNotified; // Allow re-completion after new work finishes
       safeWrite(planPath, plan);
 
       // Resume paused work items across all projects
