@@ -91,6 +91,20 @@ Rules for items:
 - Include `acceptance_criteria` so reviewers know when it's done
 - Aim for 5-25 items depending on plan scope. If more than 25, group related work
 
+## Updating an Existing PRD
+
+If the task description mentions **"existing implementation state"**, you are updating an existing PRD, not creating one from scratch. The plan was revised and you need to produce an updated PRD that reflects the changes while preserving existing work.
+
+**Rules for diff-aware updates:**
+- **Read the existing PRD file first** — it's at `{{team_root}}/prd/{{prd_filename}}`
+- **Preserve item IDs** — do NOT generate new IDs for items that already exist. The engine maps work items by ID.
+- **Done + unchanged** → keep `"status": "done"` and the same ID (no work dispatched)
+- **Done + modified** (plan added requirements/scope) → set `"status": "updated"` with same ID (engine re-opens the work item and dispatches to existing branch)
+- **New items** in the updated plan → generate new `P-<uuid>` IDs, set `"status": "missing"`
+- **Removed items** (in old PRD but not in updated plan) → drop from the PRD entirely (engine cancels pending work items)
+- **Pending/failed items** → reset to `"missing"` with updated description
+- Preserve `branch_strategy`, `feature_branch`, `project`, and other plan-level fields from the existing PRD unless the plan explicitly changes them
+
 ## Important
 
 - Write ONLY the single `.json` PRD file to `{{team_root}}/prd/` — do NOT write any `.md` files there

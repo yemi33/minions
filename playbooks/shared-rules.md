@@ -10,14 +10,14 @@ Your context window may be compacted or summarized mid-task by Claude's automati
 - Do NOT remove worktrees — the engine handles cleanup automatically.
 - Do NOT checkout branches in the main working tree — use worktrees or `git diff`/`git show`.
 - Read `notes.md` for team rules and decisions before starting.
-- **Check minions state before starting fresh.** Before researching from scratch, check what the team already knows:
-  - `notes.md` — consolidated team knowledge, decisions, and context
-  - `knowledge/` — categorized KB entries (architecture, conventions, build-reports, reviews)
-  - `notes/inbox/` — recent agent findings not yet consolidated
-  - Previous agent output in `agents/*/live-output.log` for related tasks
-  - Work item descriptions and `resultSummary` for prior completed work on the same topic
-  - `pinned.md` — critical context flagged by the human teammate
-  This avoids duplicating research another agent already completed.
+- **Check team memory first, then look outside.** Before researching from scratch, check what the team already knows — in this order:
+  1. `pinned.md` — critical context flagged by the human teammate (READ FIRST)
+  2. `knowledge/` — categorized KB entries (architecture, conventions, build-reports, reviews)
+  3. `notes.md` — consolidated team knowledge, decisions, and context
+  4. `notes/inbox/` — recent agent findings not yet consolidated
+  5. Previous agent output in `agents/*/live-output.log` for related tasks
+  6. Work item descriptions and `resultSummary` for prior completed work on the same topic
+  Only after exhausting team memory should you look outside (web search, codebase exploration, external docs). This avoids duplicating research another agent already completed and ensures team decisions are respected.
 - If you discover a repeatable workflow, output it as a fenced skill block. The engine auto-extracts it to `~/.claude/skills/<name>/SKILL.md`. Required format:
   ````
   ```skill
