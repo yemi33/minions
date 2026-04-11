@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -1360,8 +1360,8 @@ function materializePlansAsWorkItems(config) {
               if (targetProject) {
                 const queued = shared.queuePlanToPrd({
                   planFile: plan.source_plan, prdFile: file,
-                  title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
-                  description: `Plan file: plans/${plan.source_plan}\nSource plan was revised (PRD was ${prdStatus}) — regenerating.${completedContext}`,
+                  title: `Generate PRD from plan: ${plan.source_plan}`,
+                  description: `Plan file: plans/${plan.source_plan}\nSource plan was updated while PRD was awaiting approval — generating fresh PRD.${completedContext}`,
                   project: targetProject.name, createdBy: 'engine:plan-revision',
                 });
                 if (queued) log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
@@ -1458,9 +1458,9 @@ function materializePlansAsWorkItems(config) {
 
       mutateWorkItems(wiPath, existingItems => {
         for (const item of projItems) {
-          // Re-open: PRD item set back to missing/planned/updated but work item is done → reset to pending
+          // Re-open: only 'updated' re-opens a done work item (missing = new item, not re-open)
           const existingWi = existingItems.find(w => w.id === item.id);
-          const shouldReopen = PRD_MATERIALIZABLE.has(item.status);
+          const shouldReopen = item.status === PRD_ITEM_STATUS.UPDATED;
           if (existingWi && DONE_STATUSES.has(existingWi.status) && shouldReopen) {
             existingWi.status = WI_STATUS.PENDING;
             existingWi._reopened = true;

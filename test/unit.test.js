@@ -1760,10 +1760,10 @@ async function testPrdStaleInvalidation() {
       'shared.js should define PRD_ITEM_STATUS.UPDATED and PRD_MATERIALIZABLE set');
   });
 
-  await test('Re-open: done work items reset to pending when PRD item set to updated/missing', () => {
+  await test('Re-open: only "updated" status re-opens done work items (not "missing")', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('DONE_STATUSES.has(existingWi.status)') && src.includes('shouldReopen'),
-      'Should check for done WI + reopen-eligible PRD status');
+    assert.ok(src.includes('PRD_ITEM_STATUS.UPDATED') && src.includes('shouldReopen'),
+      'shouldReopen should check for PRD_ITEM_STATUS.UPDATED only');
     assert.ok(src.includes('_reopened = true'),
       'Should mark re-opened work items with _reopened flag');
   });

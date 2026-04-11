@@ -587,8 +587,8 @@ const PLAN_STATUS = {
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
   REVISION_REQUESTED: 'revision-requested',
 };
-const PRD_ITEM_STATUS = { MISSING: 'missing', PLANNED: 'planned', UPDATED: 'updated', DONE: 'done' };
-const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.PLANNED, PRD_ITEM_STATUS.UPDATED]);
+const PRD_ITEM_STATUS = { MISSING: 'missing', UPDATED: 'updated', DONE: 'done' };
+const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.UPDATED]);
 const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
 // PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
 const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
