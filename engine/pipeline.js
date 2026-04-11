@@ -75,14 +75,24 @@ function startRun(pipelineId, pipeline) {
   }
   const run = { runId, pipelineId, startedAt: ts(), status: PIPELINE_STATUS.RUNNING, stages };
 
+  let alreadyActive = false;
   mutateJsonFileLocked(PIPELINE_RUNS_PATH, (data) => {
     if (!data[pipelineId]) data[pipelineId] = [];
+    // Guard: skip if there's already an active run (prevents race between ticks)
+    if (data[pipelineId].some(r => r.status === PIPELINE_STATUS.RUNNING || r.status === PIPELINE_STATUS.PAUSED)) {
+      alreadyActive = true;
+      return data;
+    }
     // Keep last 10 runs per pipeline
     if (data[pipelineId].length >= 10) data[pipelineId] = data[pipelineId].slice(-9);
     data[pipelineId].push(run);
     return data;
   }, { defaultValue: {} });
 
+  if (alreadyActive) {
+    log('info', `Pipeline ${pipelineId}: skipped startRun — active run already exists`);
+    return null;
+  }
   log('info', `Pipeline ${pipelineId}: started run ${runId}`);
   return run;
 }

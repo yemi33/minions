@@ -521,7 +521,8 @@ async function _deletePipelineConfirm(id) {
   showToast('cmd-toast', 'Pipeline deleted', true);
   try {
     var res = await fetch('/api/pipelines/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    if (!res.ok) { showToast('cmd-toast', 'Delete failed', false); refresh(); }
+    if (!res.ok) { showToast('cmd-toast', 'Delete failed', false); }
+    refresh();
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 

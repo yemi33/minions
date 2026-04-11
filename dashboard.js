@@ -4446,8 +4446,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!pipeline) return jsonReply(res, 404, { error: 'Pipeline not found' });
       if (getActiveRun(body.id)) return jsonReply(res, 409, { error: 'Pipeline already has an active run' });
       const run = startRun(body.id, pipeline);
+      if (!run) return jsonReply(res, 409, { error: 'Pipeline already has an active run' });
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, runId: run.runId });
+      return jsonReply(res, 200, { ok: true, runId: run?.runId });
     }},
     { method: 'POST', path: '/api/pipelines/continue', desc: 'Continue a pipeline past a wait stage', params: 'id, stageId', handler: async (req, res) => {
       const body = await readBody(req);
@@ -4482,7 +4483,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               }
             }
           });
-        } catch {}
+        } catch (e) { console.error(`Pipeline abort: WI cancel error: ${e.message}`); }
       }
       const dispatchCleaned = cleanDispatchEntries(d => d.meta?.item?._pipelineRun === run.runId);
       invalidateStatusCache();
