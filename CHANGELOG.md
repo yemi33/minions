@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.874 (2026-04-11)
+
+### Fixes
+- include started_at in done/error agent status so duration renders
+
 ## 0.1.873 (2026-04-11)
 
 ### Features
