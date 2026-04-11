@@ -2247,34 +2247,21 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         const projectName = plan.project || body.file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
         const targetProject = PROJECTS.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || PROJECTS[0];
         if (targetProject) {
-          const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-          mutateJsonFileLocked(centralWiPath, items => {
-            if (!Array.isArray(items)) items = [];
-            if (items.some(w => w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === 'pending' || w.status === 'dispatched'))) return items;
-            items.push({
-              id: 'W-' + shared.uid(),
-              title: `Update PRD from revised plan: ${plan.source_plan}`,
-              type: 'plan-to-prd',
-              priority: 'high',
-              description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${body.file}\n\n` +
-                `Source plan was revised. Compare the updated plan against existing PRD and produce an updated version.\n\n` +
-                `**Current PRD implementation state:**\n${implContext}\n\n` +
-                `**Rules for updating:**\n` +
-                `- Items that are done and unchanged in the plan → keep status "done" (preserve their ID)\n` +
-                `- Items that are done but modified in the plan (new requirements) → set status "updated" (engine will re-open)\n` +
-                `- New items in the plan → set status "missing" (engine will materialize)\n` +
-                `- Items removed from the plan → drop from PRD (engine will cancel pending WIs)\n` +
-                `- Preserve all existing item IDs for unchanged/modified items — do NOT generate new IDs for them`,
-              status: 'pending',
-              created: new Date().toISOString(),
-              createdBy: 'dashboard:plan-resume',
-              project: targetProject.name,
-              planFile: plan.source_plan,
-              _existingPrdFile: body.file,
-            });
-            diffAwareQueued = true;
-            return items;
-          }, { defaultValue: [] });
+          diffAwareQueued = shared.queuePlanToPrd({
+            planFile: plan.source_plan, prdFile: body.file,
+            title: `Update PRD from revised plan: ${plan.source_plan}`,
+            description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${body.file}\n\n` +
+              `Source plan was revised. Compare the updated plan against existing PRD and produce an updated version.\n\n` +
+              `**Current PRD implementation state:**\n${implContext}\n\n` +
+              `**Rules for updating:**\n` +
+              `- Items that are done and unchanged in the plan → keep status "done" (preserve their ID)\n` +
+              `- Items that are done but modified in the plan (new requirements) → set status "updated" (engine will re-open)\n` +
+              `- New items in the plan → set status "missing" (engine will materialize)\n` +
+              `- Items removed from the plan → drop from PRD (engine will cancel pending WIs)\n` +
+              `- Preserve all existing item IDs for unchanged/modified items — do NOT generate new IDs for them`,
+            project: targetProject.name, createdBy: 'dashboard:plan-resume',
+            extra: { _existingPrdFile: body.file },
+          });
         }
       }
 

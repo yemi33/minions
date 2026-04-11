@@ -1751,10 +1751,13 @@ async function testPrdStaleInvalidation() {
       'Should use dashboard:plan-resume as createdBy');
   });
 
-  await test('Materializer handles "updated" PRD item status', () => {
+  await test('Materializer uses PRD_MATERIALIZABLE constant for status filter', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes("'updated'") && src.includes('statusFilter'),
-      'statusFilter should include "updated"');
+    assert.ok(src.includes('PRD_MATERIALIZABLE'),
+      'statusFilter should use PRD_MATERIALIZABLE constant');
+    const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(sharedSrc.includes("UPDATED: 'updated'") && sharedSrc.includes('PRD_MATERIALIZABLE'),
+      'shared.js should define PRD_ITEM_STATUS.UPDATED and PRD_MATERIALIZABLE set');
   });
 
   await test('Re-open: done work items reset to pending when PRD item set to updated/missing', () => {

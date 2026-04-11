@@ -587,6 +587,8 @@ const PLAN_STATUS = {
   PAUSED: 'paused', REJECTED: 'rejected', COMPLETED: 'completed',
   REVISION_REQUESTED: 'revision-requested',
 };
+const PRD_ITEM_STATUS = { MISSING: 'missing', PLANNED: 'planned', UPDATED: 'updated', DONE: 'done' };
+const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.PLANNED, PRD_ITEM_STATUS.UPDATED]);
 const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
 // PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
 const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
@@ -604,6 +606,32 @@ function trackReviewMetric(pr, newReviewStatus, config) {
       return metrics;
     });
   } catch (err) { log('warn', `Metrics update: ${err.message}`); }
+}
+
+/** Queue a plan-to-prd work item with dedup check inside lock. Returns true if queued. */
+function queuePlanToPrd({ planFile, prdFile, title, description, project, createdBy, extra }) {
+  const centralWiPath = path.join(__dirname, '..', 'work-items.json');
+  let queued = false;
+  mutateJsonFileLocked(centralWiPath, items => {
+    if (!Array.isArray(items)) items = [];
+    if (items.some(w => w.type === 'plan-to-prd' && w.planFile === planFile && (w.status === 'pending' || w.status === 'dispatched'))) return items;
+    items.push({
+      id: 'W-' + uid(),
+      title,
+      type: 'plan-to-prd',
+      priority: 'high',
+      description,
+      status: 'pending',
+      created: new Date().toISOString(),
+      createdBy,
+      project,
+      planFile,
+      ...(extra || {}),
+    });
+    queued = true;
+    return items;
+  }, { defaultValue: [] });
+  return queued;
 }
 const DISPATCH_RESULT = { SUCCESS: 'success', ERROR: 'error', TIMEOUT: 'timeout' };
 const PIPELINE_STATUS = {
@@ -1021,7 +1049,7 @@ module.exports = {
   KB_CATEGORIES,
   classifyInboxItem,
   ENGINE_DEFAULTS,
-  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric,
+  WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,

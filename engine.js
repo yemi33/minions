@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -1358,26 +1358,12 @@ function materializePlansAsWorkItems(config) {
               const allProjects = getProjects(config);
               const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
               if (targetProject) {
-                const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-                let queued = false;
-                mutateJsonFileLocked(centralWiPath, items => {
-                  if (!Array.isArray(items)) items = [];
-                  if (items.some(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED))) return items;
-                  items.push({
-                    id: 'W-' + shared.uid(),
-                    title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
-                    type: 'plan-to-prd',
-                    priority: 'high',
-                    description: `Plan file: plans/${plan.source_plan}\nSource plan was revised (PRD was ${prdStatus}) — regenerating.${completedContext}`,
-                    status: 'pending',
-                    created: ts(),
-                    createdBy: 'engine:plan-revision',
-                    project: targetProject.name,
-                    planFile: plan.source_plan,
-                  });
-                  queued = true;
-                  return items;
-                }, { defaultValue: [] });
+                const queued = shared.queuePlanToPrd({
+                  planFile: plan.source_plan, prdFile: file,
+                  title: `Regenerate PRD from revised plan: ${plan.source_plan}`,
+                  description: `Plan file: plans/${plan.source_plan}\nSource plan was revised (PRD was ${prdStatus}) — regenerating.${completedContext}`,
+                  project: targetProject.name, createdBy: 'engine:plan-revision',
+                });
                 if (queued) log('info', `Queued plan-to-prd regeneration for revised plan ${plan.source_plan} (${completedItems.length} completed items to carry over)`);
               }
             }
@@ -1417,14 +1403,14 @@ function materializePlansAsWorkItems(config) {
     // No project found — use central work-items.json (engine works without projects)
     const useCentral = !defaultProject;
 
-    const statusFilter = ['missing', 'planned', 'updated'];
+    const statusFilter = PRD_MATERIALIZABLE;
     // Also materialize in-pr/done items that never got a work item (race with PR status sync)
     const allExistingWiIds = new Set();
     for (const w of queries.getWorkItems()) {
       if (w.id) allExistingWiIds.add(w.id);
     }
     const items = plan.missing_features.filter(f =>
-      statusFilter.includes(f.status) ||
+      statusFilter.has(f.status) ||
       (DONE_STATUSES.has(f.status) && f.id && !allExistingWiIds.has(f.id))
     );
 
@@ -1474,7 +1460,7 @@ function materializePlansAsWorkItems(config) {
         for (const item of projItems) {
           // Re-open: PRD item set back to missing/planned/updated but work item is done → reset to pending
           const existingWi = existingItems.find(w => w.id === item.id);
-          const shouldReopen = item.status === 'missing' || item.status === 'planned' || item.status === 'updated';
+          const shouldReopen = PRD_MATERIALIZABLE.has(item.status);
           if (existingWi && DONE_STATUSES.has(existingWi.status) && shouldReopen) {
             existingWi.status = WI_STATUS.PENDING;
             existingWi._reopened = true;
