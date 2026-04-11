@@ -257,6 +257,7 @@ function getAgentStatus(agentId) {
         task: latest.task || '',
         dispatch_id: latest.id,
         type: latest.type || '',
+        started_at: latest.started_at || null,
         completed_at: latest.completed_at,
         resultSummary: latest.resultSummary || latest.reason || '',
       };
