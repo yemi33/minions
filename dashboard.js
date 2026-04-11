@@ -2402,31 +2402,19 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       try { fs.unlinkSync(prdPath); } catch { /* cleanup */ }
 
       // Queue plan-to-prd regeneration with instructions to preserve completed items
-      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
-
       const completedContext = completedItems.length > 0
         ? `\n\n**Previously completed items (preserve their status in the new PRD):**\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
         : '';
 
-      const id = 'W-' + shared.uid();
-      let alreadyQueuedId = null;
-      mutateWorkItems(wiPath, items => {
-        // Dedup: check if already queued
-        const alreadyQueued = items.find(w =>
-          w.type === 'plan-to-prd' && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED)
-        );
-        if (alreadyQueued) { alreadyQueuedId = alreadyQueued.id; return; }
-        items.push({
-          id, title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
-          type: 'plan-to-prd', priority: 'high',
-          description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-          status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard:regenerate',
-          project: plan.project || '', planFile: plan.source_plan,
-          _targetPrdFile: body.file,
-        });
+      const queued = shared.queuePlanToPrd({
+        planFile: plan.source_plan, prdFile: body.file,
+        title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
+        description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
+        project: plan.project || '', createdBy: 'dashboard:regenerate',
+        extra: { _targetPrdFile: body.file },
       });
-      if (alreadyQueuedId) return jsonReply(res, 200, { id: alreadyQueuedId, alreadyQueued: true });
-      return jsonReply(res, 200, { id, file: plan.source_plan });
+      if (!queued) return jsonReply(res, 200, { alreadyQueued: true });
+      return jsonReply(res, 200, { ok: true, file: plan.source_plan });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -2440,28 +2428,15 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const planPath = path.join(MINIONS_DIR, 'plans', body.file);
       if (!fs.existsSync(planPath)) return jsonReply(res, 404, { error: 'plan file not found' });
 
-      // Atomic check-and-insert to prevent duplicates and races with engine
-      const centralPath = path.join(MINIONS_DIR, 'work-items.json');
-      let existingId = null;
-      const id = 'W-' + shared.uid();
-      mutateJsonFileLocked(centralPath, (items) => {
-        if (!Array.isArray(items)) items = [];
-        // Only block if actively pending/dispatched — allow re-execute after completion
-        const existing = items.find(w => w.type === 'plan-to-prd' && w.planFile === body.file && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED));
-        if (existing) { existingId = existing.id; return items; }
-        items.push({
-          id, title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
-          type: 'plan-to-prd', priority: 'high',
-          description: 'Plan file: plans/' + body.file,
-          status: WI_STATUS.PENDING, created: new Date().toISOString(),
-          createdBy: 'dashboard:execute', project: body.project || '',
-          planFile: body.file,
-        });
-        return items;
-      }, { defaultValue: [] });
-      if (existingId) return jsonReply(res, 200, { ok: true, id: existingId, alreadyQueued: true });
+      const queued = shared.queuePlanToPrd({
+        planFile: body.file,
+        title: 'Convert plan to PRD: ' + body.file.replace('.md', ''),
+        description: 'Plan file: plans/' + body.file,
+        project: body.project || '', createdBy: 'dashboard:execute',
+      });
+      if (!queued) return jsonReply(res, 200, { ok: true, alreadyQueued: true });
       invalidateStatusCache();
-      return jsonReply(res, 200, { ok: true, id });
+      return jsonReply(res, 200, { ok: true });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
