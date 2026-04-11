@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.822 (2026-04-11)
+
+### Features
+-  add resume-plan CC action for diff-aware plan updates
+-  verify workflow handles shared-branch plans and existing E2E PRs
+-  doc-chat drag-to-resize, queued message UX, insertAdjacentHTML
+-  re-open done work items when PRD item set to updated/missing
+-  diff-aware plan-to-prd dispatch for completed/approved PRDs
+-  Bidirectional Teams integration for Command Center (#764)
+- show branch strategy on PRD view (#762)
+- Restructure decompose.md sub-task output format (#655)
+-  CC race condition fixes, doc-chat expand, settings save fix, metric rate
+-  configurable ignored comment authors — auto-filtered, never trigger fixes
+-  add open-source community sources to agentic research pipeline
+-  broaden daily pipeline research from Anthropic-only to full agentic space
+-  cap review→fix cycles at evalMaxIterations (default 3)
+
+### Fixes
+-  doc-chat resize cap raised, modal overflow + flex body layout
+-  prevent duplicate verify WIs per PRD, re-open on modified plan
+-  strip ===ACTIONS=== server-side in streaming chunks (not client)
+-  strip ===ACTIONS=== from CC streamed text during rendering
+-  ccExecuteAction routes action status to correct tab via targetTabId
+-  clear _completionNotified on plan resume for re-completion
+- handle local-only dependency branches in dep merge (closes #782) (#825)
+- reset PRD item status when work item is deleted (closes #779) (#823)
+-  add smoke test for checkTimeouts ReferenceError regression (closes #775) (#822)
+- replace safeWrite with mutateDispatch in CLI kill handler (#654)
+-  CC queue drain uses combined flush, not one-at-a-time while loop (#818)
+-  allow agents to explain rationale instead of blindly fixing review feedback
+-  don't URL-encode ADO branchName filter (refs/heads/ format expected raw)
+-  ADO build query filters by source branch (not all org builds)
+-  adoFetch supports method/body for PATCH requests (auto-complete)
+-  prevent false [process-exit] detection from tool result content
+- allow PRD item retry when work item is missing (closes #781) (#807)
+-  handle force-pushed dep branches on retry (closes #738) (#806)
+-  project-scoped skill work items instruct wrong file path format (closes #790) (#804)
+-  move ignoredAuthors construction outside inner comment loop (ADO)
+
+### Other
+- docs: diff-aware PRD update playbook + prioritize team memory in shared rules
+
 ## 0.1.782 (2026-04-10)
 
 ### Features
