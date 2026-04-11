@@ -149,7 +149,10 @@ function ccSwitchTab(id) {
         html += '</div>';
       }
       var text = tab._streamedText || '';
-      if (text) html += renderMd(text);
+      if (text) {
+        var displayRestore = text.indexOf('===ACTIONS===') >= 0 ? text.slice(0, text.indexOf('===ACTIONS===')).trim() : text;
+        html += renderMd(displayRestore);
+      }
       var ms = Date.now() - restoreStart;
       var label = 'Thinking...';
       for (var pi = phases.length - 1; pi >= 0; pi--) { if (ms >= phases[pi][0]) { label = phases[pi][1]; break; } }
@@ -510,7 +513,8 @@ async function _ccDoSend(message, skipUserMsg) {
         html += '</div>';
       }
       if (streamedText) {
-        html += renderMd(streamedText);
+        var displayText = streamedText.indexOf('===ACTIONS===') >= 0 ? streamedText.slice(0, streamedText.indexOf('===ACTIONS===')).trim() : streamedText;
+        html += renderMd(displayText);
       }
       html += '<div style="margin-top:' + (streamedText ? '6px' : '0') + '">' + _getThinkingHtml() + '</div>';
       streamDiv.innerHTML = html;
