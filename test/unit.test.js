@@ -5832,6 +5832,97 @@ async function testAgentSteering() {
       'Should write confirmation to live-output.log so user sees it in dashboard');
   });
 
+  // ── Steering resume failure handling ─────────────────────────────────────────
+
+  await test('steering resume non-zero exit calls onAgentClose (not SUCCESS)', () => {
+    // When resumed agent exits non-zero, it should run normal close handler
+    // not silently mark as SUCCESS
+    const resumeCloseBlock = engineSrc.slice(
+      engineSrc.indexOf('resumeProc.on(\'close\''),
+      engineSrc.indexOf('resumeProc.on(\'error\'')
+    );
+    assert.ok(resumeCloseBlock.includes('onAgentClose(resumeCode)'),
+      'Resume close handler should call onAgentClose on non-zero exit');
+    assert.ok(!resumeCloseBlock.includes('DISPATCH_RESULT.SUCCESS'),
+      'Resume close handler should NOT mark non-zero exit as SUCCESS');
+  });
+
+  await test('steering spawn error marks dispatch as ERROR', () => {
+    const spawnErrorBlock = engineSrc.slice(
+      engineSrc.indexOf("resumeProc.on('error'"),
+      engineSrc.indexOf("resumeProc.on('error'") + 500
+    );
+    assert.ok(spawnErrorBlock.includes('DISPATCH_RESULT.ERROR'),
+      'Spawn error should mark dispatch as ERROR so work item retries');
+    assert.ok(!spawnErrorBlock.includes('DISPATCH_RESULT.SUCCESS'),
+      'Spawn error should NOT mark dispatch as SUCCESS');
+  });
+
+  // ── Fast poll interval ─────────────────────────────────────────────────────
+
+  await test('fast poll runs every 1s for responsive steering', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('}, 1000)'),
+      'Fast poll interval should be 1000ms (1s) for responsive steering');
+  });
+
+  // ── Steering UX: live-stream frontend ─────────────────────────────────────
+
+  await test('sendSteering shows immediate feedback in live output', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('function sendSteering'),
+      'live-stream.js should export sendSteering');
+    assert.ok(liveSrc.includes('steer-pending'),
+      'Should show pending indicator in user message bubble');
+    assert.ok(liveSrc.includes('Sending...'),
+      'Should show "Sending..." status immediately');
+  });
+
+  await test('sendSteering polls for agent acknowledgment', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('ackInterval') || liveSrc.includes('ackChecks'),
+      'Should poll for agent response after steering');
+    assert.ok(liveSrc.includes('Agent acknowledged') || liveSrc.includes('agent acknowledged'),
+      'Should show acknowledgment when agent responds');
+  });
+
+  await test('sendSteering pauses polling during send', () => {
+    const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
+    assert.ok(liveSrc.includes('_steerInFlight'),
+      'Should track in-flight state to pause polling');
+  });
+
+  await test('steer input exists in detail panel live tab', () => {
+    const detailSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'detail-panel.js'), 'utf8');
+    assert.ok(detailSrc.includes('live-steer-input'),
+      'Detail panel live tab should have steer input field');
+    assert.ok(detailSrc.includes('sendSteering()'),
+      'Input should call sendSteering on Enter or button click');
+  });
+
+  // ── Steering edge cases ───────────────────────────────────────────────────
+
+  await test('checkSteering kills process tree on Unix (pkill fallback)', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    assert.ok(timeoutSrc.includes('pkill') && timeoutSrc.includes('-P'),
+      'Stale steering recovery should attempt process tree kill on Unix');
+  });
+
+  await test('spawn-agent.js skips system prompt on resume', () => {
+    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    const resumeBlock = spawnSrc.slice(spawnSrc.indexOf('if (isResume)'), spawnSrc.indexOf('if (isResume)') + 200);
+    assert.ok(resumeBlock.includes("cliArgs = ['-p'") && !resumeBlock.includes('system-prompt'),
+      'Resume should use -p without --system-prompt-file (session has its own context)');
+  });
+
+  await test('steering prompt piped via stdin through spawn-agent', () => {
+    const spawnSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'spawn-agent.js'), 'utf8');
+    assert.ok(spawnSrc.includes('proc.stdin.write(prompt)'),
+      'spawn-agent should write prompt to Claude CLI stdin');
+    assert.ok(spawnSrc.includes('proc.stdin.end()'),
+      'spawn-agent should close stdin after writing prompt');
+  });
+
   // Functional test: checkSteering with mock activeProcesses
   await test('checkSteering functional: finds steer.md and sets flags', () => {
     const restore = createTestMinionsDir();
