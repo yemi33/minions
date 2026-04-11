@@ -193,6 +193,12 @@ function renderPrdProgress(prog) {
       requeueBtn = '<span onclick="event.stopPropagation();prdItemRequeue(\'' + escHtml(wi ? wi.id : i.id) + '\',\'' + escHtml(wi ? (wi._source || '') : '') + '\',\'' + escHtml(i.source || '') + '\')" style="color:var(--green);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.3);border-radius:3px" title="Requeue this work item">retry</span>';
     }
 
+    // Re-open button for done items — sets PRD item to "updated" so engine re-dispatches
+    const isDone = i.status === 'done' || (wi && wi.status === 'done');
+    const reopenBtn = isDone
+      ? '<span onclick="event.stopPropagation();prdItemReopen(\'' + escHtml(i.source || '') + '\',\'' + escHtml(i.id) + '\')" style="color:var(--blue);cursor:pointer;font-size:9px;padding:1px 5px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:3px" title="Re-open: set to updated so engine re-dispatches on existing branch">re-open</span>'
+      : '';
+
     return '<div class="prd-item-row st-' + (i.status || 'missing') + '" style="flex-wrap:wrap;cursor:pointer" onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')">' +
       statusBadge(i.status, i.id) +
       '<span class="prd-item-id">' + escHtml(i.id) + '</span>' +
@@ -200,6 +206,7 @@ function renderPrdProgress(prog) {
       wiLabel +
       agentLabel +
       requeueBtn +
+      reopenBtn +
       (projBadges ? '<span>' + projBadges + '</span>' : '') +
       (prLinks ? '<span>' + prLinks + '</span>' : '') +
       branchLabel +
@@ -766,6 +773,29 @@ async function prdItemRequeue(workItemId, source, prdFile) {
   }
 }
 
+async function prdItemReopen(source, itemId) {
+  if (!confirm('Re-open this item? It will be set to "updated" and the engine will re-dispatch it on the existing branch.')) return;
+  try {
+    // Set item to "updated" + clear stale flag + approve so materializer picks it up
+    const res = await fetch('/api/prd-items/update', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, itemId, status: 'updated' })
+    });
+    if (res.ok) {
+      // Also approve the plan (clears planStale so materializer runs)
+      await fetch('/api/plans/approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: source, skipRegen: true })
+      });
+      showToast('cmd-toast', 'Item re-opened — will dispatch on next tick', true);
+      refresh();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      alert('Re-open failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
 async function _planApproveAction(prdFile, skipRegen, confirmMsg, successMsg) {
   if (!confirm(confirmMsg)) return;
   try {
@@ -866,4 +896,4 @@ function openArchive(i) {
   document.getElementById('modal').classList.add('open');
 }
 
-window.MinionsPrd = { renderPrd, renderPrdProgress, openArchivedPrdModal, showArchivedPrdDetail, prdItemEdit, prdItemSave, prdItemRemove, prdItemRequeue, prdRegenerate, openArchive };
+window.MinionsPrd = { renderPrd, renderPrdProgress, openArchivedPrdModal, showArchivedPrdDetail, prdItemEdit, prdItemSave, prdItemRemove, prdItemRequeue, prdItemReopen, prdRegenerate, openArchive };
