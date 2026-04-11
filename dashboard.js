@@ -1876,6 +1876,9 @@ const server = http.createServer(async (req, res) => {
       global._kbSweepInFlight = false;
     }
     if (global._kbSweepInFlight) return jsonReply(res, 409, { error: 'sweep already in progress' });
+    // Generation token prevents stale finally blocks from clearing the flag for a new sweep
+    const sweepToken = Date.now() + Math.random();
+    global._kbSweepToken = sweepToken;
     global._kbSweepInFlight = true;
     global._kbSweepStartedAt = Date.now();
     try {
@@ -2017,7 +2020,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
       return jsonReply(res, 200, { ok: true, summary, plan });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { global._kbSweepInFlight = false; }
+    } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { if (global._kbSweepToken === sweepToken) global._kbSweepInFlight = false; }
   }
 
   async function handlePlansList(req, res) {

@@ -108,7 +108,9 @@ function _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTur
   const sysPath = path.join(tmpDir, `${label}-sys-${id}.md`);
   safeWrite(promptPath, promptText);
   safeWrite(sysPath, sysPromptText || '');
-  cleanupFiles.push(promptPath, sysPath);
+  // spawn-agent.js derives a PID file from prompt path — include it in cleanup to prevent leaks
+  const pidPath = promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid');
+  cleanupFiles.push(promptPath, sysPath, pidPath);
 
   const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
   const args = [
