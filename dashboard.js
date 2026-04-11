@@ -2250,10 +2250,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
           diffAwareQueued = shared.queuePlanToPrd({
             planFile: plan.source_plan, prdFile: body.file,
             title: `Update PRD from revised plan: ${plan.source_plan}`,
-            description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${body.file}\n\n` +
-              `Source plan was revised. This is a diff-aware update — read the existing PRD and compare against the updated plan.\n\n` +
+            description: `mode: diff-aware-update\nPlan file: plans/${plan.source_plan}\nPRD file: prd/${body.file}\n\n` +
+              `Source plan was revised. Read the existing PRD and compare against the updated plan.\n\n` +
               `**Existing implementation state:**\n${implContext}\n\n` +
-              `Follow the "Updating an Existing PRD" section in the playbook. Key: items whose requirements changed must be set to status "updated" (not "done") so the engine re-opens them.`,
+              `Follow the "Updating an Existing PRD" section in the playbook. Items whose requirements changed MUST be set to status "updated" (not "done") so the engine re-opens them.`,
             project: targetProject.name, createdBy: 'dashboard:plan-resume',
             extra: { _existingPrdFile: body.file },
           });

@@ -93,7 +93,7 @@ Rules for items:
 
 ## Updating an Existing PRD
 
-If the task description mentions **"existing implementation state"**, you are updating an existing PRD, not creating one from scratch. The plan was revised and you need to produce an updated PRD that reflects the changes while preserving existing work.
+If the task description contains `mode: diff-aware-update`, you are updating an existing PRD, not creating one from scratch. The plan was revised and you need to produce an updated PRD that reflects the changes while preserving existing work.
 
 **Rules for diff-aware updates:**
 - **Read the existing PRD file first** — it's at `{{team_root}}/prd/{{prd_filename}}`
