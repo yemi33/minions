@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.882 (2026-04-11)
+
+### Features
+-  add 13 missing CC action types for full dashboard parity
+
+### Fixes
+- suppress false [steering-failed] banner when agent responded (closes #894) (#896)
+- delete .backup sidecar when archiving PRD
+-  CC action bugs + security guard on generic fallback
+- reset central work-items.json on agent kill (closes #890) (#891)
+- include started_at in done/error agent status so duration renders
+
+### Other
+- simplify: fix CC regenerate-plan field name, remove dead revise-and-regenerate handler
+- remove doc-chat plan auto-pause in favour of stale banner only
+- simplify: CC actions cleanup — missing wakeEngine, redundant refresh, hardened fallback
+
 ## 0.1.873 (2026-04-11)
 
 ### Features
