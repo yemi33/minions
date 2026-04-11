@@ -228,15 +228,20 @@ const commands = {
         const agentId = item.agent;
         const outputPath = path.join(MINIONS_DIR, 'agents', agentId, 'live-output.log');
         try {
-          const stat = fs.statSync(outputPath);
           const output = fs.readFileSync(outputPath, 'utf8');
 
-          // Check for completion markers in output
-          const hasResult = output.includes('"type":"result"') || output.includes('"type": "result"');
-          const hasError = output.includes('"is_error":true') || output.includes('"is_error": true');
-          if (!hasResult && !hasError) continue;
+          // Only process if the session actually emitted a result line — no result means the
+          // session was still running when the engine died and should be requeued, not failed.
+          // Tool-level is_error:true (e.g. a Read on a missing file) must not be confused with
+          // a session-level error, so we scope the is_error check to the result line only.
+          const resultIdx = output.search(/"type"\s*:\s*"result"/);
+          if (resultIdx === -1) continue;
 
-          let isSuccess = hasResult && !hasError;
+          const resultLineEnd = output.indexOf('\n', resultIdx);
+          const resultLine = output.slice(resultIdx, resultLineEnd === -1 ? output.length : resultLineEnd);
+          const hasError = resultLine.includes('"is_error":true') || resultLine.includes('"is_error": true');
+
+          let isSuccess = !hasError;
 
           // Extract PRs from output first — if PRs were created, the agent succeeded
           // regardless of intermediate error lines in the log
