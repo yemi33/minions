@@ -2251,14 +2251,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
             planFile: plan.source_plan, prdFile: body.file,
             title: `Update PRD from revised plan: ${plan.source_plan}`,
             description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${body.file}\n\n` +
-              `Source plan was revised. Compare the updated plan against existing PRD and produce an updated version.\n\n` +
-              `**Current PRD implementation state:**\n${implContext}\n\n` +
-              `**Rules for updating:**\n` +
-              `- Items that are done and unchanged in the plan → keep status "done" (preserve their ID)\n` +
-              `- Items that are done but modified in the plan (new requirements) → set status "updated" (engine will re-open)\n` +
-              `- New items in the plan → set status "missing" (engine will materialize)\n` +
-              `- Items removed from the plan → drop from PRD (engine will cancel pending WIs)\n` +
-              `- Preserve all existing item IDs for unchanged/modified items — do NOT generate new IDs for them`,
+              `Source plan was revised. This is a diff-aware update — read the existing PRD and compare against the updated plan.\n\n` +
+              `**Existing implementation state:**\n${implContext}\n\n` +
+              `Follow the "Updating an Existing PRD" section in the playbook. Key: items whose requirements changed must be set to status "updated" (not "done") so the engine re-opens them.`,
             project: targetProject.name, createdBy: 'dashboard:plan-resume',
             extra: { _existingPrdFile: body.file },
           });
