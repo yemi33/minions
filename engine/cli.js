@@ -360,8 +360,8 @@ const commands = {
     // Start tick loop
     const tickTimer = setInterval(() => e.tick(), interval);
 
-    // Fast poll: check steering every 3s (lightweight — just fs.stat per agent)
-    // and wakeup signals every 3s (control.json read)
+    // Fast poll: check steering every 1s (lightweight — just fs.stat per agent)
+    // and wakeup signals every 1s (control.json read)
     const { checkSteering } = require('./timeout');
     const fastPollTimer = setInterval(() => {
       try { checkSteering(); } catch {}
@@ -371,7 +371,7 @@ const commands = {
         safeWrite(CONTROL_PATH, ctrl);
         e.tick();
       }
-    }, 3000);
+    }, 1000);
 
     // Teams inbox poll timer — process incoming Teams messages through CC
     const teams = require('./teams');
