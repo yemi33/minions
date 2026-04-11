@@ -1899,14 +1899,29 @@ async function discoverFromPrs(config, project) {
     // PRs with merge conflicts — dispatch fix to resolve
     if (pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
       const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
-      if (!isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
+      // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
+      // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
+      // a successful push. _conflictFixedAt is cleared when the poller confirms clean status.
+      const conflictFixedAt = pr._conflictFixedAt;
+      const withinLag = conflictFixedAt && Date.now() - new Date(conflictFixedAt).getTime() < 10 * 60 * 1000;
+      if (!withinLag && !isAlreadyDispatched(key) && !isOnCooldown(key, cooldownMs)) {
         const agentId = resolveAgent('fix', config, pr.agent);
         if (agentId) {
           const item = buildPrDispatch(agentId, config, project, pr, 'fix', {
             pr_id: pr.id, pr_branch: pr.branch || '',
             review_note: `This PR has merge conflicts with the target branch. Resolve the conflicts:\n\n1. Pull latest from main/master\n2. Resolve all conflicts (prefer PR branch changes unless main has critical fixes)\n3. Build and test after resolving\n4. Push the resolved branch`,
           }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-          if (item) { newWork.push(item); setCooldown(key); }
+          if (item) {
+            newWork.push(item);
+            setCooldown(key);
+            // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
+            try {
+              mutatePullRequests(projectPrPath(project), prs => {
+                const target = prs.find(p => p.id === pr.id);
+                if (target) target._conflictFixedAt = new Date().toISOString();
+              });
+            } catch (e) { log('warn', `conflict-fix timestamp: ${e.message}`); }
+          }
         }
       }
     }

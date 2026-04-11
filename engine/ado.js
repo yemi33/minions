@@ -485,6 +485,7 @@ async function pollPrStatus(config) {
       }
     } else if (pr._mergeConflict) {
       delete pr._mergeConflict;
+      delete pr._conflictFixedAt; // ADO confirmed clean — allow re-dispatch if conflicts recur
       updated = true;
     }
 
