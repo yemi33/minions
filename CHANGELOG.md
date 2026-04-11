@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.838 (2026-04-11)
+
+### Features
+-  per-item Re-open button on done PRD items (deterministic fallback)
+-  stale PRD shows Regenerate PRD + Resume as-is buttons
+
+### Fixes
+-  use structured marker for diff-aware PRD update detection
+-  match playbook trigger phrase for diff-aware PRD updates
+-  engine only flags stale on plan revision, never auto-regenerates
+-  only 'updated' re-opens done work items, remove 'planned' status
+-  revert doc-chat MAX_HEIGHT to 500px
+-  hide plan card action buttons when stale banner is showing
+-  hide conflicting action buttons when stale PRD banner is showing
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
+### Other
+- remove: /api/prd/regenerate endpoint (destructive delete + fresh gen)
+- refactor: migrate handlePrdRegenerate and handlePlansExecute to queuePlanToPrd
+- refactor: add PRD_ITEM_STATUS/PRD_MATERIALIZABLE constants, extract queuePlanToPrd
+- refactor: remove dead criteria variable, DRY plan resume functions
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
