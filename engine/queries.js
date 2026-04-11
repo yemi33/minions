@@ -955,7 +955,7 @@ function getPrdInfo(config) {
     // Work item status is source of truth when available (PRD JSON may lag behind)
     // If PRD says dispatched/failed but no work item exists, treat as pending (orphaned — #779)
     const rawStatus = wi ? (wi.status || item.status)
-      : ((item.status === 'dispatched' || item.status === 'failed') ? 'pending' : item.status);
+      : ((item.status === WI_STATUS.DISPATCHED || item.status === WI_STATUS.FAILED) ? WI_STATUS.PENDING : item.status);
     item.status = statusDisplay[rawStatus] || rawStatus || 'missing';
     // Attach execution metadata for display (agent, PR link, fail reason)
     if (wi) {
@@ -991,6 +991,7 @@ function getPrdInfo(config) {
       description: i.description || '', projects: i.projects || [],
       prs: prdToPr[i.id] || [], depends_on: i.depends_on || [],
       project: i.project || '', source: i._source || '', planSummary: i._planSummary || '', planProject: i._planProject || '', planStatus: i._planStatus || 'active', _archived: i._archived || false, sourcePlan: i._sourcePlan || '',
+      branchStrategy: i._branchStrategy || 'parallel',
       planStale: i._planStale || false, lastSyncedFromPlan: i._lastSyncedFromPlan || null, prdUpdatedAt: i._prdUpdatedAt || null, prdCompletedAt: i._prdCompletedAt || '',
       agent: i._agent || '', failReason: i._failReason || '',
     })),

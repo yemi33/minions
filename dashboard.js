@@ -20,6 +20,7 @@ const _dashboardVersion = {
 };
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
+const teams = require('./engine/teams');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
@@ -38,6 +39,7 @@ function reloadConfig() {
 }
 
 const PLANS_DIR = path.join(MINIONS_DIR, 'plans');
+const TEAMS_INBOX_PATH = path.join(ENGINE_DIR, 'teams-inbox.json');
 
 // Resolve a plan/PRD file path: .json files live in prd/, .md files in plans/
 // Validates that the file stays within the expected directory to prevent path traversal.
@@ -461,7 +463,8 @@ setInterval(() => {
 
 // ── Command Center: session state + helpers ─────────────────────────────────
 
-const CC_SESSION_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
+// Sessions never expire by time — user controls lifecycle via tabs (new tab = new session, /clear = reset).
+// Only invalidated by: system prompt change, explicit clear, or tab close.
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
@@ -477,17 +480,13 @@ function ccSessionValid() {
     ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
     return false;
   }
-  const age = Date.now() - new Date(ccSession.lastActiveAt || 0).getTime();
-  return age < CC_SESSION_EXPIRY_MS && ccSession.turnCount < CC_SESSION_MAX_TURNS;
+  return ccSession.turnCount < CC_SESSION_MAX_TURNS;
 }
 
 // Load persisted CC session on startup
 try {
   const saved = safeJson(path.join(ENGINE_DIR, 'cc-session.json'));
-  if (saved && saved.sessionId) {
-    const age = Date.now() - new Date(saved.lastActiveAt || 0).getTime();
-    if (age < CC_SESSION_EXPIRY_MS) ccSession = saved;
-  }
+  if (saved && saved.sessionId) ccSession = saved;
 } catch { /* optional */ }
 
 // Static system prompt — baked into session on creation, never changes
@@ -584,10 +583,8 @@ const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
-    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      const age = now - new Date(s.lastActiveAt || 0).getTime();
-      if (age < CC_SESSION_EXPIRY_MS && s.turnCount < CC_SESSION_MAX_TURNS) {
+      if (s.turnCount < CC_SESSION_MAX_TURNS) {
         docSessions.set(key, s);
       }
     }
@@ -608,8 +605,7 @@ function resolveSession(store, key) {
   if (!key) return null;
   const s = docSessions.get(key);
   if (!s) return null;
-  const age = Date.now() - new Date(s.lastActiveAt).getTime();
-  if (age > CC_SESSION_EXPIRY_MS || s.turnCount >= CC_SESSION_MAX_TURNS) {
+  if (s.turnCount >= CC_SESSION_MAX_TURNS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -752,7 +748,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     store: 'doc', sessionKey,
     extraContext: docContext, label: 'doc-chat',
     allowedTools: canEdit ? 'Read,Write,Edit,Glob,Grep' : 'Read,Glob,Grep',
-    maxTurns: canEdit ? 15 : 10,
+    maxTurns: canEdit ? 25 : 10,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
   });
@@ -1046,7 +1042,74 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
-      if (!wiPath) return jsonReply(res, 404, { error: 'work item not found in any source' });
+      // If no work item found, attempt to re-materialize from PRD item definition
+      if (!wiPath) {
+        const prdFile = body.prdFile;
+        if (!prdFile) return jsonReply(res, 404, { error: 'work item not found in any source' });
+
+        // Look up PRD item to create a new work item on-demand
+        const prdPath = path.join(PRD_DIR, prdFile);
+        const plan = shared.safeJson(prdPath);
+        if (!plan?.missing_features) return jsonReply(res, 404, { error: 'PRD file not found or invalid' });
+        const prdItem = plan.missing_features.find(f => f.id === id);
+        if (!prdItem) return jsonReply(res, 404, { error: 'PRD item not found in ' + prdFile });
+
+        // Determine target work-items file (project from PRD item or plan, fallback to central)
+        const projName = prdItem.project || plan.project || prdFile.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
+        const proj = PROJECTS.find(p => p.name?.toLowerCase() === projName.toLowerCase());
+        const targetWiPath = proj ? shared.projectWorkItemsPath(proj) : path.join(MINIONS_DIR, 'work-items.json');
+
+        // Create new work item from PRD item definition (same logic as materializePlansAsWorkItems)
+        const complexity = prdItem.estimated_complexity || 'medium';
+        const criteria = (prdItem.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+        const newItem = {
+          id,
+          title: `Implement: ${prdItem.name}`,
+          type: complexity === 'large' ? 'implement:large' : 'implement',
+          priority: prdItem.priority || 'medium',
+          description: `${prdItem.description || ''}\n\n**Plan:** ${prdFile}\n**Plan Item:** ${prdItem.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
+          status: WI_STATUS.PENDING,
+          created: new Date().toISOString(),
+          createdBy: 'dashboard:prd-retry',
+          sourcePlan: prdFile,
+          depends_on: prdItem.depends_on || [],
+          branchStrategy: plan.branch_strategy || 'parallel',
+          featureBranch: plan.feature_branch || null,
+          project: prdItem.project || plan.project || null,
+          _source: proj?.name || 'central',
+          _retryCount: 0,
+        };
+        mutateWorkItems(targetWiPath, items => { items.push(newItem); });
+
+        // Reset PRD item status to pending
+        try {
+          const lifecycle = require('./engine/lifecycle');
+          lifecycle.syncPrdItemStatus(id, WI_STATUS.PENDING, prdFile);
+        } catch (e) { console.error('PRD status sync:', e.message); }
+
+        // Clear dispatch history and cooldowns for this item
+        const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+        const sourcePrefix = proj ? `work-${proj.name}-` : 'central-work-';
+        const dispatchKey = sourcePrefix + id;
+        try {
+          mutateJsonFileLocked(dispatchPath, (dispatch) => {
+            dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+            dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
+            dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
+            return dispatch;
+          }, { defaultValue: { pending: [], active: [], completed: [] } });
+        } catch (e) { console.error('dispatch cleanup:', e.message); }
+        try {
+          const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+          const cooldowns = safeJsonObj(cooldownPath);
+          if (cooldowns[dispatchKey]) {
+            delete cooldowns[dispatchKey];
+            safeWrite(cooldownPath, cooldowns);
+          }
+        } catch (e) { console.error('cooldown cleanup:', e.message); }
+
+        return jsonReply(res, 200, { ok: true, id, rematerialized: true });
+      }
 
       let found = false;
       mutateJsonFileLocked(wiPath, (items) => {
@@ -1151,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
       if (item && item.sourcePlan) {
         try {
           const lifecycle = require('./engine/lifecycle');
-          lifecycle.syncPrdItemStatus(id, 'pending', item.sourcePlan);
+          lifecycle.syncPrdItemStatus(id, WI_STATUS.PENDING, item.sourcePlan);
         } catch (e) { console.error('PRD status reset on delete:', e.message); }
       }
 
@@ -2161,6 +2224,9 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         }, { defaultValue: { pending: [], active: [], completed: [] } });
       }
 
+      // Teams notification for plan approval — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-approved').catch(() => {}); } catch {}
+
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, status: 'approved', resumedWorkItems: resumed });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
@@ -2369,6 +2435,10 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.rejectedBy = body.rejectedBy || os.userInfo().username;
       if (body.reason) plan.rejectionReason = body.reason;
       safeWrite(planPath, plan);
+
+      // Teams notification for plan rejection — non-blocking
+      try { teams.teamsNotifyPlanEvent({ name: plan.plan_summary || body.file, file: body.file }, 'plan-rejected').catch(() => {}); } catch {}
+
       return jsonReply(res, 200, { ok: true, status: 'rejected' });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
@@ -2815,12 +2885,21 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
+  const docChatInFlight = new Set(); // per-document concurrency guard
   async function handleDocChat(req, res) {
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
       if (!body.document) return jsonReply(res, 400, { error: 'document required' });
 
+      // Per-document concurrency guard — prevent parallel writes to same file
+      const docKey = body.filePath || body.title || 'default';
+      if (docChatInFlight.has(docKey)) {
+        return jsonReply(res, 429, { error: 'This document is already being processed — wait for the current response.' });
+      }
+      docChatInFlight.add(docKey);
+
+      try {
       const canEdit = !!body.filePath;
       const isJson = body.filePath?.endsWith('.json');
       let currentContent = body.document;
@@ -2946,6 +3025,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions, pausedPrd });
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
+      } finally { docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -3350,8 +3430,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightTabs.add(tabId);
 
       try {
+        let sessionReset = false;
         if (body.sessionId && body.sessionId !== ccSession.sessionId) {
           ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+        }
+        // Detect prompt hash change — force fresh session
+        if (body.sessionId && ccSession._promptHash && ccSession._promptHash !== _ccPromptHash) {
+          ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
+          sessionReset = true;
         }
         const wasResume = !!(body.sessionId && body.sessionId === ccSession.sessionId && ccSessionValid());
 
@@ -3373,7 +3459,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           });
         }
 
-        return jsonReply(res, 200, { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume });
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        if (!tabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
+        const reply = { ...parseCCActions(result.text), sessionId: ccSession.sessionId, newSession: !wasResume };
+        if (sessionReset) reply.sessionReset = true;
+        return jsonReply(res, 200, reply);
       } finally {
         ccInFlightTabs.delete(tabId);
       }
@@ -3405,7 +3498,17 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       try {
         // Session management — per-tab: use sessionId from request, don't mutate global ccSession
-        const tabSessionId = body.sessionId || null;
+        let tabSessionId = body.sessionId || null;
+        let sessionReset = false;
+        // If system prompt changed since this session was created, force a fresh session
+        if (tabSessionId) {
+          const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
+          const tabEntry = sessions.find(s => s.id === (body.tabId || 'default'));
+          if (tabEntry && tabEntry._promptHash && tabEntry._promptHash !== _ccPromptHash) {
+            tabSessionId = null;
+            sessionReset = true;
+          }
+        }
         const wasResume = !!tabSessionId;
         const sessionId = tabSessionId || null;
         const preamble = wasResume ? '' : buildCCStatePreamble();
@@ -3459,10 +3562,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             if (existing) {
               existing.sessionId = responseSessionId;
               existing.lastActiveAt = new Date(now).toISOString();
-              existing.turnCount = (existing.turnCount || 0) + 1;
+              existing.turnCount = sessionReset ? 1 : (existing.turnCount || 0) + 1;
               existing.preview = preview;
+              existing._promptHash = _ccPromptHash;
             } else {
-              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview });
+              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -3470,7 +3574,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         // Send final result with actions
         const { text: displayText, actions } = parseCCActions(result.text);
-        res.write('data: ' + JSON.stringify({ type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume }) + '\n\n');
+        const donePayload = { type: 'done', text: displayText, actions, sessionId: responseSessionId, newSession: !wasResume };
+        if (sessionReset) donePayload.sessionReset = true;
+        res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
+
+        // Mirror CC response to Teams (non-blocking, skip Teams-originated)
+        const _streamTabId = body.tabId || 'default';
+        if (!_streamTabId.startsWith('teams-')) {
+          teams.teamsPostCCResponse(body.message, result.text).catch(() => {});
+        }
+
         _ccStreamEnded = true; res.end();
       } finally {
         ccInFlightTabs.delete(tabId);
@@ -3608,6 +3721,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       if (!config.claude) config.claude = {};
       if (!config.agents) config.agents = {};
 
+      const _clamped = [];
       if (body.engine) {
         const e = body.engine;
         const D = shared.ENGINE_DEFAULTS;
@@ -3621,14 +3735,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
         };
-        const clamped = [];
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {
             let val = Number(e[key]) || D[key];
             const raw = val;
             val = Math.max(min, val);
             if (max !== undefined) val = Math.min(max, val);
-            if (val !== raw) clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
+            if (val !== raw) _clamped.push(`${key}: ${raw} → ${val} (range: ${min}–${max || '∞'})`);
             config.engine[key] = val;
           }
         }
@@ -3659,6 +3772,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Eval loop settings
         if (e.evalMaxIterations !== undefined) config.engine.evalMaxIterations = Math.max(1, Math.min(10, Number(e.evalMaxIterations) || D.evalMaxIterations));
         if (e.evalMaxCost !== undefined) config.engine.evalMaxCost = e.evalMaxCost === null || e.evalMaxCost === '' ? null : Math.max(0, Number(e.evalMaxCost) || 0);
+        if (e.ignoredCommentAuthors !== undefined) {
+          config.engine.ignoredCommentAuthors = String(e.ignoredCommentAuthors || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+        }
       }
 
       if (body.claude) {
@@ -3689,10 +3805,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       reloadConfig();
       invalidateStatusCache();
       console.log('[settings] Saved config.json — engine keys:', Object.keys(config.engine || {}));
-      const msg = clamped.length > 0
-        ? 'Settings saved. Some values were adjusted: ' + clamped.join('; ')
+      const msg = (_clamped.length > 0)
+        ? 'Settings saved. Some values were adjusted: ' + _clamped.join('; ')
         : 'Settings saved. Engine picks up changes on next tick.';
-      return jsonReply(res, 200, { ok: true, message: msg, clamped });
+      return jsonReply(res, 200, { ok: true, message: msg, clamped: _clamped });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
@@ -3760,6 +3876,93 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       }
     } catch (e) {
       return jsonReply(res, 500, { error: e.message }, req);
+    }
+  }
+
+  // ── Teams Bot Handler ─────────────────────────────────────────────────────
+
+  async function handleTeamsBot(req, res) {
+    if (!teams.isTeamsEnabled()) {
+      return jsonReply(res, 503, { error: 'Teams integration disabled' }, req);
+    }
+    const adapter = teams.createAdapter();
+    if (!adapter) {
+      return jsonReply(res, 503, { error: 'Teams adapter unavailable' }, req);
+    }
+    try {
+      await adapter.process(req, res, async (context) => {
+        const activity = context.activity;
+        const cfg = teams.getTeamsConfig();
+
+        // Save conversation reference on install/member events
+        if (activity.type === 'conversationUpdate' && activity.membersAdded?.length) {
+          const ref = context.activity.conversation?.id;
+          if (ref) {
+            const convRef = {
+              activityId: activity.id,
+              user: activity.from,
+              bot: activity.recipient,
+              conversation: activity.conversation,
+              channelId: activity.channelId,
+              locale: activity.locale,
+              serviceUrl: activity.serviceUrl,
+            };
+            teams.saveConversationRef(activity.conversation.id, convRef);
+            shared.log('info', `Teams conversationUpdate: saved ref for ${activity.conversation.id}`);
+          }
+        }
+
+        if (activity.type === 'installationUpdate') {
+          const convRef = {
+            activityId: activity.id,
+            user: activity.from,
+            bot: activity.recipient,
+            conversation: activity.conversation,
+            channelId: activity.channelId,
+            locale: activity.locale,
+            serviceUrl: activity.serviceUrl,
+          };
+          if (activity.conversation?.id) {
+            teams.saveConversationRef(activity.conversation.id, convRef);
+            shared.log('info', `Teams installationUpdate: saved ref for ${activity.conversation.id}`);
+          }
+        }
+
+        // Handle incoming messages
+        if (activity.type === 'message' && activity.text) {
+          // Filter bot's own echo messages
+          if (activity.from?.id === cfg.appId) return;
+
+          const msgId = `teams-${Date.now()}-${shared.uid()}`;
+          const convRef = {
+            activityId: activity.id,
+            user: activity.from,
+            bot: activity.recipient,
+            conversation: activity.conversation,
+            channelId: activity.channelId,
+            locale: activity.locale,
+            serviceUrl: activity.serviceUrl,
+          };
+          mutateJsonFileLocked(TEAMS_INBOX_PATH, (inbox) => {
+            if (!Array.isArray(inbox)) inbox = [];
+            inbox.push({
+              id: msgId,
+              text: activity.text,
+              from: activity.from?.name || activity.from?.id || 'unknown',
+              conversationRef: convRef,
+              receivedAt: new Date().toISOString(),
+              _processedAt: null,
+            });
+            return inbox;
+          }, { defaultValue: [] });
+          shared.log('info', `Teams message received from ${activity.from?.name || 'unknown'}: ${activity.text.slice(0, 80)}`);
+        }
+      });
+    } catch (err) {
+      shared.log('warn', `Teams bot handler error: ${err.message}`);
+      if (!res.headersSent) {
+        return jsonReply(res, 500, { error: 'Bot processing failed' }, req);
+      }
     }
   }
 
@@ -3963,13 +4166,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           description: '',
           agent: 'human',
           branch: '',
-          reviewStatus: autoObserve ? 'pending' : 'none',
-          status: autoObserve ? 'active' : 'linked',
+          reviewStatus: 'pending',
+          status: 'active',
           created: new Date().toISOString(),
           url,
           prdItems: [],
           _manual: true,
-          _autoObserve: !!autoObserve,
+          _contextOnly: !autoObserve,
           _context: context || '',
         });
         return prs;
@@ -4366,6 +4569,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
+
+    // Teams Bot Framework webhook
+    { method: 'POST', path: '/api/bot', desc: 'Bot Framework webhook for Teams integration', handler: handleTeamsBot },
   ];
 
   // ── Route Dispatcher ────────────────────────────────────────────────────────

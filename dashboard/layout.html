@@ -109,6 +109,9 @@
     </div>
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-qa" id="modal-qa" style="display:none">
+      <div id="qa-expand-bar" style="display:none;text-align:center;padding:2px 0">
+        <button style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()" title="Expand thread">&#x25B2; Expand chat</button>
+      </div>
       <div id="modal-qa-thread-wrap" style="display:none">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <button id="qa-clear-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="clearQaConversation()" title="Clear conversation">Clear</button>

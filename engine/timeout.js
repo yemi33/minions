@@ -193,7 +193,7 @@ function checkTimeouts(config) {
         fs.closeSync(fd);
         liveLog = buf.toString('utf8');
       } catch { /* ENOENT or read failure — liveLog stays undefined */ }
-      if (liveLog && (liveLog.includes('"type":"result"') || liveLog.includes('[process-exit]'))) {
+      if (liveLog && (liveLog.includes('"type":"result"') || liveLog.includes('\n[process-exit]'))) {
         completedViaOutput = true;
         const isSuccess = liveLog.includes('"subtype":"success"');
         log('info', `Agent ${item.agent} (${item.id}) completed via output detection (${isSuccess ? 'success' : 'error'})`);
@@ -237,7 +237,7 @@ function checkTimeouts(config) {
         if (liveLog) {
           // If the output contains a result event or process-exit sentinel, the agent is done.
           // Don't extend timeout for stale blocking tool calls from before the result (#716).
-          if (liveLog.includes('"type":"result"') || liveLog.includes('[process-exit]')) {
+          if (liveLog.includes('"type":"result"') || liveLog.includes('\n[process-exit]')) {
             // Agent completed but close event didn't fire — let orphan/hung detection handle it.
             // Don't set isBlocking — use base heartbeat timeout.
           } else {
@@ -316,6 +316,12 @@ function checkTimeouts(config) {
       const procInfo = activeProcesses.get(item.id);
       if (procInfo) {
         shared.killGracefully(procInfo.proc, 5000);
+        // On Unix, also kill child process tree (killGracefully only hits parent PID)
+        if (process.platform !== 'win32' && procInfo.proc?.pid) {
+          setTimeout(() => {
+            try { shared.exec(`pkill -KILL -P ${procInfo.proc.pid}`, { timeout: 3000 }); } catch { /* children may already be dead */ }
+          }, 6000); // after grace period
+        }
         activeProcesses.delete(item.id);
       }
       // Clear session so retry starts fresh instead of resuming the killed session

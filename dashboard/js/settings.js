@@ -54,6 +54,7 @@ async function openSettings() {
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
       settingsField('Max Build Fix Attempts', 'set-maxBuildFixAttempts', e.maxBuildFixAttempts || 3, '', 'Max auto-fix dispatches per PR before escalating to human (1-10)') +
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
+      settingsField('Ignored Comment Authors', 'set-ignoredCommentAuthors', (e.ignoredCommentAuthors || []).join(', '), '', 'Comma-separated usernames — comments auto-closed, never trigger fixes') +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Max Turns by Task Type</h3>' +
@@ -210,6 +211,7 @@ async function saveSettings() {
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
+      ignoredCommentAuthors: document.getElementById('set-ignoredCommentAuthors').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
       ccModel: document.getElementById('set-ccModel').value,
       ccEffort: document.getElementById('set-ccEffort').value || null,

@@ -583,11 +583,10 @@ function runCleanup(config, verbose = false) {
   } catch (e) { log('warn', 'migrate PRD legacy statuses: ' + e.message); }
 
   // Reset orphaned PRD item statuses — dispatched/failed with no matching work item (#779)
+  cleaned.orphanedPrdStatuses = 0;
   try {
-    const config = queries.getConfig();
-    const allProjects = getProjects(config);
     const wiIds = new Set();
-    for (const project of allProjects) {
+    for (const project of projects) {
       const items = safeJson(projectWorkItemsPath(project)) || [];
       for (const wi of items) { if (wi?.id) wiIds.add(wi.id); }
     }
@@ -596,27 +595,120 @@ function runCleanup(config, verbose = false) {
       for (const wi of centralWi) { if (wi?.id) wiIds.add(wi.id); }
     } catch { /* optional */ }
 
-    let prdDirEntries;
-    try { prdDirEntries = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); }
-    catch { prdDirEntries = []; }
-    for (const pf of prdDirEntries) {
+    let orphanPrdEntries;
+    try { orphanPrdEntries = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); }
+    catch { orphanPrdEntries = []; }
+    for (const pf of orphanPrdEntries) {
       const prdPath = path.join(PRD_DIR, pf);
       const prd = safeJson(prdPath);
       if (!prd?.missing_features) continue;
       let reset = 0;
       for (const feat of prd.missing_features) {
-        if ((feat.status === 'dispatched' || feat.status === 'failed') && !wiIds.has(feat.id)) {
-          feat.status = 'pending';
+        if ((feat.status === shared.WI_STATUS.DISPATCHED || feat.status === shared.WI_STATUS.FAILED) && !wiIds.has(feat.id)) {
+          feat.status = shared.WI_STATUS.PENDING;
           reset++;
         }
       }
       if (reset > 0) {
         safeWrite(prdPath, prd);
         log('info', `Reset ${reset} orphaned PRD item status(es) → pending in ${pf}`);
-        cleaned++;
+        cleaned.orphanedPrdStatuses += reset;
       }
     }
   } catch (e) { log('warn', 'orphan PRD status reset: ' + e.message); }
+
+  // 10. Prune CC tab sessions — cap at 50 entries, remove oldest beyond cap
+  cleaned.ccSessions = 0;
+  try {
+    const ccSessionsPath = path.join(ENGINE_DIR, 'cc-sessions.json');
+    const sessions = shared.safeJsonArr(ccSessionsPath);
+    const CC_SESSIONS_CAP = 50;
+    if (sessions.length > CC_SESSIONS_CAP) {
+      // Sort by lastActiveAt descending, keep newest
+      sessions.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
+      const pruned = sessions.slice(0, CC_SESSIONS_CAP);
+      cleaned.ccSessions = sessions.length - pruned.length;
+      safeWrite(ccSessionsPath, pruned);
+    }
+  } catch (e) { log('warn', 'prune cc-sessions: ' + e.message); }
+
+  // 10b. Prune doc-chat sessions — cap at 100 entries, remove oldest beyond cap
+  cleaned.docSessions = 0;
+  try {
+    const docSessionsPath = path.join(ENGINE_DIR, 'doc-sessions.json');
+    const docSessions = safeJson(docSessionsPath);
+    if (docSessions && typeof docSessions === 'object') {
+      const entries = Object.entries(docSessions);
+      const DOC_SESSIONS_CAP = 100;
+      if (entries.length > DOC_SESSIONS_CAP) {
+        entries.sort((a, b) => new Date(b.lastActiveAt || 0) - new Date(a.lastActiveAt || 0));
+        const keep = Object.fromEntries(entries.slice(0, DOC_SESSIONS_CAP));
+        cleaned.docSessions = entries.length - DOC_SESSIONS_CAP;
+        safeWrite(docSessionsPath, keep);
+      }
+    }
+  } catch (e) { log('warn', 'prune doc-sessions: ' + e.message); }
+
+  // 11. Cap cooldowns.json — keep at most 500 entries (on top of 24h TTL in cooldown.js)
+  cleaned.cooldowns = 0;
+  try {
+    const cooldownPath = path.join(ENGINE_DIR, 'cooldowns.json');
+    const cooldowns = safeJson(cooldownPath);
+    if (cooldowns && typeof cooldowns === 'object') {
+      const entries = Object.entries(cooldowns);
+      const COOLDOWN_CAP = 500;
+      if (entries.length > COOLDOWN_CAP) {
+        // Keep most recent by timestamp
+        entries.sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
+        const keep = Object.fromEntries(entries.slice(0, COOLDOWN_CAP));
+        cleaned.cooldowns = entries.length - COOLDOWN_CAP;
+        safeWrite(cooldownPath, keep);
+      }
+    }
+  } catch (e) { log('warn', 'cap cooldowns: ' + e.message); }
+
+  // 12. Clean stale PID files — remove PID files whose process is no longer running
+  cleaned.pidFiles = 0;
+  try {
+    const tmpDir = path.join(ENGINE_DIR, 'tmp');
+    if (fs.existsSync(tmpDir)) {
+      let pidDirEntries;
+      try { pidDirEntries = fs.readdirSync(tmpDir); } catch { pidDirEntries = []; }
+      const activePids = new Set();
+      for (const [, info] of activeProcesses) {
+        if (info.proc?.pid) activePids.add(String(info.proc.pid));
+      }
+      for (const f of pidDirEntries) {
+        if (!f.startsWith('pid-') || !f.endsWith('.pid')) continue;
+        const fp = path.join(tmpDir, f);
+        try {
+          const pidStr = fs.readFileSync(fp, 'utf8').trim();
+          // Skip if actively tracked
+          if (activePids.has(pidStr)) continue;
+          // Check if file is stale (>1 hour old)
+          const stat = fs.statSync(fp);
+          if (stat.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(fp);
+            cleaned.pidFiles++;
+          }
+        } catch { /* cleanup */ }
+      }
+    }
+  } catch (e) { log('warn', 'clean stale PID files: ' + e.message); }
+
+  // 13. Prune test-results.json — keep last 200 entries
+  try {
+    const testResultsPath = path.join(ENGINE_DIR, 'test-results.json');
+    const results = shared.safeJsonArr(testResultsPath);
+    const TEST_RESULTS_CAP = 200;
+    if (results.length > TEST_RESULTS_CAP) {
+      safeWrite(testResultsPath, results.slice(-TEST_RESULTS_CAP));
+    }
+  } catch { /* optional — file may not exist */ }
+
+  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles > 0) {
+    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pidFiles} PID files`);
+  }
 
   return cleaned;
 }

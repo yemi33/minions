@@ -73,8 +73,10 @@ function renderMetrics(metrics) {
 
   let html = '<table class="pr-table"><thead><tr><th>Agent</th><th>Done</th><th>Errors</th><th>PRs</th><th>Approved</th><th>Rejected</th><th>Rate</th><th>Reviews</th><th>Avg Runtime</th></tr></thead><tbody>';
   for (const [id, m] of rows) {
-    const rate = m.prsCreated > 0 ? Math.round((m.prsApproved / m.prsCreated) * 100) + '%' : '-';
-    const rateColor = m.prsCreated > 0 ? (m.prsApproved / m.prsCreated >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
+    const totalTasks = (m.tasksCompleted || 0) + (m.tasksErrored || 0);
+    const ratio = totalTasks > 0 ? m.tasksCompleted / totalTasks : 0;
+    const rate = totalTasks > 0 ? Math.round(ratio * 100) + '%' : '-';
+    const rateColor = totalTasks > 0 ? (ratio >= 0.7 ? 'var(--green)' : 'var(--red)') : 'var(--muted)';
     html += '<tr>' +
       '<td style="font-weight:600">' + escHtml(id) + '</td>' +
       '<td style="color:var(--green)">' + (m.tasksCompleted || 0) + '</td>' +
