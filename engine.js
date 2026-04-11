@@ -898,7 +898,11 @@ async function spawnAgent(dispatchItem, config) {
         try { fs.unlinkSync(steerPromptPath); } catch { /* cleanup */ }
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
-          try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Resume exited with code ${resumeCode}. Your message was received but the agent could not continue the session.\n`); } catch {}
+          // Claude CLI can exit code 1 after a successful single-turn --resume session.
+          // Only show [steering-failed] if no output was produced — suppress when agent responded despite non-zero exit.
+          if (!stdout.trim()) {
+            try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Resume exited with code ${resumeCode}. Your message was received but the agent could not continue the session.\n`); } catch {}
+          }
           // Don't assume original work completed — run normal close handler to parse output and determine actual result
           onAgentClose(resumeCode);
           return;
