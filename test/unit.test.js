@@ -9195,6 +9195,67 @@ async function testEngineAuditCritical() {
     assert.ok(refreshFn.includes('openPipelineDetail(id)'), 'Should re-render detail modal');
   });
 
+  // ── Pipeline Run Now optimistic update flow ──
+
+  await test('pipeline Run Now shows optimistic running state before API call', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes("_pipelinesData.find"), 'Should find pipeline in local data');
+    assert.ok(triggerFn.includes("p.runs.push") && triggerFn.includes("status: 'running'"),
+      'Should inject optimistic running run before API call');
+    assert.ok(triggerFn.includes("openPipelineDetail(id)"),
+      'Should re-render detail modal immediately with running state');
+  });
+
+  await test('pipeline Run Now optimistic run is placed before fetch call', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    const optimisticIdx = triggerFn.indexOf("p.runs.push");
+    const fetchIdx = triggerFn.indexOf("await fetch");
+    assert.ok(optimisticIdx > 0 && fetchIdx > 0 && optimisticIdx < fetchIdx,
+      'Optimistic state injection must happen BEFORE the fetch call');
+  });
+
+  await test('pipeline Run Now shows toast before API call', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    const toastIdx = triggerFn.indexOf("showToast");
+    const fetchIdx = triggerFn.indexOf("await fetch");
+    assert.ok(toastIdx > 0 && fetchIdx > 0 && toastIdx < fetchIdx,
+      'Toast must fire BEFORE the fetch call');
+  });
+
+  await test('pipeline Run Now restores button on success before refresh', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes("if (res.ok)") && triggerFn.includes("btn.textContent = 'Run Now'"),
+      'Should restore button text on success (prevents stuck Starting...)');
+  });
+
+  await test('pipeline Run Now error path restores button and shows error toast', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes("'Run Now'") && triggerFn.includes("showToast('cmd-toast'") && triggerFn.includes("false)"),
+      'Error path should restore button + show error toast');
+  });
+
+  await test('pipeline Run Now real data replaces optimistic via _refreshPipelineDetail', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const triggerFn = src.slice(src.indexOf('async function _triggerPipeline'), src.indexOf('async function _abortPipeline'));
+    assert.ok(triggerFn.includes('_refreshPipelineDetail(id)'),
+      'Success path should call _refreshPipelineDetail to replace optimistic data with real server state');
+  });
+
+  await test('pipeline abort/retrigger restore button on success', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-pipelines.js'), 'utf8');
+    const abortFn = src.slice(src.indexOf('async function _abortPipeline'), src.indexOf('async function _retriggerPipeline'));
+    assert.ok(abortFn.includes("if (res.ok)") && abortFn.includes("btn.textContent = 'Abort'"),
+      'Abort should restore button on success');
+    const retrigFn = src.slice(src.indexOf('async function _retriggerPipeline'), src.indexOf('async function _togglePipelineEnabled'));
+    assert.ok(retrigFn.includes("if (res.ok)") && retrigFn.includes("btn.textContent = 'Retrigger'"),
+      'Retrigger should restore button on success');
+  });
+
   await test('pipeline abort cancels work items and dispatches on server', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const abortHandler = src.slice(src.indexOf("'/api/pipelines/abort'"));
