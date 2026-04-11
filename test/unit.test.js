@@ -1503,6 +1503,23 @@ async function testPlanLifecycle() {
       'lifecycle.js should have comment explaining removal');
   });
 
+  await test('plan-to-prd sets skipDoneStatus when PRD file not written (#893)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const hookStart = src.indexOf('function runPostCompletionHooks(');
+    const hookBody = src.slice(hookStart, src.indexOf('\nfunction ', hookStart + 1) || src.length);
+    // PRD file check must set skipDoneStatus BEFORE updateWorkItemStatus(DONE)
+    const prdCheckIdx = hookBody.indexOf('WORK_TYPE.PLAN_TO_PRD && effectiveSuccess');
+    const skipDoneIdx = hookBody.indexOf('skipDoneStatus = true', prdCheckIdx);
+    const doneMarkIdx = hookBody.indexOf('updateWorkItemStatus(meta, WI_STATUS.DONE');
+    assert.ok(prdCheckIdx > -1, 'lifecycle.js should check PLAN_TO_PRD with effectiveSuccess');
+    assert.ok(skipDoneIdx > -1 && skipDoneIdx < doneMarkIdx,
+      'plan-to-prd PRD check must set skipDoneStatus BEFORE the done marking (#893)');
+    assert.ok(hookBody.includes('PRD file not written'),
+      'Should use descriptive failure reason when PRD file missing');
+    assert.ok(hookBody.includes('_prdFilename'),
+      'Should check _prdFilename for deterministic PRD file lookup');
+  });
+
   await test('plan-to-prd playbook sets PRD status to awaiting-approval', () => {
     const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
     assert.ok(playbook.includes('"status": "awaiting-approval"'),
