@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.825 (2026-04-11)
+
+### Features
+-  stale PRD shows Regenerate PRD + Resume as-is buttons
+
+### Fixes
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
