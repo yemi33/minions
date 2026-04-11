@@ -446,67 +446,66 @@ async function _refreshPipelineDetail(id) {
 
 async function _triggerPipeline(id, btn) {
   if (btn) { btn.textContent = 'Starting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Pipeline triggered', true);
   try {
     var res = await fetch('/api/pipelines/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    var d = await res.json();
-    if (res.ok) { showToast('cmd-toast', 'Pipeline triggered: ' + (d.runId || ''), true); refresh(); await _refreshPipelineDetail(id); }
-    else { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); await _refreshPipelineDetail(id); }
+    else { var d = await res.json().catch(function() { return {}; }); if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function _abortPipeline(id, btn) {
   if (!confirm('Abort the active run for "' + id + '"?')) return;
   if (btn) { btn.textContent = 'Aborting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Pipeline aborted', true);
   try {
     var res = await fetch('/api/pipelines/abort', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
     if (res.ok) {
-      var d = await res.json().catch(function() { return {}; });
-      showToast('cmd-toast', 'Pipeline aborted — ' + (d.cancelledWorkItems || 0) + ' work items cancelled', true);
       refresh();
       await _refreshPipelineDetail(id);
-    } else { var d = await res.json().catch(function() { return {}; }); alert('Abort failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
-  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+    } else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Abort failed: ' + (d.error || 'unknown'), false); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
 
 async function _retriggerPipeline(id, btn) {
   if (!confirm('Abort current run and start a fresh one for "' + id + '"?')) return;
   if (btn) { btn.textContent = 'Retriggering...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Pipeline retriggered', true);
   try {
     var res = await fetch('/api/pipelines/retrigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    var d = await res.json();
     if (res.ok) {
-      showToast('cmd-toast', 'Pipeline retriggered: ' + (d.runId || ''), true);
       refresh();
       await _refreshPipelineDetail(id);
-    } else { alert('Retrigger failed: ' + (d.error || 'unknown')); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
-  } catch (e) { alert('Error: ' + e.message); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+    } else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Retrigger failed: ' + (d.error || 'unknown'), false); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
 }
 
 async function _togglePipelineEnabled(id, enabled, btn) {
   if (btn) { btn.textContent = enabled ? 'Enabling...' : 'Disabling...'; btn.style.pointerEvents = 'none'; }
+  showToast('cmd-toast', enabled ? 'Pipeline enabled' : 'Pipeline disabled', true);
   try {
     var res = await fetch('/api/pipelines/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, enabled: enabled }) });
-    if (res.ok) { showToast('cmd-toast', enabled ? 'Pipeline enabled' : 'Pipeline disabled', true); refresh(); }
-    else { alert('Failed'); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { showToast('cmd-toast', 'Failed to ' + (enabled ? 'enable' : 'disable') + ' pipeline', false); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
   if (btn) { btn.textContent = enabled ? 'Disable' : 'Enable'; btn.style.pointerEvents = ''; }
 }
 
 async function _continuePipeline(id, stageId, btn) {
   if (btn) { btn.textContent = 'Continuing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
   try {
     var res = await fetch('/api/pipelines/continue', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, stageId: stageId }) });
     if (res.ok) {
-      showToast('cmd-toast', 'Stage continued — dispatching next tick', true);
       if (btn) { btn.textContent = '\u2713 Continued'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)'; btn.style.opacity = '1'; }
       // Immediate refresh — no waiting for 4s poll
       await _refreshPipelineDetail(id);
     } else {
-      var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown'));
+      var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false);
       if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
     }
   } catch (e) {
-    alert('Error: ' + e.message);
+    showToast('cmd-toast', 'Error: ' + e.message, false);
     if (btn) { btn.textContent = 'Continue'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
   }
 }
@@ -515,10 +514,11 @@ async function _deletePipelineConfirm(id) {
   if (!confirm('Delete pipeline "' + id + '"?')) return;
   markDeleted('pipeline:' + id);
   try { closeModal(); } catch {}
+  showToast('cmd-toast', 'Pipeline deleted', true);
   try {
     var res = await fetch('/api/pipelines/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    if (!res.ok) { alert('Delete failed'); refresh(); }
-  } catch (e) { alert('Error: ' + e.message); refresh(); }
+    if (!res.ok) { showToast('cmd-toast', 'Delete failed', false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); refresh(); }
 }
 
 function openCreatePipelineModal() {
@@ -613,8 +613,8 @@ async function _submitCreatePipeline() {
   showToast('cmd-toast', 'Pipeline created', true);
   try {
     var res = await fetch('/api/pipelines', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (res.ok) { refresh(); } else { var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown')); openCreatePipelineModal(); }
-  } catch (e) { alert('Error: ' + e.message); openCreatePipelineModal(); }
+    if (res.ok) { refresh(); } else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); openCreatePipelineModal(); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); openCreatePipelineModal(); }
 }
 
 function openEditPipelineModal(id) {
@@ -694,11 +694,13 @@ async function _submitEditPipeline() {
   if (!Array.isArray(stages) || stages.length === 0) { alert('Stages must be a non-empty array'); return; }
 
   var body = { id: id, title: title, stages: stages, trigger: cron ? { cron: cron } : null };
+  closeModal();
+  showToast('cmd-toast', 'Pipeline updated', true);
   try {
     var res = await fetch('/api/pipelines/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (res.ok) { closeModal(); showToast('cmd-toast', 'Pipeline updated', true); refresh(); }
-    else { var d = await res.json().catch(function() { return {}; }); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 window.MinionsPipelines = { renderPipelines, openPipelineDetail, openCreatePipelineModal, openEditPipelineModal };

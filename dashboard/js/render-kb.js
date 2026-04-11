@@ -143,12 +143,12 @@ async function kbSweep() {
   btn.textContent = 'sweeping...';
   btn.style.color = 'var(--blue)';
   try {
+    showToast('cmd-toast', 'KB sweep started', true);
     const res = await fetch('/api/knowledge/sweep', { method: 'POST', signal: AbortSignal.timeout(300000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinnedKeys: getPinnedItems().filter(function(k) { return k.startsWith('knowledge/'); }) }) });
     const data = await res.json();
     if (data.ok) {
       btn.textContent = 'done';
       btn.style.color = 'var(--green)';
-      showToast('cmd-toast', 'KB sweep: ' + (data.summary || 'complete'), true);
       refreshKnowledgeBase();
     } else {
       btn.style.color = 'var(--red)';
@@ -202,13 +202,14 @@ async function submitKbEntry() {
   const content = document.getElementById('kb-new-content').value;
   if (!title || !content) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } alert('Title and content are required'); return; }
   try {
+    showToast('cmd-toast', 'KB entry created', true);
     const res = await fetch('/api/knowledge', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ category, title, content })
     });
-    if (res.ok) { closeModal(); refreshKnowledgeBase(); showToast('cmd-toast', 'KB entry created', true); }
-    else { const d = await res.json().catch(() => ({})); alert('KB create failed: ' + (d.error || 'unknown')); }
-  } catch (e) { alert('Error: ' + e.message); }
+    if (res.ok) { closeModal(); refreshKnowledgeBase(); }
+    else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'KB create failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function kbOpenItem(category, file) {
