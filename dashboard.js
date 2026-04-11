@@ -1622,7 +1622,7 @@ const server = http.createServer(async (req, res) => {
       }, { defaultValue: { pending: [], active: [], completed: [] } });
 
       // 4. Reset work items from dispatched → pending so they can be retried
-      const allWiPaths = [];
+      const allWiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) allWiPaths.push(shared.projectWorkItemsPath(proj));
       let resetCount = 0;
       for (const wiPath of allWiPaths) {

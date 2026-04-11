@@ -8773,6 +8773,25 @@ async function testStatusMutationGuards() {
       'Kill-agent work item reset must check completedAt before resetting items');
   });
 
+  // ─── Fix: handleAgentKill includes central work-items.json ──────────────
+
+  await test('handleAgentKill resets central work-items.json (not just project-scoped)', () => {
+    // Find the handleAgentKill function
+    const fnStart = dashboardSrc.indexOf('async function handleAgentKill');
+    assert.ok(fnStart >= 0, 'handleAgentKill function must exist');
+    const fnBody = dashboardSrc.substring(fnStart, fnStart + 2000);
+    // The allWiPaths array must include the central work-items.json path
+    assert.ok(
+      fnBody.includes("path.join(MINIONS_DIR, 'work-items.json')"),
+      'handleAgentKill must include central work-items.json in allWiPaths for plan-to-prd and other central tasks'
+    );
+    // Verify it's initialized WITH the central path, not just project paths
+    const wiPathsLine = fnBody.match(/const allWiPaths\s*=\s*\[([^\]]*)\]/);
+    assert.ok(wiPathsLine, 'allWiPaths must be initialized as an array');
+    assert.ok(wiPathsLine[1].includes('work-items.json'),
+      'allWiPaths must be initialized with central work-items.json before the project loop');
+  });
+
   // ─── Behavioral tests: simulate guard logic ─────────────────────────────
 
   await test('BEHAVIORAL: done item survives retry attempt', () => {
