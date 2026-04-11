@@ -341,6 +341,8 @@ function getAgents(config) {
       ...a, status: s.status, lastAction,
       currentTask: (s.task || '').slice(0, 200),
       resultSummary: (s.resultSummary || '').slice(0, 500),
+      started_at: s.started_at || null,
+      completed_at: s.completed_at || null,
       _blockingToolCall: s._blockingToolCall || null,
       _warning: s._warning || null,
       _permissionMode: s._permissionMode || null,

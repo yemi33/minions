@@ -44,6 +44,19 @@ function renderDetailContent(detail, tab) {
       if (detail.statusData.task) html += 'Task: ' + escHtml(detail.statusData.task) + '\n';
       if (detail.statusData.started_at) html += 'Started: ' + detail.statusData.started_at + '\n';
       if (detail.statusData.completed_at) html += 'Completed: ' + detail.statusData.completed_at + '\n';
+      if (detail.statusData.started_at && detail.statusData.completed_at) {
+        var dMs = new Date(detail.statusData.completed_at).getTime() - new Date(detail.statusData.started_at).getTime();
+        if (dMs > 0) {
+          var dSec = Math.floor(dMs / 1000) % 60, dMin = Math.floor(dMs / 60000) % 60, dHr = Math.floor(dMs / 3600000);
+          html += 'Duration: ' + (dHr > 0 ? dHr + 'h ' : '') + dMin + 'm ' + dSec + 's\n';
+        }
+      } else if (detail.statusData.started_at && detail.statusData.status === 'working') {
+        var rMs = Date.now() - new Date(detail.statusData.started_at).getTime();
+        if (rMs > 0) {
+          var rSec = Math.floor(rMs / 1000) % 60, rMin = Math.floor(rMs / 60000) % 60, rHr = Math.floor(rMs / 3600000);
+          html += 'Running: ' + (rHr > 0 ? rHr + 'h ' : '') + rMin + 'm ' + rSec + 's\n';
+        }
+      }
       html += '</div>';
       if (detail.statusData.resultSummary) {
         html += '<h4>Last Result</h4><div class="section" style="border-left:3px solid var(--green);padding-left:12px">' + renderMd(detail.statusData.resultSummary) + '</div>';

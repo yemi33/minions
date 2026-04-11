@@ -11,6 +11,12 @@ function renderAgents(agents) {
       </div>
       <div class="agent-role">${escHtml(a.role)}</div>
       <div class="agent-action" title="${escHtml(a.lastAction)}">${escHtml(a.lastAction)}</div>
+      ${(function() {
+        var s = a.started_at, c = a.completed_at;
+        if (s && c) { var d = new Date(c) - new Date(s); if (d > 0) { var sec = Math.floor(d/1000)%60, min = Math.floor(d/60000)%60, hr = Math.floor(d/3600000); return '<div style="font-size:9px;color:var(--muted)">Last run: ' + (hr > 0 ? hr + 'h ' : '') + min + 'm ' + sec + 's</div>'; } }
+        if (s && a.status === 'working') { var r = Date.now() - new Date(s).getTime(); if (r > 0) { var sec2 = Math.floor(r/1000)%60, min2 = Math.floor(r/60000)%60, hr2 = Math.floor(r/3600000); return '<div style="font-size:9px;color:var(--yellow)">Running: ' + (hr2 > 0 ? hr2 + 'h ' : '') + min2 + 'm ' + sec2 + 's</div>'; } }
+        return '';
+      })()}
       ${a._blockingToolCall ? `<div style="margin-top:4px;padding:4px 8px;background:rgba(130,160,210,0.13);border:1px solid rgba(130,160,210,0.3);border-radius:4px;font-size:10px;color:var(--muted)">&#x23F3; Blocking tool call (${escHtml(a._blockingToolCall.tool)}) &mdash; silent ${Math.round(a._blockingToolCall.silentMs/60000)}min, timeout in ${Math.round(a._blockingToolCall.remainingMs/60000)}min</div>` : ''}
       ${a._warning ? `<div style="margin-top:4px;padding:4px 8px;background:rgba(210,153,34,0.15);border:1px solid rgba(210,153,34,0.3);border-radius:4px;font-size:10px;color:var(--yellow)">&#x26A0; ${escHtml(a._warning)}</div>` : ''}
       ${a._permissionMode && a._permissionMode !== 'bypassPermissions' && !a._warning ? `<div style="margin-top:4px;font-size:9px;color:var(--muted)">Permission mode: ${escHtml(a._permissionMode)}</div>` : ''}
