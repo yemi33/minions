@@ -524,14 +524,26 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
   init();
 } else if (cmd === 'update') {
   console.log('\n  Updating Minions...\n');
-  try {
-    execSync('npm update -g @yemi33/minions', { stdio: 'inherit', timeout: 120000 });
-  } catch (e) {
-    console.error('  npm update failed:', e.message);
-    process.exit(1);
+  // Dev/symlink installs: PKG_ROOT === MINIONS_HOME — npm update is a no-op (symlink already
+  // points to the repo), and `minions init --force` would fail (cwd/.minions is inside PKG_ROOT).
+  // Just sync the version file and restart.
+  const isSymlinkedDevInstall = path.resolve(PKG_ROOT) === path.resolve(MINIONS_HOME);
+  if (isSymlinkedDevInstall) {
+    saveInstalledVersion(getPkgVersion());
+    console.log(`  Version synced to ${getPkgVersion()} (dev/symlink install — pull from git to update code)`);
+  } else {
+    try {
+      execSync('npm install -g @yemi33/minions@latest', { stdio: 'inherit', timeout: 120000 });
+    } catch (e) {
+      console.error('  npm install failed:', e.message);
+      process.exit(1);
+    }
+    // Pass MINIONS_HOME explicitly so init updates the right directory, not cwd/.minions
+    execSync('minions init --force', {
+      stdio: 'inherit', timeout: 120000,
+      env: { ...process.env, MINIONS_HOME },
+    });
   }
-  // Re-exec the NEW binary (just installed) so the updated code runs init --force
-  execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
   // Restart engine + dashboard so they pick up the new code
   console.log('\n  Restarting engine and dashboard...\n');
   execSync('minions restart', { stdio: 'inherit', timeout: 60000 });
