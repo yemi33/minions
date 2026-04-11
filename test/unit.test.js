@@ -1739,20 +1739,16 @@ async function testPrdStaleInvalidation() {
 
   console.log('\n── Plan Resume & Diff-Aware PRD Updates ──');
 
-  await test('Resume (approve) dispatches diff-aware plan-to-prd when done work exists', () => {
+  await test('Approve dispatches diff-aware plan-to-prd when plan was stale', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('Existing implementation state'),
+    assert.ok(src.includes('wasStale') && src.includes('diffAwareQueued'),
+      'Should check wasStale flag and track dispatch');
+    assert.ok(src.includes('Existing implementation state') || src.includes('Current PRD implementation state'),
       'Should pass implementation context to agent');
     assert.ok(src.includes('_existingPrdFile'),
       'Work item should reference existing PRD file');
     assert.ok(src.includes('dashboard:plan-resume'),
       'Should use dashboard:plan-resume as createdBy');
-  });
-
-  await test('Diff-aware dispatch only fires when done work items exist', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('doneWis.length > 0'),
-      'Should check for done work items before dispatching diff-aware update');
   });
 
   await test('Materializer handles "updated" PRD item status', () => {

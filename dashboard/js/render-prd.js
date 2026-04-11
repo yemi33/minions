@@ -269,7 +269,8 @@ function renderPrdProgress(prog) {
     const staleRecovery = (!isBlocked && g.planStale)
       ? '<div style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid rgba(210,153,34,0.35);border-radius:4px;background:rgba(210,153,34,0.08);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span style="color:var(--orange);font-size:10px;font-weight:600">&#x26A0;&#xFE0F; Source plan was revised. This PRD may be outdated.</span>' +
-          '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Regenerate PRD from latest plan">Regenerate now</span>' +
+          '<span onclick="event.stopPropagation();prdRegenerate(\'' + escHtml(g.file) + '\')" style="color:var(--green);cursor:pointer;font-size:10px;font-weight:700;padding:2px 8px;background:rgba(63,185,80,0.12);border:1px solid rgba(63,185,80,0.35);border-radius:4px" title="Compare revised plan against existing PRD and update items">Regenerate PRD</span>' +
+          '<span onclick="event.stopPropagation();prdResumeWithoutRegen(\'' + escHtml(g.file) + '\')" style="color:var(--muted);cursor:pointer;font-size:10px;padding:2px 8px;background:var(--surface);border:1px solid var(--border);border-radius:4px" title="Resume without regenerating — use current PRD as-is">Resume as-is</span>' +
           '<span onclick="event.stopPropagation();planView(\'' + escHtml(g.sourcePlan || g.file) + '\')" style="color:var(--blue);cursor:pointer;font-size:10px;padding:2px 8px;background:rgba(56,139,253,0.1);border:1px solid rgba(56,139,253,0.3);border-radius:4px" title="Review latest plan changes">Review plan</span>' +
         '</div>'
       : '';
@@ -763,15 +764,32 @@ async function prdItemRequeue(workItemId, source, prdFile) {
 }
 
 async function prdRegenerate(prdFile) {
-  if (!confirm('This PRD is stale because the source plan changed.\n\nRegenerate now from the latest plan?\n\nThis resets PRD status to awaiting-approval and queues a fresh plan-to-prd conversion.')) return;
+  if (!confirm('Source plan was revised.\n\nRegenerate PRD? An agent will compare the updated plan against existing implementation and update items accordingly.\n\nDone items stay done unless modified. New items are added. Removed items are cancelled.')) return;
   try {
-    const res = await fetch('/api/prd/regenerate', {
+    const res = await fetch('/api/plans/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: prdFile })
     });
     const d = await res.json();
     if (res.ok) {
-      showToast('cmd-toast', 'PRD regeneration queued', true);
+      showToast('cmd-toast', d.diffAwareUpdate ? 'Diff-aware PRD update queued' : 'Plan approved', true);
+      refresh();
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function prdResumeWithoutRegen(prdFile) {
+  if (!confirm('Resume this plan without regenerating the PRD?\n\nThe current PRD items will be used as-is. New work items will be materialized from any missing/planned items.')) return;
+  try {
+    const res = await fetch('/api/plans/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: prdFile, skipRegen: true })
+    });
+    const d = await res.json();
+    if (res.ok) {
+      showToast('cmd-toast', 'Plan resumed (PRD unchanged)', true);
       refresh();
     } else {
       alert('Failed: ' + (d.error || 'unknown'));
