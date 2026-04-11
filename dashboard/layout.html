@@ -113,6 +113,9 @@
         <button style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()" title="Expand thread">&#x25B2; Expand chat</button>
       </div>
       <div id="modal-qa-thread-wrap" style="display:none">
+        <div id="qa-resize-handle" style="height:6px;cursor:ns-resize;display:flex;align-items:center;justify-content:center;user-select:none;touch-action:none" title="Drag to resize">
+          <div style="width:32px;height:3px;border-radius:2px;background:var(--border)"></div>
+        </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <button id="qa-clear-btn" style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="clearQaConversation()" title="Clear conversation">Clear</button>
           <button style="background:none;border:none;color:var(--muted);font-size:10px;cursor:pointer;padding:2px 6px" onclick="toggleDocChat()" id="qa-toggle-btn" title="Collapse thread">&#x25BC; Collapse</button>
