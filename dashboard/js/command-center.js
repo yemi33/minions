@@ -378,14 +378,11 @@ async function ccSend() {
   }
   var wasAborted = await _ccDoSend(message);
 
-  // Drain queued messages one at a time with abort delay
-  while (tab._queue && tab._queue.length > 0) {
-    if (wasAborted) {
-      await new Promise(function(r) { setTimeout(r, 600); });
-    }
-    var next = tab._queue.shift();
+  // Flush queued messages — combine into single request
+  if (tab._queue && tab._queue.length > 0) {
+    var combined = tab._queue.splice(0).join('\n\n');
     _renderQueueIndicator();
-    wasAborted = await _ccDoSend(next);
+    await _ccDoSend(combined);
   }
 }
 
