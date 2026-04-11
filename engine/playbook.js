@@ -81,13 +81,14 @@ function getPrVoteInstructions(project) {
   if (host === 'github') {
     const org = project?.adoOrg || '';
     const repo = project?.repoName || '';
-    return `Use \`gh pr review\` to submit a review on the PR:\n` +
-      `- Approve: \`gh pr review <number> --approve --body "Approval comment" --repo ${org}/${repo}\`\n` +
-      `- Request changes: \`gh pr review <number> --request-changes --body "What needs to change" --repo ${org}/${repo}\`\n` +
-      `- Comment only: \`gh pr review <number> --comment --body "Review comment" --repo ${org}/${repo}\`\n` +
+    return `**IMPORTANT: GitHub blocks self-approval** — all agents share the same credentials, so \`--approve\` and \`--request-changes\` will fail with "can't approve your own PR." Use \`--comment\` instead.\n\n` +
+      `Submit your review verdict using \`gh pr review\` with \`--comment\`:\n` +
+      `- Approve: \`gh pr review <number> --comment --body "VERDICT: APPROVE\\n\\n<your review details>" --repo ${org}/${repo}\`\n` +
+      `- Request changes: \`gh pr review <number> --comment --body "VERDICT: REQUEST_CHANGES\\n\\n<your review details>" --repo ${org}/${repo}\`\n` +
       `- Replace <number> with the PR number\n` +
       `- Always set --repo to \`${org}/${repo}\` to target the correct repository\n` +
-      `- Use --body to provide a review summary (supports Markdown)`;
+      `- **Your comment body MUST start with \`VERDICT: APPROVE\` or \`VERDICT: REQUEST_CHANGES\`** on its own line — the engine parses this to record your vote\n` +
+      `- Do NOT use \`--approve\` or \`--request-changes\` flags — they will fail`;
   }
   return `Use \`mcp__azure-ado__repo_update_pull_request_reviewers\`:\n- repositoryId: \`${repoId}\`\n- Set your reviewer vote on the PR (10=approve, 5=approve-with-suggestions, -10=reject)`;
 }
