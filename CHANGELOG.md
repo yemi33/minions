@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.871 (2026-04-11)
+
+### Features
+-  ticking runtime counter on working agent cards
+-  show run duration on agent cards and thought-process tab
+-  live runtime counter on agent live output tab
+-  optimistic running state on pipeline Run Now click
+
+### Fixes
+-  orphan recovery misclassifies mid-run agents as failed on engine restart
+- dep merge failures identify conflicting branch and auto-queue fix (closes #814) (#882)
+-  always show doc-chat expand bar when thread is collapsed
+-  poll for old process exit before steering resume (replaces fixed delay)
+-  add 3s delay before steering resume to let old process tree exit
+-  set steering state before killImmediate to prevent race
+-  pipeline race condition, delete refresh, abort error logging
+-  _continuePipeline now calls refresh() to update card list
+-  pipeline modal refresh was silently broken — API returns array not object
+-  pipeline modal now auto-updates on all action buttons
+-  pipeline modal buttons stuck on loading state after success
+
+### Other
+- revert: restore expand bar hide on clear/fresh session
+
 ## 0.1.854 (2026-04-11)
 
 ### Features
