@@ -4119,6 +4119,56 @@ async function testCheckTimeouts() {
       'Bash blocking block should use 120000ms, not 600000ms');
   });
 
+  // ── Per-type heartbeat timeout tests ──
+
+  await test('ENGINE_DEFAULTS.heartbeatTimeouts has explore, ask, review entries', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    assert.ok(hbt, 'heartbeatTimeouts map should exist');
+    assert.strictEqual(hbt[shared.WORK_TYPE.EXPLORE], 600000, 'EXPLORE should be 600000ms (10min)');
+    assert.strictEqual(hbt[shared.WORK_TYPE.ASK], 600000, 'ASK should be 600000ms (10min)');
+    assert.strictEqual(hbt[shared.WORK_TYPE.REVIEW], 480000, 'REVIEW should be 480000ms (8min)');
+  });
+
+  await test('heartbeatTimeouts keys use WORK_TYPE constants, not raw strings', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    // Verify the keys are the actual WORK_TYPE values (not something else)
+    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.EXPLORE), 'Should use WORK_TYPE.EXPLORE as key');
+    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.ASK), 'Should use WORK_TYPE.ASK as key');
+    assert.ok(Object.keys(hbt).includes(shared.WORK_TYPE.REVIEW), 'Should use WORK_TYPE.REVIEW as key');
+  });
+
+  await test('checkTimeouts resolves per-type heartbeat from dispatch item workType', () => {
+    assert.ok(src.includes('item.workType') || src.includes('item.meta?.item?.type'),
+      'Should read work type from dispatch item');
+    assert.ok(src.includes('perTypeTimeouts'),
+      'Should look up per-type timeout from merged map');
+    assert.ok(src.includes('defaultHeartbeatTimeout'),
+      'Should fall back to default heartbeat timeout when work type has no override');
+  });
+
+  await test('checkTimeouts merges config.engine.heartbeatTimeouts with defaults', () => {
+    assert.ok(src.includes('config.engine?.heartbeatTimeouts'),
+      'Should read heartbeatTimeouts from config for user overrides');
+    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+      'Should spread default heartbeatTimeouts as base');
+  });
+
+  await test('per-type heartbeat is base for blocking tool extension', () => {
+    // The per-type heartbeatTimeout is declared inside the per-item loop,
+    // so blocking tool detection (which uses heartbeatTimeout) naturally uses the per-type value.
+    // Verify heartbeatTimeout is scoped inside the item loop, not outside it.
+    const loopStart = src.indexOf('for (const item of (dispatchData.active');
+    const perTypeDecl = src.indexOf('const heartbeatTimeout = (workType && perTypeTimeouts');
+    assert.ok(loopStart > 0 && perTypeDecl > loopStart,
+      'heartbeatTimeout should be declared inside the per-item loop (per-type scoping)');
+  });
+
+  await test('implement/fix types fall back to default heartbeatTimeout (no override)', () => {
+    const hbt = shared.ENGINE_DEFAULTS.heartbeatTimeouts;
+    assert.strictEqual(hbt[shared.WORK_TYPE.IMPLEMENT], undefined, 'IMPLEMENT should not have per-type override');
+    assert.strictEqual(hbt[shared.WORK_TYPE.FIX], undefined, 'FIX should not have per-type override');
+  });
+
   // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
   await test('checkTimeouts does NOT reference undefined DEFAULT_HEARTBEAT_TIMEOUTS (#721)', () => {
     assert.ok(!src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'),
