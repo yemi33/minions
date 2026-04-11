@@ -65,11 +65,13 @@ function renderDetailContent(detail, tab) {
 
     el.innerHTML = html;
   } else if (tab === 'live') {
+    var startedAt = detail.statusData?.started_at;
     el.innerHTML =
       '<div id="live-chat" style="display:flex;flex-direction:column;height:60vh">' +
         '<div id="live-messages" style="flex:1;overflow-y:auto;padding:8px;font-size:11px;line-height:1.6;display:flex;flex-direction:column"></div>' +
         '<div id="live-status-bar" style="padding:4px 8px;display:flex;align-items:center;gap:8px;border-top:1px solid var(--border)">' +
           '<span class="pulse"></span><span id="live-status-label" style="font-size:11px;color:var(--green)">Streaming live</span>' +
+          '<span id="live-runtime" style="font-size:10px;color:var(--muted)" data-started="' + (startedAt || '') + '"></span>' +
           '<button class="pr-pager-btn" onclick="refreshLiveOutput()" style="font-size:10px">Refresh</button>' +
         '</div>' +
         '<div id="live-steer-bar" style="display:flex;gap:8px;padding:8px;border-top:1px solid var(--border)">' +

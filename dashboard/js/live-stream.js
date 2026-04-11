@@ -4,6 +4,20 @@ let livePollingInterval = null;
 let liveEventSource = null;
 let _steerInFlight = false;
 let _lastRenderedText = '';
+let _runtimeTimer = null;
+
+function _updateRuntimeCounter() {
+  var el = document.getElementById('live-runtime');
+  if (!el) return;
+  var started = el.dataset.started;
+  if (!started) return;
+  var ms = Date.now() - new Date(started).getTime();
+  if (ms < 0) ms = 0;
+  var sec = Math.floor(ms / 1000) % 60;
+  var min = Math.floor(ms / 60000) % 60;
+  var hr = Math.floor(ms / 3600000);
+  el.textContent = (hr > 0 ? hr + 'h ' : '') + min + 'm ' + sec + 's';
+}
 
 function renderLiveChatMessage(raw) {
   const el = document.getElementById('live-messages');
@@ -87,6 +101,10 @@ function startLiveStream(agentId) {
   if (msgEl) msgEl.innerHTML = '';
   _lastRenderedText = '';
 
+  // Start runtime counter
+  _updateRuntimeCounter();
+  _runtimeTimer = setInterval(_updateRuntimeCounter, 1000);
+
   // Use polling instead of SSE to avoid HTTP/1.1 connection exhaustion
   // (SSE holds a persistent connection, blocking CC and other API calls)
   startLivePolling();
@@ -97,6 +115,7 @@ function stopLiveStream() {
     liveEventSource.close();
     liveEventSource = null;
   }
+  if (_runtimeTimer) { clearInterval(_runtimeTimer); _runtimeTimer = null; }
   stopLivePolling();
 }
 
