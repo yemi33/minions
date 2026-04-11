@@ -1227,6 +1227,12 @@ function autoCleanPrdWorkItems(prdFile, config) {
   }
 }
 
+function buildWiDescription(item, planFile) {
+  const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+  const complexity = item.estimated_complexity || 'medium';
+  return `${item.description || ''}\n\n**Plan:** ${planFile}\n**Plan Item:** ${item.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`;
+}
+
 function materializePlansAsWorkItems(config) {
   if (!fs.existsSync(PRD_DIR)) { try { fs.mkdirSync(PRD_DIR, { recursive: true }); } catch (e) { log('warn', 'create PRD directory: ' + e.message); } }
 
@@ -1466,7 +1472,7 @@ function materializePlansAsWorkItems(config) {
     // No project found — use central work-items.json (engine works without projects)
     const useCentral = !defaultProject;
 
-    const statusFilter = ['missing', 'planned'];
+    const statusFilter = ['missing', 'planned', 'updated'];
     // Also materialize in-pr/done items that never got a work item (race with PR status sync)
     const allExistingWiIds = new Set();
     for (const w of queries.getWorkItems()) {
@@ -1517,32 +1523,53 @@ function materializePlansAsWorkItems(config) {
       const wiPath = project ? projectWorkItemsPath(project) : path.join(MINIONS_DIR, 'work-items.json');
       let created = 0;
       const newlyCreatedIds = new Set(); // tracks IDs created in this pass for reconciliation scoping
+      const deferredReopens = []; // cross-project re-opens executed after this lock releases
 
       mutateWorkItems(wiPath, existingItems => {
         for (const item of projItems) {
+          // Re-open: PRD item set back to missing/planned/updated but work item is done → reset to pending
+          const existingWi = existingItems.find(w => w.id === item.id);
+          const shouldReopen = item.status === 'missing' || item.status === 'planned' || item.status === 'updated';
+          if (existingWi && DONE_STATUSES.has(existingWi.status) && shouldReopen) {
+            existingWi.status = WI_STATUS.PENDING;
+            existingWi._reopened = true;
+            const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
+            existingWi.description = buildWiDescription(item, file);
+            existingWi.title = `Implement: ${item.name}`;
+            created++;
+            log('info', `Re-opened work item ${item.id} (PRD item set back to ${item.status}) — will dispatch to existing branch`);
+            continue;
+          }
+
           // Skip if already materialized — work item ID = PRD item ID, check all projects
-          let alreadyExists = existingItems.some(w => w.id === item.id);
+          let alreadyExists = !!existingWi;
           if (!alreadyExists) {
             for (const p of allProjects) {
               if (p.name === projName) continue;
               const otherItems = safeJson(projectWorkItemsPath(p)) || [];
-              if (otherItems.some(w => w.id === item.id)) { alreadyExists = true; break; }
+              const otherWi = otherItems.find(w => w.id === item.id);
+              if (otherWi) {
+                if (DONE_STATUSES.has(otherWi.status) && shouldReopen) {
+                  deferredReopens.push({ itemId: item.id, projectName: p.name, item });
+                  created++;
+                }
+                alreadyExists = true; break;
+              }
             }
           }
           if (alreadyExists) continue;
           // Skip items involved in dependency cycles
           if (cycleSet.has(item.id)) continue;
 
-          const id = item.id; // Work item ID = PRD item ID — no indirection
+          const id = item.id;
           const complexity = item.estimated_complexity || 'medium';
-          const criteria = (item.acceptance_criteria || []).map(c => `- ${c}`).join('\n');
 
           const newItem = {
             id,
             title: `Implement: ${item.name}`,
             type: complexity === 'large' ? 'implement:large' : 'implement',
             priority: item.priority || 'medium',
-            description: `${item.description || ''}\n\n**Plan:** ${file}\n**Plan Item:** ${item.id}\n**Complexity:** ${complexity}${criteria ? '\n\n**Acceptance Criteria:**\n' + criteria : ''}`,
+            description: buildWiDescription(item, file),
             status: 'pending',
             created: ts(),
             createdBy: 'engine:plan-discovery',
@@ -1581,6 +1608,24 @@ function materializePlansAsWorkItems(config) {
           log('info', `Plan discovery: created ${created} work item(s) from ${file} → ${projName}`);
         }
       });
+
+      // Process cross-project re-opens outside the lock (no nested locks)
+      for (const { itemId, projectName: rProjName, item: rItem } of deferredReopens) {
+        const rProject = allProjects.find(p => p.name === rProjName);
+        if (!rProject) continue;
+        const rPath = projectWorkItemsPath(rProject);
+        mutateWorkItems(rPath, items => {
+          const target = items.find(w => w.id === itemId);
+          if (target && DONE_STATUSES.has(target.status)) {
+            target.status = WI_STATUS.PENDING;
+            target._reopened = true;
+            target.description = buildWiDescription(rItem, file);
+            target.title = `Implement: ${rItem.name}`;
+          }
+        });
+        log('info', `Re-opened work item ${itemId} in ${rProjName} (cross-project, PRD item set to ${rItem.status})`);
+      }
+
       totalCreated += created;
     }
 
