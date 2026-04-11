@@ -204,8 +204,22 @@ function checkPlanCompletion(meta, config) {
       }
     }
 
+    // Shared-branch plans already have all changes on a single feature branch — no merge needed
+    const isSharedBranch = plan.branch_strategy === 'shared-branch' && plan.feature_branch;
+
     // Build per-project checkout commands: one worktree, merge all PR branches into it
     const checkoutBlocks = Object.entries(projectPrs).map(([name, { project: p, prs, mainBranch }]) => {
+      if (isSharedBranch) {
+        const featureBranch = plan.feature_branch;
+        const wtPath = `${p.localPath}/../worktrees/verify-${name}-${planSlug}`;
+        const lines = [
+          `# ${name} — shared-branch: use existing feature branch directly`,
+          `cd "${p.localPath.replace(/\\/g, '/')}"`,
+          `git fetch origin "${featureBranch}"`,
+          `git worktree add "${wtPath}" "origin/${featureBranch}" 2>/dev/null || (cd "${wtPath}" && git checkout "${featureBranch}" && git pull origin "${featureBranch}")`,
+        ];
+        return lines.join('\n');
+      }
       const wtPath = `${p.localPath}/../worktrees/verify-${name}-${planSlug}-${shared.uid()}`;
       const branches = prs.map(pr => pr.branch).filter(Boolean);
       const lines = [
@@ -235,9 +249,13 @@ function checkPlanCompletion(meta, config) {
       `- **${name}**: \`${p.localPath}/../worktrees/verify-${planSlug}\``
     ).join('\n');
 
+    const sharedBranchNote = isSharedBranch
+      ? `\n**Shared-branch plan** — all changes are already on branch \`${plan.feature_branch}\`. Use this branch directly for the E2E PR instead of creating a new \`e2e/\` branch. Check if a PR already exists for this branch before creating one.\n`
+      : '';
+
     const description = [
       `Verification task for completed plan \`${planFile}\`.`,
-      ``,
+      sharedBranchNote,
       `## Projects & Worktrees`,
       ``,
       `Each project gets ONE worktree with all PR branches merged in:`,
