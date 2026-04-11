@@ -5197,6 +5197,17 @@ async function testSpawnAgentScript() {
       'Should write PID file so engine can reattach on restart');
   });
 
+  await test('cli.js reads PID files from engine/tmp/ (same dir spawn-agent writes to)', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    // cli.js must read from ENGINE_DIR/tmp/ — spawn-agent writes pid files there
+    assert.ok(cliSrc.includes("'tmp'") && cliSrc.includes('pid-'),
+      'cli.js reattach should read PID files from engine/tmp/ subdirectory');
+    // Verify it does NOT read from ENGINE_DIR root (the old bug)
+    const reattachBlock = cliSrc.slice(cliSrc.indexOf('Re-attach to surviving'), cliSrc.indexOf('Orphan completion'));
+    assert.ok(!reattachBlock.includes("ENGINE_DIR, `pid-"),
+      'cli.js should NOT read PID files from ENGINE_DIR root — must use ENGINE_DIR/tmp/');
+  });
+
   await test('spawn-agent.js supports --resume flag', () => {
     assert.ok(src.includes("isResume") && src.includes("'--resume'"),
       'Should detect --resume flag and skip system prompt (baked into session)');

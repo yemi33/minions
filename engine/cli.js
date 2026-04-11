@@ -137,7 +137,8 @@ const commands = {
         const agentId = item.agent;
         let agentPid = null;
 
-        const pidFile = path.join(ENGINE_DIR, `pid-${item.id}.pid`);
+        const safeId = item.id.replace(/[:\\/*?"<>|]/g, '-');
+        const pidFile = path.join(ENGINE_DIR, 'tmp', `pid-${safeId}.pid`);
         try {
           const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
           if (pidStr) agentPid = parseInt(pidStr);
