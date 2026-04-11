@@ -11083,6 +11083,22 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(ccCallFn.includes('direct: true'), 'ccCall should pass direct: true to callLLM');
   });
 
+  await test('_spawnProcess indirect path includes PID file in cleanupFiles', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'llm.js'), 'utf8');
+    const indirectBlock = src.slice(src.indexOf('// Indirect: use spawn-agent.js'));
+    assert.ok(indirectBlock.includes('pidPath'), 'Should derive pidPath from promptPath');
+    assert.ok(indirectBlock.includes("replace(/prompt-/, 'pid-')"), 'Should use same PID derivation as spawn-agent.js');
+    assert.ok(indirectBlock.includes('cleanupFiles.push(promptPath, sysPath, pidPath)'), 'Should include pidPath in cleanupFiles');
+  });
+
+  await test('handleKnowledgeSweep uses generation token for race-safe finally', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const sweepFn = src.slice(src.indexOf('async function handleKnowledgeSweep'));
+    assert.ok(sweepFn.includes('sweepToken'), 'Should use a generation token');
+    assert.ok(sweepFn.includes('global._kbSweepToken = sweepToken'), 'Should store token globally');
+    assert.ok(sweepFn.includes('global._kbSweepToken === sweepToken'), 'finally should only clear flag if token matches');
+  });
+
   await test('dependency fetches run in parallel with Promise.allSettled', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('Promise.allSettled'), 'Should use Promise.allSettled for parallel dep fetches');
