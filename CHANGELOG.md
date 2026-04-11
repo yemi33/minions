@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.827 (2026-04-11)
+
+### Features
+-  stale PRD shows Regenerate PRD + Resume as-is buttons
+
+### Fixes
+-  hide plan card action buttons when stale banner is showing
+-  hide conflicting action buttons when stale PRD banner is showing
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
