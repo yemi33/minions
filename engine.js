@@ -2592,15 +2592,29 @@ function discoverCentralWorkItems(config) {
         vars.plan_summary = (item.title || item.planFile).substring(0, 80);
         vars.plan_file = item.planFile || '';
         vars.project_name_lower = (firstProject?.name || 'project').toLowerCase();
-        // Generate unique PRD filename — check prd/ and prd/archive/ for collisions
-        const prdBase = vars.project_name_lower + '-' + dateStamp();
-        let prdFilename = prdBase + '.json';
-        const prdExisting = new Set([
-          ...safeReadDir(PRD_DIR).filter(f => f.endsWith('.json')),
-          ...safeReadDir(path.join(PRD_DIR, 'archive')).filter(f => f.endsWith('.json')),
-        ]);
-        let prdCounter = 2;
-        while (prdExisting.has(prdFilename)) { prdFilename = prdBase + '-' + prdCounter + '.json'; prdCounter++; }
+        // Check if a PRD already exists for this plan — reuse its filename to avoid duplicates (#884)
+        let prdFilename = null;
+        const prdFiles = safeReadDir(PRD_DIR).filter(f => f.endsWith('.json'));
+        for (const pf of prdFiles) {
+          const prd = safeJson(path.join(PRD_DIR, pf));
+          if (prd?.source_plan === item.planFile) {
+            prdFilename = pf;
+            try { vars.existing_prd_json = fs.readFileSync(path.join(PRD_DIR, pf), 'utf8'); } catch (_) { /* ignore */ }
+            log('info', `plan-to-prd: reusing existing PRD "${pf}" for plan "${item.planFile}" (#884)`);
+            break;
+          }
+        }
+        if (!prdFilename) {
+          // Generate unique PRD filename — check prd/ and prd/archive/ for collisions
+          const prdBase = vars.project_name_lower + '-' + dateStamp();
+          prdFilename = prdBase + '.json';
+          const prdExisting = new Set([
+            ...prdFiles,
+            ...safeReadDir(path.join(PRD_DIR, 'archive')).filter(f => f.endsWith('.json')),
+          ]);
+          let prdCounter = 2;
+          while (prdExisting.has(prdFilename)) { prdFilename = prdBase + '-' + prdCounter + '.json'; prdCounter++; }
+        }
         vars.prd_filename = prdFilename;
         mutations.set(item.id, Object.assign(mutations.get(item.id) || {}, { _prdFilename: prdFilename }));
         vars.branch_strategy_hint = item.branchStrategy

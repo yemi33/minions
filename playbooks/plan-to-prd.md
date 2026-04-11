@@ -14,12 +14,13 @@ A user has provided a plan. Analyze it against the codebase and produce a struct
 ## Instructions
 
 1. **Read the plan carefully** — understand the goals, scope, and requirements
-2. **Explore the codebase** at `{{project_path}}` — understand the existing structure to write accurate descriptions and acceptance criteria. Do NOT use observations about existing PRs or partial work to set item statuses — all items are always `"missing"` regardless of codebase state
-3. **Break the plan into discrete, implementable items** — each should be a single PR's worth of work
-4. **Estimate complexity** — `small` (< 1 file), `medium` (2-5 files), `large` (6+ files or cross-cutting)
-5. **Order by dependency** — items that others depend on come first
-6. **Use unique item IDs** — generate a short uuid for each item (e.g. `P-a3f9b2c1`). Do not use sequential `P001`/`P002` — IDs must be globally unique across all PRDs to avoid collisions
-7. **Identify open questions** — flag anything ambiguous in the plan that needs user input
+2. **Check for an existing PRD** — if the engine provides `existing_prd_json` below, a PRD already exists for this plan. See "Reusing an Existing PRD" section for how to preserve item IDs and done statuses. If no existing PRD is provided, this is a fresh run — all items start as `"missing"`.
+3. **Explore the codebase** at `{{project_path}}` — understand the existing structure to write accurate descriptions and acceptance criteria. Do NOT use observations about existing PRs or partial work to set item statuses — status is determined only by existing PRD items (step 2), not codebase state
+4. **Break the plan into discrete, implementable items** — each should be a single PR's worth of work
+5. **Estimate complexity** — `small` (< 1 file), `medium` (2-5 files), `large` (6+ files or cross-cutting)
+6. **Order by dependency** — items that others depend on come first
+7. **Use unique item IDs** — generate a short uuid for each item (e.g. `P-a3f9b2c1`). Do not use sequential `P001`/`P002` — IDs must be globally unique across all PRDs to avoid collisions. **If reusing an existing PRD, keep all existing IDs — only generate new UUIDs for genuinely new items.**
+8. **Identify open questions** — flag anything ambiguous in the plan that needs user input
 
 ## Output
 
@@ -83,7 +84,7 @@ When using `parallel`:
 
 Rules for items:
 - IDs must be `P-<uuid>` format (e.g. `P-a3f9b2c1`) — globally unique, never sequential
-- **`status` is always `"missing"`** — do not set `done`, `complete`, `implemented`, or any other value, even if you observe active PRs or completed work in the codebase. Status is exclusively engine-managed after the PRD is written. Pre-setting any other status causes items to be silently skipped by the engine and breaks dependency resolution for all downstream items.
+- **`status` is `"missing"` for new items** — do not set `done`, `complete`, `implemented`, or any other value based on codebase observations. The only exception is when reusing an existing PRD (see below) — items already `"done"` in the existing PRD carry forward as `"done"`. Pre-setting any other status on new items causes them to be silently skipped by the engine.
 - **Do NOT include a "verify" or "test" or "integration test" item** — the engine automatically creates a verify task when all PRD items are done. Adding one manually creates a duplicate that blocks plan completion.
 - **`project` field is REQUIRED** — set it to the project name where the code changes go (e.g., `"OfficeAgent"`, `"office-bohemia"`). Cross-repo plans must route each item to the correct project. The engine materializes items into that project's work queue.
 - `depends_on` lists IDs of items that must be done first
@@ -91,19 +92,33 @@ Rules for items:
 - Include `acceptance_criteria` so reviewers know when it's done
 - Aim for 5-25 items depending on plan scope. If more than 25, group related work
 
-## Updating an Existing PRD
+## Reusing an Existing PRD
 
-If the task description contains `mode: diff-aware-update`, you are updating an existing PRD, not creating one from scratch. The plan was revised and you need to produce an updated PRD that reflects the changes while preserving existing work.
+When the engine detects an existing PRD for this plan (`source_plan` match), it passes the content below. If this section is empty or absent, skip to normal generation (all items `"missing"` with new UUIDs).
 
-**Rules for diff-aware updates:**
-- **Read the existing PRD file first** — it's at `{{team_root}}/prd/{{prd_filename}}`
-- **Preserve item IDs** — do NOT generate new IDs for items that already exist. The engine maps work items by ID.
-- **Done + unchanged** → keep `"status": "done"` and the same ID (no work dispatched)
-- **Done + modified** (plan added requirements/scope) → set `"status": "updated"` with same ID (engine re-opens the work item and dispatches to existing branch)
-- **New items** in the updated plan → generate new `P-<uuid>` IDs, set `"status": "missing"`
-- **Removed items** (in old PRD but not in updated plan) → drop from the PRD entirely (engine cancels pending work items)
-- **Pending/failed items** → reset to `"missing"` with updated description
-- Preserve `branch_strategy`, `feature_branch`, `project`, and other plan-level fields from the existing PRD unless the plan explicitly changes them
+<existing-prd>
+{{existing_prd_json}}
+</existing-prd>
+
+**When an existing PRD is provided:**
+
+1. **Parse the existing PRD JSON** — extract all `missing_features` items with their `id`, `status`, and metadata
+2. **Preserve item IDs** — match existing items to current plan items by name/description similarity. Each plan item that corresponds to an existing PRD item MUST reuse that item's `P-<id>`. Do NOT generate new IDs for items that already exist.
+3. **Preserve done items** — any existing item with `"status": "done"` carries forward as `"done"` with the same ID, description, and acceptance criteria. Do NOT reset done items to `"missing"`
+4. **Carry forward in-progress items** — items with `"status": "missing"` or other non-done statuses keep their existing ID and reset to `"missing"`
+5. **New items only** — only generate new `P-<uuid>` IDs for items in the plan that have no match in the existing PRD
+6. **Removed items** — if an existing PRD item has no match in the current plan, drop it from the output
+7. **Preserve plan-level fields** — keep `branch_strategy`, `feature_branch`, and `project` from the existing PRD unless the plan explicitly changes them
+
+This ensures re-running plan-to-prd on the same plan produces a clean update (new items added, completed items preserved, IDs stable) rather than a full reset with orphaned duplicates.
+
+## Updating an Existing PRD (Diff-Aware)
+
+If the task description contains `mode: diff-aware-update`, you are updating an existing PRD because the plan was revised. Follow the same reuse rules above, plus these additional diff-aware rules:
+
+**Additional diff-aware rules** (on top of the reuse rules above):
+- **Done + modified** (plan added requirements/changed scope) → set `"status": "updated"` with same ID (engine re-opens the work item and dispatches to existing branch)
+- **Pending/failed items** → reset to `"missing"` with updated description if the plan changed their scope
 
 ## Important
 
