@@ -808,8 +808,8 @@ async function spawnAgent(dispatchItem, config) {
         if (resumeCode !== 0) {
           log('warn', `Steering resume for ${agentId} exited with code ${resumeCode} | stderr: ${stderr.slice(-300).replace(/\n/g, ' ')}`);
           try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Resume exited with code ${resumeCode}. Your message was received but the agent could not continue the session.\n`); } catch {}
-          activeProcesses.delete(id);
-          completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering resume failed but original work completed', '', { processWorkItemFailure: false });
+          // Don't assume original work completed — run normal close handler to parse output and determine actual result
+          onAgentClose(resumeCode);
           return;
         }
         // Successful resume — run normal close handler
@@ -819,7 +819,7 @@ async function spawnAgent(dispatchItem, config) {
         log('warn', `Steering re-spawn error for ${agentId}: ${err.message}`);
         try { fs.appendFileSync(liveOutputPath, `\n[steering-failed] Spawn error: ${err.message}. Your message was received but the agent could not resume.\n`); } catch {}
         activeProcesses.delete(id);
-        completeDispatch(id, DISPATCH_RESULT.SUCCESS, 'Steering re-spawn error but original work completed', '', { processWorkItemFailure: false });
+        completeDispatch(id, DISPATCH_RESULT.ERROR, `Steering re-spawn failed: ${err.message}`);
       });
 
       // Don't run completion hooks — agent is still working
