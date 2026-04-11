@@ -186,7 +186,7 @@ function checkPlanCompletion(meta, config) {
 
   // 4. Create verification work item (build, test, start webapp, write testing guide)
   const existingVerify = allWorkItems.find(w => w.sourcePlan === planFile && w.itemType === 'verify');
-  if (!existingVerify && doneItems.length > 0 && failedItems.length === 0) {
+  if (!existingVerify && doneItems.length > 0) {
     const verifyId = 'PL-' + shared.uid();
     const planSlug = planFile.replace('.json', '');
 
@@ -1352,7 +1352,7 @@ function handleDecompositionResult(stdout, meta, config) {
       // Create child work items
       for (const sub of subItems) {
         if (data.some(i => i.id === sub.id)) continue; // dedupe
-        data.push({
+        const childItem = {
           id: sub.id,
           title: sub.name || sub.title || `Sub-task of ${parentId}`,
           type: (sub.estimated_complexity === 'large') ? 'implement:large' : 'implement',
@@ -1367,7 +1367,15 @@ function handleDecompositionResult(stdout, meta, config) {
           featureBranch: p.featureBranch,
           created: ts(),
           createdBy: 'decomposition',
-        });
+        };
+        // Persist structured fields from decompose output (additive — safe if absent)
+        if (Array.isArray(sub.acceptance_criteria) && sub.acceptance_criteria.length > 0) {
+          childItem.acceptance_criteria = sub.acceptance_criteria;
+        }
+        if (Array.isArray(sub.scope_boundaries) && sub.scope_boundaries.length > 0) {
+          childItem.scope_boundaries = sub.scope_boundaries;
+        }
+        data.push(childItem);
       }
       return data;
     });
