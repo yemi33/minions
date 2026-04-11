@@ -449,9 +449,16 @@ async function _refreshPipelineDetail(id) {
 async function _triggerPipeline(id, btn) {
   if (btn) { btn.textContent = 'Starting...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
   showToast('cmd-toast', 'Pipeline triggered', true);
+  // Optimistic: inject a running state so the UI updates immediately
+  var p = _pipelinesData.find(function(x) { return x.id === id; });
+  if (p) {
+    if (!p.runs) p.runs = [];
+    p.runs.push({ status: 'running', startedAt: new Date().toISOString(), stages: {} });
+    openPipelineDetail(id);
+  }
   try {
     var res = await fetch('/api/pipelines/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    if (res.ok) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } refresh(); await _refreshPipelineDetail(id); }
+    if (res.ok) { refresh(); await _refreshPipelineDetail(id); }
     else { var d = await res.json().catch(function() { return {}; }); if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); }
   } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
