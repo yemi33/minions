@@ -533,16 +533,12 @@ if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     console.log(`  Version synced to ${getPkgVersion()} (dev/symlink install — pull from git to update code)`);
   } else {
     try {
-      execSync('npm install -g @yemi33/minions@latest', { stdio: 'inherit', timeout: 120000 });
+      execSync('npm update -g @yemi33/minions', { stdio: 'inherit', timeout: 120000 });
     } catch (e) {
-      console.error('  npm install failed:', e.message);
+      console.error('  npm update failed:', e.message);
       process.exit(1);
     }
-    // Pass MINIONS_HOME explicitly so init updates the right directory, not cwd/.minions
-    execSync('minions init --force', {
-      stdio: 'inherit', timeout: 120000,
-      env: { ...process.env, MINIONS_HOME },
-    });
+    execSync('minions init --force', { stdio: 'inherit', timeout: 120000 });
   }
   // Restart engine + dashboard so they pick up the new code
   console.log('\n  Restarting engine and dashboard...\n');
