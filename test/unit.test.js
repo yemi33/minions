@@ -1642,6 +1642,25 @@ async function testPrdStaleInvalidation() {
       'engine stale alert should offer a clear restart recovery action');
   });
 
+  await test('Stale banner shown on paused PRDs (not suppressed by isBlocked)', () => {
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const renderPrd = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
+    // Both files should use showStale = (!isBlocked || isPaused) && g.planStale
+    assert.ok(html.includes('(!isBlocked || isPaused) && g.planStale'),
+      'dashboard.html should allow stale UI when paused');
+    assert.ok(renderPrd.includes('(!isBlocked || isPaused) && g.planStale'),
+      'render-prd.js should allow stale UI when paused');
+    // staleLabel and staleRecovery should use showStale, not the old !isBlocked guard
+    assert.ok(renderPrd.includes('const staleLabel = showStale'),
+      'render-prd.js staleLabel should use showStale variable');
+    assert.ok(renderPrd.includes('const staleRecovery = showStale'),
+      'render-prd.js staleRecovery should use showStale variable');
+    assert.ok(html.includes('const staleLabel = showStale'),
+      'dashboard.html staleLabel should use showStale variable');
+    assert.ok(html.includes('const staleRecovery = showStale'),
+      'dashboard.html staleRecovery should use showStale variable');
+  });
+
   await test('Dashboard shows immediate PRD retry feedback states', () => {
     const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
     assert.ok(html.includes('window._prdRequeueUi'),
