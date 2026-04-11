@@ -1331,65 +1331,10 @@ function materializePlansAsWorkItems(config) {
           // Handle PRD based on current status
           const prdStatus = plan.status || (plan.requires_approval ? 'awaiting-approval' : null);
 
-          // Approved/completed PRDs with existing work: auto-dispatch diff-aware plan-to-prd update
-          if (prdStatus === PLAN_STATUS.APPROVED || prdStatus === PLAN_STATUS.COMPLETED) {
-            const allWorkItems = queries.getWorkItems(config);
-            const planWis = allWorkItems.filter(w => w.sourcePlan === file && w.itemType !== 'pr' && w.itemType !== 'verify');
-            const doneWis = planWis.filter(w => DONE_STATUSES.has(w.status));
-            if (doneWis.length > 0) {
-              const allPrs = getProjects(config).flatMap(p => safeJson(projectPrPath(p)) || []);
-              const prLinks = shared.getPrLinks();
-              const implContext = (plan.missing_features || []).map(f => {
-                const wi = planWis.find(w => w.id === f.id);
-                const pr = allPrs.find(p => prLinks[p.id] === f.id || (p.prdItems || []).includes(f.id));
-                return `- **${f.id}**: ${f.name} [status: ${wi?.status || f.status}]${pr ? ` (PR: ${pr.id}, branch: \`${pr.branch}\`)` : ''}`;
-              }).join('\n');
-
-              const planContent = safeRead(path.join(PLANS_DIR, plan.source_plan));
-              if (planContent) {
-                const projectName = plan.project || file.replace(/-\d{4}-\d{2}-\d{2}\.json$/, '');
-                const allProjects = getProjects(config);
-                const targetProject = allProjects.find(p => p.name?.toLowerCase() === projectName.toLowerCase()) || allProjects[0];
-                if (targetProject) {
-                  const centralWiPath = path.join(MINIONS_DIR, 'work-items.json');
-                  let queued = false;
-                  mutateJsonFileLocked(centralWiPath, items => {
-                    if (!Array.isArray(items)) items = [];
-                    if (items.some(w => w.type === WORK_TYPE.PLAN_TO_PRD && w.planFile === plan.source_plan && (w.status === WI_STATUS.PENDING || w.status === WI_STATUS.DISPATCHED))) return items;
-                    items.push({
-                      id: 'W-' + shared.uid(),
-                      title: `Update PRD from revised plan: ${plan.source_plan}`,
-                      type: 'plan-to-prd',
-                      priority: 'high',
-                      description: `Plan file: plans/${plan.source_plan}\nPRD file: prd/${file}\n\n` +
-                        `Source plan was revised. Compare the updated plan against existing implementation and update the PRD.\n\n` +
-                        `**Existing implementation state:**\n${implContext}\n\n` +
-                        `**Rules for updating:**\n` +
-                        `- Items that are done and unchanged in the plan → keep status "done" (preserve their ID)\n` +
-                        `- Items that are done but modified in the plan (new requirements) → set status "updated" (engine will re-open)\n` +
-                        `- New items in the plan → set status "missing" (engine will materialize)\n` +
-                        `- Items removed from the plan → drop from PRD (engine will cancel pending WIs)\n` +
-                        `- Preserve all existing item IDs for unchanged/modified items — do NOT generate new IDs for them`,
-                      status: 'pending',
-                      created: ts(),
-                      createdBy: 'engine:plan-revision',
-                      project: targetProject.name,
-                      planFile: plan.source_plan,
-                      _existingPrdFile: file,
-                    });
-                    queued = true;
-                    return items;
-                  }, { defaultValue: [] });
-                  if (queued) log('info', `Queued diff-aware plan-to-prd update for ${plan.source_plan} (${doneWis.length} done, ${planWis.length} total items)`);
-                }
-              }
-            } else {
-              plan.planStale = true;
-              log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}, no done items) — user can re-execute from dashboard`);
-            }
-          } else if (prdStatus === PLAN_STATUS.PAUSED) {
+          // Approved/completed/paused PRDs: flag stale — user clicks Resume to trigger diff-aware update
+          if (prdStatus && prdStatus !== 'awaiting-approval') {
             plan.planStale = true;
-            log('info', `PRD ${file} flagged as stale (plan revised while paused) — user can re-execute from dashboard`);
+            log('info', `PRD ${file} flagged as stale (plan revised while ${prdStatus}) — user can resume from dashboard`);
           }
 
           // Awaiting-approval PRDs: auto-regenerate (no work started yet, safe to replace)

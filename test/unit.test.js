@@ -1573,12 +1573,12 @@ async function testPrdStaleInvalidation() {
     assert.strictEqual(noDuplicate, false, 'Should not detect duplicate for different plan');
   });
 
-  await test('Approved/paused PRDs flagged stale on plan revision (not auto-regenerated)', () => {
+  await test('Approved/paused/completed PRDs flagged stale on plan revision (user must resume)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('plan.planStale = true'),
       'Should set planStale flag for non-awaiting PRDs');
-    assert.ok(src.includes('user can re-execute from dashboard'),
-      'Should log that user must manually re-execute');
+    assert.ok(src.includes('user can resume from dashboard'),
+      'Should log that user must resume');
   });
 
   await test('Stale PRDs do not materialize new work items', () => {
@@ -1739,22 +1739,20 @@ async function testPrdStaleInvalidation() {
 
   console.log('\n── Plan Resume & Diff-Aware PRD Updates ──');
 
-  await test('Approved/completed PRDs with done work dispatch diff-aware plan-to-prd update', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('PLAN_STATUS.APPROVED') && src.includes('PLAN_STATUS.COMPLETED'),
-      'Should handle both approved and completed PRDs');
+  await test('Resume (approve) dispatches diff-aware plan-to-prd when done work exists', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('Existing implementation state'),
       'Should pass implementation context to agent');
     assert.ok(src.includes('_existingPrdFile'),
       'Work item should reference existing PRD file');
+    assert.ok(src.includes('dashboard:plan-resume'),
+      'Should use dashboard:plan-resume as createdBy');
   });
 
   await test('Diff-aware dispatch only fires when done work items exist', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('doneWis.length > 0'),
       'Should check for done work items before dispatching diff-aware update');
-    assert.ok(src.includes('no done items') && src.includes('planStale'),
-      'Should fall back to planStale when no done work exists');
   });
 
   await test('Materializer handles "updated" PRD item status', () => {
