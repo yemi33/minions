@@ -208,8 +208,8 @@ async function submitKbEntry() {
       body: JSON.stringify({ category, title, content })
     });
     if (res.ok) { closeModal(); refreshKnowledgeBase(); }
-    else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'KB create failed: ' + (d.error || 'unknown'), false); }
-  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
+    else { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'KB create failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Create'; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function kbOpenItem(category, file) {
