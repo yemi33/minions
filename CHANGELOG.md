@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.860 (2026-04-11)
+
+### Fixes
+-  set steering state before killImmediate to prevent race
+-  pipeline race condition, delete refresh, abort error logging
+-  _continuePipeline now calls refresh() to update card list
+-  pipeline modal refresh was silently broken — API returns array not object
+-  pipeline modal now auto-updates on all action buttons
+-  pipeline modal buttons stuck on loading state after success
+
 ## 0.1.854 (2026-04-11)
 
 ### Features
