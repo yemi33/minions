@@ -351,6 +351,11 @@ function archivePlan(planFile, plan, projects, config) {
       fs.renameSync(planPath, path.join(prdArchiveDir, planFile));
       log('info', `Archived completed PRD: prd/archive/${planFile}`);
     }
+    // Remove .backup sidecar — if left behind, safeJson() would restore the pre-completion
+    // snapshot (status: approved, no _completionNotified) on engine restart, re-triggering
+    // plan completion and spawning duplicate verify tasks for already-archived plans.
+    const backupPath = planPath + '.backup';
+    if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
   } catch (err) {
     log('warn', `Failed to archive PRD ${planFile}: ${err.message}`);
   }
