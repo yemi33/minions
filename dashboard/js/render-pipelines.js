@@ -449,7 +449,7 @@ async function _triggerPipeline(id, btn) {
   showToast('cmd-toast', 'Pipeline triggered', true);
   try {
     var res = await fetch('/api/pipelines/trigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
-    if (res.ok) { refresh(); await _refreshPipelineDetail(id); }
+    if (res.ok) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } refresh(); await _refreshPipelineDetail(id); }
     else { var d = await res.json().catch(function() { return {}; }); if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false); }
   } catch (e) { if (btn) { btn.textContent = 'Run Now'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
@@ -461,6 +461,7 @@ async function _abortPipeline(id, btn) {
   try {
     var res = await fetch('/api/pipelines/abort', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
     if (res.ok) {
+      if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       refresh();
       await _refreshPipelineDetail(id);
     } else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Abort failed: ' + (d.error || 'unknown'), false); if (btn) { btn.textContent = 'Abort'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
@@ -474,6 +475,7 @@ async function _retriggerPipeline(id, btn) {
   try {
     var res = await fetch('/api/pipelines/retrigger', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
     if (res.ok) {
+      if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       refresh();
       await _refreshPipelineDetail(id);
     } else { var d = await res.json().catch(function() { return {}; }); showToast('cmd-toast', 'Retrigger failed: ' + (d.error || 'unknown'), false); if (btn) { btn.textContent = 'Retrigger'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } }
