@@ -25,7 +25,8 @@ const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
 const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
-  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS } = shared;
+  WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS,
+  FAILURE_CLASS } = shared;
 const queries = require('./engine/queries');
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
@@ -149,6 +150,22 @@ let engineRestartGraceUntil = 0; // timestamp — suppress orphan detection unti
 // Per-tick cache of refs that failed to fetch — avoids repeating 30s ETIMEDOUT for same missing ref
 // Cleared at the start of each tick cycle (see tickInner)
 const _failedRefCache = new Set();
+
+// Parse conflicting file names from git merge error output (stderr/stdout combined)
+function parseConflictFiles(mergeOutput) {
+  const files = [];
+  // Match "CONFLICT (content): Merge conflict in <file>" lines
+  const conflictRe = /CONFLICT \([^)]*\): .*?(?:in|for) (.+)/g;
+  let m;
+  while ((m = conflictRe.exec(mergeOutput)) !== null) files.push(m[1].trim());
+  // Also match "Auto-merging <file>" followed by conflict (less specific, fallback)
+  if (files.length === 0) {
+    const autoMergeRe = /Auto-merging (.+)/g;
+    while ((m = autoMergeRe.exec(mergeOutput)) !== null) files.push(m[1].trim());
+  }
+  return [...new Set(files)]; // dedupe
+}
+
 const _FAST_WORK_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
 const _MAX_TURNS_BY_TYPE = {
   [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
@@ -451,6 +468,8 @@ async function spawnAgent(dispatchItem, config) {
         try {
           const depBranches = resolveDependencyBranches(depIds, meta?.item?.sourcePlan, project, config);
           let depMergeFailed = false;
+          let depConflictBranch = null; // track which dep branch caused the conflict
+          let depConflictFiles = [];    // conflicting file names parsed from git output
           // Fetch all dependency branches in parallel (git fetches are independent)
           const fetchable = depBranches.filter(d => !_failedRefCache.has(d.branch));
           const unfetchable = depBranches.filter(d => _failedRefCache.has(d.branch));
@@ -525,8 +544,28 @@ async function spawnAgent(dispatchItem, config) {
                   }
                   log('info', `Successfully re-merged all ${fetched.length} dep branches after reset for ${branchName}`);
                 } catch (resetErr) {
+                  const errOutput = (resetErr.message || '') + '\n' + (resetErr.stdout?.toString?.() || '') + '\n' + (resetErr.stderr?.toString?.() || '');
                   log('warn', `Failed to reset and re-merge deps for ${branchName}: ${resetErr.message}`);
                   try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
+                  // Identify which dep branch caused the conflict during re-merge
+                  // The last branch attempted in the re-merge loop is the one that failed
+                  for (const { branch: reBranch2 } of fetched) {
+                    try {
+                      const mainRef2 = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                      const mergeBase = (await execAsync(`git merge-base "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir })).stdout.toString().trim();
+                      const treeResult = await execAsync(`git merge-tree "${mergeBase}" "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir });
+                      const treeOutput = treeResult.stdout?.toString?.() || '';
+                      if (treeOutput.includes('<<<<<<<') || treeOutput.includes('changed in both')) {
+                        depConflictBranch = reBranch2;
+                        depConflictFiles = parseConflictFiles(treeOutput);
+                        break;
+                      }
+                    } catch (_e) { /* merge-tree may fail — continue checking other branches */ }
+                  }
+                  // Fallback: parse conflict files from the error output if merge-tree didn't identify them
+                  if (!depConflictBranch) {
+                    depConflictFiles = parseConflictFiles(errOutput);
+                  }
                   depMergeFailed = true;
                 }
                 break;
@@ -535,7 +574,47 @@ async function spawnAgent(dispatchItem, config) {
           }
           if (depMergeFailed) {
             _cleanupPromptFiles();
-            completeDispatch(id, DISPATCH_RESULT.ERROR, `Dependency merge failed — will retry next tick`);
+            // Build actionable failReason identifying the conflicting branch and files
+            let failReason = 'Dependency merge failed';
+            if (depConflictBranch) {
+              failReason = `Dependency merge failed: ${depConflictBranch} conflicts with ${sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch))}`;
+              if (depConflictFiles.length > 0) failReason += ` in ${depConflictFiles.slice(0, 5).join(', ')}`;
+              failReason += ' — dep branch needs updating';
+            }
+            completeDispatch(id, DISPATCH_RESULT.ERROR, failReason, '', { failureClass: FAILURE_CLASS.MERGE_CONFLICT });
+
+            // Auto-queue conflict-fix work item when a specific dep branch is identified
+            if (depConflictBranch && meta?.item?.id && project) {
+              try {
+                const wiPath = project.name
+                  ? projectWorkItemsPath(project)
+                  : path.join(MINIONS_DIR, 'work-items.json');
+                const conflictFixId = `conflict-fix-${depConflictBranch.replace(/[^a-zA-Z0-9-]/g, '-')}`;
+                const filesDesc = depConflictFiles.length > 0
+                  ? `\n\nConflicting files:\n${depConflictFiles.map(f => '- ' + f).join('\n')}`
+                  : '';
+                const mainBranch = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                mutateWorkItems(wiPath, items => {
+                  // Don't create duplicate conflict-fix items
+                  const existing = items.find(i => i.id === conflictFixId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED && i.status !== WI_STATUS.CANCELLED);
+                  if (existing) return;
+                  items.push({
+                    id: conflictFixId,
+                    title: `Fix merge conflict: ${depConflictBranch} conflicts with ${mainBranch}`,
+                    type: WORK_TYPE.FIX,
+                    priority: 'high',
+                    status: WI_STATUS.PENDING,
+                    description: `Branch \`${depConflictBranch}\` conflicts with \`${mainBranch}\`. Merge ${mainBranch} into the branch and resolve conflicts, then push.${filesDesc}\n\nBlocked downstream item: \`${meta.item.id}\` — ${meta.item.title || ''}`,
+                    created: ts(),
+                    createdBy: 'engine:dep-conflict-fix',
+                    _branch: depConflictBranch,
+                    _blockedItem: meta.item.id,
+                    project: project.name || null,
+                  });
+                  log('info', `Auto-queued conflict-fix work item ${conflictFixId} for ${depConflictBranch} (blocked: ${meta.item.id})`);
+                });
+              } catch (e) { log('warn', `Failed to auto-queue conflict-fix: ${e.message}`); }
+            }
             return;
           }
         } catch (e) {
@@ -3088,6 +3167,7 @@ module.exports = {
 
   // Shared helpers (used by lifecycle.js and tests)
   reconcileItemsWithPrs, detectDependencyCycles,
+  parseConflictFiles, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,

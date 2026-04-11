@@ -6435,6 +6435,66 @@ async function testDispatchCycleIntegration() {
       'engine.js must handle push failure for local-only branches gracefully');
   });
 
+  await test('Dep merge failure includes conflicting branch in failReason (#814)', () => {
+    // When dep merge fails, the failReason must identify which branch conflicted
+    assert.ok(engineSrc.includes('depConflictBranch'),
+      'engine.js must track which dep branch caused the conflict');
+    assert.ok(engineSrc.includes('depConflictFiles'),
+      'engine.js must track conflicting file names');
+    assert.ok(engineSrc.includes('conflicts with'),
+      'engine.js failReason must include "conflicts with" for actionable diagnosis');
+    assert.ok(engineSrc.includes('dep branch needs updating'),
+      'engine.js failReason must indicate the dep branch needs updating');
+  });
+
+  await test('Dep merge failure passes FAILURE_CLASS.MERGE_CONFLICT (#814)', () => {
+    // completeDispatch must receive failureClass so recovery.js uses per-class retry limits
+    assert.ok(engineSrc.includes('failureClass: FAILURE_CLASS.MERGE_CONFLICT'),
+      'engine.js must pass FAILURE_CLASS.MERGE_CONFLICT on dep merge failure');
+  });
+
+  await test('Dep merge failure auto-queues conflict-fix work item (#814)', () => {
+    assert.ok(engineSrc.includes('conflict-fix-'),
+      'engine.js must generate conflict-fix work item IDs');
+    assert.ok(engineSrc.includes('engine:dep-conflict-fix'),
+      'engine.js must tag auto-queued items with createdBy: engine:dep-conflict-fix');
+    assert.ok(engineSrc.includes('_blockedItem'),
+      'engine.js must track the blocked downstream item on conflict-fix work items');
+    assert.ok(engineSrc.includes('Auto-queued conflict-fix work item'),
+      'engine.js must log when auto-queuing conflict-fix items');
+  });
+
+  await test('Dep merge uses git merge-tree to identify conflicting branch (#814)', () => {
+    assert.ok(engineSrc.includes('git merge-tree'),
+      'engine.js must use git merge-tree to detect conflicts without checking out');
+    assert.ok(engineSrc.includes('git merge-base'),
+      'engine.js must compute merge-base for merge-tree');
+  });
+
+  await test('parseConflictFiles parses CONFLICT lines from git merge output', () => {
+    const { parseConflictFiles } = require(path.join(MINIONS_DIR, 'engine.js'));
+    // Standard CONFLICT lines
+    const output1 = 'Auto-merging src/App.tsx\nCONFLICT (content): Merge conflict in src/App.tsx\nAuto-merging src/index.ts\nCONFLICT (content): Merge conflict in src/index.ts';
+    const files1 = parseConflictFiles(output1);
+    assert.deepStrictEqual(files1, ['src/App.tsx', 'src/index.ts'],
+      'Should parse file names from CONFLICT lines');
+
+    // No CONFLICT lines — fallback to Auto-merging
+    const output2 = 'Auto-merging CoreLinks.tsx\nFailed to merge';
+    const files2 = parseConflictFiles(output2);
+    assert.deepStrictEqual(files2, ['CoreLinks.tsx'],
+      'Should fallback to Auto-merging lines when no CONFLICT lines');
+
+    // Empty output
+    assert.deepStrictEqual(parseConflictFiles(''), [],
+      'Should return empty array for empty output');
+
+    // Deduplicated files
+    const output3 = 'CONFLICT (content): Merge conflict in foo.js\nCONFLICT (content): Merge conflict in foo.js';
+    assert.deepStrictEqual(parseConflictFiles(output3), ['foo.js'],
+      'Should deduplicate conflict files');
+  });
+
   await test('Spawn renders playbook with system prompt', () => {
     assert.ok(engineSrc.includes('function renderPlaybook'),
       'engine.js must define renderPlaybook');
