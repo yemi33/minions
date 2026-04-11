@@ -961,6 +961,7 @@ const server = http.createServer(async (req, res) => {
         if (!plan) return jsonReply(res, 500, { error: 'Could not parse PRD file' });
         plan.status = 'approved';
         delete plan.completedAt;
+        delete plan.planStale;
         safeWrite(activePath, plan);
       }
 
@@ -2186,7 +2187,8 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       plan.approvedAt = new Date().toISOString();
       plan.approvedBy = body.approvedBy || os.userInfo().username;
       delete plan.pausedAt;
-      delete plan._completionNotified; // Allow re-completion after new work finishes
+      delete plan.planStale;
+      delete plan._completionNotified;
       safeWrite(planPath, plan);
 
       // Resume paused work items across all projects
