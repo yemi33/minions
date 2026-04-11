@@ -471,22 +471,39 @@ async function spawnAgent(dispatchItem, config) {
           );
           const hasFetchFailures = fetchResults.some(r => r.status === 'rejected');
           const allPrsForFetch = hasFetchFailures ? shared.getProjects(config).reduce((acc, p) => acc.concat(safeJson(shared.projectPrPath(p)) || []), []) : [];
+          // Track branches recovered by local-only push so they can be merged
+          const recoveredBranches = new Set();
           for (let i = 0; i < fetchResults.length; i++) {
             if (fetchResults[i].status === 'rejected') {
               const failedBranch = fetchable[i].branch;
               const failedPrId = fetchable[i].prId;
+              const errMsg = fetchResults[i].reason?.message || '';
               const pr = allPrsForFetch.find(p => p.id === failedPrId);
               if (pr && (pr.status === 'merged' || pr.status === 'closed')) {
                 log('info', `Dependency ${failedBranch} (${failedPrId}) already merged — skipping, changes already in main`);
                 continue;
               }
+              // If remote ref missing, check if branch exists locally and push it (#782)
+              if (errMsg.includes('couldn\'t find remote ref') || errMsg.includes('not found in upstream')) {
+                try {
+                  await execAsync(`git rev-parse --verify "refs/heads/${failedBranch}"`, { ..._gitOpts, cwd: rootDir });
+                  // Branch exists locally — push it to origin
+                  log('info', `Dependency ${failedBranch} exists locally but not on remote — pushing to origin`);
+                  await execAsync(`git push origin "${failedBranch}"`, { ..._gitOpts, cwd: rootDir, timeout: 60000 });
+                  log('info', `Successfully pushed local-only dependency branch ${failedBranch} to origin`);
+                  recoveredBranches.add(failedBranch);
+                  continue;
+                } catch (localErr) {
+                  log('warn', `Dependency ${failedBranch} not found locally or push failed: ${localErr.message}`);
+                }
+              }
               _failedRefCache.add(failedBranch);
-              log('warn', `Failed to fetch dependency ${failedBranch}: ${fetchResults[i].reason?.message}`);
+              log('warn', `Failed to fetch dependency ${failedBranch}: ${errMsg}`);
               depMergeFailed = true;
             }
           }
-          // Merge successfully-fetched branches sequentially (merges modify the worktree)
-          const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled');
+          // Merge successfully-fetched + recovered (local-only pushed) branches sequentially
+          const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled' || recoveredBranches.has(fetchable[i].branch));
           if (!depMergeFailed) {
             for (const { branch: depBranch, prId } of fetched) {
               try {
