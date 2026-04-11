@@ -1734,6 +1734,74 @@ async function testPrdStaleInvalidation() {
     assert.ok(src.includes('w.branch') && src.includes('w.id') && src.includes('pr.branch'),
       'Should collect branch slugs from work items, item IDs, and PR branches');
   });
+
+  // ── Plan Resume & Diff-Aware PRD Updates ──
+
+  console.log('\n── Plan Resume & Diff-Aware PRD Updates ──');
+
+  await test('Approved/completed PRDs with done work dispatch diff-aware plan-to-prd update', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('PLAN_STATUS.APPROVED') && src.includes('PLAN_STATUS.COMPLETED'),
+      'Should handle both approved and completed PRDs');
+    assert.ok(src.includes('Existing implementation state'),
+      'Should pass implementation context to agent');
+    assert.ok(src.includes('_existingPrdFile'),
+      'Work item should reference existing PRD file');
+  });
+
+  await test('Diff-aware dispatch only fires when done work items exist', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('doneWis.length > 0'),
+      'Should check for done work items before dispatching diff-aware update');
+    assert.ok(src.includes('no done items') && src.includes('planStale'),
+      'Should fall back to planStale when no done work exists');
+  });
+
+  await test('Materializer handles "updated" PRD item status', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("'updated'") && src.includes('statusFilter'),
+      'statusFilter should include "updated"');
+  });
+
+  await test('Re-open: done work items reset to pending when PRD item set to updated/missing', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('DONE_STATUSES.has(existingWi.status)') && src.includes('shouldReopen'),
+      'Should check for done WI + reopen-eligible PRD status');
+    assert.ok(src.includes('_reopened = true'),
+      'Should mark re-opened work items with _reopened flag');
+  });
+
+  await test('Cross-project re-opens deferred outside lock (no nested locks)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('deferredReopens'),
+      'Should collect cross-project re-opens for deferred execution');
+    assert.ok(src.includes('deferredReopens.push'),
+      'Should push to deferred array inside lock');
+  });
+
+  await test('buildWiDescription shared helper used for all WI description building', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('function buildWiDescription('),
+      'Should have buildWiDescription helper');
+    const count = (src.match(/buildWiDescription\(/g) || []).length;
+    assert.ok(count >= 4, 'buildWiDescription should be used in re-open, cross-project re-open, and new item paths (got ' + count + ')');
+  });
+
+  await test('handlePlansApprove clears _completionNotified for re-completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('delete plan._completionNotified'),
+      'Resume should clear _completionNotified so completion can re-fire');
+  });
+
+  await test('plan-to-prd playbook has diff-aware update instructions', () => {
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    assert.ok(playbook.includes('Updating an Existing PRD'),
+      'Playbook should have diff-aware update section');
+    assert.ok(playbook.includes('"updated"'),
+      'Playbook should document "updated" status for modified done items');
+    assert.ok(playbook.includes('Preserve item IDs'),
+      'Playbook should instruct agent to preserve existing IDs');
+  });
 }
 
 // ─── Archive Path Resolution & Version Tests ─────────────────────────────────
