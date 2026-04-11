@@ -1642,24 +1642,12 @@ async function testPrdStaleInvalidation() {
       'verify guide modal should also normalize file path');
   });
 
-  await test('Dashboard has /api/prd/regenerate endpoint', () => {
+  await test('Destructive /api/prd/regenerate removed — diff-aware update via /api/plans/approve', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('/api/prd/regenerate'),
-      'dashboard.js should have /api/prd/regenerate endpoint');
-    assert.ok(src.includes('fs.unlinkSync(prdPath)'),
-      'Regeneration should delete old PRD file');
-    assert.ok(src.includes('_targetPrdFile'),
-      'Regeneration work item should include target PRD filename');
-  });
-
-  await test('Regeneration carries over completed items from old PRD', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
-    assert.ok(src.includes('completedItems'),
-      'Regeneration should collect completed items');
-    assert.ok(src.includes("completedStatuses.has(f.status)") || src.includes("completedStatuses.has(w.status)"),
-      'Should preserve done work items');
-    assert.ok(src.includes('Previously completed items'),
-      'Should pass completed items context to agent');
+    assert.ok(!src.includes('handlePrdRegenerate(req'),
+      'handlePrdRegenerate handler should be removed');
+    assert.ok(src.includes('diff-aware update via /api/plans/approve'),
+      'Should have comment explaining removal');
   });
 
   await test('Engine auto-regeneration also carries over completed items', () => {

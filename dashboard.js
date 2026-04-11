@@ -2362,61 +2362,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
-  async function handlePrdRegenerate(req, res) {
-    try {
-      const body = await readBody(req);
-      if (!body.file) return jsonReply(res, 400, { error: 'file is required' });
-      shared.sanitizePath(body.file, PRD_DIR);
-
-      const prdPath = path.join(PRD_DIR, body.file);
-      const plan = safeJson(prdPath);
-      if (!plan) return jsonReply(res, 404, { error: 'PRD file not found' });
-      if (!plan.source_plan) return jsonReply(res, 400, { error: 'PRD has no source_plan — cannot regenerate' });
-
-      const sourcePlanPath = path.join(PLANS_DIR, plan.source_plan);
-      if (!fs.existsSync(sourcePlanPath)) return jsonReply(res, 400, { error: `Source plan not found: ${plan.source_plan}` });
-
-      // Collect completed item IDs from the old PRD to carry over
-      const completedStatuses = new Set(['done', 'in-pr', 'implemented']); // in-pr kept for backward compat
-      const completedItems = (plan.missing_features || [])
-        .filter(f => completedStatuses.has(f.status))
-        .map(f => ({ id: f.id, name: f.name, status: f.status }));
-
-      // Clean pending/failed work items from old PRD (keep done items)
-      const { getProjects, projectWorkItemsPath } = shared;
-      const config = queries.getConfig();
-      for (const p of getProjects(config)) {
-        const projWiPath = projectWorkItemsPath(p);
-        try {
-          mutateWorkItems(projWiPath, items => {
-            const filtered = items.filter(w => {
-              if (w.sourcePlan !== body.file) return true; // different plan, keep
-              return completedStatuses.has(w.status); // keep completed, remove pending/failed
-            });
-            if (filtered.length < items.length) return filtered;
-          });
-        } catch { /* project may not have work items */ }
-      }
-
-      // Delete old PRD — agent will write replacement at same path
-      try { fs.unlinkSync(prdPath); } catch { /* cleanup */ }
-
-      // Queue plan-to-prd regeneration with instructions to preserve completed items
-      const completedContext = completedItems.length > 0
-        ? `\n\n**Previously completed items (preserve their status in the new PRD):**\n${completedItems.map(i => `- ${i.id}: ${i.name} [${i.status}]`).join('\n')}`
-        : '';
-
-      const queued = shared.queuePlanToPrd({
-        planFile: plan.source_plan, prdFile: body.file,
-        title: `Regenerate PRD: ${plan.plan_summary || plan.source_plan}`,
-        description: `Plan file: plans/${plan.source_plan}\nTarget PRD filename: ${body.file}\nRegeneration requested by user after plan revision.${completedContext}`,
-        project: plan.project || '', createdBy: 'dashboard:regenerate',
-        extra: { _targetPrdFile: body.file },
-      });
-      if (!queued) return jsonReply(res, 200, { alreadyQueued: true });
-      return jsonReply(res, 200, { ok: true, file: plan.source_plan });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); }
-  }
+  // handlePrdRegenerate removed — destructive delete+regen replaced by diff-aware update via /api/plans/approve
 
   async function handlePlansExecute(req, res) {
     if (checkRateLimit('plans-execute', 5)) return jsonReply(res, 429, { error: 'Rate limited — max 5 requests/minute' });
@@ -4154,7 +4100,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/prd-items', desc: 'Create a PRD item as a plan file in prd/ (auto-approved)', params: 'name, description?, priority?, estimated_complexity?, project?, id?', handler: handlePrdItemsCreate },
     { method: 'POST', path: '/api/prd-items/update', desc: 'Edit a PRD item in its source plan JSON', params: 'source, itemId, name?, description?, priority?, estimated_complexity?, status?', handler: handlePrdItemsUpdate },
     { method: 'POST', path: '/api/prd-items/remove', desc: 'Remove a PRD item from plan + cancel materialized work item', params: 'source, itemId', handler: handlePrdItemsRemove },
-    { method: 'POST', path: '/api/prd/regenerate', desc: 'Regenerate PRD from revised source plan', params: 'file', handler: handlePrdRegenerate },
+    // /api/prd/regenerate removed — use /api/plans/approve which does diff-aware update
 
     // Agents
     { method: 'POST', path: '/api/pull-requests/link', desc: 'Manually link an external PR for tracking', params: 'url, title?, project?, autoObserve?, context?', handler: async (req, res) => {
