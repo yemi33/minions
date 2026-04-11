@@ -1513,6 +1513,30 @@ async function testPlanLifecycle() {
       'plan-to-prd playbook should NOT set status to approved');
   });
 
+  await test('plan-to-prd playbook has existing PRD reuse instructions (#884)', () => {
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    assert.ok(playbook.includes('Reusing an Existing PRD'),
+      'Playbook should have existing PRD reuse section');
+    assert.ok(playbook.includes('{{existing_prd_json}}'),
+      'Playbook should reference existing_prd_json template variable');
+    assert.ok(playbook.includes('Preserve done items'),
+      'Playbook should instruct agent to preserve done items');
+    assert.ok(playbook.includes('Do NOT reset done items'),
+      'Playbook should explicitly forbid resetting done items to missing');
+  });
+
+  await test('engine reuses existing PRD filename for same source_plan (#884)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the plan-to-prd dispatch block
+    const prdBlock = src.slice(src.indexOf('WORK_TYPE.PLAN_TO_PRD'), src.indexOf('vars.branch_strategy_hint'));
+    assert.ok(prdBlock.includes('source_plan'),
+      'Engine should check source_plan when looking for existing PRDs');
+    assert.ok(prdBlock.includes('existing_prd_json'),
+      'Engine should pass existing_prd_json to playbook template');
+    assert.ok(prdBlock.includes('reusing existing PRD'),
+      'Engine should log when reusing existing PRD filename');
+  });
+
   await test('cli.js recovery does not re-queue plan-to-prd chains', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
     assert.ok(!src.includes("chain === 'plan-to-prd'"),
