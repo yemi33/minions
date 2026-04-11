@@ -115,17 +115,22 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
           git diff --cached --quiet && echo "No changes to commit" || {
-            # Close stale publish PRs (they conflict after newer commits land)
-            gh pr list --state open --json number,title --jq '.[] | select(.title | startswith("chore: publish")) | .number' | while read pr; do
-              gh pr close "$pr" --delete-branch 2>/dev/null || true
-            done
-
             BRANCH="chore/publish-$NEXT"
             git checkout -b "$BRANCH"
             git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
             git push origin "$BRANCH"
             gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
-            gh pr merge "$BRANCH" --merge --auto --delete-branch
+
+            # Merge immediately with admin override so the PR lands before the next
+            # push to master can close it. --auto was the old approach but it waits
+            # for CI checks (~2 min), during which the next workflow run would close
+            # the PR and restart the cycle indefinitely.
+            gh pr merge "$BRANCH" --merge --admin --delete-branch
+
+            # Close any stale publish PRs left over from previous runs
+            gh pr list --state open --json number,title --jq '.[] | select(.title | startswith("chore: publish")) | .number' | while read pr; do
+              gh pr close "$pr" --delete-branch 2>/dev/null || true
+            done
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
