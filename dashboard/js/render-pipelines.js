@@ -414,7 +414,7 @@ function openPipelineDetail(id) {
         var fresh = (d.pipelines || []).find(function(x) { return x.id === id; });
         if (fresh) {
           // Only re-render if data changed
-          var newHash = JSON.stringify(fresh.runs || []);
+          var newHash = JSON.stringify({ runs: fresh.runs || [], enabled: fresh.enabled, _stoppedBy: fresh._stoppedBy, _stopReason: fresh._stopReason });
           if (newHash !== _pipelinePollHash) {
             _pipelinePollHash = newHash;
             _pipelinesData = _pipelinesData.map(function(x) { return x.id === id ? fresh : x; });
@@ -487,7 +487,7 @@ async function _togglePipelineEnabled(id, enabled, btn) {
   showToast('cmd-toast', enabled ? 'Pipeline enabled' : 'Pipeline disabled', true);
   try {
     var res = await fetch('/api/pipelines/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id, enabled: enabled }) });
-    if (res.ok) { refresh(); }
+    if (res.ok) { refresh(); await _refreshPipelineDetail(id); }
     else { showToast('cmd-toast', 'Failed to ' + (enabled ? 'enable' : 'disable') + ' pipeline', false); }
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
   if (btn) { btn.textContent = enabled ? 'Disable' : 'Enable'; btn.style.pointerEvents = ''; }
