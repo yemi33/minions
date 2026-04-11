@@ -908,9 +908,9 @@ const commands = {
     const e = engine();
     console.log('\n=== Kill All Active Work ===\n');
     const config = getConfig();
-    const dispatch = getDispatch();
     const shared = require('./shared');
 
+    // Kill processes via PID files (expensive — outside dispatch lock)
     const pidFiles = fs.readdirSync(ENGINE_DIR).filter(f => f.startsWith('pid-'));
     for (const f of pidFiles) {
       const pid = safeRead(path.join(ENGINE_DIR, f)).trim();
@@ -918,7 +918,15 @@ const commands = {
       fs.unlinkSync(path.join(ENGINE_DIR, f));
     }
 
-    const killed = dispatch.active || [];
+    // Atomically read and clear dispatch.active (locked read-modify-write)
+    let killed = [];
+    e.mutateDispatch((dispatch) => {
+      killed = dispatch.active || [];
+      dispatch.active = [];
+      return dispatch;
+    });
+
+    // Reset work items outside the dispatch lock (work-items.json has its own lock)
     for (const item of killed) {
       if (item.meta) {
         e.updateWorkItemStatus(item.meta, WI_STATUS.PENDING, '');
@@ -946,8 +954,6 @@ const commands = {
 
       console.log(`Killed dispatch: ${item.id} (${item.agent}) — work item reset to pending`);
     }
-    dispatch.active = [];
-    safeWrite(DISPATCH_PATH, dispatch);
 
     // Agent status derived from dispatch.json — clearing dispatch.active is sufficient.
     console.log('All agents reset to idle (dispatch cleared)');
