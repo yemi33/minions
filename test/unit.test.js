@@ -4059,6 +4059,22 @@ async function testCheckTimeouts() {
     assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
     assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
   });
+
+  // Smoke test: actually call checkTimeouts({}) to catch ReferenceErrors at runtime (#775)
+  // Previous tests only checked source strings — this exercises the real function.
+  await test('checkTimeouts({}) does not throw ReferenceError (#775 smoke test)', () => {
+    const timeout = require('../engine/timeout');
+    try {
+      timeout.checkTimeouts({});
+    } catch (e) {
+      // TypeError, missing engine context, etc. are expected in a test harness.
+      // ReferenceError means a stale/undefined constant reference — that's the bug.
+      if (e instanceof ReferenceError) {
+        throw new Error(`checkTimeouts threw ReferenceError (stale constant?): ${e.message}`);
+      }
+      // Any other error is fine — the function needs a full engine context to run end-to-end.
+    }
+  });
 }
 
 // ─── engine.js — addToDispatch Tests ────────────────────────────────────────
