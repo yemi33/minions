@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.824 (2026-04-11)
+
+### Fixes
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
