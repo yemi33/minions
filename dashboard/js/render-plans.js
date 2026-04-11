@@ -558,16 +558,16 @@ async function planView(file) {
 
 async function planApprove(file, btn) {
   if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Approving...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
   try {
     const res = await fetch('/api/plans/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     if (res.ok) {
-      showToast('cmd-toast', 'Plan approved — work will begin on next engine tick', true);
       refreshPlans();
       refresh();
     } else {
       if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
-      alert('Approve failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'Approve failed: ' + (d.error || 'unknown'), false);
     }
   } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Approve'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
@@ -626,16 +626,16 @@ async function planArchive(file, btn) {
 
 async function planPause(file, btn) {
   if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Pausing...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Plan paused — no new items will be dispatched', true);
   try {
     const res = await fetch('/api/plans/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file }) });
     if (res.ok) {
-      showToast('cmd-toast', 'Plan paused — no new items will be dispatched', true);
       refreshPlans();
       refresh();
     } else {
       if (btn) { btn.textContent = btn.dataset.origText || 'Pause'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       const d = await res.json().catch(() => ({}));
-      alert('Pause failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'Pause failed: ' + (d.error || 'unknown'), false);
     }
   } catch (e) { if (btn) { btn.textContent = btn.dataset.origText || 'Pause'; btn.style.pointerEvents = ''; btn.style.opacity = ''; } showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
@@ -643,14 +643,14 @@ async function planPause(file, btn) {
 async function planReject(file) {
   if (!confirm('Reject this plan? It will not be executed.')) return;
   const reason = prompt('Reason for rejection (optional):') || '';
+  showToast('cmd-toast', 'Plan rejected', true);
   try {
     const res = await fetch('/api/plans/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, reason }) });
     if (res.ok) {
-      showToast('cmd-toast', 'Plan rejected', true);
       refreshPlans();
     } else {
       const d = await res.json().catch(() => ({}));
-      alert('Reject failed: ' + (d.error || 'unknown'));
+      showToast('cmd-toast', 'Reject failed: ' + (d.error || 'unknown'), false);
     }
   } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
@@ -762,6 +762,7 @@ async function openVerifyGuide(file) {
 
 async function triggerVerify(file, btn) {
   if (btn) { btn.dataset.origText = btn.textContent; btn.textContent = 'Verifying...'; btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; }
+  showToast('cmd-toast', 'Verify task queued', true);
   try {
     const res = await fetch('/api/plans/trigger-verify', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -771,7 +772,6 @@ async function triggerVerify(file, btn) {
     if (res.ok && d.ok) {
       try { closeModal(); } catch { /* may not be open */ }
       refresh();
-      showToast('cmd-toast', d.verifyId ? 'Verify task ' + d.verifyId + ' created' : (d.message || 'Done'), true);
     } else {
       if (btn) { btn.textContent = btn.dataset.origText || 'Verify'; btn.style.pointerEvents = ''; btn.style.opacity = ''; }
       alert('Failed: ' + (d.error || 'unknown'));

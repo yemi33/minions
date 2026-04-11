@@ -198,13 +198,14 @@ async function deleteWorkItem(id, source) {
   markDeleted('wi:' + id);
   var wiTable = document.getElementById('work-items-content');
   (wiTable || document).querySelectorAll('tr').forEach(function(r) { if (r.textContent.includes(id)) r.remove(); });
+  showToast('cmd-toast', 'Work item deleted', true);
   try {
     const res = await fetch('/api/work-items/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, source: source || undefined })
     });
-    if (!res.ok) { const d = await res.json().catch(() => ({})); alert('Delete failed: ' + (d.error || 'unknown')); refresh(); }
-  } catch (e) { alert('Delete error: ' + e.message); refresh(); }
+    if (!res.ok) { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Delete failed: ' + (d.error || 'unknown'), false); refresh(); }
+  } catch (e) { showToast('cmd-toast', 'Delete error: ' + e.message, false); refresh(); }
 }
 
 async function archiveWorkItem(id, source) {

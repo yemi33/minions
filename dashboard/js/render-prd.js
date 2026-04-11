@@ -713,20 +713,22 @@ async function prdItemEdit(source, itemId) {
 
 async function prdItemSave(source, itemId) {
   var btn = event?.target; if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+  const body = {
+    source, itemId,
+    name: document.getElementById('prd-edit-name').value,
+    description: document.getElementById('prd-edit-desc').value,
+    priority: document.getElementById('prd-edit-priority').value,
+    estimated_complexity: document.getElementById('prd-edit-complexity').value,
+  };
+  closeModal(); showToast('cmd-toast', 'Item updated', true);
   try {
     const res = await fetch('/api/prd-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source, itemId,
-        name: document.getElementById('prd-edit-name').value,
-        description: document.getElementById('prd-edit-desc').value,
-        priority: document.getElementById('prd-edit-priority').value,
-        estimated_complexity: document.getElementById('prd-edit-complexity').value,
-      })
+      body: JSON.stringify(body)
     });
-    if (res.ok) { closeModal(); refresh(); showToast('cmd-toast', 'Item updated', true); }
-    else { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } const d = await res.json(); alert('Failed: ' + (d.error || 'unknown')); }
-  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } alert('Error: ' + e.message); }
+    if (res.ok) { refresh(); }
+    else { const d = await res.json().catch(() => ({})); showToast('cmd-toast', 'Save failed: ' + (d.error || 'unknown'), false); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 async function prdItemRemove(source, itemId) {
@@ -775,19 +777,17 @@ async function prdItemRequeue(workItemId, source, prdFile) {
 
 async function prdItemReopen(source, itemId) {
   if (!confirm('Re-open this item? It will be set to "updated" and the engine will re-dispatch it on the existing branch.')) return;
+  showToast('cmd-toast', 'Item re-opened — will dispatch on next tick', true);
   try {
-    // Set item to "updated" + clear stale flag + approve so materializer picks it up
     const res = await fetch('/api/prd-items/update', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source, itemId, status: 'updated' })
     });
     if (res.ok) {
-      // Also approve the plan (clears planStale so materializer runs)
       await fetch('/api/plans/approve', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ file: source, skipRegen: true })
       });
-      showToast('cmd-toast', 'Item re-opened — will dispatch on next tick', true);
       refresh();
     } else {
       const d = await res.json().catch(() => ({}));
@@ -798,19 +798,19 @@ async function prdItemReopen(source, itemId) {
 
 async function _planApproveAction(prdFile, skipRegen, confirmMsg, successMsg) {
   if (!confirm(confirmMsg)) return;
+  showToast('cmd-toast', successMsg || (skipRegen ? 'Plan resumed' : 'PRD regeneration queued'), true);
   try {
     const res = await fetch('/api/plans/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file: prdFile, skipRegen: skipRegen || undefined })
     });
-    const d = await res.json();
     if (res.ok) {
-      showToast('cmd-toast', successMsg || (d.diffAwareUpdate ? 'Diff-aware PRD update queued' : 'Plan approved'), true);
       refresh();
     } else {
-      alert('Failed: ' + (d.error || 'unknown'));
+      const d = await res.json().catch(() => ({}));
+      showToast('cmd-toast', 'Failed: ' + (d.error || 'unknown'), false);
     }
-  } catch (e) { alert('Error: ' + e.message); }
+  } catch (e) { showToast('cmd-toast', 'Error: ' + e.message, false); }
 }
 
 function prdRegenerate(prdFile) {
