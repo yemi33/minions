@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.830 (2026-04-11)
+
+### Features
+-  stale PRD shows Regenerate PRD + Resume as-is buttons
+
+### Fixes
+-  revert doc-chat MAX_HEIGHT to 500px
+-  hide plan card action buttons when stale banner is showing
+-  hide conflicting action buttons when stale PRD banner is showing
+-  diff-aware plan-to-prd triggered by Resume, not auto-dispatch
+
+### Other
+- refactor: add PRD_ITEM_STATUS/PRD_MATERIALIZABLE constants, extract queuePlanToPrd
+- refactor: remove dead criteria variable, DRY plan resume functions
+
 ## 0.1.823 (2026-04-11)
 
 ### Features
