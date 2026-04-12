@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.902 (2026-04-12)
+
+### Fixes
+- prohibit agents from self-merging their own PRs
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
