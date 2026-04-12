@@ -31,7 +31,7 @@ These files are removed during sync to personal:
 
 Controlled by the `files` field in `package.json`:
 - `bin/minions.js` — CLI entry point
-- `engine.js`, `dashboard.js`, `dashboard.html`, `minions.js` — core scripts
+- `engine.js`, `dashboard.js`, `dashboard/` (fragments), `minions.js` — core scripts
 - `engine/spawn-agent.js`, `engine/ado-mcp-wrapper.js` — engine helpers
 - `agents/*/charter.md` — agent role definitions
 - `playbooks/*.md` — task templates

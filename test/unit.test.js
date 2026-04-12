@@ -82,6 +82,8 @@ const MINIONS_DIR = path.resolve(__dirname, '..');
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+const { buildDashboardHtml: _buildDashHtml } = require(path.join(MINIONS_DIR, 'dashboard-build'));
+const _assembledDashHtml = _buildDashHtml();
 
 // ─── shared.js Tests ─────────────────────────────────────────────────────────
 
@@ -1660,25 +1662,25 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard has Regenerate PRD button for stale plans', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes('prdRegenerate('),
-      'dashboard.html should have prdRegenerate function call');
-    assert.ok(html.includes('Regenerate now'),
-      'dashboard.html should show a clear regenerate action label');
+      'assembled dashboard should have prdRegenerate function call');
+    assert.ok(html.includes('Regenerate PRD'),
+      'assembled dashboard should show a clear regenerate action label');
   });
 
   await test('Dashboard stale PRD UX explains meaning and recovery', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes('STALE'),
       'dashboard should visibly label stale PRDs');
     assert.ok(html.includes('Source plan was revised. This PRD may be outdated.'),
       'dashboard should explain why stale appears');
-    assert.ok(html.includes('Regenerate now'),
+    assert.ok(html.includes('Regenerate PRD'),
       'dashboard should present explicit stale recovery action');
   });
 
   await test('Dashboard engine stale badge has explicit recovery UX', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes('function renderEngineAlert('),
       'dashboard should render engine stale recovery alert');
     assert.ok(html.includes('Engine heartbeat is stale'),
@@ -1688,11 +1690,11 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Stale banner shown on paused PRDs (not suppressed by isBlocked)', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     const renderPrd = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
     // Both files should use showStale = (!isBlocked || isPaused) && g.planStale
     assert.ok(html.includes('(!isBlocked || isPaused) && g.planStale'),
-      'dashboard.html should allow stale UI when paused');
+      'assembled dashboard should allow stale UI when paused');
     assert.ok(renderPrd.includes('(!isBlocked || isPaused) && g.planStale'),
       'render-prd.js should allow stale UI when paused');
     // staleLabel and staleRecovery should use showStale, not the old !isBlocked guard
@@ -1701,13 +1703,13 @@ async function testPrdStaleInvalidation() {
     assert.ok(renderPrd.includes('const staleRecovery = showStale'),
       'render-prd.js staleRecovery should use showStale variable');
     assert.ok(html.includes('const staleLabel = showStale'),
-      'dashboard.html staleLabel should use showStale variable');
+      'assembled dashboard staleLabel should use showStale variable');
     assert.ok(html.includes('const staleRecovery = showStale'),
-      'dashboard.html staleRecovery should use showStale variable');
+      'assembled dashboard staleRecovery should use showStale variable');
   });
 
   await test('Dashboard shows immediate PRD retry feedback states', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes('window._prdRequeueUi'),
       'dashboard should maintain transient PRD requeue UI state');
     assert.ok(html.includes('requeuing…'),
@@ -1719,7 +1721,7 @@ async function testPrdStaleInvalidation() {
   });
 
   await test('Dashboard normalizes plan file paths before plan modal fetch', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes('function normalizePlanFile(file)'),
       'dashboard should normalize path-like plan references');
     assert.ok(html.includes("fetch('/api/plans/' + encodeURIComponent(normalizedFile))"),
@@ -1921,7 +1923,7 @@ async function testArchivePathResolution() {
   });
 
   await test('planView uses resolved path for _modalFilePath', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes("resolvedPath = planRes.headers.get('X-Resolved-Path')"),
       'planView should read X-Resolved-Path header');
     assert.ok(html.includes('_modalFilePath = resolvedPath ||'),
@@ -1929,7 +1931,7 @@ async function testArchivePathResolution() {
   });
 
   await test('planOpenInDocChat uses resolved path for _modalFilePath', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     // planOpenInDocChat should also fetch the header
     const fnStart = html.indexOf('async function planOpenInDocChat');
     const fnEnd = html.indexOf('} catch (e) { alert(', fnStart);
@@ -1953,10 +1955,13 @@ async function testArchivePathResolution() {
   });
 
   await test('doc-chat does not trigger version actions or forking UI', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     // The doc-chat response handler should not reference isNewVersion or versionedFile
     // since the server no longer forks on doc-chat edits
-    const sendFn = html.slice(html.indexOf('async function qaDocSend') || html.indexOf("fetch('/api/doc-chat'"));
+    const docChatStart = html.indexOf('function modalSend(') !== -1
+      ? html.indexOf('function modalSend(')
+      : html.indexOf("fetch('/api/doc-chat'");
+    const sendFn = html.slice(docChatStart);
     const docChatBlock = sendFn.slice(0, sendFn.indexOf('_qaProcessing = false'));
     assert.ok(!docChatBlock.includes('isNewVersion'),
       'doc-chat response handler should not reference isNewVersion');
@@ -1981,7 +1986,7 @@ async function testArchivePathResolution() {
   });
 
   await test('Dashboard plan card shows version badge', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes("p.version ? ' <span"),
       'plan card should show version badge when version exists');
     assert.ok(html.includes("versionBadge"),
@@ -1989,7 +1994,7 @@ async function testArchivePathResolution() {
   });
 
   await test('Plan view modal shows version label', () => {
-    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
+    const html = _assembledDashHtml;
     assert.ok(html.includes("vMatch = normalizedFile.match(/-v("),
       'planView should extract version from filename');
     assert.ok(html.includes("versionLabel"),
@@ -6033,24 +6038,7 @@ async function testCrossFeatureIntegration() {
 async function testDashboardAssembly() {
   console.log('\n── Dashboard Assembly ──');
 
-  // Try to load buildDashboardHtml — may not exist yet (test-first)
-  let buildDashboardHtml;
-  try {
-    // Look for the function in dashboard.js exports or as a standalone
-    const dashModule = require(path.join(MINIONS_DIR, 'dashboard-build'));
-    buildDashboardHtml = dashModule.buildDashboardHtml;
-  } catch {
-    try {
-      // Fallback: read current dashboard.html directly (pre-refactor)
-      const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
-      buildDashboardHtml = () => html;
-    } catch {
-      skip('dashboard-assembly', 'Neither buildDashboardHtml nor dashboard.html found');
-      return;
-    }
-  }
-
-  const html = buildDashboardHtml();
+  const html = _assembledDashHtml;
 
   await test('assembled HTML is valid structure', () => {
     assert.ok(html.includes('<!DOCTYPE html') || html.includes('<html'), 'Should start with DOCTYPE or html tag');
@@ -6701,14 +6689,9 @@ async function testToolsPageAssembly() {
   });
 
   // Assembled output check
-  let buildDashboardHtml;
-  try { buildDashboardHtml = require(path.join(MINIONS_DIR, 'dashboard-build')).buildDashboardHtml; } catch {}
-  if (buildDashboardHtml) {
-    const html = buildDashboardHtml();
-    await test('assembled HTML contains page-tools div', () => {
-      assert.ok(html.includes('id="page-tools"'), 'Should have page-tools in assembled output');
-    });
-  }
+  await test('assembled HTML contains page-tools div', () => {
+    assert.ok(_assembledDashHtml.includes('id="page-tools"'), 'Should have page-tools in assembled output');
+  });
 }
 
 // ─── Plan/PRD State Flow Tests ──────────────────────────────────────────────
@@ -13466,20 +13449,7 @@ async function testCCMultiTab() {
   // ── Dashboard assembly tests ──────────────────────────────────────────────
 
   await test('cc-tab-bar in assembled HTML', () => {
-    let buildDashboardHtml;
-    try {
-      const dashModule = require(path.join(MINIONS_DIR, 'dashboard-build'));
-      buildDashboardHtml = dashModule.buildDashboardHtml;
-    } catch {
-      try {
-        const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.html'), 'utf8');
-        buildDashboardHtml = () => html;
-      } catch {
-        assert.fail('Could not load dashboard builder');
-        return;
-      }
-    }
-    const html = buildDashboardHtml();
+    const html = _assembledDashHtml;
     assert.ok(html.includes('cc-tab-bar'), 'Assembled HTML should include cc-tab-bar');
   });
 

@@ -148,7 +148,7 @@ Frontend
 | `engine/shared.js` | `parseStreamJsonOutput()` extracts `sessionId` from result |
 | `engine/cc-session.json` | Persisted session state (sessionId, turnCount, timestamps) |
 | `dashboard.js` | CC endpoint, `buildCCStatePreamble()`, `ccDocCall()`, `parseCCActions()` |
-| `dashboard.html` | Frontend: localStorage persistence, session indicator, New Session button |
+| `dashboard/js/` | Frontend: localStorage persistence, session indicator, New Session button |
 
 ## Command Bar
 
