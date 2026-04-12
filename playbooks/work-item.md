@@ -58,3 +58,5 @@ If you encounter merge conflicts during push or PR creation:
 ## When to Stop
 
 Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed your branch, and (3) created the PR. Do NOT continue beyond the task description. Stop immediately.
+
+**NEVER run `gh pr merge` or any merge command on your own PR.** The engine reviews and merges PRs through a separate review cycle. Self-merging bypasses code review entirely and is prohibited regardless of circumstances.

@@ -76,6 +76,8 @@ After pushing, respond to each review comment/thread:
 
 Your task is complete once you have: (1) confirmed build and tests pass, (2) pushed the fix, (3) commented on the PR, and (4) resolved addressed review threads. Do NOT continue exploring unrelated code or making additional improvements. Stop immediately.
 
+**NEVER run `gh pr merge` or any merge command on this PR.** The engine handles merging after review approval. Self-merging bypasses the review cycle and is prohibited.
+
 ## Completion
 
 After finishing, output a structured completion block so the engine can parse your results:
