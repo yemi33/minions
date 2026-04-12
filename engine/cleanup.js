@@ -440,59 +440,6 @@ function runCleanup(config, verbose = false) {
     }
   } catch (e) { log('warn', 'cleanup swept KB files: ' + e.message); }
 
-  // 9. KB watchdog — restore deleted KB files from git if count dropped vs checkpoint
-  try {
-    const checkpoint = safeJson(path.join(ENGINE_DIR, 'kb-checkpoint.json'));
-    if (checkpoint && checkpoint.count > 0) {
-      const cats = KB_CATEGORIES;
-      const knowledgeDir = path.join(MINIONS_DIR, 'knowledge');
-      let current = 0;
-      for (const cat of cats) {
-        const d = path.join(knowledgeDir, cat);
-        try {
-          if (fs.existsSync(d)) current += fs.readdirSync(d).length;
-        } catch (e) {
-          log('warn', `KB watchdog: failed to read ${cat} directory — ${e.message}`);
-        }
-      }
-      if (current < checkpoint.count) {
-        log('warn', `KB watchdog: file count dropped ${checkpoint.count} → ${current}, restoring from git`);
-        try {
-          const trackedCheck = execSilent('git ls-tree --name-only HEAD -- knowledge', { cwd: MINIONS_DIR }).toString().trim();
-          if (!trackedCheck) {
-            log('warn', 'KB watchdog: knowledge/ is not tracked in git HEAD — skipping restore');
-          } else {
-            // Bug #29: Check exit code and verify restore succeeded
-            let restoreOutput;
-            try {
-              restoreOutput = execSilent('git checkout HEAD -- knowledge', { cwd: MINIONS_DIR });
-            } catch (restoreErr) {
-              log('warn', `KB watchdog: git checkout exited with error — ${restoreErr.message}`);
-              restoreOutput = null;
-            }
-            if (restoreOutput !== null) {
-              // Verify the restore actually recovered files
-              let postRestoreCount = 0;
-              for (const cat of cats) {
-                const d = path.join(knowledgeDir, cat);
-                try {
-                  if (fs.existsSync(d)) postRestoreCount += fs.readdirSync(d).length;
-                } catch { /* count what we can */ }
-              }
-              if (postRestoreCount < checkpoint.count) {
-                log('warn', `KB watchdog: restore incomplete — expected ${checkpoint.count} files, got ${postRestoreCount}`);
-              } else {
-                log('info', `KB watchdog: restored knowledge/ from git HEAD (${postRestoreCount} files)`);
-              }
-            }
-          }
-        } catch (err) {
-          log('error', `KB watchdog: git restore failed — ${err.message}`);
-        }
-      }
-    }
-  } catch (e) { log('warn', 'KB watchdog check: ' + e.message); }
-
   // 6a. Reconcile failed work items that have an attached PR (#407)
   // If a work item is 'failed' but already has _pr, it should be 'done'.
   for (const project of projects) {

@@ -2268,13 +2268,6 @@ async function testWorktreeManagement() {
       'findExistingWorktree should verify directory exists');
   });
 
-  await test('KB watchdog skips git restore when knowledge is untracked', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    assert.ok(src.includes('git ls-tree --name-only HEAD -- knowledge'),
-      'KB watchdog should check whether knowledge is tracked before restore');
-    assert.ok(src.includes('knowledge/ is not tracked in git HEAD'),
-      'KB watchdog should emit explicit skip log when knowledge is untracked');
-  });
 }
 
 // ─── Config & Playbook Tests ────────────────────────────────────────────────
@@ -8209,23 +8202,6 @@ async function testCheckpointResume() {
     assert.ok(src.includes('dirEntries = fs.readdirSync(dir)'), 'Should assign readdirSync to variable for per-dir error handling');
     assert.ok(src.includes('failed to read') && src.includes('continue'),
       'Should log warning and continue to next directory on readdirSync failure');
-    // KB watchdog category counting should also be individually wrapped
-    assert.ok(src.includes('failed to read') && src.includes('cat'),
-      'KB watchdog directory reads should be individually try-caught');
-  });
-
-  // ── Bug #29: KB restore checks exit code and verifies result ──
-
-  await test('cleanup.js KB restore checks git exit code and verifies file count', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    // Should catch git checkout errors specifically
-    assert.ok(src.includes('git checkout exited with error'),
-      'Should log warning when git checkout exits with error');
-    // Should verify the restore result by recounting
-    assert.ok(src.includes('postRestoreCount'),
-      'Should count files after restore to verify success');
-    assert.ok(src.includes('restore incomplete'),
-      'Should warn when restore did not fully recover files');
   });
 
   // ── worktreeDirMatchesBranch helper (extracted to eliminate 3x duplication) ──
@@ -8940,24 +8916,8 @@ async function testPrWriteRaceConditions() {
     assert.ok(src.includes('dirEntries = fs.readdirSync(dir)'), 'Should assign readdirSync to variable for per-dir error handling');
     assert.ok(src.includes('failed to read') && src.includes('continue'),
       'Should log warning and continue to next directory on readdirSync failure');
-    // KB watchdog category counting should also be individually wrapped
-    assert.ok(src.includes('failed to read') && src.includes('cat'),
-      'KB watchdog directory reads should be individually try-caught');
   });
 
-  // ── Bug #29: KB restore checks exit code and verifies result ──
-
-  await test('cleanup.js KB restore checks git exit code and verifies file count', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
-    // Should catch git checkout errors specifically
-    assert.ok(src.includes('git checkout exited with error'),
-      'Should log warning when git checkout exits with error');
-    // Should verify the restore result by recounting
-    assert.ok(src.includes('postRestoreCount'),
-      'Should count files after restore to verify success');
-    assert.ok(src.includes('restore incomplete'),
-      'Should warn when restore did not fully recover files');
-  });
   // ── Engine.js Race Condition Fixes (P-aa0ik3fh) ──────────────────────────
 
   console.log('\n── Engine.js Race Condition Fixes (P-aa0ik3fh) ──');
