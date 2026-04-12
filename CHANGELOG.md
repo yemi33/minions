@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.897 (2026-04-12)
+
+### Fixes
+- PRD updated/missing status takes priority over work item done in display (closes #930) (#935)
+
 ## 0.1.896 (2026-04-12)
 
 ### Fixes
