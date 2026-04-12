@@ -11809,6 +11809,42 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(sweepFn.includes('global._kbSweepToken === sweepToken'), 'finally should only clear flag if token matches');
   });
 
+  await test('handleKnowledgeSweep is async — returns 202 and runs sweep in background', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const sweepHandler = src.slice(src.indexOf('async function handleKnowledgeSweep'), src.indexOf('async function _runKbSweepBackground'));
+    // Handler returns 202 immediately, not 200 with full results
+    assert.ok(sweepHandler.includes('jsonReply(res, 202'), 'Should return 202 Accepted when starting sweep');
+    assert.ok(sweepHandler.includes('started: true'), 'Should include started: true in 202 response');
+    // Handler returns 200 with alreadyRunning instead of 409
+    assert.ok(sweepHandler.includes('alreadyRunning: true'), 'Should return alreadyRunning when sweep in flight');
+    assert.ok(!sweepHandler.includes('409'), 'Should NOT return 409 for in-flight sweep');
+    // Calls background worker
+    assert.ok(sweepHandler.includes('_runKbSweepBackground'), 'Should delegate to background worker');
+  });
+
+  await test('_runKbSweepBackground stores result for status polling', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const bgFn = src.slice(src.indexOf('async function _runKbSweepBackground'));
+    assert.ok(bgFn.includes('global._kbSweepLastResult'), 'Should store last result globally');
+    assert.ok(bgFn.includes('global._kbSweepLastCompletedAt'), 'Should store completion timestamp');
+    // Stores result on success
+    assert.ok(bgFn.includes("_kbSweepLastResult = { ok: true, summary"), 'Should store ok result on success');
+    // Stores result on error too
+    assert.ok(bgFn.includes("_kbSweepLastResult = { ok: false, error"), 'Should store error result on failure');
+  });
+
+  await test('handleKnowledgeSweepStatus endpoint exists and returns expected fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function handleKnowledgeSweepStatus'), 'Should have status handler function');
+    const statusFn = src.slice(src.indexOf('function handleKnowledgeSweepStatus'));
+    assert.ok(statusFn.includes('inFlight'), 'Should include inFlight field');
+    assert.ok(statusFn.includes('startedAt'), 'Should include startedAt field');
+    assert.ok(statusFn.includes('lastResult'), 'Should include lastResult field');
+    assert.ok(statusFn.includes('lastCompletedAt'), 'Should include lastCompletedAt field');
+    // Route registration
+    assert.ok(src.includes("/api/knowledge/sweep/status"), 'Should register sweep status route');
+  });
+
   await test('dependency fetches run in parallel with Promise.allSettled', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(src.includes('Promise.allSettled'), 'Should use Promise.allSettled for parallel dep fetches');
