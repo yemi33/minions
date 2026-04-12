@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.900 (2026-04-12)
+
+### Other
+- chore(dashboard): remove dashboard.html monolith, fragments are canonical (closes #932) (#942)
+
 ## 0.1.899 (2026-04-12)
 
 ### Fixes
