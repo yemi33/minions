@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.898 (2026-04-12)
+
+### Fixes
+- preserve updated status across successive diff-aware regenerations (closes #928) (#938)
+
 ## 0.1.897 (2026-04-12)
 
 ### Fixes
