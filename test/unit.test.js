@@ -3002,6 +3002,403 @@ async function testPreflightModule() {
   });
 }
 
+// ─── engine/preflight.js Deep Tests ─────────────────────────────────────────
+
+async function testPreflightDeep() {
+  console.log('\n── engine/preflight.js (deep coverage) ──');
+
+  let preflight;
+  try {
+    preflight = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+  } catch (e) {
+    skip('preflight-deep', `Could not load preflight: ${e.message}`);
+    return;
+  }
+
+  const preflightSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+
+  // ── findClaudeBinary: search path logic ──
+
+  await test('findClaudeBinary search paths include npm global, APPDATA, Unix, Homebrew, nvm, fnm', () => {
+    // Verify all expected search path patterns are present in source
+    assert.ok(preflightSrc.includes('npm_config_prefix'), 'Should check npm_config_prefix');
+    assert.ok(preflightSrc.includes('APPDATA'), 'Should check APPDATA for Windows');
+    assert.ok(preflightSrc.includes('/usr/local/lib/node_modules'), 'Should check Unix global');
+    assert.ok(preflightSrc.includes('/usr/lib/node_modules'), 'Should check Unix /usr/lib');
+    assert.ok(preflightSrc.includes('/opt/homebrew/lib/node_modules'), 'Should check Homebrew');
+    assert.ok(preflightSrc.includes('process.execPath'), 'Should check nvm/fnm paths relative to node binary');
+  });
+
+  await test('findClaudeBinary filters out empty paths from search list', () => {
+    assert.ok(preflightSrc.includes('.filter(p =>'), 'Should filter search paths');
+    assert.ok(preflightSrc.includes("if (!p)"), 'Should drop empty/falsy paths');
+  });
+
+  await test('findClaudeBinary which/where fallback uses correct OS command', () => {
+    assert.ok(preflightSrc.includes("process.platform === 'win32'"), 'Should detect Windows');
+    assert.ok(preflightSrc.includes('where claude'), 'Should use "where" on Windows');
+    assert.ok(preflightSrc.includes('which claude'), 'Should use "which" on Unix');
+  });
+
+  await test('findClaudeBinary resolves wrapper scripts to cli.js via readFileSync', () => {
+    // When which/where returns a wrapper script, it reads the file and looks for cli.js reference
+    assert.ok(preflightSrc.includes('fs.readFileSync(whichNative'), 'Should read wrapper script');
+    assert.ok(preflightSrc.includes("wrapper.match(/node_modules"), 'Should extract cli.js path from wrapper');
+  });
+
+  await test('findClaudeBinary detects native binary (not ending in cli.js)', () => {
+    // If wrapper cannot be read as text, it's a native binary — returned directly
+    assert.ok(preflightSrc.includes("// Native installer binary on PATH"), 'Should handle native binary case');
+    assert.ok(preflightSrc.includes('return whichNative'), 'Should return native binary path');
+  });
+
+  await test('findClaudeBinary npm root -g is last resort fallback', () => {
+    assert.ok(preflightSrc.includes("npm root -g"), 'Should try npm root -g as last resort');
+    // Verify it comes after the which/where block
+    const whichIdx = preflightSrc.indexOf('which claude');
+    const npmRootIdx = preflightSrc.indexOf('npm root -g');
+    assert.ok(npmRootIdx > whichIdx, 'npm root -g should come after which/where fallback');
+  });
+
+  await test('findClaudeBinary returns null when nothing found', () => {
+    // The function must end with return null
+    const funcEnd = preflightSrc.indexOf('function runPreflight');
+    const funcBody = preflightSrc.slice(preflightSrc.indexOf('function findClaudeBinary'), funcEnd);
+    assert.ok(funcBody.includes('return null'), 'Should return null as final fallback');
+  });
+
+  await test('findClaudeBinary uses fs.existsSync for each search path', () => {
+    assert.ok(preflightSrc.includes('fs.existsSync(p)'), 'Should check existence of each search path');
+  });
+
+  await test('findClaudeBinary resolves symlinks with realpathSync', () => {
+    assert.ok(preflightSrc.includes('fs.realpathSync(whichNative)'), 'Should resolve symlinks');
+  });
+
+  await test('findClaudeBinary uses timeout for execSync calls', () => {
+    // All execSync calls should have timeout to prevent hanging
+    const execCalls = preflightSrc.match(/execSync\([^)]+\)/g) || [];
+    for (const call of execCalls) {
+      assert.ok(call.includes('timeout'), `execSync call should have timeout: ${call.slice(0, 60)}...`);
+    }
+  });
+
+  // ── findClaudeBinary: behavioral test with temp directory ──
+
+  await test('findClaudeBinary: search finds cli.js at npm_config_prefix path', () => {
+    const dir = createTmpDir();
+    const cliPath = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, '// fake cli.js');
+
+    const origPrefix = process.env.npm_config_prefix;
+    process.env.npm_config_prefix = dir;
+    // Bust require cache so the module re-evaluates
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result !== null, 'Should find binary');
+      assert.ok(result.endsWith('cli.js'), 'Should end with cli.js');
+      assert.ok(result.includes(dir.replace(/\\/g, path.sep)), `Should be in test dir, got: ${result}`);
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  await test('findClaudeBinary: search finds cli.js at APPDATA path on Windows', () => {
+    if (process.platform !== 'win32') {
+      // Only meaningful on Windows, but verify the path construction
+      assert.ok(preflightSrc.includes("process.env.APPDATA"), 'APPDATA path should be checked');
+      return;
+    }
+    const dir = createTmpDir();
+    const cliPath = path.join(dir, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, '// fake cli.js');
+
+    const origAppdata = process.env.APPDATA;
+    // Also clear npm_config_prefix to avoid it matching first
+    const origPrefix = process.env.npm_config_prefix;
+    delete process.env.npm_config_prefix;
+    process.env.APPDATA = dir;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result !== null, 'Should find binary at APPDATA path');
+      assert.ok(result.endsWith('cli.js'), 'Should end with cli.js');
+    } finally {
+      process.env.APPDATA = origAppdata;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  // ── runPreflight: detailed checks ──
+
+  await test('runPreflight Node.js check passes on current runtime (>= 18)', () => {
+    const major = parseInt(process.versions.node.split('.')[0], 10);
+    assert.ok(major >= 18, 'Test environment should be >= Node 18');
+    const { results: r } = preflight.runPreflight();
+    const nodeCheck = r.find(c => c.name === 'Node.js');
+    assert.strictEqual(nodeCheck.ok, true);
+    assert.ok(nodeCheck.message.startsWith('v'), 'Message should start with v for version');
+    assert.ok(nodeCheck.message.includes(process.versions.node), 'Message should include actual version');
+  });
+
+  await test('runPreflight source rejects Node < 18', () => {
+    // We can't actually run on Node < 18, but verify the logic exists
+    assert.ok(preflightSrc.includes('major >= 18'), 'Should check for major >= 18');
+    assert.ok(preflightSrc.includes('requires >= 18'), 'Should show upgrade message for old Node');
+  });
+
+  await test('runPreflight Git check verifies git is callable', () => {
+    const { results: r } = preflight.runPreflight();
+    const gitCheck = r.find(c => c.name === 'Git');
+    assert.ok(gitCheck, 'Git check should exist');
+    // Git should be available in this test environment
+    assert.strictEqual(gitCheck.ok, true, 'Git should be found');
+    assert.ok(gitCheck.message.startsWith('v'), 'Git message should show version');
+  });
+
+  await test('runPreflight Git failure path exists in source', () => {
+    assert.ok(preflightSrc.includes("not found — install from https://git-scm.com"),
+      'Should provide Git install URL on failure');
+  });
+
+  await test('runPreflight Claude CLI check classifies native vs cli.js binary', () => {
+    const { results: r } = preflight.runPreflight();
+    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
+    assert.ok(claudeCheck, 'Claude CLI check should exist');
+    if (claudeCheck.ok) {
+      // Message should be either 'native' or a package name like 'claude-code'
+      assert.ok(typeof claudeCheck.message === 'string' && claudeCheck.message.length > 0,
+        'Claude CLI message should be non-empty');
+    }
+  });
+
+  await test('runPreflight Claude CLI label uses "native" for non-cli.js binaries', () => {
+    assert.ok(preflightSrc.includes("const isNative = !claudeBin.endsWith('cli.js')"),
+      'Should detect native binary by checking if path ends with cli.js');
+    assert.ok(preflightSrc.includes("const label = isNative ? 'native'"),
+      'Should label native binaries as "native"');
+  });
+
+  await test('runPreflight Claude CLI failure provides install instructions', () => {
+    assert.ok(preflightSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'Should provide npm install command on failure');
+    assert.ok(preflightSrc.includes('https://claude.ai/download'),
+      'Should provide download URL on failure');
+  });
+
+  await test('runPreflight returns passed=true when all checks pass', () => {
+    const { passed: p, results: r } = preflight.runPreflight();
+    // If we're in a proper dev environment, all should pass
+    const allOk = r.every(c => c.ok === true);
+    assert.strictEqual(p, allOk, 'passed should match whether all results are ok');
+  });
+
+  await test('runPreflight allOk set to false on any failing check', () => {
+    // Verify the logic: allOk starts true, set to false on any failure
+    assert.ok(preflightSrc.includes('let allOk = true'), 'Should start with allOk = true');
+    const setFalseCount = (preflightSrc.match(/allOk = false/g) || []).length;
+    assert.ok(setFalseCount >= 3, `Should set allOk = false for each failing check (found ${setFalseCount} times)`);
+  });
+
+  await test('runPreflight does not check auth (confirmed by source)', () => {
+    assert.ok(preflightSrc.includes('Auth is handled by Claude Code itself'),
+      'Source should explicitly note auth is not checked');
+  });
+
+  // ── printPreflight: output formatting ──
+
+  await test('printPreflight uses checkmark for ok, X for fail, ! for warn', () => {
+    assert.ok(preflightSrc.includes("r.ok === true ? '\\u2713'"), 'Should use checkmark for ok');
+    assert.ok(preflightSrc.includes("r.ok === 'warn' ? '!'"), 'Should use ! for warn');
+    assert.ok(preflightSrc.includes("'\\u2717'"), 'Should use X mark for fail');
+  });
+
+  await test('printPreflight handles empty results array', () => {
+    const ok = preflight.printPreflight([], { label: 'empty test' });
+    assert.strictEqual(ok, true, 'Empty results should return true (no failures)');
+  });
+
+  await test('printPreflight uses default label when not provided', () => {
+    // Verify default parameter
+    assert.ok(preflightSrc.includes("label = 'Preflight checks'"),
+      'Should have default label parameter');
+    // Should not throw without options
+    const ok = preflight.printPreflight([{ name: 'Test', ok: true, message: 'ok' }]);
+    assert.strictEqual(ok, true);
+  });
+
+  await test('printPreflight returns true when all checks are warn (non-fatal)', () => {
+    const ok = preflight.printPreflight([
+      { name: 'W1', ok: 'warn', message: 'w' },
+      { name: 'W2', ok: 'warn', message: 'w' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true, 'Warnings alone should not cause failure');
+  });
+
+  await test('printPreflight returns false when mix of ok and fail', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: true, message: 'ok' },
+      { name: 'B', ok: false, message: 'bad' },
+      { name: 'C', ok: 'warn', message: 'w' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, false, 'Any false should cause failure');
+  });
+
+  await test('printPreflight returns false when all checks fail', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: false, message: 'bad' },
+      { name: 'B', ok: false, message: 'also bad' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, false, 'All failures should return false');
+  });
+
+  await test('printPreflight single ok result returns true', () => {
+    const ok = preflight.printPreflight([
+      { name: 'Solo', ok: true, message: 'fine' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true);
+  });
+
+  // ── checkOrExit: integration of runPreflight + printPreflight ──
+
+  await test('checkOrExit returns boolean', () => {
+    const result = preflight.checkOrExit({ exitOnFail: false });
+    assert.ok(typeof result === 'boolean', `Expected boolean, got ${typeof result}`);
+  });
+
+  await test('checkOrExit with exitOnFail=false does not exit on failure', () => {
+    // Even if preflight has failures, exitOnFail=false should not call process.exit
+    // We verify it returns normally (no throw, no exit)
+    const result = preflight.checkOrExit({ exitOnFail: false });
+    assert.ok(typeof result === 'boolean', 'Should return boolean without exiting');
+  });
+
+  await test('checkOrExit accepts custom label', () => {
+    assert.ok(preflightSrc.includes("label = 'Preflight checks'"),
+      'checkOrExit should accept label option');
+    // Should not throw with custom label
+    const result = preflight.checkOrExit({ exitOnFail: false, label: 'Custom Label' });
+    assert.ok(typeof result === 'boolean');
+  });
+
+  await test('checkOrExit calls runPreflight then printPreflight', () => {
+    // Verify the flow in source
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('runPreflight()'), 'Should call runPreflight');
+    assert.ok(checkOrExitBody.includes('printPreflight(results'), 'Should call printPreflight with results');
+  });
+
+  await test('checkOrExit exitOnFail=true path exists with process.exit(1)', () => {
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('process.exit(1)'), 'Should exit with code 1 on fatal failure');
+    assert.ok(checkOrExitBody.includes('exitOnFail'), 'Should check exitOnFail flag');
+    assert.ok(checkOrExitBody.includes('!ok && exitOnFail'), 'Should only exit when !ok AND exitOnFail');
+  });
+
+  await test('checkOrExit shows fix message before exiting', () => {
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('Fix the issues above'),
+      'Should print help message before process.exit');
+  });
+
+  await test('checkOrExit default options: exitOnFail=false', () => {
+    assert.ok(preflightSrc.includes('exitOnFail = false'),
+      'Default exitOnFail should be false');
+    // Calling with no args should work and not exit
+    const result = preflight.checkOrExit();
+    assert.ok(typeof result === 'boolean');
+  });
+
+  // ── Module exports ──
+
+  await test('preflight exports all expected functions', () => {
+    assert.strictEqual(typeof preflight.findClaudeBinary, 'function');
+    assert.strictEqual(typeof preflight.runPreflight, 'function');
+    assert.strictEqual(typeof preflight.printPreflight, 'function');
+    assert.strictEqual(typeof preflight.checkOrExit, 'function');
+    assert.strictEqual(typeof preflight.doctor, 'function');
+  });
+
+  await test('findClaudeBinary does not modify process.env', () => {
+    const envSnapshot = JSON.stringify(process.env);
+    preflight.findClaudeBinary();
+    // Verify key env vars unchanged (full stringify comparison would be too strict
+    // due to race conditions in parallel tests, so check key vars)
+    assert.strictEqual(process.env.npm_config_prefix,
+      JSON.parse(envSnapshot).npm_config_prefix,
+      'npm_config_prefix should not be modified');
+    assert.strictEqual(process.env.APPDATA,
+      JSON.parse(envSnapshot).APPDATA,
+      'APPDATA should not be modified');
+  });
+
+  // ── findClaudeBinary: edge case with empty env vars ──
+
+  await test('findClaudeBinary handles missing npm_config_prefix gracefully', () => {
+    const orig = process.env.npm_config_prefix;
+    delete process.env.npm_config_prefix;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      // Should not throw; returns string or null
+      const result = fresh.findClaudeBinary();
+      assert.ok(result === null || typeof result === 'string');
+    } finally {
+      if (orig !== undefined) process.env.npm_config_prefix = orig;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  await test('findClaudeBinary handles missing APPDATA gracefully', () => {
+    const orig = process.env.APPDATA;
+    delete process.env.APPDATA;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result === null || typeof result === 'string');
+    } finally {
+      if (orig !== undefined) process.env.APPDATA = orig;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  // ── runPreflight: result ordering ──
+
+  await test('runPreflight results are in order: Node.js, Git, Claude Code CLI', () => {
+    const { results: r } = preflight.runPreflight();
+    assert.strictEqual(r[0].name, 'Node.js', 'First check should be Node.js');
+    assert.strictEqual(r[1].name, 'Git', 'Second check should be Git');
+    assert.strictEqual(r[2].name, 'Claude Code CLI', 'Third check should be Claude Code CLI');
+  });
+
+  // ── MINIONS_DEBUG logging ──
+
+  await test('findClaudeBinary logs dropped paths when MINIONS_DEBUG is set', () => {
+    assert.ok(preflightSrc.includes('MINIONS_DEBUG'),
+      'Should check MINIONS_DEBUG for debug logging');
+    assert.ok(preflightSrc.includes('Dropped empty CLI search path'),
+      'Should log when dropping empty paths');
+  });
+}
+
 // ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
 
 async function testCleanChildEnv() {
@@ -7445,6 +7842,7 @@ async function main() {
 
     // New coverage: preflight, shared helpers, engine core, lifecycle, spawn-agent
     await testPreflightModule();
+    await testPreflightDeep();
     await testCleanChildEnv();
     await testGitEnv();
     await testProjectPathHelpers();
