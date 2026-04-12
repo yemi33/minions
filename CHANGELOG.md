@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.896 (2026-04-12)
+
+### Fixes
+- auto-sync .minions-version on startup
+
 ## 0.1.895 (2026-04-11)
 
 ### Fixes
