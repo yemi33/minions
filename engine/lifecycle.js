@@ -8,7 +8,7 @@ const path = require('path');
 const os = require('os');
 const shared = require('./shared');
 const { safeRead, safeJson, safeWrite, mutateJsonFileLocked, mutateWorkItems, execSilent, execAsync, projectPrPath, getPrLinks, addPrLink,
-  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PR_STATUS, DISPATCH_RESULT,
+  log, ts, dateStamp, WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PR_STATUS, DISPATCH_RESULT,
   ENGINE_DEFAULTS, DEFAULT_AGENT_METRICS, FAILURE_CLASS } = shared;
 const { trackEngineUsage } = require('./llm');
 const queries = require('./queries');
@@ -635,6 +635,52 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
       }
     }
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
+}
+
+// ─── PRD Backward-Scan Reconciliation (#929) ────────────────────────────────
+// Proactive counterpart to syncPrdItemStatus. Scans all active PRDs and promotes
+// "missing" items to "updated" when a done work item already exists for that ID.
+// This catches cases where a PRD regeneration incorrectly sets items to "missing"
+// and no subsequent work item state change triggers the reactive sync.
+
+function reconcilePrdStatuses(config) {
+  if (!fs.existsSync(PRD_DIR)) return;
+  let prdFiles;
+  try { prdFiles = fs.readdirSync(PRD_DIR).filter(f => f.endsWith('.json')); } catch { return; }
+  if (prdFiles.length === 0) return;
+
+  const allWorkItems = queries.getWorkItems(config);
+  if (allWorkItems.length === 0) return;
+
+  // Index done work items by ID for O(1) lookup
+  const doneWiById = new Map();
+  for (const wi of allWorkItems) {
+    if (wi.id && DONE_STATUSES.has(wi.status)) doneWiById.set(wi.id, wi);
+  }
+  if (doneWiById.size === 0) return;
+
+  for (const file of prdFiles) {
+    try {
+      const fpath = path.join(PRD_DIR, file);
+      const plan = safeJson(fpath);
+      if (!plan?.missing_features) continue;
+      // Skip completed/archived PRDs — no reconciliation needed
+      if (plan.status === PLAN_STATUS.COMPLETED) continue;
+
+      let modified = false;
+      for (const feature of plan.missing_features) {
+        if (feature.status === PRD_ITEM_STATUS.MISSING && doneWiById.has(feature.id)) {
+          feature.status = PRD_ITEM_STATUS.UPDATED;
+          modified = true;
+          log('info', `PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+        }
+      }
+
+      if (modified) {
+        safeWrite(fpath, plan);
+      }
+    } catch (err) { log('warn', `PRD backward-scan for ${file}: ${err.message}`); }
+  }
 }
 
 // ─── PR Sync from Output ─────────────────────────────────────────────────────
@@ -1876,6 +1922,7 @@ module.exports = {
   cleanupPlanWorktrees,
   updateWorkItemStatus,
   syncPrdItemStatus,
+  reconcilePrdStatuses,
   syncPrsFromOutput,
   updatePrAfterReview,
   updatePrAfterFix,

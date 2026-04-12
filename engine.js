@@ -135,7 +135,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 
 // ─── Lifecycle (extracted to engine/lifecycle.js) ────────────────────────────
 
-const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, handlePostMerge, checkPlanCompletion,
+const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconcilePrdStatuses, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
   isItemCompleted, classifyFailure, processPendingRebases } = require('./engine/lifecycle');
@@ -2692,6 +2692,7 @@ async function discoverWork(config) {
 
   // Side-effect passes: materialize plans and design docs into work-items.json
   // These write to project work queues — picked up by discoverFromWorkItems below.
+  reconcilePrdStatuses(config); // Backward-scan: correct "missing" PRD items that have done work items (#929)
   materializePlansAsWorkItems(config);
 
   for (const project of projects) {

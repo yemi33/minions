@@ -1087,6 +1087,51 @@ async function testSyncPrdItemStatus() {
     // Should not throw
     lifecycle.syncPrdItemStatus(null, 'done', 'test-plan.json');
   });
+
+  await test('reconcilePrdStatuses is exported from lifecycle', () => {
+    assert.ok(typeof lifecycle.reconcilePrdStatuses === 'function',
+      'reconcilePrdStatuses must be exported from lifecycle.js');
+  });
+
+  await test('reconcilePrdStatuses is called before materializePlansAsWorkItems in discovery (#929)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Scope search to discoverWork function to avoid matching the function definition
+    const discoverFn = src.slice(src.indexOf('async function discoverWork'));
+    const reconcileIdx = discoverFn.indexOf('reconcilePrdStatuses(config)');
+    const materializeIdx = discoverFn.indexOf('materializePlansAsWorkItems(config)');
+    assert.ok(reconcileIdx > -1, 'discoverWork must call reconcilePrdStatuses(config)');
+    assert.ok(materializeIdx > -1, 'discoverWork must call materializePlansAsWorkItems(config)');
+    assert.ok(reconcileIdx < materializeIdx,
+      'reconcilePrdStatuses must be called BEFORE materializePlansAsWorkItems in discoverWork');
+  });
+
+  await test('reconcilePrdStatuses scans for missing PRD items with done work items (#929)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function reconcilePrdStatuses'), src.indexOf('// ─── PR Sync from Output'));
+    // Must check for PRD_ITEM_STATUS.MISSING (not raw string)
+    assert.ok(fn.includes('PRD_ITEM_STATUS.MISSING'),
+      'reconcilePrdStatuses must check for PRD_ITEM_STATUS.MISSING');
+    // Must promote to PRD_ITEM_STATUS.UPDATED (not raw string)
+    assert.ok(fn.includes('PRD_ITEM_STATUS.UPDATED'),
+      'reconcilePrdStatuses must promote to PRD_ITEM_STATUS.UPDATED');
+    // Must check done work items via DONE_STATUSES
+    assert.ok(fn.includes('DONE_STATUSES'),
+      'reconcilePrdStatuses must check DONE_STATUSES for done work item lookup');
+    // Must skip completed PRDs
+    assert.ok(fn.includes('PLAN_STATUS.COMPLETED'),
+      'reconcilePrdStatuses must skip completed PRDs');
+    // Must use queries.getWorkItems for WI lookup
+    assert.ok(fn.includes('queries.getWorkItems'),
+      'reconcilePrdStatuses must use queries.getWorkItems to scan all work items');
+    // Must write back modified PRD files
+    assert.ok(fn.includes('safeWrite'),
+      'reconcilePrdStatuses must write back modified PRD files');
+  });
+
+  await test('reconcilePrdStatuses does not crash when no PRD files exist (#929)', () => {
+    // Should not throw — PRD_DIR might not exist or be empty
+    lifecycle.reconcilePrdStatuses({});
+  });
 }
 
 // ─── Consolidation Tests ─────────────────────────────────────────────────────
