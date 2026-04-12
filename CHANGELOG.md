@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.901 (2026-04-12)
+
+### Fixes
+- render action result badges outside chat bubble
+
 ## 0.1.900 (2026-04-12)
 
 ### Other
