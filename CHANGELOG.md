@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.905 (2026-04-12)
+
+### Features
+- add red dot notification on CC tab when response completes (#934) (#946)
+
+### Fixes
+- remove KB watchdog — checkpoint never written, restore never worked
+- make KB sweep endpoint async with status polling (#933)
+- prohibit agents from self-merging their own PRs
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
