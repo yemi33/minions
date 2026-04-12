@@ -326,7 +326,8 @@ function ccUpdateSessionIndicator() {
 function ccAddMessage(role, html, skipSave, targetTabId) {
   var isUser = role === 'user';
   var isSystem = role === 'system';
-  var isAssistant = !isUser && !isSystem;
+  var isAction = role === 'action';
+  var isAssistant = !isUser && !isSystem && !isAction;
   var targetTab = targetTabId ? _ccTabs.find(function(t) { return t.id === targetTabId; }) : _ccActiveTab();
   // Only render to DOM if this message is for the currently visible tab
   var isVisible = !targetTabId || targetTabId === _ccActiveTabId;
@@ -335,7 +336,7 @@ function ccAddMessage(role, html, skipSave, targetTabId) {
     var div = document.createElement('div');
     div.className = isAssistant ? 'cc-msg-assistant' : '';
     div.style.cssText = 'padding:8px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:95%;' +
-      (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : isSystem ? 'align-self:center;max-width:100%' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
+      (isUser ? 'background:var(--blue);color:#fff;align-self:flex-end' : isSystem ? 'align-self:center;max-width:100%' : isAction ? 'align-self:flex-start;padding:2px 0' : 'background:var(--surface2);color:var(--text);align-self:flex-start;border:1px solid var(--border);position:relative');
     div.innerHTML = (isAssistant && !html.includes('color:var(--red)') && !html.includes('cc-queued-pill') ? llmCopyBtn() : '') + html;
     var wasNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
     el.appendChild(div);
@@ -728,7 +729,7 @@ async function ccExecuteAction(action, targetTabId) {
       status.innerHTML = '&#10003; ' + escHtml(action.type) + ': <strong>' + label + '</strong>';
       status.style.color = 'var(--green)';
     }
-    ccAddMessage('assistant', status.outerHTML, false, targetTabId);
+    ccAddMessage('action', status.outerHTML, false, targetTabId);
     if (['dispatch','fix','implement','explore','review','test'].includes(action.type)) wakeEngine();
     refresh();
     return;
@@ -1194,7 +1195,7 @@ async function ccExecuteAction(action, targetTabId) {
     status.style.color = 'var(--red)';
   }
 
-  ccAddMessage('assistant', status.outerHTML, false, targetTabId);
+  ccAddMessage('action', status.outerHTML, false, targetTabId);
   refresh();
 }
 
