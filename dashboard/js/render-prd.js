@@ -95,6 +95,7 @@ function renderPrdProgress(prog) {
     const inProgress = items.filter(i => i.status === 'dispatched').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
+    const updated = items.filter(i => i.status === 'updated').length;
     const missing = items.filter(i => i.status === 'missing' || !i.status).length;
     const pct = (n) => total > 0 ? ((n / total) * 100).toFixed(1) : 0;
 
@@ -103,6 +104,7 @@ function renderPrdProgress(prog) {
       '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--yellow)">' + inProgress + '</div><div class="prd-stat-label">Active</div></div>' +
       (failed ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--red)">' + failed + '</div><div class="prd-stat-label">Failed</div></div>' : '') +
       (paused ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--muted)">' + paused + '</div><div class="prd-stat-label">Paused</div></div>' : '') +
+      (updated ? '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--purple)">' + updated + '</div><div class="prd-stat-label">Needs Redo</div></div>' : '') +
       '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--muted)">' + missing + '</div><div class="prd-stat-label">To Do</div></div>' +
       '<div class="prd-stat"><div class="prd-stat-num" style="color:var(--text)">' + total + '</div><div class="prd-stat-label">Total</div></div>' +
     '</div>';
@@ -110,6 +112,7 @@ function renderPrdProgress(prog) {
     const bar = '<div class="prd-progress-bar">' +
       '<div class="seg complete" style="width:' + pct(done) + '%"></div>' +
       '<div class="seg dispatched" style="width:' + pct(inProgress) + '%"></div>' +
+      '<div class="seg updated" style="width:' + pct(updated) + '%"></div>' +
       '<div class="seg paused" style="width:' + pct(paused) + '%"></div>' +
       '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
     '</div>';
@@ -131,8 +134,9 @@ function renderPrdProgress(prog) {
       'dispatched': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
+      'updated':     'background:rgba(188,140,255,0.15);color:var(--purple)',
     };
-    const labels = { 'done': 'DONE', 'dispatched': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014' };
+    const labels = { 'done': 'DONE', 'dispatched': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014', 'updated': 'REDO' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -370,6 +374,7 @@ function renderPrdProgress(prog) {
       if (s === 'done') return 'var(--green)';
       if (s === 'dispatched') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
+      if (s === 'updated') return 'var(--purple)';
       if (s === 'paused') return 'var(--muted)';
       return 'var(--border)';
     };
