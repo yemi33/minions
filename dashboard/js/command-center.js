@@ -662,7 +662,9 @@ async function _ccDoSend(message, skipUserMsg) {
     ccRenderTabBar();
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
-    if (!_ccOpen) showNotifBadge(document.getElementById('cc-toggle-btn'));
+    // Show red dot badge on CC button when response completes while drawer is closed.
+    // Skip badge on user-initiated abort — they don't need notification for their own action.
+    if (!_ccOpen && !_wasAborted) showNotifBadge(document.getElementById('cc-toggle-btn'));
   }
   return _wasAborted;
 }

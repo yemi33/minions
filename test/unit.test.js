@@ -12253,6 +12253,32 @@ async function testDashboardResilience() {
       'toggleCommandCenter must toggle overlay display');
   });
 
+  // ── CC notification badge on response completion (#934) ──
+
+  await test('CC shows red dot badge when response completes while drawer closed', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function _ccDoSend'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('async function _ccDoSend') + 1));
+    assert.ok(fn.includes('!_ccOpen') && fn.includes("showNotifBadge(document.getElementById('cc-toggle-btn'))"),
+      '_ccDoSend finally block must show badge on CC button when drawer is closed');
+  });
+
+  await test('CC badge skips user-initiated abort', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('async function _ccDoSend'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('async function _ccDoSend') + 1));
+    assert.ok(fn.includes('!_wasAborted') && fn.includes("showNotifBadge(document.getElementById('cc-toggle-btn'))"),
+      'Badge condition must include !_wasAborted to skip badge on user abort');
+  });
+
+  await test('CC clears badge when drawer opens', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function toggleCommandCenter'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('function toggleCommandCenter') + 1));
+    assert.ok(fn.includes("clearNotifBadge(document.getElementById('cc-toggle-btn'))"),
+      'toggleCommandCenter must clear badge when drawer opens');
+  });
+
+  await test('CC shows processing badge when drawer closed while sending', () => {
+    const fn = ccSrc.slice(ccSrc.indexOf('function toggleCommandCenter'), ccSrc.indexOf('\nfunction', ccSrc.indexOf('function toggleCommandCenter') + 1));
+    assert.ok(fn.includes("showNotifBadge(document.getElementById('cc-toggle-btn'), 'processing')"),
+      'toggleCommandCenter must show processing badge when closing drawer during active request');
+  });
+
   // ── Safety net: no safeWrite targeting work-items.json or pull-requests.json ──
 
   await test('dashboard.js: no safeWrite calls target work-items.json or pull-requests.json', () => {
