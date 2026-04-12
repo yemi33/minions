@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.899 (2026-04-12)
+
+### Fixes
+- add backward-scan in syncPrdItemStatus to re-open done work items on PRD reset (closes #929) (#940)
+
 ## 0.1.898 (2026-04-12)
 
 ### Fixes
