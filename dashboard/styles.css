@@ -171,6 +171,7 @@
   .prd-progress-bar .seg { height: 100%; transition: width 0.5s ease; }
   .prd-progress-bar .seg.complete { background: var(--green); }
   .prd-progress-bar .seg.dispatched { background: var(--yellow); }
+  .prd-progress-bar .seg.updated { background: var(--purple); }
   .prd-progress-bar .seg.paused { background: var(--muted); opacity: 0.5; }
   .prd-progress-bar .seg.missing { background: var(--border); }
   .prd-progress-pct { font-size: 22px; font-weight: 700; color: var(--green); margin-bottom: var(--space-4); }
@@ -179,6 +180,7 @@
   .prd-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
   .prd-legend-dot.complete { background: var(--green); }
   .prd-legend-dot.dispatched { background: var(--yellow); }
+  .prd-legend-dot.updated { background: var(--purple); }
   .prd-legend-dot.missing { background: var(--border); }
 
   /* Pipeline Step-Progress */
@@ -212,6 +214,7 @@
   @keyframes prdWipPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(210,153,34,0); } 50% { box-shadow: 0 0 0 4px rgba(210,153,34,0.2); } }
   .prd-item-row.st-failed { border-left-color: var(--red); }
   .prd-item-row.st-needs-human-review { border-left-color: var(--orange); }
+  .prd-item-row.st-updated { border-left-color: var(--purple); }
   .prd-item-row.st-paused { border-left-color: var(--muted); opacity: 0.5; }
   .prd-item-id { font-family: Consolas, monospace; color: var(--muted); min-width: 36px; font-size: 0.9em; }
   .prd-item-name { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
