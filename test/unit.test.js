@@ -7970,6 +7970,513 @@ async function testMeetings() {
   });
 }
 
+// ─── Team Meetings Behavioral Tests ─────────────────────────────────────────
+
+async function testMeetingsBehavioral() {
+  console.log('\n── meeting.js — Behavioral Tests ──');
+
+  const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const meetingsDir = meetingMod.MEETINGS_DIR;
+
+  // Helper: clean up a specific test meeting file
+  function cleanupMeeting(id) {
+    const fp = path.join(meetingsDir, id + '.json');
+    try { fs.unlinkSync(fp); } catch {}
+  }
+
+  // ── getMeetings ──
+
+  await test('getMeetings returns array (even with existing meetings dir)', () => {
+    const result = meetingMod.getMeetings();
+    assert.ok(Array.isArray(result), 'Should return an array');
+  });
+
+  await test('getMeetings returns empty array when meetings dir is missing', () => {
+    // Temporarily rename meetings dir if it exists
+    const backupDir = meetingsDir + '-test-backup-' + Date.now();
+    let renamed = false;
+    if (fs.existsSync(meetingsDir)) {
+      fs.renameSync(meetingsDir, backupDir);
+      renamed = true;
+    }
+    try {
+      const result = meetingMod.getMeetings();
+      assert.deepStrictEqual(result, [], 'Should return empty array when dir missing');
+    } finally {
+      if (renamed) fs.renameSync(backupDir, meetingsDir);
+    }
+  });
+
+  await test('getMeetings filters out corrupt JSON files', () => {
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    const corruptId = 'TEST-corrupt-' + Date.now();
+    const corruptPath = path.join(meetingsDir, corruptId + '.json');
+    fs.writeFileSync(corruptPath, 'NOT VALID JSON {{{');
+    try {
+      const result = meetingMod.getMeetings();
+      assert.ok(Array.isArray(result), 'Should return array');
+      const corruptEntry = result.find(m => m && m.id === corruptId);
+      assert.strictEqual(corruptEntry, undefined, 'Corrupt JSON should be filtered out');
+    } finally {
+      cleanupMeeting(corruptId);
+    }
+  });
+
+  await test('getMeetings returns valid JSON meetings', () => {
+    const testId = 'TEST-valid-' + Date.now();
+    const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(testMeeting));
+    try {
+      const result = meetingMod.getMeetings();
+      const found = result.find(m => m.id === testId);
+      assert.ok(found, 'Should include the test meeting');
+      assert.strictEqual(found.title, 'Test Meeting');
+      assert.strictEqual(found.status, 'investigating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('getMeetings only returns .json files', () => {
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    const txtPath = path.join(meetingsDir, 'TEST-not-json-' + Date.now() + '.txt');
+    fs.writeFileSync(txtPath, 'not a json file');
+    try {
+      const result = meetingMod.getMeetings();
+      // No .txt entry should appear
+      assert.ok(Array.isArray(result), 'Should return array');
+    } finally {
+      try { fs.unlinkSync(txtPath); } catch {}
+    }
+  });
+
+  // ── getMeeting ──
+
+  await test('getMeeting returns null for missing ID', () => {
+    const result = meetingMod.getMeeting('NONEXISTENT-ID-99999');
+    assert.strictEqual(result, null, 'Should return null for missing meeting');
+  });
+
+  await test('getMeeting populates default fields (findings, debate, humanNotes, participants)', () => {
+    const testId = 'TEST-defaults-' + Date.now();
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify({ id: testId, title: 'Minimal' }));
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.ok(result, 'Should find the meeting');
+      assert.deepStrictEqual(result.findings, {}, 'findings should default to {}');
+      assert.deepStrictEqual(result.debate, {}, 'debate should default to {}');
+      assert.deepStrictEqual(result.humanNotes, [], 'humanNotes should default to []');
+      assert.deepStrictEqual(result.participants, [], 'participants should default to []');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('getMeeting preserves existing fields when populated', () => {
+    const testId = 'TEST-preserve-' + Date.now();
+    const data = {
+      id: testId, title: 'Full Meeting',
+      findings: { alice: { content: 'found stuff' } },
+      debate: { bob: { content: 'disagreed' } },
+      humanNotes: ['note1'],
+      participants: ['alice', 'bob'],
+    };
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(data));
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.deepStrictEqual(result.findings, { alice: { content: 'found stuff' } });
+      assert.deepStrictEqual(result.debate, { bob: { content: 'disagreed' } });
+      assert.deepStrictEqual(result.humanNotes, ['note1']);
+      assert.deepStrictEqual(result.participants, ['alice', 'bob']);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  // ── saveMeeting ──
+
+  await test('saveMeeting creates MEETINGS_DIR if missing and writes JSON', () => {
+    const backupDir = meetingsDir + '-test-backup-save-' + Date.now();
+    let renamed = false;
+    if (fs.existsSync(meetingsDir)) {
+      fs.renameSync(meetingsDir, backupDir);
+      renamed = true;
+    }
+    const testId = 'TEST-save-' + Date.now();
+    try {
+      meetingMod.saveMeeting({ id: testId, title: 'Saved Meeting', status: 'investigating' });
+      assert.ok(fs.existsSync(meetingsDir), 'Should create meetings dir');
+      const fp = path.join(meetingsDir, testId + '.json');
+      assert.ok(fs.existsSync(fp), 'Should write meeting file');
+      const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      assert.strictEqual(data.title, 'Saved Meeting');
+    } finally {
+      cleanupMeeting(testId);
+      if (renamed) {
+        try { fs.rmSync(meetingsDir, { recursive: true, force: true }); } catch {}
+        fs.renameSync(backupDir, meetingsDir);
+      }
+    }
+  });
+
+  await test('saveMeeting + getMeeting round-trip', () => {
+    const testId = 'TEST-roundtrip-' + Date.now();
+    const data = {
+      id: testId, title: 'Roundtrip', status: 'debating',
+      round: 2, participants: ['x', 'y'], findings: { x: { content: 'hi' } },
+      debate: {}, humanNotes: ['a note'], transcript: [],
+    };
+    try {
+      meetingMod.saveMeeting(data);
+      const result = meetingMod.getMeeting(testId);
+      assert.strictEqual(result.id, testId);
+      assert.strictEqual(result.title, 'Roundtrip');
+      assert.strictEqual(result.status, 'debating');
+      assert.strictEqual(result.round, 2);
+      assert.deepStrictEqual(result.participants, ['x', 'y']);
+      assert.strictEqual(result.findings.x.content, 'hi');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('saveMeeting overwrites existing meeting data', () => {
+    const testId = 'TEST-overwrite-' + Date.now();
+    meetingMod.saveMeeting({ id: testId, title: 'Original', status: 'investigating' });
+    meetingMod.saveMeeting({ id: testId, title: 'Updated', status: 'debating' });
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.strictEqual(result.title, 'Updated', 'Should have overwritten title');
+      assert.strictEqual(result.status, 'debating', 'Should have overwritten status');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  // ── createMeeting ──
+
+  await test('createMeeting generates MTG- prefixed ID', () => {
+    const result = meetingMod.createMeeting({ title: 'Test', agenda: 'stuff', participants: ['a'] });
+    try {
+      assert.ok(result.id.startsWith('MTG-'), 'ID should start with MTG-');
+      assert.ok(result.id.length > 4, 'ID should have a uid suffix');
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting sets status to investigating', () => {
+    const result = meetingMod.createMeeting({ title: 'Investigate Test', agenda: 'test', participants: [] });
+    try {
+      assert.strictEqual(result.status, 'investigating');
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting initializes all required fields', () => {
+    const result = meetingMod.createMeeting({ title: 'Full Init', agenda: 'test agenda', participants: ['alice', 'bob'] });
+    try {
+      assert.strictEqual(result.title, 'Full Init');
+      assert.strictEqual(result.agenda, 'test agenda');
+      assert.strictEqual(result.round, 1);
+      assert.deepStrictEqual(result.participants, ['alice', 'bob']);
+      assert.strictEqual(result.createdBy, 'human');
+      assert.ok(result.createdAt, 'Should have createdAt timestamp');
+      assert.ok(result.roundStartedAt, 'Should have roundStartedAt timestamp');
+      assert.deepStrictEqual(result.findings, {});
+      assert.deepStrictEqual(result.debate, {});
+      assert.strictEqual(result.conclusion, null);
+      assert.deepStrictEqual(result.humanNotes, []);
+      assert.deepStrictEqual(result.transcript, []);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting defaults participants to empty array', () => {
+    const result = meetingMod.createMeeting({ title: 'No Participants', agenda: 'solo' });
+    try {
+      assert.deepStrictEqual(result.participants, []);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting persists to disk (readable by getMeeting)', () => {
+    const result = meetingMod.createMeeting({ title: 'Persist Check', agenda: 'check', participants: ['agent1'] });
+    try {
+      const loaded = meetingMod.getMeeting(result.id);
+      assert.ok(loaded, 'Should be loadable from disk');
+      assert.strictEqual(loaded.title, 'Persist Check');
+      assert.strictEqual(loaded.status, 'investigating');
+      assert.deepStrictEqual(loaded.participants, ['agent1']);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting generates unique IDs for consecutive calls', () => {
+    const m1 = meetingMod.createMeeting({ title: 'A', agenda: 'a', participants: [] });
+    const m2 = meetingMod.createMeeting({ title: 'B', agenda: 'b', participants: [] });
+    try {
+      assert.notStrictEqual(m1.id, m2.id, 'Consecutive meetings should have different IDs');
+    } finally {
+      cleanupMeeting(m1.id);
+      cleanupMeeting(m2.id);
+    }
+  });
+
+  // ── discoverMeetingWork ──
+
+  await test('discoverMeetingWork returns empty array for completed meetings', () => {
+    const testId = 'TEST-discover-completed-' + Date.now();
+    const data = { id: testId, title: 'Done', agenda: 'wrap up', status: 'completed', participants: ['a'], findings: {}, debate: {}, humanNotes: [] };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { a: { name: 'Alice', role: 'Engineer' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work for completed meetings');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates work items for investigating meeting participants', () => {
+    const testId = 'TEST-discover-inv-' + Date.now();
+    const data = {
+      id: testId, title: 'Investigate Test', agenda: 'test investigation', status: 'investigating',
+      round: 1, participants: ['alpha', 'beta'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { alpha: { name: 'Alpha', role: 'Lead' }, beta: { name: 'Beta', role: 'Dev' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 2, 'Should create work for each participant');
+      assert.ok(forThis.every(w => w.type === 'meeting'), 'All should be meeting type');
+      assert.ok(forThis.every(w => w.meta.roundName === 'investigate'), 'All should be investigate round');
+      const agents = forThis.map(w => w.agent).sort();
+      assert.deepStrictEqual(agents, ['alpha', 'beta'], 'Should assign correct agents');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips participants who already submitted findings', () => {
+    const testId = 'TEST-discover-skip-' + Date.now();
+    const data = {
+      id: testId, title: 'Skip Test', agenda: 'test skipping', status: 'investigating',
+      round: 1, participants: ['alice', 'bob'],
+      findings: { alice: { content: 'already submitted' } },
+      debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { alice: { name: 'Alice', role: 'E' }, bob: { name: 'Bob', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should only dispatch unfulfilled participant');
+      assert.strictEqual(forThis[0].agent, 'bob', 'Should dispatch bob (not alice who already submitted)');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates debate work with correct round metadata', () => {
+    const testId = 'TEST-discover-debate-' + Date.now();
+    const data = {
+      id: testId, title: 'Debate Test', agenda: 'test debate', status: 'debating',
+      round: 2, participants: ['p1'],
+      findings: { p1: { content: 'Some findings here' } },
+      debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { p1: { name: 'P1', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should create debate work item');
+      assert.strictEqual(forThis[0].meta.roundName, 'debate');
+      assert.strictEqual(forThis[0].meta.round, 2);
+      assert.ok(forThis[0].prompt, 'Should have a rendered prompt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates conclude work for first available participant', () => {
+    const testId = 'TEST-discover-conclude-' + Date.now();
+    const data = {
+      id: testId, title: 'Conclude Test', agenda: 'test conclusion', status: 'concluding',
+      round: 3, participants: ['c1', 'c2'],
+      findings: { c1: { content: 'f1' }, c2: { content: 'f2' } },
+      debate: { c1: { content: 'd1' }, c2: { content: 'd2' } },
+      conclusion: null, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { c1: { name: 'C1', role: 'E' }, c2: { name: 'C2', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should create exactly one conclude work item');
+      assert.strictEqual(forThis[0].meta.roundName, 'conclude');
+      assert.ok(['c1', 'c2'].includes(forThis[0].agent), 'Should assign a participant as concluder');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips concluding meeting that already has conclusion', () => {
+    const testId = 'TEST-discover-already-concluded-' + Date.now();
+    const data = {
+      id: testId, title: 'Already Concluded', agenda: 'concluded', status: 'concluding',
+      round: 3, participants: ['x'],
+      findings: {}, debate: {},
+      conclusion: { content: 'Done', agent: 'x' },
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { x: { name: 'X', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work when conclusion already exists');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork sets correct meta fields', () => {
+    const testId = 'TEST-discover-meta-' + Date.now();
+    const data = {
+      id: testId, title: 'Meta Test', agenda: 'test meta fields', status: 'investigating',
+      round: 1, participants: ['m1'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { m1: { name: 'M1', role: 'Eng' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      const meta = forThis[0].meta;
+      assert.strictEqual(meta.source, 'meeting');
+      assert.strictEqual(meta.meetingId, testId);
+      assert.strictEqual(meta.round, 1);
+      assert.strictEqual(meta.roundName, 'investigate');
+      assert.ok(meta.dispatchKey.startsWith('meeting-' + testId), 'dispatchKey should contain meeting ID');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork sets agentName and agentRole from config', () => {
+    const testId = 'TEST-discover-agent-info-' + Date.now();
+    const data = {
+      id: testId, title: 'Agent Info', agenda: 'test agent info', status: 'investigating',
+      round: 1, participants: ['dallas'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { dallas: { name: 'Dallas', role: 'Engineer' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.strictEqual(forThis[0].agentName, 'Dallas');
+      assert.strictEqual(forThis[0].agentRole, 'Engineer');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork uses agent ID as fallback for name/role', () => {
+    const testId = 'TEST-discover-fallback-' + Date.now();
+    const data = {
+      id: testId, title: 'Fallback', agenda: 'test fallback', status: 'investigating',
+      round: 1, participants: ['unknown_agent'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: {} };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.strictEqual(forThis[0].agentName, 'unknown_agent', 'Should fall back to agent ID');
+      assert.strictEqual(forThis[0].agentRole, 'Agent', 'Should fall back to "Agent"');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips meeting with no participants in conclude', () => {
+    const testId = 'TEST-discover-no-participants-' + Date.now();
+    const data = {
+      id: testId, title: 'No Participants', agenda: 'test empty', status: 'concluding',
+      round: 3, participants: [],
+      findings: {}, debate: {}, conclusion: null,
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: {} };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work when no participants for conclude');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips debating participants who already submitted debate', () => {
+    const testId = 'TEST-discover-debate-skip-' + Date.now();
+    const data = {
+      id: testId, title: 'Debate Skip', agenda: 'test debate skip', status: 'debating',
+      round: 2, participants: ['d1', 'd2'],
+      findings: { d1: { content: 'f' }, d2: { content: 'f' } },
+      debate: { d1: { content: 'already debated' } },
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { d1: { name: 'D1', role: 'E' }, d2: { name: 'D2', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should only dispatch d2');
+      assert.strictEqual(forThis[0].agent, 'd2');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork task label includes meeting title and round info', () => {
+    const testId = 'TEST-discover-label-' + Date.now();
+    const data = {
+      id: testId, title: 'Sprint Retro', agenda: 'review sprint progress', status: 'investigating',
+      round: 1, participants: ['a1'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { a1: { name: 'A1', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.ok(forThis[0].task.includes('Sprint Retro'), 'Task label should include meeting title');
+      assert.ok(forThis[0].task.includes('Round 1'), 'Task label should include round number');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -8176,6 +8683,7 @@ async function main() {
     // Dispatch cycle integration tests
     await testDispatchCycleIntegration();
     await testMeetings();
+    await testMeetingsBehavioral();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
