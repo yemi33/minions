@@ -11,7 +11,7 @@ const shared = require('./shared');
 
 const { safeRead, safeReadDir, safeJson, safeWrite, getProjects,
   projectWorkItemsPath, projectPrPath, parseSkillFrontmatter, KB_CATEGORIES,
-  WI_STATUS, ENGINE_DEFAULTS } = shared;
+  WI_STATUS, DONE_STATUSES, PRD_ITEM_STATUS, ENGINE_DEFAULTS } = shared;
 
 /**
  * Read the first `bytes` and last `bytes` of a file efficiently using byte offsets.
@@ -955,9 +955,12 @@ function getPrdInfo(config) {
   const statusDisplay = { pending: 'missing' };
   for (const item of items) {
     const wi = wiById[item.id];
-    // Work item status is source of truth when available (PRD JSON may lag behind)
+    // PRD 'updated'/'missing' = intentional rework signal — takes priority over a done work item (#930).
+    // Otherwise work item status is source of truth when available (PRD JSON may lag behind).
     // If PRD says dispatched/failed but no work item exists, treat as pending (orphaned — #779)
-    const rawStatus = wi ? (wi.status || item.status)
+    const prdFlaggedForRework = item.status === PRD_ITEM_STATUS.UPDATED || item.status === PRD_ITEM_STATUS.MISSING;
+    const rawStatus = (wi && !(prdFlaggedForRework && DONE_STATUSES.has(wi.status)))
+      ? (wi.status || item.status)
       : ((item.status === WI_STATUS.DISPATCHED || item.status === WI_STATUS.FAILED) ? WI_STATUS.PENDING : item.status);
     item.status = statusDisplay[rawStatus] || rawStatus || 'missing';
     // Attach execution metadata for display (agent, PR link, fail reason)

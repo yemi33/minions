@@ -11567,6 +11567,20 @@ async function testAutoRecoveryAndAtomicity() {
       'getPrdInfo must also reset orphaned failed PRD items when work item is missing');
   });
 
+  await test('getPrdInfo: PRD updated/missing status takes priority over work item done (#930)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    const prdFn = src.slice(src.indexOf('function getPrdInfo'));
+    // PRD 'updated' must override done work item status
+    assert.ok(prdFn.includes('PRD_ITEM_STATUS.UPDATED'),
+      'getPrdInfo must check for PRD_ITEM_STATUS.UPDATED to detect rework signal');
+    assert.ok(prdFn.includes('PRD_ITEM_STATUS.MISSING'),
+      'getPrdInfo must check for PRD_ITEM_STATUS.MISSING to detect rework signal');
+    assert.ok(prdFn.includes('DONE_STATUSES.has'),
+      'getPrdInfo must use DONE_STATUSES to guard against done overriding rework');
+    assert.ok(prdFn.includes('prdFlaggedForRework'),
+      'getPrdInfo must compute prdFlaggedForRework before rawStatus');
+  });
+
   await test('areDependenciesMet returns failed when dep item is failed', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const fn = src.slice(src.indexOf('function areDependenciesMet'));
