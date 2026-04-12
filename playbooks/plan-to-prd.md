@@ -105,7 +105,7 @@ When the engine detects an existing PRD for this plan (`source_plan` match), it 
 1. **Parse the existing PRD JSON** — extract all `missing_features` items with their `id`, `status`, and metadata
 2. **Preserve item IDs** — match existing items to current plan items by name/description similarity. Each plan item that corresponds to an existing PRD item MUST reuse that item's `P-<id>`. Do NOT generate new IDs for items that already exist.
 3. **Preserve done items** — any existing item with `"status": "done"` carries forward as `"done"` with the same ID, description, and acceptance criteria. Do NOT reset done items to `"missing"`
-4. **Carry forward in-progress items** — items with `"status": "missing"` or other non-done statuses keep their existing ID and reset to `"missing"`
+4. **Carry forward in-progress items** — items with `"status": "missing"` or other non-done statuses (except `"updated"`) keep their existing ID and reset to `"missing"`. Items with `"status": "updated"` keep their existing ID and remain `"updated"` — do NOT reset to `"missing"`
 5. **New items only** — only generate new `P-<uuid>` IDs for items in the plan that have no match in the existing PRD
 6. **Removed items** — if an existing PRD item has no match in the current plan, drop it from the output
 7. **Preserve plan-level fields** — keep `branch_strategy`, `feature_branch`, and `project` from the existing PRD unless the plan explicitly changes them
@@ -118,6 +118,7 @@ If the task description contains `mode: diff-aware-update`, you are updating an 
 
 **Additional diff-aware rules** (on top of the reuse rules above):
 - **Done + modified** (plan added requirements/changed scope) → set `"status": "updated"` with same ID (engine re-opens the work item and dispatches to existing branch)
+- **Already `"updated"`** (was previously flagged for rework and still needs changes) → keep `"status": "updated"` with same ID and revised description. Do NOT reset to `"missing"` — this preserves the existing branch reference so the agent continues from prior work
 - **Pending/failed items** → reset to `"missing"` with updated description if the plan changed their scope
 
 ## Important

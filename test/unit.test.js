@@ -1844,6 +1844,14 @@ async function testPrdStaleInvalidation() {
     assert.ok(playbook.includes('Preserve item IDs'),
       'Playbook should instruct agent to preserve existing IDs');
   });
+
+  await test('plan-to-prd playbook preserves "updated" status on successive diff-aware regenerations (#928)', () => {
+    const playbook = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'plan-to-prd.md'), 'utf8');
+    assert.ok(playbook.includes('Already') && playbook.includes('keep') && playbook.includes('"updated"') && playbook.includes('Do NOT reset to'),
+      'Diff-aware rules should explicitly preserve "updated" items and not reset to "missing"');
+    assert.ok(playbook.includes('except') && playbook.includes('"updated"'),
+      'Base reuse rule should exclude "updated" items from the "missing" reset');
+  });
 }
 
 // ─── Archive Path Resolution & Version Tests ─────────────────────────────────
