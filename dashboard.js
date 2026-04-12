@@ -62,14 +62,13 @@ function resolvePlanPath(file) {
   return active;
 }
 
-// Assemble dashboard HTML from fragments (or fall back to monolith)
+// Assemble dashboard HTML from fragments (canonical source: dashboard/)
 function buildDashboardHtml() {
   const dashDir = path.join(MINIONS_DIR, 'dashboard');
   const layoutPath = path.join(dashDir, 'layout.html');
 
-  // Fall back to monolith if fragments don't exist
   if (!fs.existsSync(layoutPath)) {
-    return safeRead(path.join(MINIONS_DIR, 'dashboard.html')) || '';
+    throw new Error(`Dashboard layout not found: ${layoutPath}. The dashboard/ directory must exist.`);
   }
 
   const layout = safeRead(layoutPath);
