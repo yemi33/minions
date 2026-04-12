@@ -1942,16 +1942,28 @@ const server = http.createServer(async (req, res) => {
       console.log('[kb-sweep] Auto-releasing stale guard (>5min)');
       global._kbSweepInFlight = false;
     }
-    if (global._kbSweepInFlight) return jsonReply(res, 409, { error: 'sweep already in progress' });
+    if (global._kbSweepInFlight) {
+      return jsonReply(res, 200, { ok: true, alreadyRunning: true, startedAt: global._kbSweepStartedAt });
+    }
     // Generation token prevents stale finally blocks from clearing the flag for a new sweep
     const sweepToken = Date.now() + Math.random();
     global._kbSweepToken = sweepToken;
     global._kbSweepInFlight = true;
     global._kbSweepStartedAt = Date.now();
+    const body = await readBody(req).catch(() => ({}));
+    // Run sweep in background — return immediately so agents/UI don't time out
+    _runKbSweepBackground(body, sweepToken);
+    return jsonReply(res, 202, { ok: true, started: true });
+  }
+
+  async function _runKbSweepBackground(body, sweepToken) {
     try {
-      const body = await readBody(req).catch(() => ({}));
       const entries = getKnowledgeBaseEntries();
-      if (entries.length < 2) return jsonReply(res, 200, { ok: true, summary: 'nothing to sweep (< 2 entries)' });
+      if (entries.length < 2) {
+        global._kbSweepLastResult = { ok: true, summary: 'nothing to sweep (< 2 entries)' };
+        global._kbSweepLastCompletedAt = Date.now();
+        return;
+      }
 
       // Build a manifest of all KB entries with their content (skip pinned — user wants to keep them)
       const pinnedKeys = new Set(body.pinnedKeys || []);
@@ -2012,10 +2024,12 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       let removed = 0, reclassified = 0, merged = 0;
       const kbDir = path.join(MINIONS_DIR, 'knowledge');
 
-      // If nothing to do, return early
+      // If nothing to do, store result and return
       const totalActions = (plan.remove || []).length + (plan.duplicates || []).reduce((n, d) => n + (d.remove || []).length, 0) + (plan.reclassify || []).length;
       if (totalActions === 0) {
-        return jsonReply(res, 200, { ok: true, summary: 'KB is clean — nothing to sweep', plan });
+        global._kbSweepLastResult = { ok: true, summary: 'KB is clean — nothing to sweep', plan };
+        global._kbSweepLastCompletedAt = Date.now();
+        return;
       }
 
       // Archive dir for swept files (never delete, always preserve)
@@ -2086,8 +2100,22 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
 
       const summary = `${merged} duplicates merged, ${removed} stale removed, ${reclassified} reclassified${pruned ? ', ' + pruned + ' old swept files pruned' : ''}`;
       safeWrite(path.join(ENGINE_DIR, 'kb-swept.json'), JSON.stringify({ timestamp: new Date().toISOString(), summary }));
-      return jsonReply(res, 200, { ok: true, summary, plan });
-    } catch (e) { return jsonReply(res, 500, { error: e.message }); } finally { if (global._kbSweepToken === sweepToken) global._kbSweepInFlight = false; }
+      global._kbSweepLastResult = { ok: true, summary, plan };
+      global._kbSweepLastCompletedAt = Date.now();
+    } catch (e) {
+      console.error('[kb-sweep] background error:', e.message);
+      global._kbSweepLastResult = { ok: false, error: e.message };
+      global._kbSweepLastCompletedAt = Date.now();
+    } finally { if (global._kbSweepToken === sweepToken) global._kbSweepInFlight = false; }
+  }
+
+  function handleKnowledgeSweepStatus(req, res) {
+    return jsonReply(res, 200, {
+      inFlight: !!global._kbSweepInFlight,
+      startedAt: global._kbSweepStartedAt || null,
+      lastResult: global._kbSweepLastResult || null,
+      lastCompletedAt: global._kbSweepLastCompletedAt || null
+    });
   }
 
   async function handlePlansList(req, res) {
@@ -4131,7 +4159,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, path: filePath });
     }},
-    { method: 'POST', path: '/api/knowledge/sweep', desc: 'Deduplicate, consolidate, and reorganize knowledge base', handler: handleKnowledgeSweep },
+    { method: 'POST', path: '/api/knowledge/sweep', desc: 'Trigger async KB sweep (returns 202)', handler: handleKnowledgeSweep },
+    { method: 'GET', path: '/api/knowledge/sweep/status', desc: 'Poll KB sweep status', handler: handleKnowledgeSweepStatus },
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat

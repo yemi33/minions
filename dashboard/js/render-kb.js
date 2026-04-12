@@ -144,21 +144,49 @@ async function kbSweep() {
   btn.style.color = 'var(--blue)';
   try {
     showToast('cmd-toast', 'KB sweep started', true);
-    const res = await fetch('/api/knowledge/sweep', { method: 'POST', signal: AbortSignal.timeout(300000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinnedKeys: getPinnedItems().filter(function(k) { return k.startsWith('knowledge/'); }) }) });
-    const data = await res.json();
-    if (data.ok) {
-      btn.textContent = 'done';
-      btn.style.color = 'var(--green)';
-      refreshKnowledgeBase();
-    } else {
+    const triggerRes = await fetch('/api/knowledge/sweep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pinnedKeys: getPinnedItems().filter(function(k) { return k.startsWith('knowledge/'); }) }) });
+    const triggerData = await triggerRes.json();
+    if (!triggerData.ok) {
       btn.style.color = 'var(--red)';
       btn.textContent = 'failed';
-      showToast('cmd-toast', 'Sweep failed: ' + (data.error || 'unknown'), false);
+      showToast('cmd-toast', 'Sweep failed: ' + (triggerData.error || 'unknown'), false);
+      setTimeout(function() { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, 60000);
+      return;
+    }
+    // Poll status until sweep completes (every 3s, up to 10 min)
+    var maxPolls = 200;
+    var pollCount = 0;
+    while (pollCount < maxPolls) {
+      await new Promise(function(r) { setTimeout(r, 3000); });
+      pollCount++;
+      try {
+        var statusRes = await fetch('/api/knowledge/sweep/status');
+        var statusData = await statusRes.json();
+        if (!statusData.inFlight) {
+          var result = statusData.lastResult;
+          if (result && result.ok) {
+            btn.textContent = 'done';
+            btn.style.color = 'var(--green)';
+            showToast('cmd-toast', 'KB sweep complete: ' + (result.summary || 'done'), true);
+            refreshKnowledgeBase();
+          } else {
+            btn.style.color = 'var(--red)';
+            btn.textContent = 'failed';
+            showToast('cmd-toast', 'Sweep failed: ' + ((result && result.error) || 'unknown'), false);
+          }
+          break;
+        }
+      } catch { /* poll error — retry */ }
+    }
+    if (pollCount >= maxPolls) {
+      btn.textContent = 'timeout';
+      btn.style.color = 'var(--red)';
+      showToast('cmd-toast', 'Sweep polling timed out — check status later', false);
     }
     // Show notification on sidebar if user is on a different page
     var kbLink = document.querySelector('.sidebar-link[data-page="inbox"]');
     var activePage = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
-    if (kbLink && activePage !== 'inbox') showNotifBadge(kbLink, data.ok ? 'done' : 'done');
+    if (kbLink && activePage !== 'inbox') showNotifBadge(kbLink, 'done');
   } catch (e) {
     btn.style.color = 'var(--red)';
     btn.textContent = 'failed';
@@ -167,8 +195,8 @@ async function kbSweep() {
     var activePage2 = document.querySelector('.sidebar-link.active')?.getAttribute('data-page');
     if (kbLink2 && activePage2 !== 'inbox') showNotifBadge(kbLink2);
   }
-  const isError = btn.textContent === 'failed';
-  setTimeout(() => { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, isError ? 60000 : 3000);
+  var isError = btn.textContent === 'failed' || btn.textContent === 'timeout';
+  setTimeout(function() { btn.textContent = origText; btn.style.color = 'var(--muted)'; btn.disabled = false; }, isError ? 60000 : 3000);
 }
 
 function openCreateKbModal() {
