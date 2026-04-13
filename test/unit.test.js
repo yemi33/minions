@@ -11715,6 +11715,41 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(docCallFn.includes('skipStatePreamble: true'), 'Doc-chat should skip state preamble');
   });
 
+  await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
+    // ccDocCall must accept freshSession param
+    assert.ok(docCallFn.includes('freshSession'), 'ccDocCall should accept freshSession parameter');
+    // When freshSession is true, existing session must be skipped
+    assert.ok(docCallFn.includes('freshSession ? null : resolveSession'), 'ccDocCall should skip session resolution when freshSession is true');
+    // Session should be deleted to prevent context bleed
+    assert.ok(docCallFn.includes('docSessions.delete(sessionKey)'), 'ccDocCall should delete stale session on freshSession');
+  });
+
+  await test('handleDocChat threads freshSession to ccDocCall (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handlerFn = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
+    assert.ok(handlerFn.includes('freshSession: !!body.freshSession'), 'handleDocChat should pass freshSession from request body');
+  });
+
+  await test('Create Plan from meeting sends freshSession: true (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const createPlanFn = src.slice(src.indexOf('async function _createPlanFromMeeting'));
+    assert.ok(createPlanFn.includes("freshSession: true"), 'Create Plan should request a fresh session');
+  });
+
+  await test('Create Plan validates generated content looks like a plan (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const createPlanFn = src.slice(src.indexOf('async function _createPlanFromMeeting'));
+    assert.ok(createPlanFn.includes("does not look like a plan"), 'Should reject content that does not look like a plan');
+  });
+
+  await test('/api/plans/create rejects content without markdown heading (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const planCreateHandler = src.slice(src.indexOf("/api/plans/create"), src.indexOf("/api/plans/create") + 1000);
+    assert.ok(planCreateHandler.includes('must start with a markdown heading'), 'Should validate plan content starts with markdown heading');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');

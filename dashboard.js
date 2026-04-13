@@ -783,13 +783,21 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession }) {
   const sessionKey = filePath || title;
   const docSlice = document.slice(0, 20000);
 
+  // freshSession: true → discard any prior session for this key so the call starts clean.
+  // Used by one-shot generation flows (e.g. Create Plan from meeting) that must not
+  // bleed context from earlier conversations.
+  if (freshSession && sessionKey) {
+    docSessions.delete(sessionKey);
+    // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
+  }
+
   // Skip re-sending full document on session resume if content unchanged
   const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = resolveSession('doc', sessionKey);
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
   const docUnchanged = existing?.sessionId && existing._docHash === docHash;
 
   let docContext;
@@ -808,8 +816,14 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     skipStatePreamble: true,
     ...(model ? { model } : {}),
   });
-  // Store doc hash for next call's unchanged check
-  if (result.code === 0 && result.sessionId) {
+
+  if (freshSession && sessionKey) {
+    // One-shot call — discard the session ccCall just stored so it cannot
+    // bleed into future interactions under the same key.
+    docSessions.delete(sessionKey);
+    persistDocSessions();
+  } else if (result.code === 0 && result.sessionId) {
+    // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = docHash;
   }
@@ -2843,6 +2857,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
+        freshSession: !!body.freshSession,
       });
 
       if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
@@ -4104,6 +4119,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { title, content, project: projectName, meetingId } = body;
       if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
+
+      // Reject meta-responses that aren't actual plan content — e.g. doc-chat
+      // summaries of prior conversations that reference existing plan files.
+      const trimmed = content.trim();
+      if (!/^#/.test(trimmed) && !/^\*\*/.test(trimmed) && !/^[-*] /.test(trimmed)) {
+        return jsonReply(res, 400, { error: 'Plan content must start with a markdown heading (#), bold text (**), or a list item' });
+      }
 
       const plansDir = path.join(MINIONS_DIR, 'plans');
       if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });
