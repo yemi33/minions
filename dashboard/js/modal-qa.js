@@ -340,9 +340,9 @@ function qaAbort() {
     _qaAbortController.abort();
     _qaAbortController = null;
   }
-  // Force-reset processing state so UI isn't stuck if abort races with response
-  _qaProcessing = false;
-  // Don't clear _qaQueue — queued messages should auto-process after abort
+  // Don't reset _qaProcessing here — the catch block in _processQaMessage handles it,
+  // avoiding a double-drain race on _qaQueue from a microtask gap.
+  // Don't clear _qaQueue — queued messages auto-process after abort.
 }
 
 function toggleDocChat() {

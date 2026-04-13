@@ -2989,7 +2989,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 200, { ok: true, answer, edited: true, content, actions });
       }
       return jsonReply(res, 200, { ok: true, answer: answer + '\n\n(Read-only — changes not saved)', edited: false, actions });
-      } finally { docChatInFlight.delete(docKey); }
+      } finally { _docAbort = null; docChatInFlight.delete(docKey); }
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
   }
 
