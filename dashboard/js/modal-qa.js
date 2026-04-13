@@ -340,6 +340,9 @@ function qaAbort() {
     _qaAbortController.abort();
     _qaAbortController = null;
   }
+  // Force-reset processing state so UI isn't stuck if abort races with response
+  _qaProcessing = false;
+  _qaQueue = [];
 }
 
 function toggleDocChat() {

@@ -2935,6 +2935,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 429, { error: 'This document is already being processed — wait for the current response.' });
       }
       docChatInFlight.add(docKey);
+      // Release guard if client disconnects (abort/navigation) so next request isn't blocked
+      let _clientDisconnected = false;
+      req.on('close', () => { _clientDisconnected = true; docChatInFlight.delete(docKey); });
 
       try {
       const canEdit = !!body.filePath;
