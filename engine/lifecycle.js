@@ -1020,18 +1020,24 @@ async function rebaseBranchOntoMain(pr, project, config) {
 const PENDING_REBASES_PATH = path.join(ENGINE_DIR, 'pending-rebases.json');
 
 function queuePendingRebase(pr, project, mergedItemId) {
-  const pending = safeJson(PENDING_REBASES_PATH) || [];
-  if (pending.some(e => e.prId === pr.id)) return; // already queued
-  pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
-  safeWrite(PENDING_REBASES_PATH, pending);
+  mutateJsonFileLocked(PENDING_REBASES_PATH, (pending) => {
+    if (pending.some(e => e.prId === pr.id)) return; // already queued
+    pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
+  }, { defaultValue: [] });
 }
 
 async function processPendingRebases(config) {
-  const pending = safeJson(PENDING_REBASES_PATH) || [];
-  if (pending.length === 0) return;
+  // Atomically drain the queue under lock so concurrent queuePendingRebase calls
+  // during processing don't lose entries (they append to the now-empty file).
+  let snapshot = [];
+  mutateJsonFileLocked(PENDING_REBASES_PATH, (data) => {
+    snapshot = [...data];
+    return []; // drain file
+  }, { defaultValue: [] });
+  if (snapshot.length === 0) return;
 
   const remaining = [];
-  for (const entry of pending) {
+  for (const entry of snapshot) {
     if (isBranchActive(entry.branch)) { remaining.push(entry); continue; }
 
     const project = shared.getProjects(config).find(p => p.name === entry.projectName);
@@ -1052,7 +1058,12 @@ async function processPendingRebases(config) {
       }
     }
   }
-  safeWrite(PENDING_REBASES_PATH, remaining);
+  // Merge remaining items back under lock — entries queued during processing are preserved
+  if (remaining.length > 0) {
+    mutateJsonFileLocked(PENDING_REBASES_PATH, (data) => {
+      data.push(...remaining);
+    }, { defaultValue: [] });
+  }
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
