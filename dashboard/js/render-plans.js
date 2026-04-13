@@ -601,6 +601,11 @@ async function planArchive(file, btn) {
   if (!confirm(confirmMsg)) return;
   _stopPlanPoll();
   markDeleted('plan:' + file);
+  // Also optimistically hide the linked source plan (server archives both)
+  if (isPrd) {
+    var linkedPlan = (window._lastPlans || []).find(function(p) { return p.file === file && p.sourcePlan; });
+    if (linkedPlan) markDeleted('plan:' + linkedPlan.sourcePlan);
+  }
   try { closeModal(); } catch { /* may not be open */ }
   showToast('cmd-toast', 'Archiving...', true);
   try {
