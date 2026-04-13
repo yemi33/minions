@@ -9331,6 +9331,9 @@ async function main() {
     // PR review→fix, poll→fix, merge conflict, auto-complete flows
     await testPrReviewFixFlows();
 
+    // #998: ADO token injection into spawned agents
+    await testAdoTokenInjection();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -16725,6 +16728,76 @@ async function testPlanPauseNoNestedLocks() {
     assert.strictEqual(filtered[0].agent, 'ralph', 'ralph (other plan) should survive');
     assert.strictEqual(items[0].status, 'done', 'Done item W1 should be untouched');
     assert.strictEqual(items[4].status, 'dispatched', 'Other plan item W5 should be untouched');
+  });
+}
+
+// ─── #998: ADO token injection into spawned agents ──────────────────────────
+
+async function testAdoTokenInjection() {
+  console.log('\n── #998: ADO token injection into spawned agents ──');
+
+  await test('engine.js imports getAdoToken from engine/ado', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes('getAdoToken'),
+      'engine.js should reference getAdoToken for token injection');
+  });
+
+  await test('engine.js injects MINIONS_ADO_TOKEN into childEnv in spawnAgent', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // Find the spawnAgent function and verify token injection
+    const spawnAgentIdx = src.indexOf('async function spawnAgent(');
+    assert.ok(spawnAgentIdx > -1, 'spawnAgent function should exist');
+    // spawnAgent is a large function (~35K chars) — scan the full body
+    const spawnSection = src.slice(spawnAgentIdx, spawnAgentIdx + 40000);
+    assert.ok(spawnSection.includes('MINIONS_ADO_TOKEN'),
+      'spawnAgent should inject MINIONS_ADO_TOKEN into child environment');
+    assert.ok(spawnSection.includes('getAdoToken'),
+      'spawnAgent should call getAdoToken to get the cached token');
+  });
+
+  await test('engine.js injects MINIONS_ADO_TOKEN in steering spawn path', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    // The steering path has a second cleanChildEnv() call — find it
+    const firstCleanEnv = src.indexOf('cleanChildEnv()');
+    assert.ok(firstCleanEnv > -1, 'First cleanChildEnv call should exist');
+    const secondCleanEnv = src.indexOf('cleanChildEnv()', firstCleanEnv + 1);
+    assert.ok(secondCleanEnv > -1, 'Second cleanChildEnv call (steering) should exist');
+    // Check that MINIONS_ADO_TOKEN is injected after the second call too
+    const steeringSection = src.slice(secondCleanEnv, secondCleanEnv + 500);
+    assert.ok(steeringSection.includes('MINIONS_ADO_TOKEN'),
+      'Steering spawn path should also inject MINIONS_ADO_TOKEN');
+  });
+
+  await test('cleanChildEnv does not filter MINIONS_* keys (source check)', () => {
+    // spawn-agent.js calls cleanChildEnv() which only removes CLAUDE_CODE* and CLAUDECODE_ keys.
+    // MINIONS_ADO_TOKEN must pass through so the agent can use the cached token.
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fnStart = src.indexOf('function cleanChildEnv()');
+    assert.ok(fnStart > -1, 'cleanChildEnv function should exist');
+    const fnBody = src.slice(fnStart, fnStart + 500);
+    // Verify only CLAUDE_CODE* and CLAUDECODE_ prefixes are filtered
+    assert.ok(fnBody.includes("'CLAUDE_CODE'") || fnBody.includes('"CLAUDE_CODE"'),
+      'cleanChildEnv should filter CLAUDE_CODE* keys');
+    assert.ok(fnBody.includes("'CLAUDECODE_'") || fnBody.includes('"CLAUDECODE_"'),
+      'cleanChildEnv should filter CLAUDECODE_* keys');
+    // Verify MINIONS_ is NOT mentioned as a filter
+    assert.ok(!fnBody.includes('MINIONS_'),
+      'cleanChildEnv should not filter MINIONS_* keys — token must pass through to agents');
+  });
+
+  await test('SessionStart hook uses http type (not command with curl)', () => {
+    // The SessionStart hook should use type: http to avoid curl exit code propagation
+    const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+    if (!fs.existsSync(settingsPath)) { skipped++; return; }
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    const sessionStartHooks = settings?.hooks?.SessionStart;
+    if (!sessionStartHooks) { skipped++; return; }
+    for (const entry of sessionStartHooks) {
+      for (const hook of (entry.hooks || [])) {
+        assert.notStrictEqual(hook.type, 'command',
+          'SessionStart hook should use type: http, not command (curl exit code 28 pollutes stderr)');
+      }
+    }
   });
 }
 
