@@ -6956,6 +6956,36 @@ async function testDispatchCycleIntegration() {
       'engine.js must compute merge-base for merge-tree');
   });
 
+  await test('Dep merge skips re-merge when all deps already ancestors of worktree HEAD (#973)', () => {
+    // Fix 1: Before the merge loop, check if all dep branches are already merged
+    assert.ok(engineSrc.includes('merge-base --is-ancestor'),
+      'engine.js must check if dep branches are already ancestors of HEAD');
+    assert.ok(engineSrc.includes('skipDepMerge'),
+      'engine.js must use skipDepMerge flag to skip redundant dep merges');
+    assert.ok(engineSrc.includes('skipping dep re-merge'),
+      'engine.js must log when skipping dep re-merge');
+    // The merge loop condition must respect skipDepMerge
+    assert.ok(engineSrc.includes('!skipDepMerge'),
+      'engine.js merge loop must check skipDepMerge flag');
+  });
+
+  await test('Dep merge stashes uncommitted changes before merge and restores after (#973)', () => {
+    // Fix 2: Stash dirty worktree state before dep merge, restore after
+    assert.ok(engineSrc.includes('git status --porcelain'),
+      'engine.js must check worktree dirty state before dep merge');
+    assert.ok(engineSrc.includes('git stash push --include-untracked'),
+      'engine.js must stash uncommitted changes including untracked files');
+    assert.ok(engineSrc.includes('stash before dep re-merge'),
+      'engine.js must label stash entry for traceability');
+    assert.ok(engineSrc.includes('git stash pop'),
+      'engine.js must restore stashed changes after dep merge');
+    assert.ok(engineSrc.includes('Restored stashed changes'),
+      'engine.js must log when restoring stashed changes');
+    // Stash pop failure should warn but not crash
+    assert.ok(engineSrc.includes('stash preserved for agent'),
+      'engine.js must gracefully handle stash pop failure');
+  });
+
   await test('parseConflictFiles parses CONFLICT lines from git merge output', () => {
     const { parseConflictFiles } = require(path.join(MINIONS_DIR, 'engine.js'));
     // Standard CONFLICT lines
