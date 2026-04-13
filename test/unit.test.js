@@ -8202,6 +8202,546 @@ async function testMeetingsBehavioral() {
   });
 }
 
+// ─── Team Meetings Extended Behavioral Tests ────────────────────────────────
+
+async function testMeetingsExtendedBehavioral() {
+  console.log('\n── meeting.js — Extended Behavioral Tests (collectMeetingFindings, addMeetingNote, advanceMeetingRound, endMeeting, archive, delete) ──');
+
+  const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const meetingsDir = meetingMod.MEETINGS_DIR;
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+
+  function cleanupMeeting(id) {
+    const fp = path.join(meetingsDir, id + '.json');
+    try { fs.unlinkSync(fp); } catch {}
+  }
+
+  function cleanupInboxForMeeting(meetingId) {
+    try {
+      const files = fs.readdirSync(inboxDir);
+      for (const f of files) {
+        if (f.includes(meetingId)) {
+          try { fs.unlinkSync(path.join(inboxDir, f)); } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // Helper to produce stream-json output that parseStreamJsonOutput understands
+  function makeOutput(text) {
+    return JSON.stringify({ type: 'result', result: text });
+  }
+
+  // ── collectMeetingFindings ──
+
+  await test('collectMeetingFindings records investigate findings for agent', () => {
+    const testId = 'TEST-EXT-inv-' + Date.now();
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    meetingMod.saveMeeting({
+      id: testId, title: 'Investigate Test', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Alice found issue X'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.findings.alice, 'Should have alice findings');
+      assert.strictEqual(m.findings.alice.content, 'Alice found issue X');
+      assert.ok(m.findings.alice.submittedAt, 'Should have submittedAt timestamp');
+      assert.strictEqual(m.transcript.length, 1, 'Should have 1 transcript entry');
+      assert.strictEqual(m.transcript[0].type, 'finding');
+      assert.strictEqual(m.transcript[0].agent, 'alice');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings records debate response for agent', () => {
+    const testId = 'TEST-EXT-deb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Debate Test', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'debate', makeOutput('Alice disagrees with B'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.debate.alice, 'Should have alice debate entry');
+      assert.strictEqual(m.debate.alice.content, 'Alice disagrees with B');
+      assert.strictEqual(m.transcript.length, 1);
+      assert.strictEqual(m.transcript[0].type, 'debate');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings records conclusion and marks meeting completed', () => {
+    const testId = 'TEST-EXT-con-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Conclude Test', status: 'concluding', round: 3,
+      participants: ['alice'],
+      findings: { alice: { content: 'Found stuff' } },
+      debate: { alice: { content: 'Debated stuff' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'conclude', makeOutput('We decided to do X'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.conclusion, 'Should have conclusion');
+      assert.strictEqual(m.conclusion.content, 'We decided to do X');
+      assert.strictEqual(m.conclusion.agent, 'alice');
+      assert.strictEqual(m.status, 'completed');
+      assert.ok(m.completedAt, 'Should have completedAt');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings rejects empty output', () => {
+    const testId = 'TEST-EXT-empty-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Empty Output', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput(''));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record empty findings');
+      assert.strictEqual(m.status, 'investigating', 'Status should remain investigating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings rejects placeholder "(no output)" text', () => {
+    const testId = 'TEST-EXT-placeholder-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Placeholder Output', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('(no output)'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record placeholder findings');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings auto-advances investigating → debating when all participants submit', () => {
+    const testId = 'TEST-EXT-advinv-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Alice findings'));
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'Should still be investigating with 1/2 submitted');
+
+      meetingMod.collectMeetingFindings(testId, 'bob', 'investigate', makeOutput('Bob findings'));
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should advance to debating when all submit');
+      assert.strictEqual(m.round, 2, 'Round should advance to 2');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings auto-advances debating → concluding when all participants submit', () => {
+    const testId = 'TEST-EXT-advdeb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance Debate', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'debate', makeOutput('Alice debate'));
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should still be debating with 1/2 submitted');
+
+      meetingMod.collectMeetingFindings(testId, 'bob', 'debate', makeOutput('Bob debate'));
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'Should advance to concluding when all submit');
+      assert.strictEqual(m.round, 3, 'Round should advance to 3');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings ignores late findings for completed meeting', () => {
+    const testId = 'TEST-EXT-late-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Late Findings', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done', agent: 'alice' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Late findings'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record late findings');
+      assert.strictEqual(m.status, 'completed', 'Status should remain completed');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings does not crash for missing meeting', () => {
+    // Should return silently without throwing
+    meetingMod.collectMeetingFindings('NONEXISTENT-MEETING-9999', 'alice', 'investigate', makeOutput('test'));
+  });
+
+  // ── addMeetingNote ──
+
+  await test('addMeetingNote stores human note and returns updated meeting', () => {
+    const testId = 'TEST-EXT-note-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Note Test', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.addMeetingNote(testId, 'Remember to check logs');
+      assert.ok(result, 'Should return updated meeting');
+      assert.deepStrictEqual(result.humanNotes, ['Remember to check logs']);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('addMeetingNote appends to transcript', () => {
+    const testId = 'TEST-EXT-notet-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Transcript Note', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.addMeetingNote(testId, 'Important note');
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.transcript.length, 1);
+      assert.strictEqual(m.transcript[0].agent, 'human');
+      assert.strictEqual(m.transcript[0].type, 'note');
+      assert.strictEqual(m.transcript[0].content, 'Important note');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('addMeetingNote returns null for missing meeting', () => {
+    const result = meetingMod.addMeetingNote('NONEXISTENT-NOTE-9999', 'test');
+    assert.strictEqual(result, null);
+  });
+
+  // ── advanceMeetingRound ──
+
+  await test('advanceMeetingRound advances investigating → debating', () => {
+    const testId = 'TEST-EXT-adv1-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 1', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'debating');
+      assert.strictEqual(result.round, 2);
+      assert.ok(result.roundStartedAt, 'Should have updated roundStartedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound advances debating → concluding', () => {
+    const testId = 'TEST-EXT-adv2-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 2', status: 'debating', round: 2,
+      participants: ['alice'], findings: { alice: { content: 'found' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result.status, 'concluding');
+      assert.strictEqual(result.round, 3);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound advances concluding → completed', () => {
+    const testId = 'TEST-EXT-adv3-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 3', status: 'concluding', round: 3,
+      participants: ['alice'], findings: { alice: { content: 'found' } },
+      debate: { alice: { content: 'debated' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result.status, 'completed');
+      assert.ok(result.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound returns null for completed meeting', () => {
+    const testId = 'TEST-EXT-advc-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Already Completed', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result, null, 'Should return null for completed meeting');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound returns null for missing meeting', () => {
+    const result = meetingMod.advanceMeetingRound('NONEXISTENT-ADV-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── endMeeting ──
+
+  await test('endMeeting sets status to completed with completedAt', () => {
+    const testId = 'TEST-EXT-end-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'End Test', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.endMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'completed');
+      assert.ok(result.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('endMeeting returns null for missing meeting', () => {
+    const result = meetingMod.endMeeting('NONEXISTENT-END-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── archiveMeeting ──
+
+  await test('archiveMeeting sets status to archived with archivedAt', () => {
+    const testId = 'TEST-EXT-arch-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Archive Test', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.archiveMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'archived');
+      assert.ok(result.archivedAt, 'Should set archivedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('archiveMeeting returns null for missing meeting', () => {
+    const result = meetingMod.archiveMeeting('NONEXISTENT-ARCH-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── unarchiveMeeting ──
+
+  await test('unarchiveMeeting restores archived meeting to completed', () => {
+    const testId = 'TEST-EXT-unarch-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Unarchive Test', status: 'archived', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.unarchiveMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'completed');
+      assert.strictEqual(result.archivedAt, undefined, 'Should remove archivedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('unarchiveMeeting returns null for non-archived meeting', () => {
+    const testId = 'TEST-EXT-unarch2-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Not Archived', status: 'completed', round: 3,
+      participants: [], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.unarchiveMeeting(testId);
+      assert.strictEqual(result, null, 'Should return null for non-archived meeting');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('unarchiveMeeting returns null for missing meeting', () => {
+    const result = meetingMod.unarchiveMeeting('NONEXISTENT-UNARCH-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── deleteMeeting ──
+
+  await test('deleteMeeting removes meeting file and returns true', () => {
+    const testId = 'TEST-EXT-del-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Delete Me', status: 'completed', round: 1,
+      participants: [], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    const fp = path.join(meetingsDir, testId + '.json');
+    assert.ok(fs.existsSync(fp), 'File should exist before delete');
+    const result = meetingMod.deleteMeeting(testId);
+    assert.strictEqual(result, true, 'Should return true on successful delete');
+    assert.ok(!fs.existsSync(fp), 'File should be gone after delete');
+  });
+
+  await test('deleteMeeting returns false for missing meeting', () => {
+    const result = meetingMod.deleteMeeting('NONEXISTENT-DEL-9999');
+    assert.strictEqual(result, false, 'Should return false for missing meeting');
+  });
+
+  // ── checkMeetingTimeouts (safe tests — no side effects on real meetings) ──
+
+  await test('checkMeetingTimeouts does not advance meeting within timeout window', () => {
+    const testId = 'TEST-EXT-tout-safe-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(), // just now — well within timeout
+    });
+    try {
+      // Use a large timeout to ensure no real meetings are affected
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'Should NOT advance — within timeout');
+      assert.strictEqual(m.round, 1, 'Round should remain 1');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts skips completed meetings', () => {
+    const testId = 'TEST-EXT-tout-skip-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts advances investigating → debating when timed out', () => {
+    const testId = 'TEST-EXT-tout-inv-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(), // 11.7 min ago
+    });
+    try {
+      // Default ENGINE_DEFAULTS.meetingRoundTimeout is 600000 (10 min)
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should advance to debating after timeout');
+      assert.strictEqual(m.round, 2);
+      // Transcript should record timeout event
+      const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
+      assert.ok(timeoutEntry, 'Should record timeout in transcript');
+      assert.ok(timeoutEntry.content.includes('1/2'), 'Should note partial response count');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts advances debating → concluding when timed out', () => {
+    const testId = 'TEST-EXT-tout-deb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: { alice: { content: 'Alice debate' } }, // only alice submitted
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'Should advance to concluding after timeout');
+      assert.strictEqual(m.round, 3);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts auto-completes concluding round with synthesized conclusion', () => {
+    const testId = 'TEST-EXT-tout-con-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
+      participants: ['alice'],
+      findings: { alice: { content: 'Found bugs in module X' } },
+      debate: { alice: { content: 'Should fix ASAP' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'completed', 'Should auto-complete on conclude timeout');
+      assert.ok(m.conclusion, 'Should have auto-generated conclusion');
+      assert.strictEqual(m.conclusion.agent, 'system', 'Conclusion agent should be system');
+      assert.ok(m.conclusion.content.includes('Auto-generated'), 'Should note auto-generation');
+      assert.ok(m.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -8409,6 +8949,7 @@ async function main() {
     await testDispatchCycleIntegration();
     await testMeetings();
     await testMeetingsBehavioral();
+    await testMeetingsExtendedBehavioral();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
