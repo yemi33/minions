@@ -172,9 +172,26 @@ function completeDispatch(id, result = DISPATCH_RESULT.SUCCESS, reason = '', res
           }
         } catch (e) { log('warn', 'increment retry counter: ' + e.message); }
       } else {
+        // Human-readable labels for each failure class — used as fallback when reason is empty
+        const CLASS_LABELS = {
+          [FAILURE_CLASS.EMPTY_OUTPUT]: 'agent produced no output \u2014 likely crashed on startup',
+          [FAILURE_CLASS.BUILD_FAILURE]: 'build/test/lint failure in output',
+          [FAILURE_CLASS.MERGE_CONFLICT]: 'merge conflict',
+          [FAILURE_CLASS.MAX_TURNS]: 'reached max turn limit',
+          [FAILURE_CLASS.TIMEOUT]: 'timed out waiting for agent',
+          [FAILURE_CLASS.SPAWN_ERROR]: 'agent process failed to start',
+          [FAILURE_CLASS.NETWORK_ERROR]: 'network or API error',
+          [FAILURE_CLASS.OUT_OF_CONTEXT]: 'context window exhausted',
+          [FAILURE_CLASS.CONFIG_ERROR]: 'configuration error',
+          [FAILURE_CLASS.PERMISSION_BLOCKED]: 'permission or auth failure',
+          [FAILURE_CLASS.UNKNOWN]: 'unknown error',
+        };
+        const classLabel = failureClass ? (CLASS_LABELS[failureClass] || failureClass) : '';
+        const effectiveReason = reason || classLabel || 'Unknown error';
+        const classSuffix = failureClass ? ` [${failureClass.toUpperCase().replace(/-/g, '_')}]` : '';
         const finalReason = !retryableFailure
-          ? `Non-retryable failure: ${reason || 'Unknown error'}`
-          : (reason || `Failed after ${maxRetries} retries`);
+          ? `Non-retryable failure: ${effectiveReason}${classSuffix}`
+          : (reason || `Failed after ${maxRetries} retries${classSuffix}`);
         lifecycle().updateWorkItemStatus(item.meta, WI_STATUS.FAILED, finalReason);
         // Alert: find items blocked by this failure and write inbox note
         try {
