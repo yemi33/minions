@@ -3493,17 +3493,38 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         trackUsage('command-center', result.usage);
 
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
+        if (!result.text && wasResume && result.code !== 0) {
+          // Resume failed (stale/expired session) — auto-retry as fresh session
+          console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
+          const freshPreamble = buildCCStatePreamble();
+          const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
+          const retryPromise = callLLMStreaming(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
+            timeout: 900000, label: 'command-center', model: streamModel, maxTurns: ccMaxTurns,
+            allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
+            effort: streamEffort, direct: true,
+            onChunk: (text) => {
+              const actIdx = text.indexOf('===ACTIONS===');
+              const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
+              try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
+            },
+            onToolUse: (name, input) => {
+              try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
+            }
+          });
+          _ccStreamAbort = retryPromise.abort;
+          const retryResult = await retryPromise;
+          trackUsage('command-center', retryResult.usage);
+          if (retryResult.text) {
+            // Fresh session succeeded — use retryResult from here
+            Object.assign(result, retryResult);
+          }
+        }
         if (!result.text) {
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
-          // If resuming a session failed, auto-reset so next attempt starts fresh
-          const retryHint = wasResume && result.code !== 0
-            ? 'Session was reset — send your message again to start fresh.'
-            : 'Send your message again to retry.';
-          // Return null sessionId on resume failure so client clears the stale session
-          const errorSessionId = (wasResume && result.code !== 0) ? null : tabSessionId;
-          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: errorSessionId }) + '\n\n');
+          const retryHint = 'Send your message again to retry.';
+          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null }) + '\n\n');
           _ccStreamEnded = true; res.end();
           return;
         }
