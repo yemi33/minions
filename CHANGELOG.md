@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.911 (2026-04-13)
+
+### Features
+- audit and harden log buffering implementation (#971)
+- replace magic string 'active' with PR_STATUS.ACTIVE in lifecycle.js (#969)
+- fix dashboard plan-pause nested lock violation (#968)
+- add missing branch_name to central dispatch vars (#967)
+- fix dispatch.js mutator fallback to use nullish coalescing (#966)
+- fix stall recovery nested lock violation (#965)
+- fix pending-rebases.json race condition with file locking (#964)
+- add missing resolveWorkItemPath import in engine.js (#963)
+- bump plan-to-prd max turns from 20 to 35
+- add weekly dead code & deprecated cleanup pipeline
+- add red dot notification on CC tab when response completes (#934) (#946)
+
+### Fixes
+- pass sysPromptPath instead of steerPromptPath as system prompt in steering resume (#962)
+-  PRD item display dispatched/in-progress status conflation (closes #950) (#955)
+- remove KB watchdog — checkpoint never written, restore never worked
+- make KB sweep endpoint async with status polling (#933)
+- prohibit agents from self-merging their own PRs
+
+### Other
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
