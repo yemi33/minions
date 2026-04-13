@@ -524,7 +524,37 @@ async function spawnAgent(dispatchItem, config) {
           }
           // Merge successfully-fetched + recovered (local-only pushed) branches sequentially
           const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled' || recoveredBranches.has(fetchable[i].branch));
-          if (!depMergeFailed) {
+          // Skip dep re-merge if worktree HEAD already contains all dep commits (#973)
+          let skipDepMerge = false;
+          if (!depMergeFailed && fetched.length > 0) {
+            const ancestorChecks = await Promise.all(
+              fetched.map(async ({ branch: depBranch }) => {
+                try {
+                  await execAsync(`git merge-base --is-ancestor "origin/${depBranch}" HEAD`, { ..._gitOpts, cwd: worktreePath });
+                  return true;
+                } catch (_) { return false; }
+              })
+            );
+            if (ancestorChecks.every(Boolean)) {
+              log('info', `All ${fetched.length} dep branch(es) already merged into ${branchName} — skipping dep re-merge`);
+              skipDepMerge = true;
+            }
+          }
+          // Stash uncommitted changes before dep merge if worktree is dirty (#973)
+          let stashed = false;
+          if (!depMergeFailed && !skipDepMerge && fetched.length > 0) {
+            try {
+              const statusOut = (await execAsync('git status --porcelain', { ..._gitOpts, cwd: worktreePath })).stdout.toString().trim();
+              if (statusOut) {
+                await execAsync('git stash push --include-untracked -m "engine: stash before dep re-merge"', { ..._gitOpts, cwd: worktreePath });
+                stashed = true;
+                log('info', `Stashed uncommitted changes in ${branchName} before dep merge`);
+              }
+            } catch (stashErr) {
+              log('warn', `Failed to stash changes in ${branchName} before dep merge: ${stashErr.message}`);
+            }
+          }
+          if (!depMergeFailed && !skipDepMerge) {
             for (const { branch: depBranch, prId } of fetched) {
               try {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
@@ -571,6 +601,15 @@ async function spawnAgent(dispatchItem, config) {
                 }
                 break;
               }
+            }
+          }
+          // Restore stashed changes after dep merge (#973)
+          if (stashed) {
+            try {
+              await execAsync('git stash pop', { ..._gitOpts, cwd: worktreePath });
+              log('info', `Restored stashed changes in ${branchName} after dep merge`);
+            } catch (popErr) {
+              log('warn', `git stash pop failed in ${branchName}: ${popErr.message} — stash preserved for agent`);
             }
           }
           if (depMergeFailed) {
