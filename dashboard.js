@@ -792,7 +792,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
   // bleed context from earlier conversations.
   if (freshSession && sessionKey) {
     docSessions.delete(sessionKey);
-    persistDocSessions();
+    // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
   }
 
   // Skip re-sending full document on session resume if content unchanged

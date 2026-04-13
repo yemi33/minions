@@ -446,7 +446,7 @@ async function _createPlanFromMeeting(id, btn) {
 
     const planContent = genData.answer || '';
     // Guard: reject doc-chat meta-responses that aren't plan content
-    if (!planContent.trim() || !/^[#*\-]/.test(planContent.trim())) {
+    if (!planContent.trim() || !/^(#|\*\*|[-*] )/.test(planContent.trim())) {
       resetBtn();
       showToast('cmd-toast', 'Generated content does not look like a plan — try again', false);
       return;
