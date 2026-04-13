@@ -23,7 +23,7 @@ const queries = require('./engine/queries');
 const teams = require('./engine/teams');
 const os = require('os');
 
-const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS } = shared;
+const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
 const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getSkills, getInbox, getNotesWithMeta, getPullRequests,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
@@ -614,6 +614,40 @@ async function executeCCActions(actions) {
           if (!fs.existsSync(kbDir)) fs.mkdirSync(kbDir, { recursive: true });
           shared.safeWrite(path.join(kbDir, slug + '.md'), `# ${action.title}\n\n${action.content || action.description || ''}`);
           results.push({ type: 'knowledge', ok: true });
+          break;
+        }
+        case 'reopen-work-item': {
+          const project = action.project || '';
+          const targetProject = project ? PROJECTS.find(p => p.name?.toLowerCase() === project.toLowerCase()) : PROJECTS[0];
+          const wiPath = targetProject ? shared.projectWorkItemsPath(targetProject) : path.join(MINIONS_DIR, 'work-items.json');
+          let reopenResult = null;
+          mutateJsonFileLocked(wiPath, items => {
+            if (!Array.isArray(items)) items = [];
+            const item = items.find(i => i.id === action.id);
+            if (!item) { reopenResult = { error: 'item not found' }; return items; }
+            if (item.status !== WI_STATUS.DONE && item.status !== WI_STATUS.FAILED && !DONE_STATUSES.has(item.status)) {
+              reopenResult = { error: 'can only reopen done or failed items' }; return items;
+            }
+            reopenWorkItem(item);
+            if (action.description) item.description = action.description;
+            reopenResult = { ok: true };
+            return items;
+          }, { defaultValue: [] });
+          if (reopenResult?.ok) {
+            // Clear dispatch history outside lock
+            const sourcePrefix = targetProject ? `work-${targetProject.name}-` : 'central-work-';
+            const dispatchKey = sourcePrefix + action.id;
+            try {
+              const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+              mutateJsonFileLocked(dispatchPath, dispatch => {
+                dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+                dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
+                return dispatch;
+              }, { defaultValue: { pending: [], active: [], completed: [] } });
+            } catch { /* best effort */ }
+            invalidateStatusCache();
+          }
+          results.push({ type: 'reopen-work-item', id: action.id, ...(reopenResult || { error: 'unexpected' }) });
           break;
         }
         default:
@@ -1342,6 +1376,66 @@ const server = http.createServer(async (req, res) => {
       }
       return jsonReply(res, 200, allArchived);
     } catch (e) { console.error('Archive fetch error:', e.message); return jsonReply(res, 500, { error: e.message }); }
+  }
+
+  async function handleWorkItemsReopen(req, res) {
+    try {
+      const body = await readBody(req);
+      const { id, description } = body;
+      const project = body.project || body.source;
+      if (!id) return jsonReply(res, 400, { error: 'id required' });
+
+      // Find the right work-items file
+      let wiPath;
+      if (!project || project === 'central') {
+        wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      } else {
+        const proj = PROJECTS.find(p => p.name === project);
+        if (proj) wiPath = shared.projectWorkItemsPath(proj);
+      }
+      if (!wiPath) return jsonReply(res, 404, { error: 'project not found' });
+
+      let result = null;
+      mutateJsonFileLocked(wiPath, (items) => {
+        if (!Array.isArray(items)) items = [];
+        const item = items.find(i => i.id === id);
+        if (!item) { result = { code: 404, body: { error: 'item not found' } }; return items; }
+        if (item.status !== WI_STATUS.DONE && item.status !== WI_STATUS.FAILED && !DONE_STATUSES.has(item.status)) {
+          result = { code: 400, body: { error: 'can only reopen done or failed items (current: ' + item.status + ')' } };
+          return items;
+        }
+        reopenWorkItem(item);
+        if (description !== undefined) item.description = description;
+        result = { code: 200, body: { ok: true, item } };
+        return items;
+      });
+      if (!result) return jsonReply(res, 500, { error: 'unexpected state' });
+      if (result.code !== 200) return jsonReply(res, result.code, result.body);
+
+      // Clear dispatch history and cooldowns outside lock
+      const sourcePrefix = (!project || project === 'central') ? 'central-work-' : `work-${project}-`;
+      const dispatchKey = sourcePrefix + id;
+      try {
+        const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
+        mutateJsonFileLocked(dispatchPath, (dispatch) => {
+          dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
+          dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
+          dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
+          return dispatch;
+        }, { defaultValue: { pending: [], active: [], completed: [] } });
+      } catch (e) { console.error('dispatch cleanup on reopen:', e.message); }
+      try {
+        const cooldownPath = path.join(MINIONS_DIR, 'engine', 'cooldowns.json');
+        const cooldowns = safeJsonObj(cooldownPath);
+        if (cooldowns[dispatchKey]) {
+          delete cooldowns[dispatchKey];
+          safeWrite(cooldownPath, cooldowns);
+        }
+      } catch (e) { console.error('cooldown cleanup on reopen:', e.message); }
+
+      invalidateStatusCache();
+      return jsonReply(res, result.code, result.body);
+    } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
 
   async function handleWorkItemsCreate(req, res) {
@@ -3856,6 +3950,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/work-items/delete', desc: 'Remove a work item, kill agent, clear dispatch', params: 'id, source?', handler: handleWorkItemsDelete },
     { method: 'POST', path: '/api/work-items/archive', desc: 'Move a completed/failed work item to archive', params: 'id, source?', handler: handleWorkItemsArchive },
     { method: 'GET', path: '/api/work-items/archive', desc: 'List archived work items', handler: handleWorkItemsArchiveList },
+    { method: 'POST', path: '/api/work-items/reopen', desc: 'Reopen a done/failed work item back to pending', params: 'id, project?, description?', handler: handleWorkItemsReopen },
     { method: 'POST', path: '/api/work-items/feedback', desc: 'Add human feedback on completed work', params: 'id, rating, comment?', handler: async (req, res) => {
       const body = await readBody(req);
       const { id, source, rating, comment } = body;

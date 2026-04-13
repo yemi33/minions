@@ -1114,6 +1114,13 @@ async function ccExecuteAction(action, targetTabId) {
         status.style.color = 'var(--green)';
         break;
       }
+      case 'reopen-work-item': {
+        await _ccFetch('/api/work-items/reopen', { id: action.id, project: action.project || action.source || '', description: action.description });
+        status.innerHTML = '&#10003; Work item reopened: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--green)';
+        wakeEngine();
+        break;
+      }
       case 'reopen-prd-item': {
         await _ccFetch('/api/prd-items/update', { source: action.file, itemId: action.id, status: 'updated' });
         status.innerHTML = '&#10003; PRD item reopened: <strong>' + escHtml(action.id) + '</strong>';
