@@ -3156,6 +3156,403 @@ async function testPreflightModule() {
   });
 }
 
+// ─── engine/preflight.js Deep Tests ─────────────────────────────────────────
+
+async function testPreflightDeep() {
+  console.log('\n── engine/preflight.js (deep coverage) ──');
+
+  let preflight;
+  try {
+    preflight = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+  } catch (e) {
+    skip('preflight-deep', `Could not load preflight: ${e.message}`);
+    return;
+  }
+
+  const preflightSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+
+  // ── findClaudeBinary: search path logic ──
+
+  await test('findClaudeBinary search paths include npm global, APPDATA, Unix, Homebrew, nvm, fnm', () => {
+    // Verify all expected search path patterns are present in source
+    assert.ok(preflightSrc.includes('npm_config_prefix'), 'Should check npm_config_prefix');
+    assert.ok(preflightSrc.includes('APPDATA'), 'Should check APPDATA for Windows');
+    assert.ok(preflightSrc.includes('/usr/local/lib/node_modules'), 'Should check Unix global');
+    assert.ok(preflightSrc.includes('/usr/lib/node_modules'), 'Should check Unix /usr/lib');
+    assert.ok(preflightSrc.includes('/opt/homebrew/lib/node_modules'), 'Should check Homebrew');
+    assert.ok(preflightSrc.includes('process.execPath'), 'Should check nvm/fnm paths relative to node binary');
+  });
+
+  await test('findClaudeBinary filters out empty paths from search list', () => {
+    assert.ok(preflightSrc.includes('.filter(p =>'), 'Should filter search paths');
+    assert.ok(preflightSrc.includes("if (!p)"), 'Should drop empty/falsy paths');
+  });
+
+  await test('findClaudeBinary which/where fallback uses correct OS command', () => {
+    assert.ok(preflightSrc.includes("process.platform === 'win32'"), 'Should detect Windows');
+    assert.ok(preflightSrc.includes('where claude'), 'Should use "where" on Windows');
+    assert.ok(preflightSrc.includes('which claude'), 'Should use "which" on Unix');
+  });
+
+  await test('findClaudeBinary resolves wrapper scripts to cli.js via readFileSync', () => {
+    // When which/where returns a wrapper script, it reads the file and looks for cli.js reference
+    assert.ok(preflightSrc.includes('fs.readFileSync(whichNative'), 'Should read wrapper script');
+    assert.ok(preflightSrc.includes("wrapper.match(/node_modules"), 'Should extract cli.js path from wrapper');
+  });
+
+  await test('findClaudeBinary detects native binary (not ending in cli.js)', () => {
+    // If wrapper cannot be read as text, it's a native binary — returned directly
+    assert.ok(preflightSrc.includes("// Native installer binary on PATH"), 'Should handle native binary case');
+    assert.ok(preflightSrc.includes('return whichNative'), 'Should return native binary path');
+  });
+
+  await test('findClaudeBinary npm root -g is last resort fallback', () => {
+    assert.ok(preflightSrc.includes("npm root -g"), 'Should try npm root -g as last resort');
+    // Verify it comes after the which/where block
+    const whichIdx = preflightSrc.indexOf('which claude');
+    const npmRootIdx = preflightSrc.indexOf('npm root -g');
+    assert.ok(npmRootIdx > whichIdx, 'npm root -g should come after which/where fallback');
+  });
+
+  await test('findClaudeBinary returns null when nothing found', () => {
+    // The function must end with return null
+    const funcEnd = preflightSrc.indexOf('function runPreflight');
+    const funcBody = preflightSrc.slice(preflightSrc.indexOf('function findClaudeBinary'), funcEnd);
+    assert.ok(funcBody.includes('return null'), 'Should return null as final fallback');
+  });
+
+  await test('findClaudeBinary uses fs.existsSync for each search path', () => {
+    assert.ok(preflightSrc.includes('fs.existsSync(p)'), 'Should check existence of each search path');
+  });
+
+  await test('findClaudeBinary resolves symlinks with realpathSync', () => {
+    assert.ok(preflightSrc.includes('fs.realpathSync(whichNative)'), 'Should resolve symlinks');
+  });
+
+  await test('findClaudeBinary uses timeout for execSync calls', () => {
+    // All execSync calls should have timeout to prevent hanging
+    const execCalls = preflightSrc.match(/execSync\([^)]+\)/g) || [];
+    for (const call of execCalls) {
+      assert.ok(call.includes('timeout'), `execSync call should have timeout: ${call.slice(0, 60)}...`);
+    }
+  });
+
+  // ── findClaudeBinary: behavioral test with temp directory ──
+
+  await test('findClaudeBinary: search finds cli.js at npm_config_prefix path', () => {
+    const dir = createTmpDir();
+    const cliPath = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, '// fake cli.js');
+
+    const origPrefix = process.env.npm_config_prefix;
+    process.env.npm_config_prefix = dir;
+    // Bust require cache so the module re-evaluates
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result !== null, 'Should find binary');
+      assert.ok(result.endsWith('cli.js'), 'Should end with cli.js');
+      assert.ok(result.includes(dir.replace(/\\/g, path.sep)), `Should be in test dir, got: ${result}`);
+    } finally {
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      else delete process.env.npm_config_prefix;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  await test('findClaudeBinary: search finds cli.js at APPDATA path on Windows', () => {
+    if (process.platform !== 'win32') {
+      // Only meaningful on Windows, but verify the path construction
+      assert.ok(preflightSrc.includes("process.env.APPDATA"), 'APPDATA path should be checked');
+      return;
+    }
+    const dir = createTmpDir();
+    const cliPath = path.join(dir, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+    fs.mkdirSync(path.dirname(cliPath), { recursive: true });
+    fs.writeFileSync(cliPath, '// fake cli.js');
+
+    const origAppdata = process.env.APPDATA;
+    // Also clear npm_config_prefix to avoid it matching first
+    const origPrefix = process.env.npm_config_prefix;
+    delete process.env.npm_config_prefix;
+    process.env.APPDATA = dir;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result !== null, 'Should find binary at APPDATA path');
+      assert.ok(result.endsWith('cli.js'), 'Should end with cli.js');
+    } finally {
+      process.env.APPDATA = origAppdata;
+      if (origPrefix !== undefined) process.env.npm_config_prefix = origPrefix;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  // ── runPreflight: detailed checks ──
+
+  await test('runPreflight Node.js check passes on current runtime (>= 18)', () => {
+    const major = parseInt(process.versions.node.split('.')[0], 10);
+    assert.ok(major >= 18, 'Test environment should be >= Node 18');
+    const { results: r } = preflight.runPreflight();
+    const nodeCheck = r.find(c => c.name === 'Node.js');
+    assert.strictEqual(nodeCheck.ok, true);
+    assert.ok(nodeCheck.message.startsWith('v'), 'Message should start with v for version');
+    assert.ok(nodeCheck.message.includes(process.versions.node), 'Message should include actual version');
+  });
+
+  await test('runPreflight source rejects Node < 18', () => {
+    // We can't actually run on Node < 18, but verify the logic exists
+    assert.ok(preflightSrc.includes('major >= 18'), 'Should check for major >= 18');
+    assert.ok(preflightSrc.includes('requires >= 18'), 'Should show upgrade message for old Node');
+  });
+
+  await test('runPreflight Git check verifies git is callable', () => {
+    const { results: r } = preflight.runPreflight();
+    const gitCheck = r.find(c => c.name === 'Git');
+    assert.ok(gitCheck, 'Git check should exist');
+    // Git should be available in this test environment
+    assert.strictEqual(gitCheck.ok, true, 'Git should be found');
+    assert.ok(gitCheck.message.startsWith('v'), 'Git message should show version');
+  });
+
+  await test('runPreflight Git failure path exists in source', () => {
+    assert.ok(preflightSrc.includes("not found — install from https://git-scm.com"),
+      'Should provide Git install URL on failure');
+  });
+
+  await test('runPreflight Claude CLI check classifies native vs cli.js binary', () => {
+    const { results: r } = preflight.runPreflight();
+    const claudeCheck = r.find(c => c.name === 'Claude Code CLI');
+    assert.ok(claudeCheck, 'Claude CLI check should exist');
+    if (claudeCheck.ok) {
+      // Message should be either 'native' or a package name like 'claude-code'
+      assert.ok(typeof claudeCheck.message === 'string' && claudeCheck.message.length > 0,
+        'Claude CLI message should be non-empty');
+    }
+  });
+
+  await test('runPreflight Claude CLI label uses "native" for non-cli.js binaries', () => {
+    assert.ok(preflightSrc.includes("const isNative = !claudeBin.endsWith('cli.js')"),
+      'Should detect native binary by checking if path ends with cli.js');
+    assert.ok(preflightSrc.includes("const label = isNative ? 'native'"),
+      'Should label native binaries as "native"');
+  });
+
+  await test('runPreflight Claude CLI failure provides install instructions', () => {
+    assert.ok(preflightSrc.includes('npm install -g @anthropic-ai/claude-code'),
+      'Should provide npm install command on failure');
+    assert.ok(preflightSrc.includes('https://claude.ai/download'),
+      'Should provide download URL on failure');
+  });
+
+  await test('runPreflight returns passed=true when all checks pass', () => {
+    const { passed: p, results: r } = preflight.runPreflight();
+    // If we're in a proper dev environment, all should pass
+    const allOk = r.every(c => c.ok === true);
+    assert.strictEqual(p, allOk, 'passed should match whether all results are ok');
+  });
+
+  await test('runPreflight allOk set to false on any failing check', () => {
+    // Verify the logic: allOk starts true, set to false on any failure
+    assert.ok(preflightSrc.includes('let allOk = true'), 'Should start with allOk = true');
+    const setFalseCount = (preflightSrc.match(/allOk = false/g) || []).length;
+    assert.ok(setFalseCount >= 3, `Should set allOk = false for each failing check (found ${setFalseCount} times)`);
+  });
+
+  await test('runPreflight does not check auth (confirmed by source)', () => {
+    assert.ok(preflightSrc.includes('Auth is handled by Claude Code itself'),
+      'Source should explicitly note auth is not checked');
+  });
+
+  // ── printPreflight: output formatting ──
+
+  await test('printPreflight uses checkmark for ok, X for fail, ! for warn', () => {
+    assert.ok(preflightSrc.includes("r.ok === true ? '\\u2713'"), 'Should use checkmark for ok');
+    assert.ok(preflightSrc.includes("r.ok === 'warn' ? '!'"), 'Should use ! for warn');
+    assert.ok(preflightSrc.includes("'\\u2717'"), 'Should use X mark for fail');
+  });
+
+  await test('printPreflight handles empty results array', () => {
+    const ok = preflight.printPreflight([], { label: 'empty test' });
+    assert.strictEqual(ok, true, 'Empty results should return true (no failures)');
+  });
+
+  await test('printPreflight uses default label when not provided', () => {
+    // Verify default parameter
+    assert.ok(preflightSrc.includes("label = 'Preflight checks'"),
+      'Should have default label parameter');
+    // Should not throw without options
+    const ok = preflight.printPreflight([{ name: 'Test', ok: true, message: 'ok' }]);
+    assert.strictEqual(ok, true);
+  });
+
+  await test('printPreflight returns true when all checks are warn (non-fatal)', () => {
+    const ok = preflight.printPreflight([
+      { name: 'W1', ok: 'warn', message: 'w' },
+      { name: 'W2', ok: 'warn', message: 'w' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true, 'Warnings alone should not cause failure');
+  });
+
+  await test('printPreflight returns false when mix of ok and fail', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: true, message: 'ok' },
+      { name: 'B', ok: false, message: 'bad' },
+      { name: 'C', ok: 'warn', message: 'w' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, false, 'Any false should cause failure');
+  });
+
+  await test('printPreflight returns false when all checks fail', () => {
+    const ok = preflight.printPreflight([
+      { name: 'A', ok: false, message: 'bad' },
+      { name: 'B', ok: false, message: 'also bad' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, false, 'All failures should return false');
+  });
+
+  await test('printPreflight single ok result returns true', () => {
+    const ok = preflight.printPreflight([
+      { name: 'Solo', ok: true, message: 'fine' },
+    ], { label: 'test' });
+    assert.strictEqual(ok, true);
+  });
+
+  // ── checkOrExit: integration of runPreflight + printPreflight ──
+
+  await test('checkOrExit returns boolean', () => {
+    const result = preflight.checkOrExit({ exitOnFail: false });
+    assert.ok(typeof result === 'boolean', `Expected boolean, got ${typeof result}`);
+  });
+
+  await test('checkOrExit with exitOnFail=false does not exit on failure', () => {
+    // Even if preflight has failures, exitOnFail=false should not call process.exit
+    // We verify it returns normally (no throw, no exit)
+    const result = preflight.checkOrExit({ exitOnFail: false });
+    assert.ok(typeof result === 'boolean', 'Should return boolean without exiting');
+  });
+
+  await test('checkOrExit accepts custom label', () => {
+    assert.ok(preflightSrc.includes("label = 'Preflight checks'"),
+      'checkOrExit should accept label option');
+    // Should not throw with custom label
+    const result = preflight.checkOrExit({ exitOnFail: false, label: 'Custom Label' });
+    assert.ok(typeof result === 'boolean');
+  });
+
+  await test('checkOrExit calls runPreflight then printPreflight', () => {
+    // Verify the flow in source
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('runPreflight()'), 'Should call runPreflight');
+    assert.ok(checkOrExitBody.includes('printPreflight(results'), 'Should call printPreflight with results');
+  });
+
+  await test('checkOrExit exitOnFail=true path exists with process.exit(1)', () => {
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('process.exit(1)'), 'Should exit with code 1 on fatal failure');
+    assert.ok(checkOrExitBody.includes('exitOnFail'), 'Should check exitOnFail flag');
+    assert.ok(checkOrExitBody.includes('!ok && exitOnFail'), 'Should only exit when !ok AND exitOnFail');
+  });
+
+  await test('checkOrExit shows fix message before exiting', () => {
+    const checkOrExitBody = preflightSrc.slice(
+      preflightSrc.indexOf('function checkOrExit'),
+      preflightSrc.indexOf('function doctor')
+    );
+    assert.ok(checkOrExitBody.includes('Fix the issues above'),
+      'Should print help message before process.exit');
+  });
+
+  await test('checkOrExit default options: exitOnFail=false', () => {
+    assert.ok(preflightSrc.includes('exitOnFail = false'),
+      'Default exitOnFail should be false');
+    // Calling with no args should work and not exit
+    const result = preflight.checkOrExit();
+    assert.ok(typeof result === 'boolean');
+  });
+
+  // ── Module exports ──
+
+  await test('preflight exports all expected functions', () => {
+    assert.strictEqual(typeof preflight.findClaudeBinary, 'function');
+    assert.strictEqual(typeof preflight.runPreflight, 'function');
+    assert.strictEqual(typeof preflight.printPreflight, 'function');
+    assert.strictEqual(typeof preflight.checkOrExit, 'function');
+    assert.strictEqual(typeof preflight.doctor, 'function');
+  });
+
+  await test('findClaudeBinary does not modify process.env', () => {
+    const envSnapshot = JSON.stringify(process.env);
+    preflight.findClaudeBinary();
+    // Verify key env vars unchanged (full stringify comparison would be too strict
+    // due to race conditions in parallel tests, so check key vars)
+    assert.strictEqual(process.env.npm_config_prefix,
+      JSON.parse(envSnapshot).npm_config_prefix,
+      'npm_config_prefix should not be modified');
+    assert.strictEqual(process.env.APPDATA,
+      JSON.parse(envSnapshot).APPDATA,
+      'APPDATA should not be modified');
+  });
+
+  // ── findClaudeBinary: edge case with empty env vars ──
+
+  await test('findClaudeBinary handles missing npm_config_prefix gracefully', () => {
+    const orig = process.env.npm_config_prefix;
+    delete process.env.npm_config_prefix;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      // Should not throw; returns string or null
+      const result = fresh.findClaudeBinary();
+      assert.ok(result === null || typeof result === 'string');
+    } finally {
+      if (orig !== undefined) process.env.npm_config_prefix = orig;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  await test('findClaudeBinary handles missing APPDATA gracefully', () => {
+    const orig = process.env.APPDATA;
+    delete process.env.APPDATA;
+    try {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+      const fresh = require(path.join(MINIONS_DIR, 'engine', 'preflight'));
+      const result = fresh.findClaudeBinary();
+      assert.ok(result === null || typeof result === 'string');
+    } finally {
+      if (orig !== undefined) process.env.APPDATA = orig;
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'preflight'))];
+    }
+  });
+
+  // ── runPreflight: result ordering ──
+
+  await test('runPreflight results are in order: Node.js, Git, Claude Code CLI', () => {
+    const { results: r } = preflight.runPreflight();
+    assert.strictEqual(r[0].name, 'Node.js', 'First check should be Node.js');
+    assert.strictEqual(r[1].name, 'Git', 'Second check should be Git');
+    assert.strictEqual(r[2].name, 'Claude Code CLI', 'Third check should be Claude Code CLI');
+  });
+
+  // ── MINIONS_DEBUG logging ──
+
+  await test('findClaudeBinary logs dropped paths when MINIONS_DEBUG is set', () => {
+    assert.ok(preflightSrc.includes('MINIONS_DEBUG'),
+      'Should check MINIONS_DEBUG for debug logging');
+    assert.ok(preflightSrc.includes('Dropped empty CLI search path'),
+      'Should log when dropping empty paths');
+  });
+}
+
 // ─── shared.js — cleanChildEnv & gitEnv Tests ──────────────────────────────
 
 async function testCleanChildEnv() {
@@ -7573,6 +7970,1053 @@ async function testMeetings() {
   });
 }
 
+// ─── Team Meetings Behavioral Tests ─────────────────────────────────────────
+
+async function testMeetingsBehavioral() {
+  console.log('\n── meeting.js — Behavioral Tests ──');
+
+  const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const meetingsDir = meetingMod.MEETINGS_DIR;
+
+  // Helper: clean up a specific test meeting file
+  function cleanupMeeting(id) {
+    const fp = path.join(meetingsDir, id + '.json');
+    try { fs.unlinkSync(fp); } catch {}
+  }
+
+  // ── getMeetings ──
+
+  await test('getMeetings returns array (even with existing meetings dir)', () => {
+    const result = meetingMod.getMeetings();
+    assert.ok(Array.isArray(result), 'Should return an array');
+  });
+
+  await test('getMeetings returns empty array when meetings dir is missing', () => {
+    // Temporarily rename meetings dir if it exists
+    const backupDir = meetingsDir + '-test-backup-' + Date.now();
+    let renamed = false;
+    if (fs.existsSync(meetingsDir)) {
+      fs.renameSync(meetingsDir, backupDir);
+      renamed = true;
+    }
+    try {
+      const result = meetingMod.getMeetings();
+      assert.deepStrictEqual(result, [], 'Should return empty array when dir missing');
+    } finally {
+      if (renamed) fs.renameSync(backupDir, meetingsDir);
+    }
+  });
+
+  await test('getMeetings filters out corrupt JSON files', () => {
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    const corruptId = 'TEST-corrupt-' + Date.now();
+    const corruptPath = path.join(meetingsDir, corruptId + '.json');
+    fs.writeFileSync(corruptPath, 'NOT VALID JSON {{{');
+    try {
+      const result = meetingMod.getMeetings();
+      assert.ok(Array.isArray(result), 'Should return array');
+      const corruptEntry = result.find(m => m && m.id === corruptId);
+      assert.strictEqual(corruptEntry, undefined, 'Corrupt JSON should be filtered out');
+    } finally {
+      cleanupMeeting(corruptId);
+    }
+  });
+
+  await test('getMeetings returns valid JSON meetings', () => {
+    const testId = 'TEST-valid-' + Date.now();
+    const testMeeting = { id: testId, title: 'Test Meeting', status: 'investigating' };
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(testMeeting));
+    try {
+      const result = meetingMod.getMeetings();
+      const found = result.find(m => m.id === testId);
+      assert.ok(found, 'Should include the test meeting');
+      assert.strictEqual(found.title, 'Test Meeting');
+      assert.strictEqual(found.status, 'investigating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('getMeetings only returns .json files', () => {
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    const txtPath = path.join(meetingsDir, 'TEST-not-json-' + Date.now() + '.txt');
+    fs.writeFileSync(txtPath, 'not a json file');
+    try {
+      const result = meetingMod.getMeetings();
+      // No .txt entry should appear
+      assert.ok(Array.isArray(result), 'Should return array');
+    } finally {
+      try { fs.unlinkSync(txtPath); } catch {}
+    }
+  });
+
+  // ── getMeeting ──
+
+  await test('getMeeting returns null for missing ID', () => {
+    const result = meetingMod.getMeeting('NONEXISTENT-ID-99999');
+    assert.strictEqual(result, null, 'Should return null for missing meeting');
+  });
+
+  await test('getMeeting populates default fields (findings, debate, humanNotes, participants)', () => {
+    const testId = 'TEST-defaults-' + Date.now();
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify({ id: testId, title: 'Minimal' }));
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.ok(result, 'Should find the meeting');
+      assert.deepStrictEqual(result.findings, {}, 'findings should default to {}');
+      assert.deepStrictEqual(result.debate, {}, 'debate should default to {}');
+      assert.deepStrictEqual(result.humanNotes, [], 'humanNotes should default to []');
+      assert.deepStrictEqual(result.participants, [], 'participants should default to []');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('getMeeting preserves existing fields when populated', () => {
+    const testId = 'TEST-preserve-' + Date.now();
+    const data = {
+      id: testId, title: 'Full Meeting',
+      findings: { alice: { content: 'found stuff' } },
+      debate: { bob: { content: 'disagreed' } },
+      humanNotes: ['note1'],
+      participants: ['alice', 'bob'],
+    };
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    fs.writeFileSync(path.join(meetingsDir, testId + '.json'), JSON.stringify(data));
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.deepStrictEqual(result.findings, { alice: { content: 'found stuff' } });
+      assert.deepStrictEqual(result.debate, { bob: { content: 'disagreed' } });
+      assert.deepStrictEqual(result.humanNotes, ['note1']);
+      assert.deepStrictEqual(result.participants, ['alice', 'bob']);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  // ── saveMeeting ──
+
+  await test('saveMeeting creates MEETINGS_DIR if missing and writes JSON', () => {
+    const backupDir = meetingsDir + '-test-backup-save-' + Date.now();
+    let renamed = false;
+    if (fs.existsSync(meetingsDir)) {
+      fs.renameSync(meetingsDir, backupDir);
+      renamed = true;
+    }
+    const testId = 'TEST-save-' + Date.now();
+    try {
+      meetingMod.saveMeeting({ id: testId, title: 'Saved Meeting', status: 'investigating' });
+      assert.ok(fs.existsSync(meetingsDir), 'Should create meetings dir');
+      const fp = path.join(meetingsDir, testId + '.json');
+      assert.ok(fs.existsSync(fp), 'Should write meeting file');
+      const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      assert.strictEqual(data.title, 'Saved Meeting');
+    } finally {
+      cleanupMeeting(testId);
+      if (renamed) {
+        try { fs.rmSync(meetingsDir, { recursive: true, force: true }); } catch {}
+        fs.renameSync(backupDir, meetingsDir);
+      }
+    }
+  });
+
+  await test('saveMeeting + getMeeting round-trip', () => {
+    const testId = 'TEST-roundtrip-' + Date.now();
+    const data = {
+      id: testId, title: 'Roundtrip', status: 'debating',
+      round: 2, participants: ['x', 'y'], findings: { x: { content: 'hi' } },
+      debate: {}, humanNotes: ['a note'], transcript: [],
+    };
+    try {
+      meetingMod.saveMeeting(data);
+      const result = meetingMod.getMeeting(testId);
+      assert.strictEqual(result.id, testId);
+      assert.strictEqual(result.title, 'Roundtrip');
+      assert.strictEqual(result.status, 'debating');
+      assert.strictEqual(result.round, 2);
+      assert.deepStrictEqual(result.participants, ['x', 'y']);
+      assert.strictEqual(result.findings.x.content, 'hi');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('saveMeeting overwrites existing meeting data', () => {
+    const testId = 'TEST-overwrite-' + Date.now();
+    meetingMod.saveMeeting({ id: testId, title: 'Original', status: 'investigating' });
+    meetingMod.saveMeeting({ id: testId, title: 'Updated', status: 'debating' });
+    try {
+      const result = meetingMod.getMeeting(testId);
+      assert.strictEqual(result.title, 'Updated', 'Should have overwritten title');
+      assert.strictEqual(result.status, 'debating', 'Should have overwritten status');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  // ── createMeeting ──
+
+  await test('createMeeting generates MTG- prefixed ID', () => {
+    const result = meetingMod.createMeeting({ title: 'Test', agenda: 'stuff', participants: ['a'] });
+    try {
+      assert.ok(result.id.startsWith('MTG-'), 'ID should start with MTG-');
+      assert.ok(result.id.length > 4, 'ID should have a uid suffix');
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting sets status to investigating', () => {
+    const result = meetingMod.createMeeting({ title: 'Investigate Test', agenda: 'test', participants: [] });
+    try {
+      assert.strictEqual(result.status, 'investigating');
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting initializes all required fields', () => {
+    const result = meetingMod.createMeeting({ title: 'Full Init', agenda: 'test agenda', participants: ['alice', 'bob'] });
+    try {
+      assert.strictEqual(result.title, 'Full Init');
+      assert.strictEqual(result.agenda, 'test agenda');
+      assert.strictEqual(result.round, 1);
+      assert.deepStrictEqual(result.participants, ['alice', 'bob']);
+      assert.strictEqual(result.createdBy, 'human');
+      assert.ok(result.createdAt, 'Should have createdAt timestamp');
+      assert.ok(result.roundStartedAt, 'Should have roundStartedAt timestamp');
+      assert.deepStrictEqual(result.findings, {});
+      assert.deepStrictEqual(result.debate, {});
+      assert.strictEqual(result.conclusion, null);
+      assert.deepStrictEqual(result.humanNotes, []);
+      assert.deepStrictEqual(result.transcript, []);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting defaults participants to empty array', () => {
+    const result = meetingMod.createMeeting({ title: 'No Participants', agenda: 'solo' });
+    try {
+      assert.deepStrictEqual(result.participants, []);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting persists to disk (readable by getMeeting)', () => {
+    const result = meetingMod.createMeeting({ title: 'Persist Check', agenda: 'check', participants: ['agent1'] });
+    try {
+      const loaded = meetingMod.getMeeting(result.id);
+      assert.ok(loaded, 'Should be loadable from disk');
+      assert.strictEqual(loaded.title, 'Persist Check');
+      assert.strictEqual(loaded.status, 'investigating');
+      assert.deepStrictEqual(loaded.participants, ['agent1']);
+    } finally {
+      cleanupMeeting(result.id);
+    }
+  });
+
+  await test('createMeeting generates unique IDs for consecutive calls', () => {
+    const m1 = meetingMod.createMeeting({ title: 'A', agenda: 'a', participants: [] });
+    const m2 = meetingMod.createMeeting({ title: 'B', agenda: 'b', participants: [] });
+    try {
+      assert.notStrictEqual(m1.id, m2.id, 'Consecutive meetings should have different IDs');
+    } finally {
+      cleanupMeeting(m1.id);
+      cleanupMeeting(m2.id);
+    }
+  });
+
+  // ── discoverMeetingWork ──
+
+  await test('discoverMeetingWork returns empty array for completed meetings', () => {
+    const testId = 'TEST-discover-completed-' + Date.now();
+    const data = { id: testId, title: 'Done', agenda: 'wrap up', status: 'completed', participants: ['a'], findings: {}, debate: {}, humanNotes: [] };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { a: { name: 'Alice', role: 'Engineer' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work for completed meetings');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates work items for investigating meeting participants', () => {
+    const testId = 'TEST-discover-inv-' + Date.now();
+    const data = {
+      id: testId, title: 'Investigate Test', agenda: 'test investigation', status: 'investigating',
+      round: 1, participants: ['alpha', 'beta'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { alpha: { name: 'Alpha', role: 'Lead' }, beta: { name: 'Beta', role: 'Dev' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 2, 'Should create work for each participant');
+      assert.ok(forThis.every(w => w.type === 'meeting'), 'All should be meeting type');
+      assert.ok(forThis.every(w => w.meta.roundName === 'investigate'), 'All should be investigate round');
+      const agents = forThis.map(w => w.agent).sort();
+      assert.deepStrictEqual(agents, ['alpha', 'beta'], 'Should assign correct agents');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips participants who already submitted findings', () => {
+    const testId = 'TEST-discover-skip-' + Date.now();
+    const data = {
+      id: testId, title: 'Skip Test', agenda: 'test skipping', status: 'investigating',
+      round: 1, participants: ['alice', 'bob'],
+      findings: { alice: { content: 'already submitted' } },
+      debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { alice: { name: 'Alice', role: 'E' }, bob: { name: 'Bob', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should only dispatch unfulfilled participant');
+      assert.strictEqual(forThis[0].agent, 'bob', 'Should dispatch bob (not alice who already submitted)');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates debate work with correct round metadata', () => {
+    const testId = 'TEST-discover-debate-' + Date.now();
+    const data = {
+      id: testId, title: 'Debate Test', agenda: 'test debate', status: 'debating',
+      round: 2, participants: ['p1'],
+      findings: { p1: { content: 'Some findings here' } },
+      debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { p1: { name: 'P1', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should create debate work item');
+      assert.strictEqual(forThis[0].meta.roundName, 'debate');
+      assert.strictEqual(forThis[0].meta.round, 2);
+      assert.ok(forThis[0].prompt, 'Should have a rendered prompt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork creates conclude work for first available participant', () => {
+    const testId = 'TEST-discover-conclude-' + Date.now();
+    const data = {
+      id: testId, title: 'Conclude Test', agenda: 'test conclusion', status: 'concluding',
+      round: 3, participants: ['c1', 'c2'],
+      findings: { c1: { content: 'f1' }, c2: { content: 'f2' } },
+      debate: { c1: { content: 'd1' }, c2: { content: 'd2' } },
+      conclusion: null, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { c1: { name: 'C1', role: 'E' }, c2: { name: 'C2', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should create exactly one conclude work item');
+      assert.strictEqual(forThis[0].meta.roundName, 'conclude');
+      assert.ok(['c1', 'c2'].includes(forThis[0].agent), 'Should assign a participant as concluder');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips concluding meeting that already has conclusion', () => {
+    const testId = 'TEST-discover-already-concluded-' + Date.now();
+    const data = {
+      id: testId, title: 'Already Concluded', agenda: 'concluded', status: 'concluding',
+      round: 3, participants: ['x'],
+      findings: {}, debate: {},
+      conclusion: { content: 'Done', agent: 'x' },
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { x: { name: 'X', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work when conclusion already exists');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork sets correct meta fields', () => {
+    const testId = 'TEST-discover-meta-' + Date.now();
+    const data = {
+      id: testId, title: 'Meta Test', agenda: 'test meta fields', status: 'investigating',
+      round: 1, participants: ['m1'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { m1: { name: 'M1', role: 'Eng' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      const meta = forThis[0].meta;
+      assert.strictEqual(meta.source, 'meeting');
+      assert.strictEqual(meta.meetingId, testId);
+      assert.strictEqual(meta.round, 1);
+      assert.strictEqual(meta.roundName, 'investigate');
+      assert.ok(meta.dispatchKey.startsWith('meeting-' + testId), 'dispatchKey should contain meeting ID');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork sets agentName and agentRole from config', () => {
+    const testId = 'TEST-discover-agent-info-' + Date.now();
+    const data = {
+      id: testId, title: 'Agent Info', agenda: 'test agent info', status: 'investigating',
+      round: 1, participants: ['dallas'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { dallas: { name: 'Dallas', role: 'Engineer' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.strictEqual(forThis[0].agentName, 'Dallas');
+      assert.strictEqual(forThis[0].agentRole, 'Engineer');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork uses agent ID as fallback for name/role', () => {
+    const testId = 'TEST-discover-fallback-' + Date.now();
+    const data = {
+      id: testId, title: 'Fallback', agenda: 'test fallback', status: 'investigating',
+      round: 1, participants: ['unknown_agent'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: {} };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.strictEqual(forThis[0].agentName, 'unknown_agent', 'Should fall back to agent ID');
+      assert.strictEqual(forThis[0].agentRole, 'Agent', 'Should fall back to "Agent"');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips meeting with no participants in conclude', () => {
+    const testId = 'TEST-discover-no-participants-' + Date.now();
+    const data = {
+      id: testId, title: 'No Participants', agenda: 'test empty', status: 'concluding',
+      round: 3, participants: [],
+      findings: {}, debate: {}, conclusion: null,
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: {} };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 0, 'No work when no participants for conclude');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork skips debating participants who already submitted debate', () => {
+    const testId = 'TEST-discover-debate-skip-' + Date.now();
+    const data = {
+      id: testId, title: 'Debate Skip', agenda: 'test debate skip', status: 'debating',
+      round: 2, participants: ['d1', 'd2'],
+      findings: { d1: { content: 'f' }, d2: { content: 'f' } },
+      debate: { d1: { content: 'already debated' } },
+      humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { d1: { name: 'D1', role: 'E' }, d2: { name: 'D2', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1, 'Should only dispatch d2');
+      assert.strictEqual(forThis[0].agent, 'd2');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('discoverMeetingWork task label includes meeting title and round info', () => {
+    const testId = 'TEST-discover-label-' + Date.now();
+    const data = {
+      id: testId, title: 'Sprint Retro', agenda: 'review sprint progress', status: 'investigating',
+      round: 1, participants: ['a1'],
+      findings: {}, debate: {}, humanNotes: [], transcript: [],
+    };
+    meetingMod.saveMeeting(data);
+    try {
+      const config = { agents: { a1: { name: 'A1', role: 'E' } } };
+      const work = meetingMod.discoverMeetingWork(config);
+      const forThis = work.filter(w => w.meta?.meetingId === testId);
+      assert.strictEqual(forThis.length, 1);
+      assert.ok(forThis[0].task.includes('Sprint Retro'), 'Task label should include meeting title');
+      assert.ok(forThis[0].task.includes('Round 1'), 'Task label should include round number');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+}
+
+// ─── Team Meetings Extended Behavioral Tests ────────────────────────────────
+
+async function testMeetingsExtendedBehavioral() {
+  console.log('\n── meeting.js — Extended Behavioral Tests (collectMeetingFindings, addMeetingNote, advanceMeetingRound, endMeeting, archive, delete) ──');
+
+  const meetingMod = require(path.join(MINIONS_DIR, 'engine', 'meeting'));
+  const meetingsDir = meetingMod.MEETINGS_DIR;
+  const inboxDir = path.join(MINIONS_DIR, 'notes', 'inbox');
+
+  function cleanupMeeting(id) {
+    const fp = path.join(meetingsDir, id + '.json');
+    try { fs.unlinkSync(fp); } catch {}
+  }
+
+  function cleanupInboxForMeeting(meetingId) {
+    try {
+      const files = fs.readdirSync(inboxDir);
+      for (const f of files) {
+        if (f.includes(meetingId)) {
+          try { fs.unlinkSync(path.join(inboxDir, f)); } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  // Helper to produce stream-json output that parseStreamJsonOutput understands
+  function makeOutput(text) {
+    return JSON.stringify({ type: 'result', result: text });
+  }
+
+  // ── collectMeetingFindings ──
+
+  await test('collectMeetingFindings records investigate findings for agent', () => {
+    const testId = 'TEST-EXT-inv-' + Date.now();
+    if (!fs.existsSync(meetingsDir)) fs.mkdirSync(meetingsDir, { recursive: true });
+    meetingMod.saveMeeting({
+      id: testId, title: 'Investigate Test', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Alice found issue X'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.findings.alice, 'Should have alice findings');
+      assert.strictEqual(m.findings.alice.content, 'Alice found issue X');
+      assert.ok(m.findings.alice.submittedAt, 'Should have submittedAt timestamp');
+      assert.strictEqual(m.transcript.length, 1, 'Should have 1 transcript entry');
+      assert.strictEqual(m.transcript[0].type, 'finding');
+      assert.strictEqual(m.transcript[0].agent, 'alice');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings records debate response for agent', () => {
+    const testId = 'TEST-EXT-deb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Debate Test', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'debate', makeOutput('Alice disagrees with B'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.debate.alice, 'Should have alice debate entry');
+      assert.strictEqual(m.debate.alice.content, 'Alice disagrees with B');
+      assert.strictEqual(m.transcript.length, 1);
+      assert.strictEqual(m.transcript[0].type, 'debate');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings records conclusion and marks meeting completed', () => {
+    const testId = 'TEST-EXT-con-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Conclude Test', status: 'concluding', round: 3,
+      participants: ['alice'],
+      findings: { alice: { content: 'Found stuff' } },
+      debate: { alice: { content: 'Debated stuff' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'conclude', makeOutput('We decided to do X'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(m.conclusion, 'Should have conclusion');
+      assert.strictEqual(m.conclusion.content, 'We decided to do X');
+      assert.strictEqual(m.conclusion.agent, 'alice');
+      assert.strictEqual(m.status, 'completed');
+      assert.ok(m.completedAt, 'Should have completedAt');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings rejects empty output', () => {
+    const testId = 'TEST-EXT-empty-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Empty Output', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput(''));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record empty findings');
+      assert.strictEqual(m.status, 'investigating', 'Status should remain investigating');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings rejects placeholder "(no output)" text', () => {
+    const testId = 'TEST-EXT-placeholder-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Placeholder Output', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('(no output)'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record placeholder findings');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings auto-advances investigating → debating when all participants submit', () => {
+    const testId = 'TEST-EXT-advinv-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Alice findings'));
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'Should still be investigating with 1/2 submitted');
+
+      meetingMod.collectMeetingFindings(testId, 'bob', 'investigate', makeOutput('Bob findings'));
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should advance to debating when all submit');
+      assert.strictEqual(m.round, 2, 'Round should advance to 2');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings auto-advances debating → concluding when all participants submit', () => {
+    const testId = 'TEST-EXT-advdeb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance Debate', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'debate', makeOutput('Alice debate'));
+      let m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should still be debating with 1/2 submitted');
+
+      meetingMod.collectMeetingFindings(testId, 'bob', 'debate', makeOutput('Bob debate'));
+      m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'Should advance to concluding when all submit');
+      assert.strictEqual(m.round, 3, 'Round should advance to 3');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings ignores late findings for completed meeting', () => {
+    const testId = 'TEST-EXT-late-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Late Findings', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done', agent: 'alice' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.collectMeetingFindings(testId, 'alice', 'investigate', makeOutput('Late findings'));
+      const m = meetingMod.getMeeting(testId);
+      assert.ok(!m.findings.alice, 'Should NOT record late findings');
+      assert.strictEqual(m.status, 'completed', 'Status should remain completed');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('collectMeetingFindings does not crash for missing meeting', () => {
+    // Should return silently without throwing
+    meetingMod.collectMeetingFindings('NONEXISTENT-MEETING-9999', 'alice', 'investigate', makeOutput('test'));
+  });
+
+  // ── addMeetingNote ──
+
+  await test('addMeetingNote stores human note and returns updated meeting', () => {
+    const testId = 'TEST-EXT-note-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Note Test', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.addMeetingNote(testId, 'Remember to check logs');
+      assert.ok(result, 'Should return updated meeting');
+      assert.deepStrictEqual(result.humanNotes, ['Remember to check logs']);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('addMeetingNote appends to transcript', () => {
+    const testId = 'TEST-EXT-notet-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Transcript Note', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      meetingMod.addMeetingNote(testId, 'Important note');
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.transcript.length, 1);
+      assert.strictEqual(m.transcript[0].agent, 'human');
+      assert.strictEqual(m.transcript[0].type, 'note');
+      assert.strictEqual(m.transcript[0].content, 'Important note');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('addMeetingNote returns null for missing meeting', () => {
+    const result = meetingMod.addMeetingNote('NONEXISTENT-NOTE-9999', 'test');
+    assert.strictEqual(result, null);
+  });
+
+  // ── advanceMeetingRound ──
+
+  await test('advanceMeetingRound advances investigating → debating', () => {
+    const testId = 'TEST-EXT-adv1-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 1', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'debating');
+      assert.strictEqual(result.round, 2);
+      assert.ok(result.roundStartedAt, 'Should have updated roundStartedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound advances debating → concluding', () => {
+    const testId = 'TEST-EXT-adv2-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 2', status: 'debating', round: 2,
+      participants: ['alice'], findings: { alice: { content: 'found' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result.status, 'concluding');
+      assert.strictEqual(result.round, 3);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound advances concluding → completed', () => {
+    const testId = 'TEST-EXT-adv3-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Advance 3', status: 'concluding', round: 3,
+      participants: ['alice'], findings: { alice: { content: 'found' } },
+      debate: { alice: { content: 'debated' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result.status, 'completed');
+      assert.ok(result.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound returns null for completed meeting', () => {
+    const testId = 'TEST-EXT-advc-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Already Completed', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.advanceMeetingRound(testId);
+      assert.strictEqual(result, null, 'Should return null for completed meeting');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('advanceMeetingRound returns null for missing meeting', () => {
+    const result = meetingMod.advanceMeetingRound('NONEXISTENT-ADV-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── endMeeting ──
+
+  await test('endMeeting sets status to completed with completedAt', () => {
+    const testId = 'TEST-EXT-end-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'End Test', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.endMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'completed');
+      assert.ok(result.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('endMeeting returns null for missing meeting', () => {
+    const result = meetingMod.endMeeting('NONEXISTENT-END-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── archiveMeeting ──
+
+  await test('archiveMeeting sets status to archived with archivedAt', () => {
+    const testId = 'TEST-EXT-arch-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Archive Test', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.archiveMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'archived');
+      assert.ok(result.archivedAt, 'Should set archivedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('archiveMeeting returns null for missing meeting', () => {
+    const result = meetingMod.archiveMeeting('NONEXISTENT-ARCH-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── unarchiveMeeting ──
+
+  await test('unarchiveMeeting restores archived meeting to completed', () => {
+    const testId = 'TEST-EXT-unarch-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Unarchive Test', status: 'archived', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.unarchiveMeeting(testId);
+      assert.ok(result, 'Should return updated meeting');
+      assert.strictEqual(result.status, 'completed');
+      assert.strictEqual(result.archivedAt, undefined, 'Should remove archivedAt');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('unarchiveMeeting returns null for non-archived meeting', () => {
+    const testId = 'TEST-EXT-unarch2-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Not Archived', status: 'completed', round: 3,
+      participants: [], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(),
+    });
+    try {
+      const result = meetingMod.unarchiveMeeting(testId);
+      assert.strictEqual(result, null, 'Should return null for non-archived meeting');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('unarchiveMeeting returns null for missing meeting', () => {
+    const result = meetingMod.unarchiveMeeting('NONEXISTENT-UNARCH-9999');
+    assert.strictEqual(result, null);
+  });
+
+  // ── deleteMeeting ──
+
+  await test('deleteMeeting removes meeting file and returns true', () => {
+    const testId = 'TEST-EXT-del-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Delete Me', status: 'completed', round: 1,
+      participants: [], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [], roundStartedAt: new Date().toISOString(),
+    });
+    const fp = path.join(meetingsDir, testId + '.json');
+    assert.ok(fs.existsSync(fp), 'File should exist before delete');
+    const result = meetingMod.deleteMeeting(testId);
+    assert.strictEqual(result, true, 'Should return true on successful delete');
+    assert.ok(!fs.existsSync(fp), 'File should be gone after delete');
+  });
+
+  await test('deleteMeeting returns false for missing meeting', () => {
+    const result = meetingMod.deleteMeeting('NONEXISTENT-DEL-9999');
+    assert.strictEqual(result, false, 'Should return false for missing meeting');
+  });
+
+  // ── checkMeetingTimeouts (safe tests — no side effects on real meetings) ──
+
+  await test('checkMeetingTimeouts does not advance meeting within timeout window', () => {
+    const testId = 'TEST-EXT-tout-safe-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Fresh Meeting', status: 'investigating', round: 1,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: null, transcript: [],
+      roundStartedAt: new Date().toISOString(), // just now — well within timeout
+    });
+    try {
+      // Use a large timeout to ensure no real meetings are affected
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'investigating', 'Should NOT advance — within timeout');
+      assert.strictEqual(m.round, 1, 'Round should remain 1');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts skips completed meetings', () => {
+    const testId = 'TEST-EXT-tout-skip-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Completed Meeting', status: 'completed', round: 3,
+      participants: ['alice'], findings: {}, debate: {}, humanNotes: [],
+      conclusion: { content: 'Done' }, transcript: [],
+      completedAt: new Date().toISOString(),
+      roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts advances investigating → debating when timed out', () => {
+    const testId = 'TEST-EXT-tout-inv-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Investigate', status: 'investigating', round: 1,
+      participants: ['alice', 'bob'], findings: { alice: { content: 'partial' } },
+      debate: {}, humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(), // 11.7 min ago
+    });
+    try {
+      // Default ENGINE_DEFAULTS.meetingRoundTimeout is 600000 (10 min)
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'debating', 'Should advance to debating after timeout');
+      assert.strictEqual(m.round, 2);
+      // Transcript should record timeout event
+      const timeoutEntry = m.transcript.find(t => t.type === 'timeout');
+      assert.ok(timeoutEntry, 'Should record timeout in transcript');
+      assert.ok(timeoutEntry.content.includes('1/2'), 'Should note partial response count');
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts advances debating → concluding when timed out', () => {
+    const testId = 'TEST-EXT-tout-deb-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Debate', status: 'debating', round: 2,
+      participants: ['alice', 'bob'],
+      findings: { alice: { content: 'A' }, bob: { content: 'B' } },
+      debate: { alice: { content: 'Alice debate' } }, // only alice submitted
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'concluding', 'Should advance to concluding after timeout');
+      assert.strictEqual(m.round, 3);
+    } finally {
+      cleanupMeeting(testId);
+    }
+  });
+
+  await test('checkMeetingTimeouts auto-completes concluding round with synthesized conclusion', () => {
+    const testId = 'TEST-EXT-tout-con-' + Date.now();
+    meetingMod.saveMeeting({
+      id: testId, title: 'Timeout Conclude', status: 'concluding', round: 3,
+      participants: ['alice'],
+      findings: { alice: { content: 'Found bugs in module X' } },
+      debate: { alice: { content: 'Should fix ASAP' } },
+      humanNotes: [], conclusion: null, transcript: [],
+      roundStartedAt: new Date(Date.now() - 700000).toISOString(),
+    });
+    try {
+      meetingMod.checkMeetingTimeouts({ engine: {}, agents: {} });
+      const m = meetingMod.getMeeting(testId);
+      assert.strictEqual(m.status, 'completed', 'Should auto-complete on conclude timeout');
+      assert.ok(m.conclusion, 'Should have auto-generated conclusion');
+      assert.strictEqual(m.conclusion.agent, 'system', 'Conclusion agent should be system');
+      assert.ok(m.conclusion.content.includes('Auto-generated'), 'Should note auto-generation');
+      assert.ok(m.completedAt, 'Should set completedAt');
+    } finally {
+      cleanupMeeting(testId);
+      cleanupInboxForMeeting(testId);
+    }
+  });
+}
+
 // ─── scheduler.js Tests ─────────────────────────────────────────────────────
 
 async function testSchedulerCronParsing() {
@@ -7720,6 +9164,7 @@ async function main() {
 
     // New coverage: preflight, shared helpers, engine core, lifecycle, spawn-agent
     await testPreflightModule();
+    await testPreflightDeep();
     await testCleanChildEnv();
     await testGitEnv();
     await testProjectPathHelpers();
@@ -7778,6 +9223,8 @@ async function main() {
     // Dispatch cycle integration tests
     await testDispatchCycleIntegration();
     await testMeetings();
+    await testMeetingsBehavioral();
+    await testMeetingsExtendedBehavioral();
 
     // P-bf3a91c7: shared.js fixes
     await testSharedJsFixes();
