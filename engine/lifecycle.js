@@ -962,7 +962,7 @@ function findDependentActivePrs(mergedItemId, config) {
   for (const p of projects) {
     const prs = safeJson(projectPrPath(p)) || [];
     for (const pr of prs) {
-      if (!pr.branch || pr.status !== 'active') continue;
+      if (!pr.branch || pr.status !== PR_STATUS.ACTIVE) continue;
       const linked = (pr.prdItems || []).some(id => dependentWis.some(wi => wi.id === id));
       if (linked && !results.some(r => r.pr.id === pr.id)) {
         const wi = dependentWis.find(w => (pr.prdItems || []).includes(w.id));
@@ -1044,7 +1044,7 @@ async function processPendingRebases(config) {
     if (!project) continue;
 
     const prs = safeJson(projectPrPath(project)) || [];
-    const pr = prs.find(p => p.id === entry.prId && p.status === 'active');
+    const pr = prs.find(p => p.id === entry.prId && p.status === PR_STATUS.ACTIVE);
     if (!pr) continue; // PR closed/merged since queuing
 
     const result = await rebaseBranchOntoMain(pr, project, config);
