@@ -14484,6 +14484,29 @@ async function testIssue716HeartbeatFeedbackLoop() {
       shared.FAILURE_CLASS.MAX_TURNS);
   });
 
+  // #995: error_max_turns takes priority over permission-blocked when both patterns present
+  await test('classifyFailure: error_max_turns wins over permission-blocked hook noise (#995)', () => {
+    // Simulates: agent ran 51 turns to error_max_turns, but SessionStart hook failed with
+    // curl timeout exit code 28, injecting "access denied" / "permission denied" into stderr
+    const stdout = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
+    const stderr = 'hook SessionStart failed: exit code 28\ncurl: (28) Connection timed out\npermission denied accessing resource';
+    assert.strictEqual(lifecycle.classifyFailure(1, stdout, stderr),
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'error_max_turns must take priority over permission-blocked patterns from hook failures');
+
+    // Also test with "access denied" variant
+    const stderr2 = 'access denied for endpoint\n' + stdout;
+    assert.strictEqual(lifecycle.classifyFailure(1, stderr2, ''),
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'error_max_turns in combined output must win even when access denied is also present');
+
+    // And with "unauthorized" variant
+    const combined = 'unauthorized request to api\n' + '{"type":"result","subtype":"error_max_turns","is_error":true}';
+    assert.strictEqual(lifecycle.classifyFailure(1, combined, ''),
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'error_max_turns must win over unauthorized pattern');
+  });
+
   // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
   await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
