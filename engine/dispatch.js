@@ -30,7 +30,7 @@ function mutateDispatch(mutator) {
     dispatch.pending = Array.isArray(dispatch.pending) ? dispatch.pending : [];
     dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
     dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
-    return mutator(dispatch) || dispatch;
+    return mutator(dispatch) ?? dispatch;
   }, { defaultValue: defaultDispatch });
   // Invalidate the read cache so next getDispatch() sees fresh data
   try { require('./queries').invalidateDispatchCache(); } catch {}
