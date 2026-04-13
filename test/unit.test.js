@@ -6701,9 +6701,17 @@ async function testPlanPrdStateFlow() {
       'Should have derivePlanStatus function');
   });
 
-  await test('derivePlanStatus returns awaiting-approval when no work items', () => {
-    assert.ok(plansSrc.includes("prdJsonStatus === 'awaiting-approval' && implementWi.length === 0"),
-      'Should return awaiting-approval when PRD is awaiting and no items materialized');
+  await test('derivePlanStatus returns awaiting-approval regardless of WI state', () => {
+    assert.ok(plansSrc.includes("prdJsonStatus === 'awaiting-approval'") && plansSrc.includes("return 'awaiting-approval'"),
+      'Should return awaiting-approval when PRD is awaiting — overrides WI-derived completion (#970)');
+  });
+
+  await test('derivePlanStatus checks awaiting-approval BEFORE allDone (#970)', () => {
+    const awaitIdx = plansSrc.indexOf("prdJsonStatus === 'awaiting-approval'");
+    const allDoneIdx = plansSrc.indexOf('allDone && !hasActiveWork');
+    assert.ok(awaitIdx > 0 && allDoneIdx > 0, 'Both checks must exist');
+    assert.ok(awaitIdx < allDoneIdx,
+      'awaiting-approval check must come before allDone check — prevents completed override when PRD has un-materialized items');
   });
 
   await test('derivePlanStatus returns dispatched when active work exists', () => {
