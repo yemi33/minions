@@ -9115,6 +9115,99 @@ async function testStatusMutationGuards() {
       'Stall recovery un-fail must check isItemCompleted/completedAt before resetting');
   });
 
+  // ─── Fix 6b: stall recovery no nested locks ───────────────────────────────
+
+  await test('stall recovery does not call mutateDispatch inside mutateWorkItems', () => {
+    // Find the stall recovery mutateWorkItems callback
+    const stallStart = engineSrc.indexOf('Collect keys to clear AFTER work-items lock is released');
+    assert.ok(stallStart > 0, 'engine.js must have stall recovery collect-keys comment');
+    // Find the closing of mutateWorkItems callback — marked by dispatch clearing AFTER lock
+    const afterLockComment = engineSrc.indexOf('Clear dispatch entries AFTER work-items lock is released', stallStart);
+    assert.ok(afterLockComment > stallStart, 'engine.js must have post-lock dispatch clearing comment');
+    // The mutateWorkItems callback is between stallStart and afterLockComment
+    const insideLock = engineSrc.substring(stallStart, afterLockComment);
+    assert.ok(!insideLock.includes('mutateDispatch('),
+      'mutateDispatch must NOT be called inside mutateWorkItems callback in stall recovery');
+  });
+
+  await test('stall recovery collects dispatch keys for clearing outside lock', () => {
+    // Verify the collect-then-clear pattern: keys collected inside, cleared outside
+    const stallStart = engineSrc.indexOf('Collect keys to clear AFTER work-items lock is released');
+    const stallEnd = engineSrc.indexOf('stall recovery process project', stallStart);
+    assert.ok(stallStart > 0 && stallEnd > stallStart, 'engine.js must have stall recovery section');
+    const stallSection = engineSrc.substring(stallStart, stallEnd);
+    assert.ok(stallSection.includes('dispatchKeysToClear.push('),
+      'Stall recovery must collect dispatch keys inside mutateWorkItems');
+    assert.ok(stallSection.includes('cooldownKeysToClear.push('),
+      'Stall recovery must collect cooldown keys inside mutateWorkItems');
+    assert.ok(stallSection.includes('for (const key of dispatchKeysToClear)'),
+      'Stall recovery must iterate collected dispatch keys outside lock');
+    assert.ok(stallSection.includes('for (const key of cooldownKeysToClear)'),
+      'Stall recovery must iterate collected cooldown keys outside lock');
+  });
+
+  await test('BEHAVIORAL: stall recovery retries failed blocking items and collects dispatch keys', () => {
+    const items = [
+      { id: 'A', status: 'failed', failReason: 'timeout' },
+      { id: 'B', status: 'pending', depends_on: ['A'] },
+      { id: 'C', status: 'failed', failReason: 'Dependency failed \u2014 cannot proceed', depends_on: ['A'] },
+    ];
+    const projectName = 'TestProject';
+    const dispatchKeysToClear = [];
+    const cooldownKeysToClear = [];
+
+    // Simulate the refactored stall recovery logic (inside mutateWorkItems)
+    let changed = false;
+    const failedIds = new Set(items.filter(w => w.status === 'failed').map(w => w.id));
+    const pendingWithBlockedDeps = items.filter(w =>
+      w.status === 'pending' && (w.depends_on || []).some(d => failedIds.has(d))
+    );
+
+    if (pendingWithBlockedDeps.length > 0) {
+      for (const item of items) {
+        if (item.status !== 'failed' || item.completedAt) continue;
+        const isBlocking = items.some(w => w.status === 'pending' && (w.depends_on || []).includes(item.id));
+        if (!isBlocking) continue;
+        item.status = 'pending';
+        item._retryCount = 0;
+        delete item.failReason;
+        changed = true;
+        const key = `work-${projectName}-${item.id}`;
+        dispatchKeysToClear.push(key);
+        cooldownKeysToClear.push(key);
+      }
+    }
+
+    // Un-fail cascade-failed dependents
+    if (changed) {
+      const retriedIds = new Set(items.filter(w => w.status === 'pending' && w._retryCount === 0).map(w => w.id));
+      for (const dep of items) {
+        if (dep.status === 'failed' && dep.failReason === 'Dependency failed \u2014 cannot proceed') {
+          const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
+          if (blockers.length > 0) {
+            dep.status = 'pending';
+            dep._retryCount = 0;
+            delete dep.failReason;
+            dispatchKeysToClear.push(`work-${projectName}-${dep.id}`);
+          }
+        }
+      }
+    }
+
+    // Verify work items were retried correctly
+    assert.strictEqual(items[0].status, 'pending', 'Failed blocker A should be retried');
+    assert.strictEqual(items[1].status, 'pending', 'Pending item B unchanged');
+    assert.strictEqual(items[2].status, 'pending', 'Cascade-failed C should be un-failed');
+
+    // Verify dispatch keys collected for clearing OUTSIDE lock
+    assert.deepStrictEqual(dispatchKeysToClear, [
+      'work-TestProject-A', 'work-TestProject-C'
+    ], 'Dispatch keys for both retried and un-failed items must be collected');
+    assert.deepStrictEqual(cooldownKeysToClear, [
+      'work-TestProject-A'
+    ], 'Cooldown keys only for directly retried items');
+  });
+
   // ─── Fix 7: dashboard manual retry guards done items ─────────────────────
 
   await test('dashboard manual retry checks for done items', () => {

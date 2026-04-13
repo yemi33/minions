@@ -2944,6 +2944,10 @@ async function tickInner() {
         for (const project of projects) {
           try {
             const wiPath = projectWorkItemsPath(project);
+            // Collect keys to clear AFTER work-items lock is released (avoid nested locks)
+            const dispatchKeysToClear = [];
+            const cooldownKeysToClear = [];
+
             mutateWorkItems(wiPath, items => {
               let changed = false;
               const failedIds = new Set(items.filter(w => w.status === WI_STATUS.FAILED).map(w => w.id));
@@ -2968,23 +2972,10 @@ async function tickInner() {
                   delete item.dispatched_to;
                   changed = true;
 
-                  // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
-                  try {
-                      const key = `work-${project.name}-${item.id}`;
-                      mutateDispatch((dp) => {
-                        dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                        return dp;
-                      });
-                    } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
-
-                  // Clear cooldown so item isn't blocked by exponential backoff
-                  try {
-                    const key = `work-${project.name}-${item.id}`;
-                    if (dispatchCooldowns.has(key)) {
-                      dispatchCooldowns.delete(key);
-                      saveCooldowns();
-                    }
-                  } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
+                  // Collect dispatch + cooldown keys for clearing outside lock
+                  const key = `work-${project.name}-${item.id}`;
+                  dispatchKeysToClear.push(key);
+                  cooldownKeysToClear.push(key);
                 }
               }
 
@@ -3002,19 +2993,33 @@ async function tickInner() {
                       delete dep.failedAt;
                       delete dep.dispatched_at;
                       delete dep.dispatched_to;
-                      // Clear dispatch entries for this dependent too
-                      try {
-                        const key = `work-${project.name}-${dep.id}`;
-                        mutateDispatch((dp) => {
-                          dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                          return dp;
-                        });
-                      } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
+                      // Collect dispatch key for clearing outside lock
+                      dispatchKeysToClear.push(`work-${project.name}-${dep.id}`);
                     }
                   }
                 }
               }
             });
+
+            // Clear dispatch entries AFTER work-items lock is released (no nested locks)
+            for (const key of dispatchKeysToClear) {
+              try {
+                mutateDispatch((dp) => {
+                  dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                  return dp;
+                });
+              } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
+            }
+
+            // Clear cooldowns AFTER work-items lock is released
+            for (const key of cooldownKeysToClear) {
+              try {
+                if (dispatchCooldowns.has(key)) {
+                  dispatchCooldowns.delete(key);
+                  saveCooldowns();
+                }
+              } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
+            }
           } catch (e) { log('warn', 'stall recovery process project: ' + e.message); }
         }
       }
