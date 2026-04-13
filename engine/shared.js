@@ -8,7 +8,7 @@ const path = require('path');
 
 const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
-const LOG_PATH = path.join(__dirname, 'log.json');
+const LOG_PATH = path.join(MINIONS_DIR, 'engine', 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
 // Extracted from engine.js so engine/* modules can import directly without

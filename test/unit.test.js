@@ -2538,6 +2538,70 @@ async function testStateIntegrity() {
       'graceful shutdown should call shared.flushLogs() to drain buffered log entries');
   });
 
+  await test('Log buffer accumulates entries and flushLogs drains to disk', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      // Buffer should start empty
+      s._logBuffer.length = 0;
+
+      // Push a few entries below threshold — they should stay in buffer
+      for (let i = 0; i < 5; i++) s.log('info', `test-entry-${i}`);
+      assert.strictEqual(s._logBuffer.length, 5,
+        'entries below threshold should accumulate in buffer');
+
+      // flushLogs should drain buffer to disk and clear timer
+      s.flushLogs();
+      assert.strictEqual(s._logBuffer.length, 0,
+        'flushLogs should drain the buffer completely');
+
+      // Verify entries were written to log.json
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      assert.ok(logData.length >= 5,
+        'flushed entries should be written to log.json on disk');
+      assert.ok(logData.some(e => e.message === 'test-entry-0'),
+        'log.json should contain the buffered entries');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('Log buffer auto-flushes at ENGINE_DEFAULTS.logBufferSize threshold', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const bufSize = s.ENGINE_DEFAULTS.logBufferSize; // 50
+
+      // Clear any prior state
+      s._logBuffer.length = 0;
+
+      // Push exactly bufSize entries — the last push triggers auto-flush
+      for (let i = 0; i < bufSize; i++) s.log('info', `threshold-${i}`);
+      assert.strictEqual(s._logBuffer.length, 0,
+        'buffer should be empty after reaching logBufferSize threshold (auto-flushed)');
+
+      // Clean up the interval timer
+      s.flushLogs();
+    } finally {
+      restore();
+    }
+  });
+
+  await test('LOG_PATH respects MINIONS_TEST_DIR for test isolation', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      assert.strictEqual(s.LOG_PATH, path.join(testDir, 'engine', 'log.json'),
+        'LOG_PATH should use MINIONS_DIR (respects MINIONS_TEST_DIR) not __dirname');
+    } finally {
+      restore();
+    }
+  });
+
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     assert.ok(src.includes('mutateJsonFileLocked'),
