@@ -642,6 +642,7 @@ async function executeCCActions(actions) {
               mutateJsonFileLocked(dispatchPath, dispatch => {
                 dispatch.completed = Array.isArray(dispatch.completed) ? dispatch.completed : [];
                 dispatch.completed = dispatch.completed.filter(d => d.meta?.dispatchKey !== dispatchKey);
+                dispatch.completed = dispatch.completed.filter(d => !d.meta?.parentKey || d.meta.parentKey !== dispatchKey);
                 return dispatch;
               }, { defaultValue: { pending: [], active: [], completed: [] } });
             } catch { /* best effort */ }
