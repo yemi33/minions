@@ -4158,6 +4158,24 @@ async function testBuildWorkItemDispatchVars() {
       'discoverCentralWorkItems should call buildWorkItemDispatchVars');
   });
 
+  await test('central dispatch fan-out vars include branch_name', () => {
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    // Find the fan-out vars block (comes before the normal dispatch vars block)
+    const fanOutSection = centralFn.slice(0, centralFn.indexOf('// ─── Normal'));
+    assert.ok(fanOutSection.includes('branch_name: fanBranch'),
+      'Fan-out dispatch vars should include branch_name derived from fanBranch');
+    assert.ok(fanOutSection.includes("const fanBranch = `fan/${item.id}/${agent.id}`"),
+      'Fan-out should compute fanBranch from item.id and agent.id');
+  });
+
+  await test('central dispatch normal vars include branch_name', () => {
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    // Find the normal dispatch section
+    const normalSection = centralFn.slice(centralFn.indexOf('// ─── Normal'));
+    assert.ok(normalSection.includes('branch_name: centralBranch'),
+      'Normal central dispatch vars should include branch_name derived from centralBranch');
+  });
+
   await test('no inline fs.readFileSync for notes.md in discovery functions', () => {
     // After extraction, discovery functions should not have inline notes.md reads
     const discoverWI = src.slice(src.indexOf('function discoverFromWorkItems('), src.indexOf('function normalizeAc('));
