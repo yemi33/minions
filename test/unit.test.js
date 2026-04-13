@@ -15071,6 +15071,79 @@ async function testPrReviewFixFlows() {
     assert.ok(!engineSrc.includes('Review PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
     assert.ok(!engineSrc.includes('Fix PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
   });
+
+  // ── /api/work-items/reopen endpoint ──
+
+  const dashSrcReopen = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('POST /api/work-items/reopen route is registered', () => {
+    assert.ok(dashSrcReopen.includes("'/api/work-items/reopen'"),
+      'Should register /api/work-items/reopen route');
+  });
+
+  await test('handleWorkItemsReopen uses mutateJsonFileLocked for atomic writes', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('mutateJsonFileLocked'),
+      'Reopen handler must use mutateJsonFileLocked for atomic read-modify-write');
+  });
+
+  await test('handleWorkItemsReopen uses reopenWorkItem helper', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('reopenWorkItem(item)'),
+      'Reopen handler must use shared.reopenWorkItem helper');
+  });
+
+  await test('handleWorkItemsReopen rejects non-done/failed items', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('WI_STATUS.DONE') && fn.includes('WI_STATUS.FAILED'),
+      'Reopen handler must check for done/failed status before reopening');
+    assert.ok(fn.includes('can only reopen done or failed items'),
+      'Should return error message for non-done/failed items');
+  });
+
+  await test('handleWorkItemsReopen supports optional description override', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('description') && fn.includes('item.description'),
+      'Reopen handler must support optional description override');
+  });
+
+  await test('handleWorkItemsReopen returns 404 for unknown item', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('item not found') && fn.includes('404'),
+      'Should return 404 when item is not found');
+  });
+
+  await test('handleWorkItemsReopen clears dispatch history and cooldowns', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('dispatch.json') && fn.includes('cooldowns'),
+      'Reopen handler must clear dispatch history and cooldowns outside lock');
+  });
+
+  await test('handleWorkItemsReopen invalidates status cache', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function handleWorkItemsReopen'), dashSrcReopen.indexOf('async function handleWorkItemsCreate'));
+    assert.ok(fn.includes('invalidateStatusCache'),
+      'Reopen handler must invalidate status cache after mutation');
+  });
+
+  await test('reopen-work-item CC action in executeCCActions', () => {
+    const fn = dashSrcReopen.slice(dashSrcReopen.indexOf('async function executeCCActions'), dashSrcReopen.indexOf('// ── Shared LLM call core'));
+    assert.ok(fn.includes("case 'reopen-work-item'"),
+      'executeCCActions must handle reopen-work-item action type');
+    assert.ok(fn.includes('reopenWorkItem(item)'),
+      'CC action must use reopenWorkItem helper');
+  });
+
+  await test('reopen-work-item in CC system prompt', () => {
+    const ccPrompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(ccPrompt.includes('reopen-work-item'),
+      'CC system prompt must document reopen-work-item action');
+  });
+
+  await test('reopen-work-item client-side action handler', () => {
+    const ccJs = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccJs.includes("case 'reopen-work-item'") && ccJs.includes('/api/work-items/reopen'),
+      'Client-side command-center.js must handle reopen-work-item action');
+  });
 }
 
 // ─── P-9e1a4c6b: Plan pause nested lock violation fix ──────────────────────

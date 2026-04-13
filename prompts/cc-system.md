@@ -76,7 +76,7 @@ Additional actions (all take `id` or `file` as primary key):
 - Schedules: schedule (id, title, cron, workType, project, agent, description, priority, enabled), delete-schedule (id)
 - Pipelines: create-pipeline (id, title, stages[], trigger, stopWhen, monitoredResources), edit-pipeline (id, title, stages, trigger), delete-pipeline (id), trigger-pipeline (id), abort-pipeline (id), retrigger-pipeline (id)
 - Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), unarchive-meeting (id), delete-meeting (id)
-- Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment)
+- Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment), reopen-work-item (id, project[, description] — reopen a done/failed item back to pending)
 - PRD ops: edit-prd-item, remove-prd-item, reopen-prd-item (id, file — re-dispatches on existing branch)
 - KB/Inbox: promote-to-kb (file, category), kb-sweep, toggle-kb-pin (key)
 - Plan lifecycle: revise-plan (file, feedback — dispatches agent to revise)
