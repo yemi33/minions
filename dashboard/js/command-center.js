@@ -90,6 +90,8 @@ function toggleCommandCenter() {
     // Ensure at least one tab exists
     if (_ccTabs.length === 0) ccNewTab(true);
     clearNotifBadge(document.getElementById('cc-toggle-btn'));
+    var activeTabOnOpen = _ccActiveTab();
+    if (activeTabOnOpen) activeTabOnOpen._unread = false;
     ccRenderTabBar();
     document.getElementById('cc-input').focus();
     ccRestoreMessages();
@@ -129,6 +131,7 @@ function ccSwitchTab(id) {
   if (!tab) return;
   // If there is an active request, keep it running but switch view
   _ccActiveTabId = id;
+  tab._unread = false;
   var el = document.getElementById('cc-messages');
   el.innerHTML = '';
   // Re-render messages from the tab's data
@@ -247,6 +250,7 @@ function ccRenderTabBar() {
     var isActive = t.id === _ccActiveTabId;
     html += '<div class="cc-tab' + (isActive ? ' active' : '') + (t._sending ? ' working' : '') + '" onclick="ccSwitchTab(\'' + t.id + '\')" title="' + escHtml(t.title) + '">';
     html += '<span class="cc-tab-text">' + escHtml(t.title) + '</span>';
+    if (t._unread) html += '<span class="notif-badge done"></span>';
     html += '<span class="cc-tab-close" onclick="event.stopPropagation();ccCloseTab(\'' + t.id + '\')">&times;</span>';
     html += '</div>';
   }
@@ -661,6 +665,8 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
   } finally {
     if (activeTab) { activeTab._sending = false; activeTab._abortController = null; activeTab._429retries = 0; delete activeTab._streamedText; delete activeTab._toolsUsed; delete activeTab._sendStartedAt; }
     _ccSending = (_ccTabs.some(function(t) { return t._sending; }));
+    // Mark tab unread if response completed on a background tab or while drawer is closed
+    if (activeTab && !_wasAborted && (activeTab.id !== _ccActiveTabId || !_ccOpen)) activeTab._unread = true;
     ccRenderTabBar();
     try { clearInterval(phaseTimer); } catch { /* may not be defined if error before reader */ }
     try { localStorage.removeItem('cc-sending'); } catch {}
