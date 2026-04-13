@@ -1893,8 +1893,14 @@ function classifyFailure(code, stdout = '', stderr = '') {
     return FAILURE_CLASS.MERGE_CONFLICT;
   }
 
-  // Context window / max turns exhausted
-  if (/context window|max.*turns.*reached|error_max_turns|terminal_reason.*max_turns|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+  // Max turns exhausted (error_max_turns) — work in progress, retryable
+  // Must be checked BEFORE OUT_OF_CONTEXT to avoid misclassification as non-retryable
+  if (/error_max_turns|"subtype"\s*:\s*"error_max_turns"|terminal_reason.*max_turns|max.*turns.*reached/i.test(combined)) {
+    return FAILURE_CLASS.MAX_TURNS;
+  }
+
+  // Context window exhausted (token limit, context length — NOT max turns)
+  if (/context window|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
     return FAILURE_CLASS.OUT_OF_CONTEXT;
   }
 

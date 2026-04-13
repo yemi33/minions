@@ -64,6 +64,12 @@ const RECOVERY_RECIPES = new Map([
     freshSession: false,
     description: 'Network/API error — retry with exponential backoff',
   }],
+  [FAILURE_CLASS.MAX_TURNS, {
+    maxAttempts: 3,
+    escalation: ESCALATION_POLICY.RETRY_SAME,
+    freshSession: false,
+    description: 'Max turns reached — work in progress, retry same agent to continue',
+  }],
   [FAILURE_CLASS.OUT_OF_CONTEXT, {
     maxAttempts: 1,
     escalation: ESCALATION_POLICY.HUMAN_REVIEW,
