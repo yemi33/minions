@@ -630,6 +630,7 @@
   .cc-tab.working { border-color: var(--blue); }
   .cc-tab.working::before { content: ''; position: absolute; top: 3px; left: 5px; width: 4px; height: 4px; border-radius: 50%; background: var(--blue); animation: pulse 1.5s infinite; }
   .cc-tab.working.active::before { background: var(--blue); }
+  .cc-tab .notif-badge.done { top: 3px; left: 5px; right: auto; width: 4px; height: 4px; }
   .cc-tab-close { flex-shrink: 0; margin-left: 4px; opacity: 0; cursor: pointer; font-size: 12px; line-height: 1; }
   .cc-tab:hover .cc-tab-close { opacity: 0.5; }
   .cc-tab-close:hover { opacity: 1; color: var(--red); }
