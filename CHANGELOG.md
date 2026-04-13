@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.1.924 (2026-04-13)
+
+### Features
+- add /api/work-items/reopen endpoint and reopen-work-item CC action (#982)
+- CC tab unread dot + reopened badge on work items
+- fix dep re-merge failure on retry with existing commits (#977)
+- audit and harden log buffering implementation (#971)
+- replace magic string 'active' with PR_STATUS.ACTIVE in lifecycle.js (#969)
+- fix dashboard plan-pause nested lock violation (#968)
+- add missing branch_name to central dispatch vars (#967)
+- fix dispatch.js mutator fallback to use nullish coalescing (#966)
+- fix stall recovery nested lock violation (#965)
+- fix pending-rebases.json race condition with file locking (#964)
+- add missing resolveWorkItemPath import in engine.js (#963)
+- bump plan-to-prd max turns from 20 to 35
+- add weekly dead code & deprecated cleanup pipeline
+- add red dot notification on CC tab when response completes (#934) (#946)
+
+### Fixes
+-  CC streaming auto-retries fresh session when resume fails
+-  429 retry on abort race applies to all sends, not just queued
+- show actionable failure context instead of Unknown error (#1003)
+- prioritize error_max_turns over permission-blocked in classifyFailure (#1001)
+-  optimistic archive hides both PRD and linked source plan simultaneously
+- align CC tab unread dot to same position as working dot
+- pipeline artifact links use pushModalBack instead of setTimeout race (#993)
+- close unclosed code fences and lone backticks in renderMd (#991)
+- PRD item status stuck at dispatched when fix completes (#989)
+- dep merge ancestor pruning + pre-flight simulation (#958) (#979)
+- add MAX_TURNS failure class and fix enum count test (#983)
+- prevent Create Plan from meeting saving doc-chat context bleed (#980)
+- plan completion incorrectly overrides awaiting-approval status (#970) (#978)
+-  CC queued messages sent to wrong tab after tab switch
+- pass sysPromptPath instead of steerPromptPath as system prompt in steering resume (#962)
+-  PRD item display dispatched/in-progress status conflation (closes #950) (#955)
+- remove KB watchdog — checkpoint never written, restore never worked
+- make KB sweep endpoint async with status polling (#933)
+- prohibit agents from self-merging their own PRs
+
+### Other
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
