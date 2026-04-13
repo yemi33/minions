@@ -741,7 +741,7 @@ function updateSession(store, key, sessionId, existing) {
  * @param {number} opts.maxTurns - Max tool-use turns
  * @param {string} opts.allowedTools - Comma-separated tool list
  */
-async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model } = {}) {
+async function ccCall(message, { store = 'cc', sessionKey, extraContext, label = 'command-center', timeout = 900000, maxTurns, allowedTools = 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch', skipStatePreamble = false, model, onAbortReady } = {}) {
   if (!maxTurns) maxTurns = CONFIG.engine?.ccMaxTurns || shared.ENGINE_DEFAULTS.ccMaxTurns;
   if (!model) model = CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel;
   const ccEffort = CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort;
@@ -759,9 +759,11 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   // Attempt 1: resume existing session — skip preamble (session already has context)
   if (sessionId && maxTurns > 1) {
-    result = await llm.callLLM(buildPrompt({ includePreamble: false }), '', {
+    const p1 = llm.callLLM(buildPrompt({ includePreamble: false }), '', {
       timeout, label, model, maxTurns, allowedTools, sessionId, effort: ccEffort, direct: true,
     });
+    if (onAbortReady) onAbortReady(p1.abort);
+    result = await p1;
     llm.trackEngineUsage(label, result.usage);
 
     if (result.text) {
@@ -792,9 +794,11 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 
   // Attempt 2: fresh session (include preamble for full context)
   const freshPrompt = buildPrompt();
-  result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
+  const p2 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
   });
+  if (onAbortReady) onAbortReady(p2.abort);
+  result = await p2;
   llm.trackEngineUsage(label, result.usage);
 
   if (result.text) {
@@ -806,9 +810,11 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   if (maxTurns <= 1) return result;
   console.log(`[${label}] Fresh call also failed (code=${result.code}, empty=${!result.text}), retrying once more...`);
   await new Promise(r => setTimeout(r, 2000));
-  result = await llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
+  const p3 = llm.callLLM(freshPrompt, CC_STATIC_SYSTEM_PROMPT, {
     timeout, label, model, maxTurns, allowedTools, effort: ccEffort, direct: true,
   });
+  if (onAbortReady) onAbortReady(p3.abort);
+  result = await p3;
   llm.trackEngineUsage(label, result.usage);
 
   if (result.text) {
@@ -818,7 +824,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
   const docSlice = document.slice(0, 20000);
 
@@ -850,6 +856,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     maxTurns: canEdit ? 25 : 10,
     skipStatePreamble: true,
     ...(model ? { model } : {}),
+    onAbortReady,
   });
 
   if (freshSession && sessionKey) {
@@ -2935,9 +2942,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         return jsonReply(res, 429, { error: 'This document is already being processed — wait for the current response.' });
       }
       docChatInFlight.add(docKey);
-      // Release guard if client disconnects (abort/navigation) so next request isn't blocked
-      let _clientDisconnected = false;
-      req.on('close', () => { _clientDisconnected = true; docChatInFlight.delete(docKey); });
+      // Kill LLM process + release guard if client disconnects (abort/navigation)
+      let _docAbort = null;
+      req.on('close', () => { docChatInFlight.delete(docKey); if (_docAbort) _docAbort(); });
 
       try {
       const canEdit = !!body.filePath;
@@ -2956,6 +2963,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
         freshSession: !!body.freshSession,
+        onAbortReady: (abort) => { _docAbort = abort; },
       });
 
       if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });

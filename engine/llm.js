@@ -130,9 +130,12 @@ function _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTur
 // ── Core LLM Call ───────────────────────────────────────────────────────────
 
 function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', model = 'sonnet', maxTurns = 1, allowedTools = '', sessionId = null, effort = null, direct = false } = {}) {
-  return new Promise((resolve) => {
+  let _abort = null;
+  const promise = new Promise((resolve) => {
     const _startMs = Date.now();
     const { proc, cleanupFiles } = _spawnProcess(promptText, sysPromptText, { direct, label, model, maxTurns, allowedTools, effort, sessionId });
+
+    _abort = () => { shared.killImmediate(proc); };
 
     let stdout = '';
     let stderr = '';
@@ -156,6 +159,8 @@ function callLLM(promptText, sysPromptText, { timeout = 120000, label = 'llm', m
       resolve({ text: '', usage: null, sessionId: null, code: 1, stderr: err.message, raw: '' });
     });
   });
+  promise.abort = () => { if (_abort) _abort(); };
+  return promise;
 }
 
 /**

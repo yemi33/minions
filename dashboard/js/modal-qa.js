@@ -342,7 +342,7 @@ function qaAbort() {
   }
   // Force-reset processing state so UI isn't stuck if abort races with response
   _qaProcessing = false;
-  _qaQueue = [];
+  // Don't clear _qaQueue — queued messages should auto-process after abort
 }
 
 function toggleDocChat() {
