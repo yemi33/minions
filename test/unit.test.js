@@ -14484,6 +14484,25 @@ async function testIssue716HeartbeatFeedbackLoop() {
       shared.FAILURE_CLASS.MAX_TURNS);
   });
 
+  // #995: error_max_turns must take priority over permission-blocked when hook failure text is also present
+  await test('classifyFailure: error_max_turns wins over hook auth failure text (#995)', () => {
+    // Simulates: SessionStart hook failed with curl exit code 28 (timeout to auth endpoint)
+    // but agent ran all 51 turns to exhaustion — error_max_turns is the real cause
+    const stdout = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
+    const stderr = 'Error: SessionStart hook failed with exit code 28\ncurl: (28) Connection timed out\nFailed to reach https://auth.example.com/session — unauthorized';
+    assert.strictEqual(lifecycle.classifyFailure(1, stdout, stderr),
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'error_max_turns should win over permission-blocked when both patterns present');
+  });
+
+  await test('classifyFailure: error_max_turns wins over access denied text (#995)', () => {
+    // Agent output contains both "access denied" (from hook) and max_turns (from agent result)
+    const stdout = 'Hook stderr: access denied for resource\n... 51 turns of agent work ...\n{"type":"result","subtype":"error_max_turns","is_error":true}';
+    assert.strictEqual(lifecycle.classifyFailure(1, stdout, ''),
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'error_max_turns should take priority even when access denied text is also present');
+  });
+
   // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
   await test('engine.js tracks realActivityMap on stdout/stderr data', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');

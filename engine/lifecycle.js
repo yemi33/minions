@@ -1883,6 +1883,14 @@ function classifyFailure(code, stdout = '', stderr = '') {
   // Exit code 78 — configuration error (Claude CLI not found, bad setup)
   if (code === 78) return FAILURE_CLASS.CONFIG_ERROR;
 
+  // Max turns exhausted (error_max_turns) — definitive stop reason, retryable
+  // Must be checked FIRST — hook startup failures (e.g. curl exit code 28) can inject
+  // permission/auth text into stderr, but if the agent ran to turn exhaustion that's the
+  // real cause. Checked before PERMISSION_BLOCKED and OUT_OF_CONTEXT.
+  if (/error_max_turns|"subtype"\s*:\s*"error_max_turns"|terminal_reason.*max_turns|max.*turns.*reached/i.test(combined)) {
+    return FAILURE_CLASS.MAX_TURNS;
+  }
+
   // Permission / trust / auth failures
   if (/permission denied|access denied|unauthorized|403 forbidden|trust.*blocked|auth.*fail/i.test(combined)) {
     return FAILURE_CLASS.PERMISSION_BLOCKED;
@@ -1891,12 +1899,6 @@ function classifyFailure(code, stdout = '', stderr = '') {
   // Merge conflicts
   if (/merge conflict|conflict.*merge|automatic merge failed|fix conflicts/i.test(combined)) {
     return FAILURE_CLASS.MERGE_CONFLICT;
-  }
-
-  // Max turns exhausted (error_max_turns) — work in progress, retryable
-  // Must be checked BEFORE OUT_OF_CONTEXT to avoid misclassification as non-retryable
-  if (/error_max_turns|"subtype"\s*:\s*"error_max_turns"|terminal_reason.*max_turns|max.*turns.*reached/i.test(combined)) {
-    return FAILURE_CLASS.MAX_TURNS;
   }
 
   // Context window exhausted (token limit, context length — NOT max turns)
