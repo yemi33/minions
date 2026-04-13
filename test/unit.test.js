@@ -9398,15 +9398,15 @@ async function testDashboardAuditCritical() {
       'pause must set the values that resume looks for');
   });
 
-  await test('PRD isActive check includes both dispatched and pending', () => {
+  await test('PRD isActive check includes both in-progress and missing display statuses', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-prd.js'), 'utf8');
-    // Should not have the tautology: dispatched || dispatched
-    const tautology = (src.match(/dispatched.*\|\|.*dispatched/g) || []);
+    // Should not have the tautology: in-progress || in-progress
+    const tautology = (src.match(/in-progress.*\|\|.*in-progress/g) || []);
     assert.strictEqual(tautology.length, 0,
-      'render-prd.js must not have dispatched || dispatched tautology');
-    // Should have dispatched || pending
-    assert.ok(src.includes("'dispatched' || i.status === 'pending'") || src.includes("'dispatched' || item.status === 'pending'"),
-      'isActive/wip check must include both dispatched and pending');
+      'render-prd.js must not have in-progress || in-progress tautology');
+    // Should have in-progress || missing (display-mapped statuses from statusDisplay in queries.js)
+    assert.ok(src.includes("'in-progress' || i.status === 'missing'") || src.includes("'in-progress' || item.status === 'missing'"),
+      'isActive/wip check must include both in-progress and missing display statuses');
   });
 
   await test('rerenderPrdFromCache calls renderPrdProgress', () => {

@@ -952,7 +952,7 @@ function getPrdInfo(config) {
   // PRD JSON status is the source of truth — kept in sync with work item by syncPrdItemStatus.
   // Map from PRD JSON values to display values (pending → missing for undispatched items)
   // Augment each item with execution metadata from the work item.
-  const statusDisplay = { pending: 'missing' };
+  const statusDisplay = { pending: 'missing', dispatched: 'in-progress' };
   for (const item of items) {
     const wi = wiById[item.id];
     // PRD 'updated'/'missing' = intentional rework signal — takes priority over a done work item (#930).
@@ -973,7 +973,7 @@ function getPrdInfo(config) {
   const byStatus = {};
   items.forEach(item => { const s = item.status || 'missing'; byStatus[s] = byStatus[s] || []; byStatus[s].push(item); });
   const complete = (byStatus['done'] || []).length + (byStatus['decomposed'] || []).length;
-  const inProgress = (byStatus['dispatched'] || []).length;
+  const inProgress = (byStatus['in-progress'] || []).length;
   const paused = (byStatus['paused'] || []).length;
   const missing = (byStatus['missing'] || []).length;
   const donePercent = total > 0 ? Math.round((complete / total) * 100) : 0;

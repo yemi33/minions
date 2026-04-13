@@ -92,7 +92,7 @@ function renderPrdProgress(prog) {
     const total = items.length;
     if (total === 0) return '';
     const done = items.filter(i => i.status === 'done').length;
-    const inProgress = items.filter(i => i.status === 'dispatched').length;
+    const inProgress = items.filter(i => i.status === 'in-progress').length;
     const failed = items.filter(i => i.status === 'failed').length;
     const paused = items.filter(i => i.status === 'paused').length;
     const updated = items.filter(i => i.status === 'updated').length;
@@ -111,7 +111,7 @@ function renderPrdProgress(prog) {
 
     const bar = '<div class="prd-progress-bar">' +
       '<div class="seg complete" style="width:' + pct(done) + '%"></div>' +
-      '<div class="seg dispatched" style="width:' + pct(inProgress) + '%"></div>' +
+      '<div class="seg in-progress" style="width:' + pct(inProgress) + '%"></div>' +
       '<div class="seg updated" style="width:' + pct(updated) + '%"></div>' +
       '<div class="seg paused" style="width:' + pct(paused) + '%"></div>' +
       '<div class="seg missing" style="width:' + pct(missing) + '%"></div>' +
@@ -120,23 +120,23 @@ function renderPrdProgress(prog) {
     return '<div style="margin:6px 0 8px 0;padding:0 8px">' + stats + '<div style="margin-top:8px">' + bar + '</div></div>';
   }
 
-  // PRD item statuses: missing → dispatched → done
+  // PRD item statuses: missing → in-progress → done
   const statusBadge = (s, itemId) => {
     // Decomposed: show WIP if children still running, DONE if all children done
     if (s === 'decomposed' && itemId) {
       const children = (window._lastWorkItems || []).filter(w => w.parent_id === itemId);
       const allChildrenDone = children.length > 0 && children.every(c => c.status === 'done');
       if (allChildrenDone) { s = 'done'; }
-      else { s = 'dispatched'; } // show as WIP while children are running
+      else { s = 'in-progress'; } // show as WIP while children are running
     }
     const styles = {
       'done': 'background:rgba(63,185,80,0.15);color:var(--green)',
-      'dispatched': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
+      'in-progress': 'background:rgba(210,153,34,0.15);color:var(--yellow);animation:wipPulse 1.5s infinite',
       'failed':      'background:rgba(248,81,73,0.15);color:var(--red)',
       'paused':      'background:rgba(139,148,158,0.15);color:var(--muted)',
       'updated':     'background:rgba(188,140,255,0.15);color:var(--purple)',
     };
-    const labels = { 'done': 'DONE', 'dispatched': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014', 'updated': 'REDO' };
+    const labels = { 'done': 'DONE', 'in-progress': 'WIP', 'failed': 'FAIL', 'paused': 'PAUSED', 'missing': '\u2014', 'updated': 'REDO' };
     const style = styles[s] || 'background:var(--surface);color:var(--muted)';
     const label = labels[s] || '—';
     return '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;' + style + '">' + label + '</span>';
@@ -253,7 +253,7 @@ function renderPrdProgress(prog) {
 
   const renderGroupHeader = (g) => {
     const done = g.items.filter(i => i.status === 'done').length;
-    const wip = g.items.filter(i => i.status === 'dispatched' || i.status === 'pending').length;
+    const wip = g.items.filter(i => i.status === 'in-progress' || i.status === 'missing').length;
     const summary = (g.summary || '').replace(/^Convert plan to PRD:\s*/i, '').slice(0, 80);
     const isAwaitingApproval = g.planStatus === 'awaiting-approval';
     const isPaused = g.planStatus === 'paused';
@@ -372,7 +372,7 @@ function renderPrdProgress(prog) {
         return 'var(--yellow)'; // children still running
       }
       if (s === 'done') return 'var(--green)';
-      if (s === 'dispatched') return 'var(--yellow)';
+      if (s === 'in-progress') return 'var(--yellow)';
       if (s === 'failed') return 'var(--red)';
       if (s === 'updated') return 'var(--purple)';
       if (s === 'paused') return 'var(--muted)';
@@ -394,7 +394,7 @@ function renderPrdProgress(prog) {
         const agentInfo = agentId ? (agentData.find(a => a.id === agentId) || {}) : null;
         const agentDisplay = agentInfo ? (agentInfo.emoji || '') + ' ' + escHtml(agentInfo.name || agentId) : (agentId ? escHtml(agentId) : '');
         const deps = (i.depends_on || []).join(', ');
-        const wipAnim = i.status === 'dispatched' ? 'animation:prdWipPulse 2s infinite;' : '';
+        const wipAnim = i.status === 'in-progress' ? 'animation:prdWipPulse 2s infinite;' : '';
         html += '<div onclick="prdItemEdit(\'' + src + '\',\'' + iid + '\')" ' +
           'style="background:var(--surface2);border:1px solid var(--border);border-left:3px solid ' + borderColor + ';' + wipAnim +
           'border-radius:4px;padding:6px 8px;margin-bottom:6px;cursor:pointer;font-size:11px">' +
@@ -658,7 +658,7 @@ async function prdItemEdit(source, itemId) {
   let completionHtml = '';
   const isDone = item.status === 'done';
   const isFailed = item.status === 'failed';
-  const isActive = item.status === 'dispatched' || item.status === 'pending';
+  const isActive = item.status === 'in-progress' || item.status === 'missing';
 
   if (isDone || isFailed || isActive) {
     const agent = wi?.dispatched_to || completedEntry?.agent || '';
