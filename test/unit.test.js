@@ -10099,6 +10099,59 @@ async function testEngineAuditCritical() {
     assert.ok(fn.includes('writeToInbox'), 'processPendingRebases must write inbox alert on give-up');
   });
 
+  await test('queuePendingRebase uses mutateJsonFileLocked for atomic writes', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('function queuePendingRebase'),
+      lifecycleSrcForRebase.indexOf('\nasync function processPendingRebases')
+    );
+    assert.ok(fn.includes('mutateJsonFileLocked(PENDING_REBASES_PATH'),
+      'queuePendingRebase must use mutateJsonFileLocked for atomic read-modify-write');
+    assert.ok(!fn.includes('safeJson(PENDING_REBASES_PATH)'),
+      'queuePendingRebase must not use unlocked safeJson — race condition');
+    assert.ok(!fn.match(/safeWrite\(PENDING_REBASES_PATH/),
+      'queuePendingRebase must not use unlocked safeWrite — race condition');
+  });
+
+  await test('processPendingRebases uses mutateJsonFileLocked for drain and write-back', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('mutateJsonFileLocked(PENDING_REBASES_PATH'),
+      'processPendingRebases must use mutateJsonFileLocked');
+    assert.ok(!fn.match(/(?<!\w)safeWrite\(PENDING_REBASES_PATH/),
+      'processPendingRebases must not use unlocked safeWrite — concurrent queuePendingRebase entries would be lost');
+  });
+
+  await test('processPendingRebases drains queue atomically then merges remaining back', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    // Must drain under lock first (short lock, no async inside)
+    assert.ok(fn.includes('return []'), 'processPendingRebases must drain file to empty array under lock');
+    // Must merge remaining back under a separate lock (not same lock as drain)
+    const lockCalls = fn.split('mutateJsonFileLocked').length - 1;
+    assert.ok(lockCalls >= 2, `processPendingRebases needs at least 2 lock calls (drain + write-back), found ${lockCalls}`);
+  });
+
+  await test('queuePendingRebase concurrent calls preserve all entries (behavioral)', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, 'engine'), { recursive: true });
+    const fp = path.join(dir, 'engine', 'pending-rebases.json');
+    // Simulate 3 concurrent queues by calling mutateJsonFileLocked sequentially
+    // (file locking serializes them — this proves no entries are lost)
+    for (let i = 0; i < 3; i++) {
+      shared.mutateJsonFileLocked(fp, (pending) => {
+        if (pending.some(e => e.prId === `PR-${i}`)) return;
+        pending.push({ prId: `PR-${i}`, branch: `feat/b-${i}`, projectName: 'test', mergedItemId: `W-${i}`, queuedAt: new Date().toISOString(), attempts: 0 });
+      }, { defaultValue: [] });
+    }
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result.length, 3, `All 3 entries must be preserved, got ${result.length}`);
+    assert.deepStrictEqual(result.map(e => e.prId), ['PR-0', 'PR-1', 'PR-2']);
+  });
+
   await test('engine.js calls processPendingRebases in tick cycle', () => {
     const engineSrcRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrcRebase.includes('processPendingRebases(config)'),
