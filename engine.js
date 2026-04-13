@@ -2485,6 +2485,7 @@ function discoverCentralWorkItems(config) {
 
         const ap = assignedProject || (projects.length > 0 ? projects[0] : null);
         if (!ap) { log('warn', `Fan-out: skipping ${fanKey} — no projects configured`); continue; }
+        const fanBranch = `fan/${item.id}/${agent.id}`;
         const vars = {
           ...buildBaseVars(agent.id, config, ap),
           item_id: item.id,
@@ -2495,6 +2496,7 @@ function discoverCentralWorkItems(config) {
           additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
           scope_section: buildProjectContext(projects, assignedProject, true, agent.name, agent.role),
           project_path: ap?.localPath || '',
+          branch_name: fanBranch,
         };
 
         // Build common vars: references, acceptance criteria, notes (ASK only), task context
@@ -2519,7 +2521,7 @@ function discoverCentralWorkItems(config) {
           prompt,
           meta: {
             dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
-            branch: `fan/${item.id}/${agent.id}`,
+            branch: fanBranch,
             deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || DEFAULTS.agentTimeout)
           }
         });
@@ -2564,6 +2566,7 @@ function discoverCentralWorkItems(config) {
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
         scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
+        branch_name: centralBranch,
       };
       const centralWtPath = firstProject?.localPath
         ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
