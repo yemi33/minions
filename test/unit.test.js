@@ -6356,6 +6356,16 @@ async function testAgentSteering() {
       'Re-spawn prompt should tell agent to continue after responding');
   });
 
+  await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
+    // The steering resume spawn should use: [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs]
+    // NOT: [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs]
+    // steerPromptPath is the prompt, sysPromptPath is the original agent system prompt
+    const steerSpawnLine = engineSrc.match(/resumeProc\s*=\s*runFile\([^,]+,\s*\[spawnScript,\s*steerPromptPath,\s*(\w+)/);
+    assert.ok(steerSpawnLine, 'Should find steering resume spawn line');
+    assert.strictEqual(steerSpawnLine[1], 'sysPromptPath',
+      'Second arg to spawn-agent in steering resume must be sysPromptPath (the original system prompt), not steerPromptPath');
+  });
+
   // Stale steering recovery: if kill didn't terminate agent within 30s, retry
   await test('checkSteering has stale steering recovery with retry', () => {
     const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');

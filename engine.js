@@ -848,7 +848,7 @@ async function spawnAgent(dispatchItem, config) {
       const childEnv = shared.cleanChildEnv();
       let resumeProc;
       try {
-        resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs], {
+        resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {
           cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           env: childEnv,
