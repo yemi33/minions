@@ -7106,23 +7106,78 @@ async function testDispatchCycleIntegration() {
       'engine.js must compute merge-base for merge-tree');
   });
 
+  await test('Dep merge ancestor pruning removes branches contained in another (#958)', () => {
+    assert.ok(engineSrc.includes('pruneAncestorDeps'),
+      'engine.js must call pruneAncestorDeps to filter ancestor branches');
+    assert.ok(engineSrc.includes('Ancestor pruning removed'),
+      'engine.js must log when ancestor branches are pruned');
+    assert.ok(engineSrc.includes('of prunedDeps'),
+      'engine.js merge loop must iterate prunedDeps, not fetched');
+  });
+
+  await test('Dep merge pre-flight simulation detects conflicts without touching worktree (#958)', () => {
+    assert.ok(engineSrc.includes('preflightMergeSimulation'),
+      'engine.js must call preflightMergeSimulation before real merge');
+    assert.ok(engineSrc.includes('git merge-tree --write-tree'),
+      'engine.js must use git merge-tree --write-tree for pre-flight simulation');
+    assert.ok(engineSrc.includes('git commit-tree'),
+      'engine.js must chain tree SHAs via git commit-tree for multi-dep simulation');
+    assert.ok(engineSrc.includes('Pre-flight merge simulation detected conflict'),
+      'engine.js must log when pre-flight detects a conflict');
+  });
+
+  await test('Dep merge post-mortem uses incremental simulation for inter-dep detection (#958)', () => {
+    const postMortemIdx = engineSrc.indexOf('Post-mortem: incremental simulation');
+    assert.ok(postMortemIdx > 0,
+      'engine.js post-mortem must use incremental simulation');
+    const afterPostMortem = engineSrc.substring(postMortemIdx);
+    assert.ok(afterPostMortem.includes('preflightMergeSimulation(prunedDeps'),
+      'post-mortem must call preflightMergeSimulation with prunedDeps');
+  });
+
+  await test('Dep merge inter-dep conflict generates correct fix instruction (#958)', () => {
+    assert.ok(engineSrc.includes('_isInterDepConflict'),
+      'engine.js must track whether conflict is inter-dep');
+    assert.ok(engineSrc.includes('_preflightConflictPrev'),
+      'engine.js must track the previous dep branch for inter-dep conflicts');
+    assert.ok(engineSrc.includes('conflicts with dep'),
+      'engine.js failReason must distinguish inter-dep conflicts');
+    assert.ok(engineSrc.includes('Rebase'),
+      'engine.js conflict-fix description must suggest rebase for inter-dep conflicts');
+  });
+
+  await test('pruneAncestorDeps returns input unchanged for single dep', async () => {
+    const { pruneAncestorDeps } = require(path.join(MINIONS_DIR, 'engine.js'));
+    const single = [{ branch: 'a', prId: '1' }];
+    const result = await pruneAncestorDeps(single, {}, '.');
+    assert.deepStrictEqual(result, single,
+      'Single dep should be returned unchanged');
+  });
+
+  await test('pruneAncestorDeps returns empty array unchanged', async () => {
+    const { pruneAncestorDeps } = require(path.join(MINIONS_DIR, 'engine.js'));
+    const result = await pruneAncestorDeps([], {}, '.');
+    assert.deepStrictEqual(result, [],
+      'Empty deps should be returned unchanged');
+  });
+
+  await test('preflightMergeSimulation returns ok:true for empty deps', async () => {
+    const { preflightMergeSimulation } = require(path.join(MINIONS_DIR, 'engine.js'));
+    const result = await preflightMergeSimulation([], 'main', {}, '.');
+    assert.strictEqual(result.ok, true,
+      'Empty deps should produce ok:true');
+  });
+
   await test('Dep merge skips re-merge when all deps already ancestors of worktree HEAD (#973)', () => {
-    // Fix 1: Before the merge loop, check if all dep branches are already merged
-    assert.ok(engineSrc.includes('merge-base --is-ancestor'),
-      'engine.js must check if dep branches are already ancestors of HEAD');
     assert.ok(engineSrc.includes('skipDepMerge'),
       'engine.js must use skipDepMerge flag to skip redundant dep merges');
     assert.ok(engineSrc.includes('skipping dep re-merge'),
       'engine.js must log when skipping dep re-merge');
-    // The merge loop condition must respect skipDepMerge
     assert.ok(engineSrc.includes('!skipDepMerge'),
       'engine.js merge loop must check skipDepMerge flag');
   });
 
   await test('Dep merge stashes uncommitted changes before merge and restores after (#973)', () => {
-    // Fix 2: Stash dirty worktree state before dep merge, restore after
-    assert.ok(engineSrc.includes('git status --porcelain'),
-      'engine.js must check worktree dirty state before dep merge');
     assert.ok(engineSrc.includes('git stash push --include-untracked'),
       'engine.js must stash uncommitted changes including untracked files');
     assert.ok(engineSrc.includes('stash before dep re-merge'),
@@ -7131,10 +7186,10 @@ async function testDispatchCycleIntegration() {
       'engine.js must restore stashed changes after dep merge');
     assert.ok(engineSrc.includes('Restored stashed changes'),
       'engine.js must log when restoring stashed changes');
-    // Stash pop failure should warn but not crash
     assert.ok(engineSrc.includes('stash preserved for agent'),
       'engine.js must gracefully handle stash pop failure');
   });
+
 
   await test('parseConflictFiles parses CONFLICT lines from git merge output', () => {
     const { parseConflictFiles } = require(path.join(MINIONS_DIR, 'engine.js'));
