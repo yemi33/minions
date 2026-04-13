@@ -614,27 +614,6 @@ function updateWorkItemStatus(meta, status, reason) {
 
   log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
   syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
-
-  // (#984) Fix work items have a different ID than the original PRD feature —
-  // syncPrdItemStatus(fixWiId) finds nothing. Look up the PR's prdItems and sync those too.
-  if (status === WI_STATUS.DONE && meta.project?.name) {
-    try {
-      const prPath = projectPrPath(meta.project);
-      const prs = safeJson(prPath) || [];
-      for (const pr of prs) {
-        if (!Array.isArray(pr.prdItems) || pr.prdItems.length === 0) continue;
-        // Match PR to this work item via branch or prdItems containing itemId
-        const branch = meta.branch || meta.item?.featureBranch;
-        const branchMatch = branch && pr.branch && pr.branch === branch;
-        if (!branchMatch) continue;
-        for (const prdItemId of pr.prdItems) {
-          if (prdItemId !== itemId) {
-            syncPrdItemStatus(prdItemId, WI_STATUS.DONE);
-          }
-        }
-      }
-    } catch (err) { log('warn', `PRD sync via PR prdItems: ${err.message}`); }
-  }
 }
 
 const _VALID_PRD_STATUSES = new Set([...Object.values(WI_STATUS), 'missing']);

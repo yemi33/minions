@@ -1174,19 +1174,6 @@ async function testSyncPrdItemStatus() {
       'runPostCompletionHooks must call syncPrdItemStatus for PR-linked prdItems on fix completion');
   });
 
-  await test('updateWorkItemStatus syncs PRD via PR prdItems when fix WI completes (#984)', () => {
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function updateWorkItemStatus'), src.indexOf('const _VALID_PRD_STATUSES'));
-    // Must look up PR prdItems on done status
-    assert.ok(fn.includes('pr.prdItems'),
-      'updateWorkItemStatus must look up PR prdItems when work item completes');
-    // Must match by branch
-    assert.ok(fn.includes('pr.branch') && fn.includes('branchMatch'),
-      'updateWorkItemStatus must match PR by branch when syncing prdItems');
-    // Must call syncPrdItemStatus for each prdItem
-    assert.ok(fn.includes('syncPrdItemStatus(prdItemId, WI_STATUS.DONE)'),
-      'updateWorkItemStatus must call syncPrdItemStatus for each PR-linked prdItem');
-  });
 }
 
 // ─── Consolidation Tests ─────────────────────────────────────────────────────
