@@ -962,7 +962,7 @@ function findDependentActivePrs(mergedItemId, config) {
   for (const p of projects) {
     const prs = safeJson(projectPrPath(p)) || [];
     for (const pr of prs) {
-      if (!pr.branch || pr.status !== 'active') continue;
+      if (!pr.branch || pr.status !== PR_STATUS.ACTIVE) continue;
       const linked = (pr.prdItems || []).some(id => dependentWis.some(wi => wi.id === id));
       if (linked && !results.some(r => r.pr.id === pr.id)) {
         const wi = dependentWis.find(w => (pr.prdItems || []).includes(w.id));
@@ -1020,25 +1020,31 @@ async function rebaseBranchOntoMain(pr, project, config) {
 const PENDING_REBASES_PATH = path.join(ENGINE_DIR, 'pending-rebases.json');
 
 function queuePendingRebase(pr, project, mergedItemId) {
-  const pending = safeJson(PENDING_REBASES_PATH) || [];
-  if (pending.some(e => e.prId === pr.id)) return; // already queued
-  pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
-  safeWrite(PENDING_REBASES_PATH, pending);
+  mutateJsonFileLocked(PENDING_REBASES_PATH, (pending) => {
+    if (pending.some(e => e.prId === pr.id)) return; // already queued
+    pending.push({ prId: pr.id, branch: pr.branch, projectName: project.name, mergedItemId, queuedAt: ts(), attempts: 0 });
+  }, { defaultValue: [] });
 }
 
 async function processPendingRebases(config) {
-  const pending = safeJson(PENDING_REBASES_PATH) || [];
-  if (pending.length === 0) return;
+  // Atomically drain the queue under lock so concurrent queuePendingRebase calls
+  // during processing don't lose entries (they append to the now-empty file).
+  let snapshot = [];
+  mutateJsonFileLocked(PENDING_REBASES_PATH, (data) => {
+    snapshot = [...data];
+    return []; // drain file
+  }, { defaultValue: [] });
+  if (snapshot.length === 0) return;
 
   const remaining = [];
-  for (const entry of pending) {
+  for (const entry of snapshot) {
     if (isBranchActive(entry.branch)) { remaining.push(entry); continue; }
 
     const project = shared.getProjects(config).find(p => p.name === entry.projectName);
     if (!project) continue;
 
     const prs = safeJson(projectPrPath(project)) || [];
-    const pr = prs.find(p => p.id === entry.prId && p.status === 'active');
+    const pr = prs.find(p => p.id === entry.prId && p.status === PR_STATUS.ACTIVE);
     if (!pr) continue; // PR closed/merged since queuing
 
     const result = await rebaseBranchOntoMain(pr, project, config);
@@ -1052,7 +1058,12 @@ async function processPendingRebases(config) {
       }
     }
   }
-  safeWrite(PENDING_REBASES_PATH, remaining);
+  // Merge remaining items back under lock — entries queued during processing are preserved
+  if (remaining.length > 0) {
+    mutateJsonFileLocked(PENDING_REBASES_PATH, (data) => {
+      data.push(...remaining);
+    }, { defaultValue: [] });
+  }
 }
 
 // ─── Post-Merge / Post-Close Hooks ───────────────────────────────────────────
@@ -1882,8 +1893,14 @@ function classifyFailure(code, stdout = '', stderr = '') {
     return FAILURE_CLASS.MERGE_CONFLICT;
   }
 
-  // Context window / max turns exhausted
-  if (/context window|max.*turns.*reached|error_max_turns|terminal_reason.*max_turns|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
+  // Max turns exhausted (error_max_turns) — work in progress, retryable
+  // Must be checked BEFORE OUT_OF_CONTEXT to avoid misclassification as non-retryable
+  if (/error_max_turns|"subtype"\s*:\s*"error_max_turns"|terminal_reason.*max_turns|max.*turns.*reached/i.test(combined)) {
+    return FAILURE_CLASS.MAX_TURNS;
+  }
+
+  // Context window exhausted (token limit, context length — NOT max turns)
+  if (/context window|token limit|conversation.*too long|context.*length.*exceeded/i.test(combined)) {
     return FAILURE_CLASS.OUT_OF_CONTEXT;
   }
 

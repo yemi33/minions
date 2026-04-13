@@ -783,13 +783,21 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
-async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model }) {
+async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession }) {
   const sessionKey = filePath || title;
   const docSlice = document.slice(0, 20000);
 
+  // freshSession: true → discard any prior session for this key so the call starts clean.
+  // Used by one-shot generation flows (e.g. Create Plan from meeting) that must not
+  // bleed context from earlier conversations.
+  if (freshSession && sessionKey) {
+    docSessions.delete(sessionKey);
+    // Skip persistDocSessions() here — the post-call cleanup below handles persistence.
+  }
+
   // Skip re-sending full document on session resume if content unchanged
   const docHash = require('crypto').createHash('md5').update(docSlice).digest('hex').slice(0, 8);
-  const existing = resolveSession('doc', sessionKey);
+  const existing = freshSession ? null : resolveSession('doc', sessionKey);
   const docUnchanged = existing?.sessionId && existing._docHash === docHash;
 
   let docContext;
@@ -808,8 +816,14 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     skipStatePreamble: true,
     ...(model ? { model } : {}),
   });
-  // Store doc hash for next call's unchanged check
-  if (result.code === 0 && result.sessionId) {
+
+  if (freshSession && sessionKey) {
+    // One-shot call — discard the session ccCall just stored so it cannot
+    // bleed into future interactions under the same key.
+    docSessions.delete(sessionKey);
+    persistDocSessions();
+  } else if (result.code === 0 && result.sessionId) {
+    // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
     if (session) session._docHash = docHash;
   }
@@ -2366,77 +2380,101 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
       safeWrite(planPath, plan);
 
       // Propagate pause to materialized work items across all projects:
-      // kill any active agent process and reset non-completed items back to pending.
-      let reset = 0;
+      // kill any active agent process and reset non-completed items to paused.
+      // Pattern: collect-then-release-then-act to avoid nested locks and long lock holds.
       const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
       for (const proj of PROJECTS) {
         wiPaths.push(shared.projectWorkItemsPath(proj));
       }
       const dispatchPath = path.join(MINIONS_DIR, 'engine', 'dispatch.json');
-      const killedAgents = new Set();
-      const resetItemIds = new Set();
 
-      // Read dispatch inside the lock so PID list is consistent with state being modified
-      mutateJsonFileLocked(dispatchPath, (dispatch) => {
-        for (const wiPath of wiPaths) {
+      // Step 1: Read work items (read-only, no lock) to find plan items that are dispatched.
+      const dispatchedItemIds = new Set();
+      for (const wiPath of wiPaths) {
+        try {
+          const items = safeJsonArr(wiPath);
+          for (const w of items) {
+            if (w.sourcePlan !== body.file) continue;
+            if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
+            if (w.status === WI_STATUS.DISPATCHED && w.id) dispatchedItemIds.add(w.id);
+          }
+        } catch { /* file may not exist */ }
+      }
+
+      // Step 2: Read dispatch.json (read-only, no lock) to collect kill targets.
+      const killTargets = []; // { agent, pid, statusPath }
+      const dispatch = safeJsonObj(dispatchPath);
+      const activeEntries = Array.isArray(dispatch.active) ? dispatch.active : [];
+      for (const d of activeEntries) {
+        const itemId = d.meta?.item?.id;
+        const matchesById = itemId && dispatchedItemIds.has(itemId);
+        const matchesByKey = d.meta?.dispatchKey && [...dispatchedItemIds].some(id => d.meta.dispatchKey.includes(id));
+        if (matchesById || matchesByKey) {
+          const statusPath = path.join(MINIONS_DIR, 'agents', d.agent, 'status.json');
           try {
-            mutateWorkItems(wiPath, items => {
-              let changed = false;
-              for (const w of items) {
-                if (w.sourcePlan !== body.file) continue;
-                // Keep completed items as-is, reset everything else to pending.
-                if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
-
-                if (w.status === WI_STATUS.DISPATCHED) {
-                  // Kill the agent working on this item, if any.
-                  const activeEntry = (dispatch.active || []).find(d => d.meta?.item?.id === w.id || d.meta?.dispatchKey?.includes(w.id));
-                  if (activeEntry) {
-                    const statusPath = path.join(MINIONS_DIR, 'agents', activeEntry.agent, 'status.json');
-                    try {
-                      const agentStatus = safeJsonObj(statusPath);
-                      if (agentStatus.pid) {
-                        try {
-                          const safePid = shared.validatePid(agentStatus.pid);
-                          if (process.platform === 'win32') {
-                            require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
-                          } else {
-                            process.kill(safePid, 'SIGTERM');
-                          }
-                        } catch { /* process may be dead or invalid PID */ }
-                      }
-                      agentStatus.status = 'idle';
-                      delete agentStatus.currentTask;
-                      delete agentStatus.dispatched;
-                      safeWrite(statusPath, agentStatus);
-                    } catch (e) { console.error('agent reset:', e.message); }
-                    killedAgents.add(activeEntry.agent);
-                  }
-                }
-
-                if (w.status !== WI_STATUS.PAUSED) reset++;
-                w.status = WI_STATUS.PAUSED;
-                w._pausedBy = 'prd-pause';
-                delete w._resumedAt;
-                delete w.dispatched_at;
-                delete w.dispatched_to;
-                delete w.failReason;
-                delete w.failedAt;
-                changed = true;
-                if (w.id) resetItemIds.add(w.id);
-              }
-            });
-          } catch (e) { console.error('reset work items:', e.message); }
+            const agentStatus = safeJsonObj(statusPath);
+            killTargets.push({ agent: d.agent, pid: agentStatus.pid || null, statusPath });
+          } catch { killTargets.push({ agent: d.agent, pid: null, statusPath }); }
         }
+      }
 
-        // Remove dispatch active entries for reset items or killed agents.
-        dispatch.active = Array.isArray(dispatch.active) ? dispatch.active : [];
-        dispatch.active = dispatch.active.filter(d => {
+      // Step 3: Kill agent processes OUTSIDE any lock (expensive, may take seconds).
+      const killedAgents = new Set();
+      for (const target of killTargets) {
+        if (target.pid) {
+          try {
+            const safePid = shared.validatePid(target.pid);
+            if (process.platform === 'win32') {
+              require('child_process').execFileSync('taskkill', ['/PID', String(safePid), '/F', '/T'], { stdio: 'pipe', timeout: 5000, windowsHide: true });
+            } else {
+              process.kill(safePid, 'SIGTERM');
+            }
+          } catch { /* process may be dead or invalid PID */ }
+        }
+        // Reset agent status file (no lock needed — agent-specific file).
+        try {
+          const agentStatus = safeJsonObj(target.statusPath);
+          agentStatus.status = 'idle';
+          delete agentStatus.currentTask;
+          delete agentStatus.dispatched;
+          safeWrite(target.statusPath, agentStatus);
+        } catch (e) { console.error('agent reset:', e.message); }
+        killedAgents.add(target.agent);
+      }
+
+      // Step 4: Mutate work-items.json per path — pause items (each lock held briefly, no nesting).
+      let reset = 0;
+      const resetItemIds = new Set();
+      for (const wiPath of wiPaths) {
+        try {
+          mutateWorkItems(wiPath, items => {
+            for (const w of items) {
+              if (w.sourcePlan !== body.file) continue;
+              if (w.completedAt || DONE_STATUSES.has(w.status)) continue;
+              if (w.status !== WI_STATUS.PAUSED) reset++;
+              w.status = WI_STATUS.PAUSED;
+              w._pausedBy = 'prd-pause';
+              delete w._resumedAt;
+              delete w.dispatched_at;
+              delete w.dispatched_to;
+              delete w.failReason;
+              delete w.failedAt;
+              if (w.id) resetItemIds.add(w.id);
+            }
+          });
+        } catch (e) { console.error('reset work items:', e.message); }
+      }
+
+      // Step 5: Re-acquire dispatch lock to clean up active entries (brief lock, no nesting).
+      mutateJsonFileLocked(dispatchPath, (dispatchData) => {
+        dispatchData.active = Array.isArray(dispatchData.active) ? dispatchData.active : [];
+        dispatchData.active = dispatchData.active.filter(d => {
           const itemId = d.meta?.item?.id;
           if (itemId && resetItemIds.has(itemId)) return false;
           if (killedAgents.has(d.agent)) return false;
           return true;
         });
-        return dispatch;
+        return dispatchData;
       }, { defaultValue: { pending: [], active: [], completed: [] } });
 
       invalidateStatusCache();
@@ -2819,6 +2857,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         message: body.message, document: currentContent, title: body.title,
         filePath: body.filePath, selection: body.selection, canEdit, isJson,
         model: body.model || undefined,
+        freshSession: !!body.freshSession,
       });
 
       if (!content) return jsonReply(res, 200, { ok: true, answer, edited: false, actions });
@@ -4080,6 +4119,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       const { title, content, project: projectName, meetingId } = body;
       if (!title || !content) return jsonReply(res, 400, { error: 'title and content required' });
+
+      // Reject meta-responses that aren't actual plan content — e.g. doc-chat
+      // summaries of prior conversations that reference existing plan files.
+      const trimmed = content.trim();
+      if (!/^#/.test(trimmed) && !/^\*\*/.test(trimmed) && !/^[-*] /.test(trimmed)) {
+        return jsonReply(res, 400, { error: 'Plan content must start with a markdown heading (#), bold text (**), or a list item' });
+      }
 
       const plansDir = path.join(MINIONS_DIR, 'plans');
       if (!fs.existsSync(plansDir)) fs.mkdirSync(plansDir, { recursive: true });

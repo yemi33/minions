@@ -368,6 +368,7 @@ async function ccSend() {
   input.value = '';
 
   var tab = _ccActiveTab();
+  var originTabId = _ccActiveTabId;
   if (!tab) return;
   if (!tab._queue) tab._queue = [];
 
@@ -377,16 +378,16 @@ async function ccSend() {
     _renderQueueIndicator();
     return;
   }
-  var wasAborted = await _ccDoSend(message);
+  var wasAborted = await _ccDoSend(message, false, originTabId);
 
-  // Flush queued messages one at a time, pausing after abort to let server release ccInFlight
+  // Flush queued messages to the ORIGINAL tab, even if user switched tabs
   while (tab._queue && tab._queue.length > 0) {
     if (wasAborted) {
       await new Promise(function(r) { setTimeout(r, 1500); });
     }
     var next = tab._queue.shift();
     _renderQueueIndicator();
-    wasAborted = await _ccDoSend(next);
+    wasAborted = await _ccDoSend(next, false, originTabId);
   }
 }
 
@@ -407,29 +408,30 @@ function _renderQueueIndicator() {
   if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
 }
 
-async function _ccDoSend(message, skipUserMsg) {
+async function _ccDoSend(message, skipUserMsg, forceTabId) {
   // Client-side /pin and /unpin — no LLM round-trip needed
   var pinMatch = message.match(/^\/(pin|unpin)\s+(.+)/i);
   if (pinMatch) {
-    if (!skipUserMsg) ccAddMessage('user', escHtml(message));
+    if (!skipUserMsg) ccAddMessage('user', escHtml(message), false, forceTabId);
     var pinAction = pinMatch[1].toLowerCase();
     var pinQuery = pinMatch[2].toLowerCase().trim();
     var found = _ccFindPinTarget(pinQuery);
     if (found) {
       var wasPinned = isPinned(found.key);
-      if (pinAction === 'pin' && !wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Pinned <strong>' + escHtml(found.label) + '</strong> to top'); }
-      else if (pinAction === 'unpin' && wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Unpinned <strong>' + escHtml(found.label) + '</strong>'); }
-      else { ccAddMessage('assistant', '<strong>' + escHtml(found.label) + '</strong> is already ' + (wasPinned ? 'pinned' : 'unpinned')); }
+      if (pinAction === 'pin' && !wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Pinned <strong>' + escHtml(found.label) + '</strong> to top', false, forceTabId); }
+      else if (pinAction === 'unpin' && wasPinned) { togglePin(found.key); ccAddMessage('assistant', 'Unpinned <strong>' + escHtml(found.label) + '</strong>', false, forceTabId); }
+      else { ccAddMessage('assistant', '<strong>' + escHtml(found.label) + '</strong> is already ' + (wasPinned ? 'pinned' : 'unpinned'), false, forceTabId); }
       showToast('cmd-toast', pinAction === 'pin' ? 'Pinned to top' : 'Unpinned', true);
       renderInbox(inboxData); renderKnowledgeBase();
     } else {
-      ccAddMessage('assistant', 'No inbox or KB item matching "' + escHtml(pinQuery) + '"');
+      ccAddMessage('assistant', 'No inbox or KB item matching "' + escHtml(pinQuery) + '"', false, forceTabId);
     }
     return;
   }
 
-  var activeTab = _ccActiveTab();
-  var activeTabId = _ccActiveTabId;
+  // Use forced tab ID (from queue flush) or fall back to current active tab
+  var activeTabId = forceTabId || _ccActiveTabId;
+  var activeTab = _ccTabs.find(function(t) { return t.id === activeTabId; }) || _ccActiveTab();
   if (!activeTab) return;
   activeTab._sending = true;
   activeTab._sendStartedAt = Date.now();

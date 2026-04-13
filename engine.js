@@ -138,7 +138,7 @@ const { renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS,
 const { runPostCompletionHooks, updateWorkItemStatus, syncPrdItemStatus, reconcilePrdStatuses, handlePostMerge, checkPlanCompletion,
   syncPrsFromOutput, updatePrAfterReview, updatePrAfterFix, checkForLearnings, extractSkillsFromOutput,
   updateAgentHistory, updateMetrics, createReviewFeedbackForAuthor, parseAgentOutput, syncPrdFromPrs,
-  isItemCompleted, classifyFailure, processPendingRebases } = require('./engine/lifecycle');
+  isItemCompleted, classifyFailure, processPendingRebases, resolveWorkItemPath } = require('./engine/lifecycle');
 
 // ─── Agent Spawner ──────────────────────────────────────────────────────────
 
@@ -602,8 +602,24 @@ async function spawnAgent(dispatchItem, config) {
               prunedDeps = fetched;
             }
           }
-          // Pre-flight merge simulation: detect conflicts without touching the worktree (#958)
+          // Skip dep re-merge if worktree HEAD already contains all pruned dep commits (#973)
+          let skipDepMerge = false;
           if (!depMergeFailed && prunedDeps.length > 0) {
+            const ancestorChecks = await Promise.all(
+              prunedDeps.map(async ({ branch: depBranch }) => {
+                try {
+                  await execAsync(`git merge-base --is-ancestor "origin/${depBranch}" HEAD`, { ..._gitOpts, cwd: worktreePath });
+                  return true;
+                } catch (_) { return false; }
+              })
+            );
+            if (ancestorChecks.every(Boolean)) {
+              log('info', `All ${prunedDeps.length} dep branch(es) already merged into ${branchName} — skipping dep re-merge`);
+              skipDepMerge = true;
+            }
+          }
+          // Pre-flight merge simulation: detect conflicts without touching the worktree (#958)
+          if (!depMergeFailed && !skipDepMerge && prunedDeps.length > 0) {
             const pfMainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
             try {
               const sim = await preflightMergeSimulation(prunedDeps, pfMainRef, _gitOpts, rootDir);
@@ -619,7 +635,21 @@ async function spawnAgent(dispatchItem, config) {
               log('warn', `Pre-flight simulation failed, proceeding with real merge: ${e.message}`);
             }
           }
-          if (!depMergeFailed) {
+          // Stash uncommitted changes before dep merge if worktree is dirty (#973)
+          let stashed = false;
+          if (!depMergeFailed && !skipDepMerge && prunedDeps.length > 0) {
+            try {
+              const statusOut = (await execAsync('git status --porcelain', { ..._gitOpts, cwd: worktreePath })).stdout.toString().trim();
+              if (statusOut) {
+                await execAsync('git stash push --include-untracked -m "engine: stash before dep re-merge"', { ..._gitOpts, cwd: worktreePath });
+                stashed = true;
+                log('info', `Stashed uncommitted changes in ${branchName} before dep merge`);
+              }
+            } catch (stashErr) {
+              log('warn', `Failed to stash changes in ${branchName} before dep merge: ${stashErr.message}`);
+            }
+          }
+          if (!depMergeFailed && !skipDepMerge) {
             for (const { branch: depBranch, prId } of prunedDeps) {
               try {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
@@ -678,6 +708,15 @@ async function spawnAgent(dispatchItem, config) {
                 }
                 break;
               }
+            }
+          }
+          // Restore stashed changes after dep merge (#973)
+          if (stashed) {
+            try {
+              await execAsync('git stash pop', { ..._gitOpts, cwd: worktreePath });
+              log('info', `Restored stashed changes in ${branchName} after dep merge`);
+            } catch (popErr) {
+              log('warn', `git stash pop failed in ${branchName}: ${popErr.message} — stash preserved for agent`);
             }
           }
           if (depMergeFailed) {
@@ -742,6 +781,28 @@ async function spawnAgent(dispatchItem, config) {
   }
 
   updateAgentStatus(id, AGENT_STATUS.READY, 'Worktree ready, preparing to spawn process');
+
+  // Inject dirty file list when worktree has uncommitted changes (e.g., max_turns retry)
+  // This signals to the respawned agent that prior work exists in the worktree (#960)
+  if (worktreePath && fs.existsSync(worktreePath)) {
+    try {
+      const dirtyResult = await execAsync('git status --porcelain', { ..._gitOpts, cwd: worktreePath, timeout: 10000 });
+      const dirtyOutput = (dirtyResult.stdout || '').trim();
+      if (dirtyOutput) {
+        const dirtyFiles = dirtyOutput.split('\n').map(l => l.trim()).filter(Boolean);
+        const dirtySection = [
+          '\n## Uncommitted Work in Worktree\n',
+          'The worktree has uncommitted changes from a previous agent run. Review these files and continue from where the previous agent left off.\n',
+          '```',
+          ...dirtyFiles,
+          '```\n',
+        ].join('\n');
+        // Append dirty file list to the already-written prompt file
+        try { fs.appendFileSync(promptPath, dirtySection); } catch (e) { log('warn', `dirty files inject: ${e.message}`); }
+        log('info', `Injected ${dirtyFiles.length} dirty files into prompt for ${id}`);
+      }
+    } catch (e) { log('warn', `git status --porcelain for dirty files: ${e.message}`); }
+  }
 
   // Safety check: warn if a write-capable task is running in the main repo without a worktree
   if (cwd === rootDir && ['implement', 'implement:large', 'fix', 'test', 'verify', 'plan-to-prd'].includes(type)) {
@@ -964,7 +1025,7 @@ async function spawnAgent(dispatchItem, config) {
       const childEnv = shared.cleanChildEnv();
       let resumeProc;
       try {
-        resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs], {
+        resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {
           cwd,
           stdio: ['pipe', 'pipe', 'pipe'],
           env: childEnv,
@@ -2601,6 +2662,7 @@ function discoverCentralWorkItems(config) {
 
         const ap = assignedProject || (projects.length > 0 ? projects[0] : null);
         if (!ap) { log('warn', `Fan-out: skipping ${fanKey} — no projects configured`); continue; }
+        const fanBranch = `fan/${item.id}/${agent.id}`;
         const vars = {
           ...buildBaseVars(agent.id, config, ap),
           item_id: item.id,
@@ -2611,6 +2673,7 @@ function discoverCentralWorkItems(config) {
           additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
           scope_section: buildProjectContext(projects, assignedProject, true, agent.name, agent.role),
           project_path: ap?.localPath || '',
+          branch_name: fanBranch,
         };
 
         // Build common vars: references, acceptance criteria, notes (ASK only), task context
@@ -2635,7 +2698,7 @@ function discoverCentralWorkItems(config) {
           prompt,
           meta: {
             dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
-            branch: `fan/${item.id}/${agent.id}`,
+            branch: fanBranch,
             deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || DEFAULTS.agentTimeout)
           }
         });
@@ -2680,6 +2743,7 @@ function discoverCentralWorkItems(config) {
         additional_context: item.prompt ? `## Additional Context\n\n${item.prompt}` : '',
         scope_section: buildProjectContext(projects, null, false, agentName, agentRole),
         project_path: firstProject?.localPath || '',
+        branch_name: centralBranch,
       };
       const centralWtPath = firstProject?.localPath
         ? path.resolve(firstProject.localPath, config.engine?.worktreeRoot || '../worktrees', centralBranch)
@@ -3060,6 +3124,10 @@ async function tickInner() {
         for (const project of projects) {
           try {
             const wiPath = projectWorkItemsPath(project);
+            // Collect keys to clear AFTER work-items lock is released (avoid nested locks)
+            const dispatchKeysToClear = [];
+            const cooldownKeysToClear = [];
+
             mutateWorkItems(wiPath, items => {
               let changed = false;
               const failedIds = new Set(items.filter(w => w.status === WI_STATUS.FAILED).map(w => w.id));
@@ -3084,23 +3152,10 @@ async function tickInner() {
                   delete item.dispatched_to;
                   changed = true;
 
-                  // Clear completed dispatch entries so isAlreadyDispatched doesn't block re-dispatch
-                  try {
-                      const key = `work-${project.name}-${item.id}`;
-                      mutateDispatch((dp) => {
-                        dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                        return dp;
-                      });
-                    } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
-
-                  // Clear cooldown so item isn't blocked by exponential backoff
-                  try {
-                    const key = `work-${project.name}-${item.id}`;
-                    if (dispatchCooldowns.has(key)) {
-                      dispatchCooldowns.delete(key);
-                      saveCooldowns();
-                    }
-                  } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
+                  // Collect dispatch + cooldown keys for clearing outside lock
+                  const key = `work-${project.name}-${item.id}`;
+                  dispatchKeysToClear.push(key);
+                  cooldownKeysToClear.push(key);
                 }
               }
 
@@ -3118,19 +3173,33 @@ async function tickInner() {
                       delete dep.failedAt;
                       delete dep.dispatched_at;
                       delete dep.dispatched_to;
-                      // Clear dispatch entries for this dependent too
-                      try {
-                        const key = `work-${project.name}-${dep.id}`;
-                        mutateDispatch((dp) => {
-                          dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
-                          return dp;
-                        });
-                      } catch (e) { log('warn', 'stall recovery clear dependent dispatch: ' + e.message); }
+                      // Collect dispatch key for clearing outside lock
+                      dispatchKeysToClear.push(`work-${project.name}-${dep.id}`);
                     }
                   }
                 }
               }
             });
+
+            // Clear dispatch entries AFTER work-items lock is released (no nested locks)
+            for (const key of dispatchKeysToClear) {
+              try {
+                mutateDispatch((dp) => {
+                  dp.completed = dp.completed.filter(d => d.meta?.dispatchKey !== key);
+                  return dp;
+                });
+              } catch (e) { log('warn', 'stall recovery clear dispatch: ' + e.message); }
+            }
+
+            // Clear cooldowns AFTER work-items lock is released
+            for (const key of cooldownKeysToClear) {
+              try {
+                if (dispatchCooldowns.has(key)) {
+                  dispatchCooldowns.delete(key);
+                  saveCooldowns();
+                }
+              } catch (e) { log('warn', 'stall recovery clear cooldown: ' + e.message); }
+            }
           } catch (e) { log('warn', 'stall recovery process project: ' + e.message); }
         }
       }

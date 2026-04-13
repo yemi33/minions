@@ -8,7 +8,7 @@ const path = require('path');
 
 const MINIONS_DIR = process.env.MINIONS_TEST_DIR || path.resolve(__dirname, '..');
 const PR_LINKS_PATH = path.join(MINIONS_DIR, 'engine', 'pr-links.json');
-const LOG_PATH = path.join(__dirname, 'log.json');
+const LOG_PATH = path.join(MINIONS_DIR, 'engine', 'log.json');
 
 // ── Timestamps & Logging ────────────────────────────────────────────────────
 // Extracted from engine.js so engine/* modules can import directly without
@@ -672,12 +672,13 @@ const FAILURE_CLASS = {
   EMPTY_OUTPUT: 'empty-output',           // Agent produced no meaningful output
   SPAWN_ERROR: 'spawn-error',             // Process failed to start or crashed immediately
   NETWORK_ERROR: 'network-error',         // API rate limit, DNS, connectivity
-  OUT_OF_CONTEXT: 'out-of-context',       // Context window exhausted, max turns reached
+  OUT_OF_CONTEXT: 'out-of-context',       // Context window exhausted (token limit, context length)
+  MAX_TURNS: 'max-turns',                 // Claude CLI error_max_turns — work in progress, retryable
   UNKNOWN: 'unknown',                     // Unclassified failure
 };
 const ESCALATION_POLICY = {
   NO_RETRY: 'no-retry',         // CONFIG_ERROR, PERMISSION_BLOCKED — never retry
-  RETRY_SAME: 'retry-same',     // MERGE_CONFLICT, BUILD_FAILURE — retry same agent
+  RETRY_SAME: 'retry-same',     // MERGE_CONFLICT, BUILD_FAILURE, MAX_TURNS — retry same agent
   RETRY_FRESH: 'retry-fresh',   // TIMEOUT, SPAWN_ERROR — retry with fresh session
   HUMAN_REVIEW: 'human-review', // EMPTY_OUTPUT, OUT_OF_CONTEXT — flag for human
   AUTO: 'auto',                 // UNKNOWN, NETWORK_ERROR — use default retry logic

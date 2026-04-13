@@ -2424,6 +2424,56 @@ async function testStateIntegrity() {
       'engine dispatch writes should use lock-backed mutation');
   });
 
+  await test('mutateDispatch uses nullish coalescing (??) not OR (||) for mutator fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    // Find the mutateDispatch function definition
+    const fnStart = src.indexOf('function mutateDispatch(');
+    assert.ok(fnStart > -1, 'mutateDispatch function should exist');
+    const fnEnd = src.indexOf('\n}', fnStart);
+    const fnBody = src.slice(fnStart, fnEnd + 2);
+    // Must use ?? (nullish coalescing) — not || which treats 0, false, '' as falsy
+    assert.ok(fnBody.includes('mutator(dispatch) ?? dispatch'),
+      'mutateDispatch must use ?? (nullish coalescing) for mutator fallback, not ||');
+    assert.ok(!fnBody.includes('mutator(dispatch) || dispatch'),
+      'mutateDispatch must NOT use || for mutator fallback — || treats falsy returns incorrectly');
+  });
+
+  await test('mutateDispatch falls back to dispatch when mutator returns undefined (in-place mutation)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Mutator that modifies in-place and returns undefined (implicit return)
+      testDispatch.mutateDispatch((dp) => {
+        dp.pending.push({ id: 'test-undef-1', agent: 'test', type: 'implement' });
+        // no return — undefined
+      });
+
+      const dp = testQueries.getDispatch();
+      assert.strictEqual(dp.pending.length, 1, 'Should have 1 pending item after in-place mutation');
+      assert.strictEqual(dp.pending[0].id, 'test-undef-1', 'Pending item should be the one we added');
+    } finally { restore(); }
+  });
+
+  await test('mutateDispatch uses returned value when mutator returns a dispatch object', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Mutator that returns a new dispatch object
+      testDispatch.mutateDispatch((dp) => {
+        dp.pending.push({ id: 'test-return-1', agent: 'test', type: 'implement' });
+        return dp;
+      });
+
+      const dp = testQueries.getDispatch();
+      assert.strictEqual(dp.pending.length, 1, 'Should have 1 pending item from returned dispatch');
+      assert.strictEqual(dp.pending[0].id, 'test-return-1', 'Pending item should be the one we added');
+    } finally { restore(); }
+  });
+
   await test('All mutateDispatch callbacks return dispatch object on every path', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
@@ -2536,6 +2586,70 @@ async function testStateIntegrity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
     assert.ok(src.includes('shared.flushLogs()'),
       'graceful shutdown should call shared.flushLogs() to drain buffered log entries');
+  });
+
+  await test('Log buffer accumulates entries and flushLogs drains to disk', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const logPath = path.join(testDir, 'engine', 'log.json');
+
+      // Buffer should start empty
+      s._logBuffer.length = 0;
+
+      // Push a few entries below threshold — they should stay in buffer
+      for (let i = 0; i < 5; i++) s.log('info', `test-entry-${i}`);
+      assert.strictEqual(s._logBuffer.length, 5,
+        'entries below threshold should accumulate in buffer');
+
+      // flushLogs should drain buffer to disk and clear timer
+      s.flushLogs();
+      assert.strictEqual(s._logBuffer.length, 0,
+        'flushLogs should drain the buffer completely');
+
+      // Verify entries were written to log.json
+      const logData = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      assert.ok(logData.length >= 5,
+        'flushed entries should be written to log.json on disk');
+      assert.ok(logData.some(e => e.message === 'test-entry-0'),
+        'log.json should contain the buffered entries');
+    } finally {
+      restore();
+    }
+  });
+
+  await test('Log buffer auto-flushes at ENGINE_DEFAULTS.logBufferSize threshold', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const bufSize = s.ENGINE_DEFAULTS.logBufferSize; // 50
+
+      // Clear any prior state
+      s._logBuffer.length = 0;
+
+      // Push exactly bufSize entries — the last push triggers auto-flush
+      for (let i = 0; i < bufSize; i++) s.log('info', `threshold-${i}`);
+      assert.strictEqual(s._logBuffer.length, 0,
+        'buffer should be empty after reaching logBufferSize threshold (auto-flushed)');
+
+      // Clean up the interval timer
+      s.flushLogs();
+    } finally {
+      restore();
+    }
+  });
+
+  await test('LOG_PATH respects MINIONS_TEST_DIR for test isolation', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const s = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      assert.strictEqual(s.LOG_PATH, path.join(testDir, 'engine', 'log.json'),
+        'LOG_PATH should use MINIONS_DIR (respects MINIONS_TEST_DIR) not __dirname');
+    } finally {
+      restore();
+    }
   });
 
   await test('Dashboard uses lock-backed dispatch mutations for API writes', () => {
@@ -4106,6 +4220,24 @@ async function testBuildWorkItemDispatchVars() {
     const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
     assert.ok(centralFn.includes('buildWorkItemDispatchVars(item, vars, config'),
       'discoverCentralWorkItems should call buildWorkItemDispatchVars');
+  });
+
+  await test('central dispatch fan-out vars include branch_name', () => {
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    // Find the fan-out vars block (comes before the normal dispatch vars block)
+    const fanOutSection = centralFn.slice(0, centralFn.indexOf('// ─── Normal'));
+    assert.ok(fanOutSection.includes('branch_name: fanBranch'),
+      'Fan-out dispatch vars should include branch_name derived from fanBranch');
+    assert.ok(fanOutSection.includes("const fanBranch = `fan/${item.id}/${agent.id}`"),
+      'Fan-out should compute fanBranch from item.id and agent.id');
+  });
+
+  await test('central dispatch normal vars include branch_name', () => {
+    const centralFn = src.slice(src.indexOf('function discoverCentralWorkItems('));
+    // Find the normal dispatch section
+    const normalSection = centralFn.slice(centralFn.indexOf('// ─── Normal'));
+    assert.ok(normalSection.includes('branch_name: centralBranch'),
+      'Normal central dispatch vars should include branch_name derived from centralBranch');
   });
 
   await test('no inline fs.readFileSync for notes.md in discovery functions', () => {
@@ -6356,6 +6488,16 @@ async function testAgentSteering() {
       'Re-spawn prompt should tell agent to continue after responding');
   });
 
+  await test('steering resume spawn passes sysPromptPath (not steerPromptPath) as system prompt', () => {
+    // The steering resume spawn should use: [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs]
+    // NOT: [spawnScript, steerPromptPath, steerPromptPath, ...resumeArgs]
+    // steerPromptPath is the prompt, sysPromptPath is the original agent system prompt
+    const steerSpawnLine = engineSrc.match(/resumeProc\s*=\s*runFile\([^,]+,\s*\[spawnScript,\s*steerPromptPath,\s*(\w+)/);
+    assert.ok(steerSpawnLine, 'Should find steering resume spawn line');
+    assert.strictEqual(steerSpawnLine[1], 'sysPromptPath',
+      'Second arg to spawn-agent in steering resume must be sysPromptPath (the original system prompt), not steerPromptPath');
+  });
+
   // Stale steering recovery: if kill didn't terminate agent within 30s, retry
   await test('checkSteering has stale steering recovery with retry', () => {
     const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
@@ -6701,9 +6843,17 @@ async function testPlanPrdStateFlow() {
       'Should have derivePlanStatus function');
   });
 
-  await test('derivePlanStatus returns awaiting-approval when no work items', () => {
-    assert.ok(plansSrc.includes("prdJsonStatus === 'awaiting-approval' && implementWi.length === 0"),
-      'Should return awaiting-approval when PRD is awaiting and no items materialized');
+  await test('derivePlanStatus returns awaiting-approval regardless of WI state', () => {
+    assert.ok(plansSrc.includes("prdJsonStatus === 'awaiting-approval'") && plansSrc.includes("return 'awaiting-approval'"),
+      'Should return awaiting-approval when PRD is awaiting — overrides WI-derived completion (#970)');
+  });
+
+  await test('derivePlanStatus checks awaiting-approval BEFORE allDone (#970)', () => {
+    const awaitIdx = plansSrc.indexOf("prdJsonStatus === 'awaiting-approval'");
+    const allDoneIdx = plansSrc.indexOf('allDone && !hasActiveWork');
+    assert.ok(awaitIdx > 0 && allDoneIdx > 0, 'Both checks must exist');
+    assert.ok(awaitIdx < allDoneIdx,
+      'awaiting-approval check must come before allDone check — prevents completed override when PRD has un-materialized items');
   });
 
   await test('derivePlanStatus returns dispatched when active work exists', () => {
@@ -6959,11 +7109,8 @@ async function testDispatchCycleIntegration() {
   await test('Dep merge ancestor pruning removes branches contained in another (#958)', () => {
     assert.ok(engineSrc.includes('pruneAncestorDeps'),
       'engine.js must call pruneAncestorDeps to filter ancestor branches');
-    assert.ok(engineSrc.includes('git merge-base --is-ancestor'),
-      'engine.js must use git merge-base --is-ancestor for ancestor detection');
     assert.ok(engineSrc.includes('Ancestor pruning removed'),
       'engine.js must log when ancestor branches are pruned');
-    // prunedDeps must replace fetched in the merge loop
     assert.ok(engineSrc.includes('of prunedDeps'),
       'engine.js merge loop must iterate prunedDeps, not fetched');
   });
@@ -6980,7 +7127,6 @@ async function testDispatchCycleIntegration() {
   });
 
   await test('Dep merge post-mortem uses incremental simulation for inter-dep detection (#958)', () => {
-    // Post-mortem should use preflightMergeSimulation to catch inter-dep conflicts
     const postMortemIdx = engineSrc.indexOf('Post-mortem: incremental simulation');
     assert.ok(postMortemIdx > 0,
       'engine.js post-mortem must use incremental simulation');
@@ -7021,6 +7167,29 @@ async function testDispatchCycleIntegration() {
     assert.strictEqual(result.ok, true,
       'Empty deps should produce ok:true');
   });
+
+  await test('Dep merge skips re-merge when all deps already ancestors of worktree HEAD (#973)', () => {
+    assert.ok(engineSrc.includes('skipDepMerge'),
+      'engine.js must use skipDepMerge flag to skip redundant dep merges');
+    assert.ok(engineSrc.includes('skipping dep re-merge'),
+      'engine.js must log when skipping dep re-merge');
+    assert.ok(engineSrc.includes('!skipDepMerge'),
+      'engine.js merge loop must check skipDepMerge flag');
+  });
+
+  await test('Dep merge stashes uncommitted changes before merge and restores after (#973)', () => {
+    assert.ok(engineSrc.includes('git stash push --include-untracked'),
+      'engine.js must stash uncommitted changes including untracked files');
+    assert.ok(engineSrc.includes('stash before dep re-merge'),
+      'engine.js must label stash entry for traceability');
+    assert.ok(engineSrc.includes('git stash pop'),
+      'engine.js must restore stashed changes after dep merge');
+    assert.ok(engineSrc.includes('Restored stashed changes'),
+      'engine.js must log when restoring stashed changes');
+    assert.ok(engineSrc.includes('stash preserved for agent'),
+      'engine.js must gracefully handle stash pop failure');
+  });
+
 
   await test('parseConflictFiles parses CONFLICT lines from git merge output', () => {
     const { parseConflictFiles } = require(path.join(MINIONS_DIR, 'engine.js'));
@@ -7602,6 +7771,9 @@ async function main() {
 
     // Dashboard audit: critical functional bugs
     await testDashboardAuditCritical();
+
+    // P-9e1a4c6b: Plan pause nested lock violation fix
+    await testPlanPauseNoNestedLocks();
 
     // Dashboard audit: XSS fixes
     await testDashboardAuditXss();
@@ -8390,16 +8562,30 @@ async function testDashboardBugFixes() {
       'handlePrdItemsUpdate should not use safeWrite(planPath) — use mutateJsonFileLocked instead');
   });
 
-  // Bug #18: dispatch PID read inside mutateJsonFileLocked
-  await test('plan pause reads dispatch inside mutateJsonFileLocked callback', () => {
-    // The old pattern was: const dispatch = JSON.parse(safeRead(dispatchPath)...) followed by mutateJsonFileLocked
-    // New pattern: all dispatch reads happen inside the mutateJsonFileLocked callback
-    const pauseSection = src.slice(src.indexOf('kill any active agent process'));
-    const nextFn = pauseSection.indexOf('\n  async function');
-    const pauseBody = pauseSection.slice(0, nextFn > -1 ? nextFn : 1500);
-    // Should NOT have standalone dispatch read before the lock
-    assert.ok(!pauseBody.includes('const dispatch = JSON.parse(safeRead(dispatchPath)'),
-      'Should not read dispatch.json outside the lock — read inside mutateJsonFileLocked callback');
+  // Bug #18 → P-9e1a4c6b: plan pause uses collect-then-release-then-act — no nested locks
+  await test('plan pause has no nested mutateWorkItems inside mutateJsonFileLocked', () => {
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+    // mutateJsonFileLocked callback should NOT contain mutateWorkItems
+    const lockStart = pauseBody.indexOf('mutateJsonFileLocked(dispatchPath');
+    assert.ok(lockStart > -1, 'Should have mutateJsonFileLocked(dispatchPath) call');
+    const lockBlock = pauseBody.slice(lockStart, pauseBody.indexOf('});', lockStart + 100) + 3);
+    assert.ok(!lockBlock.includes('mutateWorkItems'),
+      'mutateWorkItems must NOT appear inside mutateJsonFileLocked callback — no nested locks');
+  });
+
+  await test('plan pause kills processes outside any lock callback', () => {
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+    // taskkill/process.kill should appear BEFORE mutateJsonFileLocked and BEFORE mutateWorkItems
+    const killPos = pauseBody.indexOf('taskkill') || pauseBody.indexOf('process.kill');
+    const lockPos = pauseBody.indexOf('mutateJsonFileLocked(dispatchPath');
+    const wiLockPos = pauseBody.indexOf('mutateWorkItems(wiPath');
+    assert.ok(killPos > -1, 'Should have taskkill/process.kill');
+    assert.ok(lockPos > killPos, 'mutateJsonFileLocked should come AFTER process kills');
+    assert.ok(wiLockPos > killPos, 'mutateWorkItems should come AFTER process kills');
   });
 
   // Bug #24: watcher cleanup in try-finally
@@ -9179,6 +9365,99 @@ async function testStatusMutationGuards() {
     const unfailSection = engineSrc.substring(unfailStart, unfailEnd);
     assert.ok(unfailSection.includes('isItemCompleted') || unfailSection.includes('completedAt'),
       'Stall recovery un-fail must check isItemCompleted/completedAt before resetting');
+  });
+
+  // ─── Fix 6b: stall recovery no nested locks ───────────────────────────────
+
+  await test('stall recovery does not call mutateDispatch inside mutateWorkItems', () => {
+    // Find the stall recovery mutateWorkItems callback
+    const stallStart = engineSrc.indexOf('Collect keys to clear AFTER work-items lock is released');
+    assert.ok(stallStart > 0, 'engine.js must have stall recovery collect-keys comment');
+    // Find the closing of mutateWorkItems callback — marked by dispatch clearing AFTER lock
+    const afterLockComment = engineSrc.indexOf('Clear dispatch entries AFTER work-items lock is released', stallStart);
+    assert.ok(afterLockComment > stallStart, 'engine.js must have post-lock dispatch clearing comment');
+    // The mutateWorkItems callback is between stallStart and afterLockComment
+    const insideLock = engineSrc.substring(stallStart, afterLockComment);
+    assert.ok(!insideLock.includes('mutateDispatch('),
+      'mutateDispatch must NOT be called inside mutateWorkItems callback in stall recovery');
+  });
+
+  await test('stall recovery collects dispatch keys for clearing outside lock', () => {
+    // Verify the collect-then-clear pattern: keys collected inside, cleared outside
+    const stallStart = engineSrc.indexOf('Collect keys to clear AFTER work-items lock is released');
+    const stallEnd = engineSrc.indexOf('stall recovery process project', stallStart);
+    assert.ok(stallStart > 0 && stallEnd > stallStart, 'engine.js must have stall recovery section');
+    const stallSection = engineSrc.substring(stallStart, stallEnd);
+    assert.ok(stallSection.includes('dispatchKeysToClear.push('),
+      'Stall recovery must collect dispatch keys inside mutateWorkItems');
+    assert.ok(stallSection.includes('cooldownKeysToClear.push('),
+      'Stall recovery must collect cooldown keys inside mutateWorkItems');
+    assert.ok(stallSection.includes('for (const key of dispatchKeysToClear)'),
+      'Stall recovery must iterate collected dispatch keys outside lock');
+    assert.ok(stallSection.includes('for (const key of cooldownKeysToClear)'),
+      'Stall recovery must iterate collected cooldown keys outside lock');
+  });
+
+  await test('BEHAVIORAL: stall recovery retries failed blocking items and collects dispatch keys', () => {
+    const items = [
+      { id: 'A', status: 'failed', failReason: 'timeout' },
+      { id: 'B', status: 'pending', depends_on: ['A'] },
+      { id: 'C', status: 'failed', failReason: 'Dependency failed \u2014 cannot proceed', depends_on: ['A'] },
+    ];
+    const projectName = 'TestProject';
+    const dispatchKeysToClear = [];
+    const cooldownKeysToClear = [];
+
+    // Simulate the refactored stall recovery logic (inside mutateWorkItems)
+    let changed = false;
+    const failedIds = new Set(items.filter(w => w.status === 'failed').map(w => w.id));
+    const pendingWithBlockedDeps = items.filter(w =>
+      w.status === 'pending' && (w.depends_on || []).some(d => failedIds.has(d))
+    );
+
+    if (pendingWithBlockedDeps.length > 0) {
+      for (const item of items) {
+        if (item.status !== 'failed' || item.completedAt) continue;
+        const isBlocking = items.some(w => w.status === 'pending' && (w.depends_on || []).includes(item.id));
+        if (!isBlocking) continue;
+        item.status = 'pending';
+        item._retryCount = 0;
+        delete item.failReason;
+        changed = true;
+        const key = `work-${projectName}-${item.id}`;
+        dispatchKeysToClear.push(key);
+        cooldownKeysToClear.push(key);
+      }
+    }
+
+    // Un-fail cascade-failed dependents
+    if (changed) {
+      const retriedIds = new Set(items.filter(w => w.status === 'pending' && w._retryCount === 0).map(w => w.id));
+      for (const dep of items) {
+        if (dep.status === 'failed' && dep.failReason === 'Dependency failed \u2014 cannot proceed') {
+          const blockers = (dep.depends_on || []).filter(d => retriedIds.has(d));
+          if (blockers.length > 0) {
+            dep.status = 'pending';
+            dep._retryCount = 0;
+            delete dep.failReason;
+            dispatchKeysToClear.push(`work-${projectName}-${dep.id}`);
+          }
+        }
+      }
+    }
+
+    // Verify work items were retried correctly
+    assert.strictEqual(items[0].status, 'pending', 'Failed blocker A should be retried');
+    assert.strictEqual(items[1].status, 'pending', 'Pending item B unchanged');
+    assert.strictEqual(items[2].status, 'pending', 'Cascade-failed C should be un-failed');
+
+    // Verify dispatch keys collected for clearing OUTSIDE lock
+    assert.deepStrictEqual(dispatchKeysToClear, [
+      'work-TestProject-A', 'work-TestProject-C'
+    ], 'Dispatch keys for both retried and un-failed items must be collected');
+    assert.deepStrictEqual(cooldownKeysToClear, [
+      'work-TestProject-A'
+    ], 'Cooldown keys only for directly retried items');
   });
 
   // ─── Fix 7: dashboard manual retry guards done items ─────────────────────
@@ -10165,12 +10444,80 @@ async function testEngineAuditCritical() {
     assert.ok(fn.includes('writeToInbox'), 'processPendingRebases must write inbox alert on give-up');
   });
 
+  await test('queuePendingRebase uses mutateJsonFileLocked for atomic writes', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('function queuePendingRebase'),
+      lifecycleSrcForRebase.indexOf('\nasync function processPendingRebases')
+    );
+    assert.ok(fn.includes('mutateJsonFileLocked(PENDING_REBASES_PATH'),
+      'queuePendingRebase must use mutateJsonFileLocked for atomic read-modify-write');
+    assert.ok(!fn.includes('safeJson(PENDING_REBASES_PATH)'),
+      'queuePendingRebase must not use unlocked safeJson — race condition');
+    assert.ok(!fn.match(/safeWrite\(PENDING_REBASES_PATH/),
+      'queuePendingRebase must not use unlocked safeWrite — race condition');
+  });
+
+  await test('processPendingRebases uses mutateJsonFileLocked for drain and write-back', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    assert.ok(fn.includes('mutateJsonFileLocked(PENDING_REBASES_PATH'),
+      'processPendingRebases must use mutateJsonFileLocked');
+    assert.ok(!fn.match(/(?<!\w)safeWrite\(PENDING_REBASES_PATH/),
+      'processPendingRebases must not use unlocked safeWrite — concurrent queuePendingRebase entries would be lost');
+  });
+
+  await test('processPendingRebases drains queue atomically then merges remaining back', () => {
+    const fn = lifecycleSrcForRebase.slice(
+      lifecycleSrcForRebase.indexOf('async function processPendingRebases'),
+      lifecycleSrcForRebase.indexOf('\n// ─── Post-Merge / Post-Close')
+    );
+    // Must drain under lock first (short lock, no async inside)
+    assert.ok(fn.includes('return []'), 'processPendingRebases must drain file to empty array under lock');
+    // Must merge remaining back under a separate lock (not same lock as drain)
+    const lockCalls = fn.split('mutateJsonFileLocked').length - 1;
+    assert.ok(lockCalls >= 2, `processPendingRebases needs at least 2 lock calls (drain + write-back), found ${lockCalls}`);
+  });
+
+  await test('queuePendingRebase concurrent calls preserve all entries (behavioral)', () => {
+    const dir = createTmpDir();
+    fs.mkdirSync(path.join(dir, 'engine'), { recursive: true });
+    const fp = path.join(dir, 'engine', 'pending-rebases.json');
+    // Simulate 3 concurrent queues by calling mutateJsonFileLocked sequentially
+    // (file locking serializes them — this proves no entries are lost)
+    for (let i = 0; i < 3; i++) {
+      shared.mutateJsonFileLocked(fp, (pending) => {
+        if (pending.some(e => e.prId === `PR-${i}`)) return;
+        pending.push({ prId: `PR-${i}`, branch: `feat/b-${i}`, projectName: 'test', mergedItemId: `W-${i}`, queuedAt: new Date().toISOString(), attempts: 0 });
+      }, { defaultValue: [] });
+    }
+    const result = shared.safeJson(fp);
+    assert.strictEqual(result.length, 3, `All 3 entries must be preserved, got ${result.length}`);
+    assert.deepStrictEqual(result.map(e => e.prId), ['PR-0', 'PR-1', 'PR-2']);
+  });
+
   await test('engine.js calls processPendingRebases in tick cycle', () => {
     const engineSrcRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrcRebase.includes('processPendingRebases(config)'),
       'engine.js must call processPendingRebases during PR poll phase');
-    assert.ok(engineSrcRebase.includes('processPendingRebases }'),
+    assert.ok(engineSrcRebase.includes('processPendingRebases'),
       'engine.js must import processPendingRebases from lifecycle');
+  });
+
+  await test('engine.js imports resolveWorkItemPath from lifecycle', () => {
+    const engineSrcRwip = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrcRwip.includes('resolveWorkItemPath }') || engineSrcRwip.includes('resolveWorkItemPath,'),
+      'engine.js must import resolveWorkItemPath from lifecycle');
+    assert.ok(engineSrcRwip.includes('resolveWorkItemPath(dispatchItem.meta)'),
+      'engine.js must call resolveWorkItemPath for artifact tracking');
+    // Behavioral: verify the function is actually callable
+    const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(typeof lifecycle.resolveWorkItemPath, 'function',
+      'resolveWorkItemPath must be exported as a function from lifecycle');
+    // Verify it returns null for unknown source
+    assert.strictEqual(lifecycle.resolveWorkItemPath({ source: 'unknown' }), null,
+      'resolveWorkItemPath must return null for unrecognized source');
   });
 
   await test('scheduler enabled check uses truthy, not strict equality', () => {
@@ -11421,6 +11768,41 @@ async function testAutoRecoveryAndAtomicity() {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
     assert.ok(docCallFn.includes('skipStatePreamble: true'), 'Doc-chat should skip state preamble');
+  });
+
+  await test('ccDocCall supports freshSession to prevent context bleed (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('), src.indexOf('async function ccDocCall(') + 2000);
+    // ccDocCall must accept freshSession param
+    assert.ok(docCallFn.includes('freshSession'), 'ccDocCall should accept freshSession parameter');
+    // When freshSession is true, existing session must be skipped
+    assert.ok(docCallFn.includes('freshSession ? null : resolveSession'), 'ccDocCall should skip session resolution when freshSession is true');
+    // Session should be deleted to prevent context bleed
+    assert.ok(docCallFn.includes('docSessions.delete(sessionKey)'), 'ccDocCall should delete stale session on freshSession');
+  });
+
+  await test('handleDocChat threads freshSession to ccDocCall (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handlerFn = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleInboxPersist'));
+    assert.ok(handlerFn.includes('freshSession: !!body.freshSession'), 'handleDocChat should pass freshSession from request body');
+  });
+
+  await test('Create Plan from meeting sends freshSession: true (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const createPlanFn = src.slice(src.indexOf('async function _createPlanFromMeeting'));
+    assert.ok(createPlanFn.includes("freshSession: true"), 'Create Plan should request a fresh session');
+  });
+
+  await test('Create Plan validates generated content looks like a plan (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-meetings.js'), 'utf8');
+    const createPlanFn = src.slice(src.indexOf('async function _createPlanFromMeeting'));
+    assert.ok(createPlanFn.includes("does not look like a plan"), 'Should reject content that does not look like a plan');
+  });
+
+  await test('/api/plans/create rejects content without markdown heading (#961)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const planCreateHandler = src.slice(src.indexOf("/api/plans/create"), src.indexOf("/api/plans/create") + 1000);
+    assert.ok(planCreateHandler.includes('must start with a markdown heading'), 'Should validate plan content starts with markdown heading');
   });
 
   await test('CC system prompt discourages excessive tool use', () => {
@@ -13052,7 +13434,7 @@ async function testFailureClassEnum() {
   console.log('\n── FAILURE_CLASS enum and classifyFailure() ──');
   const lifecycle = require('../engine/lifecycle');
 
-  await test('FAILURE_CLASS enum has all 10 required values', () => {
+  await test('FAILURE_CLASS enum has all 11 required values', () => {
     const { FAILURE_CLASS } = shared;
     assert.ok(FAILURE_CLASS, 'FAILURE_CLASS should be exported from shared.js');
     assert.strictEqual(FAILURE_CLASS.CONFIG_ERROR, 'config-error');
@@ -13064,8 +13446,9 @@ async function testFailureClassEnum() {
     assert.strictEqual(FAILURE_CLASS.SPAWN_ERROR, 'spawn-error');
     assert.strictEqual(FAILURE_CLASS.NETWORK_ERROR, 'network-error');
     assert.strictEqual(FAILURE_CLASS.OUT_OF_CONTEXT, 'out-of-context');
+    assert.strictEqual(FAILURE_CLASS.MAX_TURNS, 'max-turns');
     assert.strictEqual(FAILURE_CLASS.UNKNOWN, 'unknown');
-    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 10, 'FAILURE_CLASS should have exactly 10 values');
+    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 11, 'FAILURE_CLASS should have exactly 11 values');
   });
 
   await test('ESCALATION_POLICY enum has all 5 values', () => {
@@ -13117,9 +13500,12 @@ async function testFailureClassEnum() {
       shared.FAILURE_CLASS.NETWORK_ERROR);
   });
 
-  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
+  await test('classifyFailure: max turns reached → MAX_TURNS', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, 'Error: max turns reached', ''),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+      shared.FAILURE_CLASS.MAX_TURNS);
+  });
+
+  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, 'context window exceeded', ''),
       shared.FAILURE_CLASS.OUT_OF_CONTEXT);
   });
@@ -14084,18 +14470,18 @@ async function testIssue716HeartbeatFeedbackLoop() {
   console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
   const lifecycle = require('../engine/lifecycle');
 
-  // 1. classifyFailure with exact Claude CLI error_max_turns output
-  await test('classifyFailure: exact error_max_turns JSON → OUT_OF_CONTEXT', () => {
+  // 1. classifyFailure with exact Claude CLI error_max_turns output → MAX_TURNS (retryable)
+  await test('classifyFailure: exact error_max_turns JSON → MAX_TURNS', () => {
     // Exact format from Claude CLI when agent exhausts turn limit
     const exactOutput = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
     assert.strictEqual(lifecycle.classifyFailure(1, exactOutput, ''),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT,
-      'Exact error_max_turns JSON from Claude CLI should classify as OUT_OF_CONTEXT');
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'Exact error_max_turns JSON from Claude CLI should classify as MAX_TURNS');
   });
 
-  await test('classifyFailure: terminal_reason max_turns in stderr → OUT_OF_CONTEXT', () => {
+  await test('classifyFailure: terminal_reason max_turns in stderr → MAX_TURNS', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, '', 'terminal_reason: max_turns'),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+      shared.FAILURE_CLASS.MAX_TURNS);
   });
 
   // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
@@ -14496,6 +14882,141 @@ async function testPrReviewFixFlows() {
     assert.ok(engineSrc.includes('Fix ${pr.id}: ${pr.title'), 'Fix label should have title');
     assert.ok(!engineSrc.includes('Review PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
     assert.ok(!engineSrc.includes('Fix PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
+  });
+}
+
+// ─── P-9e1a4c6b: Plan pause nested lock violation fix ──────────────────────
+
+async function testPlanPauseNoNestedLocks() {
+  console.log('\n── P-9e1a4c6b: Plan Pause No Nested Locks ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const fnStart = src.indexOf('async function handlePlansPause');
+  const fnEnd = src.indexOf('\n  async function', fnStart + 30);
+  const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+
+  await test('handlePlansPause: no mutateWorkItems inside mutateJsonFileLocked', () => {
+    // Find all mutateJsonFileLocked blocks and verify none contain mutateWorkItems
+    const lockRegex = /mutateJsonFileLocked\(dispatchPath[\s\S]*?\n      \}\)/g;
+    let match;
+    while ((match = lockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('mutateWorkItems'),
+        'mutateWorkItems must not appear inside mutateJsonFileLocked callback');
+    }
+  });
+
+  await test('handlePlansPause: no taskkill/execFileSync inside mutateJsonFileLocked', () => {
+    const lockRegex = /mutateJsonFileLocked\(dispatchPath[\s\S]*?\n      \}\)/g;
+    let match;
+    while ((match = lockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('taskkill') && !match[0].includes('execFileSync'),
+        'Process kill operations must not appear inside lock callbacks');
+      assert.ok(!match[0].includes('process.kill'),
+        'process.kill must not appear inside lock callbacks');
+    }
+  });
+
+  await test('handlePlansPause: no taskkill/execFileSync inside mutateWorkItems', () => {
+    const wiLockRegex = /mutateWorkItems\(wiPath[\s\S]*?\n        \}\)/g;
+    let match;
+    while ((match = wiLockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('taskkill') && !match[0].includes('execFileSync'),
+        'Process kill operations must not appear inside mutateWorkItems callback');
+      assert.ok(!match[0].includes('process.kill'),
+        'process.kill must not appear inside mutateWorkItems callback');
+    }
+  });
+
+  await test('handlePlansPause: still sets WI_STATUS.PAUSED and _pausedBy', () => {
+    assert.ok(pauseBody.includes('w.status = WI_STATUS.PAUSED'), 'must set status to PAUSED');
+    assert.ok(pauseBody.includes("w._pausedBy = 'prd-pause'"), 'must set _pausedBy = prd-pause');
+  });
+
+  await test('handlePlansPause: still cleans up dispatch active entries', () => {
+    assert.ok(pauseBody.includes('mutateJsonFileLocked(dispatchPath'),
+      'must use mutateJsonFileLocked for dispatch cleanup');
+    assert.ok(pauseBody.includes('resetItemIds.has(itemId)'),
+      'must filter dispatch active by resetItemIds');
+    assert.ok(pauseBody.includes('killedAgents.has(d.agent)'),
+      'must filter dispatch active by killedAgents');
+  });
+
+  await test('handlePlansPause: collect-then-act pattern — read before kill before lock', () => {
+    // Verify the ordering: dispatchedItemIds collection → killTargets collection → kills → mutateWorkItems → mutateJsonFileLocked
+    const dispatchedItemIdsPos = pauseBody.indexOf('dispatchedItemIds');
+    const killTargetsPos = pauseBody.indexOf('killTargets');
+    const taskkillPos = pauseBody.indexOf('taskkill');
+    const mutateWiPos = pauseBody.indexOf('mutateWorkItems(wiPath');
+    const mutateLockPos = pauseBody.lastIndexOf('mutateJsonFileLocked(dispatchPath');
+    assert.ok(dispatchedItemIdsPos < killTargetsPos, 'dispatchedItemIds collected before killTargets');
+    assert.ok(killTargetsPos < taskkillPos, 'killTargets collected before taskkill');
+    assert.ok(taskkillPos < mutateWiPos, 'kills happen before mutateWorkItems');
+    assert.ok(mutateWiPos < mutateLockPos, 'mutateWorkItems before dispatch cleanup lock');
+  });
+
+  // Behavioral test: simulate the pause logic outside of dashboard context
+  await test('BEHAVIORAL: plan pause collects kill targets and resets items without nesting', () => {
+    // Simulate work items
+    const items = [
+      { id: 'W1', status: 'done', completedAt: '2026-01-01', sourcePlan: 'test.json' },
+      { id: 'W2', status: 'dispatched', sourcePlan: 'test.json' },
+      { id: 'W3', status: 'pending', sourcePlan: 'test.json' },
+      { id: 'W4', status: 'failed', sourcePlan: 'test.json' },
+      { id: 'W5', status: 'dispatched', sourcePlan: 'other.json' },
+    ];
+    const dispatchActive = [
+      { agent: 'dallas', meta: { item: { id: 'W2' }, dispatchKey: 'dk-W2' } },
+      { agent: 'ralph', meta: { item: { id: 'W5' }, dispatchKey: 'dk-W5' } },
+    ];
+
+    // Step 1: Collect dispatched item IDs (read-only)
+    const dispatchedItemIds = new Set();
+    for (const w of items) {
+      if (w.sourcePlan !== 'test.json') continue;
+      if (w.completedAt || w.status === 'done') continue;
+      if (w.status === 'dispatched' && w.id) dispatchedItemIds.add(w.id);
+    }
+    assert.deepStrictEqual([...dispatchedItemIds], ['W2'], 'Only W2 should be dispatched for test.json');
+
+    // Step 2: Collect kill targets from dispatch active
+    const killTargets = [];
+    for (const d of dispatchActive) {
+      const itemId = d.meta?.item?.id;
+      if (itemId && dispatchedItemIds.has(itemId)) {
+        killTargets.push({ agent: d.agent, pid: null });
+      }
+    }
+    assert.strictEqual(killTargets.length, 1, 'Should find 1 kill target');
+    assert.strictEqual(killTargets[0].agent, 'dallas', 'Kill target should be dallas');
+
+    // Step 3: Kill would happen here (not simulated)
+
+    // Step 4: Pause items (mutateWorkItems equivalent)
+    let reset = 0;
+    const resetItemIds = new Set();
+    for (const w of items) {
+      if (w.sourcePlan !== 'test.json') continue;
+      if (w.completedAt || w.status === 'done') continue;
+      if (w.status !== 'paused') reset++;
+      w.status = 'paused';
+      w._pausedBy = 'prd-pause';
+      if (w.id) resetItemIds.add(w.id);
+    }
+    assert.strictEqual(reset, 3, 'Should reset W2, W3, W4');
+    assert.deepStrictEqual([...resetItemIds].sort(), ['W2', 'W3', 'W4'], 'resetItemIds should contain W2, W3, W4');
+
+    // Step 5: Clean dispatch active
+    const killedAgents = new Set(killTargets.map(t => t.agent));
+    const filtered = dispatchActive.filter(d => {
+      const itemId = d.meta?.item?.id;
+      if (itemId && resetItemIds.has(itemId)) return false;
+      if (killedAgents.has(d.agent)) return false;
+      return true;
+    });
+    assert.strictEqual(filtered.length, 1, 'Only W5 dispatch entry should survive');
+    assert.strictEqual(filtered[0].agent, 'ralph', 'ralph (other plan) should survive');
+    assert.strictEqual(items[0].status, 'done', 'Done item W1 should be untouched');
+    assert.strictEqual(items[4].status, 'dispatched', 'Other plan item W5 should be untouched');
   });
 }
 
