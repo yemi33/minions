@@ -64,43 +64,35 @@ function _renderMonitoredResources(resources, options) {
 /**
  * Render clickable artifact links for a pipeline stage.
  * Each artifact type gets an icon and navigates to the relevant detail view.
+ * @param {Object} artifacts - artifact map from stage run
+ * @param {string} [pipelineId] - pipeline ID for modal back-navigation
  */
-function _renderArtifactLinks(artifacts) {
+function _renderArtifactLinks(artifacts, pipelineId) {
   if (!artifacts) return '';
   var links = [];
   var linkStyle = 'display:inline-flex;align-items:center;gap:2px;padding:1px 6px;border-radius:10px;font-size:10px;cursor:pointer;text-decoration:none;color:var(--blue);background:color-mix(in srgb, var(--blue) 10%, transparent);border:1px solid color-mix(in srgb, var(--blue) 20%, transparent)';
 
-  // Work items → navigate to work page & open detail
+  // Pushes current pipeline modal onto back stack so detail modals can navigate back
+  var backFn = pipelineId ? "pushModalBack(function(){openPipelineDetail('" + escHtml(pipelineId) + "')});" : '';
+
   (artifacts.workItems || []).forEach(function(id) {
-    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'work\');setTimeout(function(){openWorkItemDetail(\'' + escHtml(id) + '\')},200)" title="Open work item ' + escHtml(id) + '">⚙ ' + escHtml(id) + '</span>');
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();' + backFn + 'openWorkItemDetail(\'' + escHtml(id) + '\')" title="Open work item ' + escHtml(id) + '">⚙ ' + escHtml(id) + '</span>');
   });
-
-  // Meetings → navigate to meetings page & open detail
   (artifacts.meetings || []).forEach(function(id) {
-    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'meetings\');setTimeout(function(){openMeetingDetail(\'' + escHtml(id) + '\')},200)" title="Open meeting ' + escHtml(id) + '">💬 ' + escHtml(id) + '</span>');
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();' + backFn + 'openMeetingDetail(\'' + escHtml(id) + '\')" title="Open meeting ' + escHtml(id) + '">💬 ' + escHtml(id) + '</span>');
   });
-
-  // Plans → navigate to plans page
   (artifacts.plans || []).forEach(function(name) {
-    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'plans\')" title="Plan: ' + escHtml(name) + '">📋 ' + escHtml(name.replace(/\.md$/, '').slice(0, 30)) + '</span>');
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();' + backFn + 'planView(\'' + escHtml(name) + '\')" title="Plan: ' + escHtml(name) + '">📋 ' + escHtml(name.replace(/\.md$/, '').slice(0, 30)) + '</span>');
   });
-
-  // PRDs → navigate to PRD page
   (artifacts.prds || []).forEach(function(name) {
-    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'prd\')" title="PRD: ' + escHtml(name) + '">📄 ' + escHtml(name.replace(/\.json$/, '').slice(0, 30)) + '</span>');
+    links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();' + backFn + 'planView(\'' + escHtml(name) + '\')" title="PRD: ' + escHtml(name) + '">📄 ' + escHtml(name.replace(/\.json$/, '').slice(0, 30)) + '</span>');
   });
-
-  // PRs → navigate to PRs page
   (artifacts.prs || []).forEach(function(id) {
     links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'prs\')" title="Pull request ' + escHtml(id) + '">🔀 PR-' + escHtml(id) + '</span>');
   });
-
-  // Sub-stages (parallel) — just label them, no nav needed
   (artifacts.subStages || []).forEach(function(id) {
     links.push('<span style="' + linkStyle + ';cursor:default;color:var(--muted);background:color-mix(in srgb, var(--muted) 8%, transparent);border-color:color-mix(in srgb, var(--muted) 15%, transparent)" title="Sub-stage ' + escHtml(id) + '">⚓ ' + escHtml(id) + '</span>');
   });
-
-  // Notes → navigate to inbox page
   (artifacts.notes || []).forEach(function(name) {
     links.push('<span style="' + linkStyle + '" onclick="event.stopPropagation();closeModal();switchPage(\'inbox\')" title="Note: ' + escHtml(name) + '">📝 ' + escHtml(name.replace(/\.md$/, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').slice(0, 30)) + '</span>');
   });
@@ -367,7 +359,7 @@ function openPipelineDetail(id) {
         (s.type === 'condition' ? ' | Check: ' + escHtml(typeof (s.check || s.condition) === 'string' ? (s.check || s.condition) : ((s.check || s.condition || {}).check || '?')) + (s.onMet ? ' | onMet: ' + escHtml(s.onMet) : '') + (s.onUnmet ? ' | onUnmet: ' + escHtml(s.onUnmet) : '') : '') +
       '</div>' +
       _renderMonitoredResources(s.monitoredResources || []) +
-      _renderArtifactLinks(stageRun.artifacts) +
+      _renderArtifactLinks(stageRun.artifacts, id) +
       (stageRun.output ? '<div style="margin-top:6px;font-size:11px;max-height:150px;overflow-y:auto">' + renderMd(stageRun.output.slice(0, 500)) + '</div>' : '') +
       (stageStatus === 'waiting-human' ? '<button class="pr-pager-btn" style="font-size:9px;padding:2px 8px;color:var(--green);border-color:var(--green);margin-top:6px" onclick="_continuePipeline(\'' + escHtml(id) + '\',\'' + escHtml(s.id) + '\',this)">Continue</button>' : '') +
     '</div>';
@@ -390,7 +382,7 @@ function openPipelineDetail(id) {
           (r.completedAt ? '<span style="color:var(--muted)">\u2192 ' + new Date(r.completedAt).toLocaleString() + '</span>' : '') +
           (artifactCount > 0 ? '<span style="color:var(--blue);cursor:pointer;user-select:none" onclick="var el=document.getElementById(\'' + toggleId + '\');el.style.display=el.style.display===\'none\'?\'flex\':\'none\'" title="Toggle artifacts">' + artifactCount + ' artifact' + (artifactCount !== 1 ? 's' : '') + ' ▾</span>' : '') +
         '</div>' +
-        (artifactCount > 0 ? '<div id="' + toggleId + '" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;margin-left:12px">' + _renderArtifactLinks(runArtifacts.merged) + '</div>' : '') +
+        (artifactCount > 0 ? '<div id="' + toggleId + '" style="display:none;flex-wrap:wrap;gap:4px;margin-top:4px;margin-left:12px">' + _renderArtifactLinks(runArtifacts.merged, id) + '</div>' : '') +
       '</div>';
     });
   }

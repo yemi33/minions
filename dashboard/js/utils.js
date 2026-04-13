@@ -152,8 +152,17 @@ function renderMd(s) {
   return _renderMdCore(s);
 }
 
+function _normalizeCodeFences(s) {
+  var fenceCount = (s.match(/```/g) || []).length;
+  if (fenceCount % 2 !== 0) s = s + '\n```';
+  return s;
+}
+
 function _renderMdCore(s) {
   let html = escHtml(s);
+
+  // Close unclosed code fences before any regex processing
+  html = _normalizeCodeFences(html);
 
   // 1. Extract code blocks and inline code into placeholders (protect from other transforms)
   const codeSlots = [];
@@ -161,6 +170,15 @@ function _renderMdCore(s) {
     codeSlots.push('<pre style="background:var(--bg);padding:8px;border-radius:4px;overflow-x:auto;font-size:11px;margin:4px 0"><code>' + code + '</code></pre>');
     return '\x00CB' + (codeSlots.length - 1) + '\x00';
   });
+
+  // Close lone unclosed backticks per-line before inline code extraction
+  html = html.split('\n').map(function(line) {
+    // Skip code block placeholders
+    if (/^\x00CB\d+\x00$/.test(line)) return line;
+    var ticks = (line.match(/`/g) || []).length;
+    return (ticks % 2 !== 0) ? line + '`' : line;
+  }).join('\n');
+
   html = html.replace(/`([^`\n]+)`/g, function(_, code) {
     codeSlots.push('<code style="background:var(--bg);padding:1px 4px;border-radius:3px;font-size:0.9em">' + code + '</code>');
     return '\x00CB' + (codeSlots.length - 1) + '\x00';
@@ -294,6 +312,9 @@ var MD_CHUNK_SIZE = 10000;
 var _mdChunkUid = 0;
 
 function _renderMdChunked(fullText) {
+  // Close unclosed code fences before chunking
+  fullText = _normalizeCodeFences(fullText);
+
   // Split at blank-line boundaries to avoid breaking code blocks and other multi-line elements
   var chunks = [];
   var pos = 0;

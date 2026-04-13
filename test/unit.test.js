@@ -1135,7 +1135,7 @@ async function testSyncPrdItemStatus() {
     lifecycle.reconcilePrdStatuses({});
   });
 
-  await test('reconcilePrdStatuses promotes dispatched→done when work item is done (#984)', () => {
+  await test('reconcilePrdStatuses promotes stale dispatched/failed/pending PRD items to done (#984)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
     const fn = src.slice(src.indexOf('function reconcilePrdStatuses'), src.indexOf('// ─── PR Sync from Output'));
     // Must check for stale PRD statuses (dispatched/failed/pending)
@@ -1146,33 +1146,34 @@ async function testSyncPrdItemStatus() {
       'reconcilePrdStatuses must promote stale statuses to WI_STATUS.DONE');
     // Must log the promotion
     assert.ok(fn.includes('promoted') && fn.includes('→done'),
-      'reconcilePrdStatuses must log dispatched→done promotions');
+      'reconcilePrdStatuses must log stale status→done promotions');
   });
 
-  await test('_STALE_PRD_STATUSES includes dispatched, failed, pending (#984)', () => {
+  await test('_STALE_PRD_STATUSES constant includes dispatched, failed, and pending (#984)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    // Verify the constant includes the three stale statuses
-    assert.ok(src.includes('WI_STATUS.DISPATCHED') && src.includes('_STALE_PRD_STATUSES'),
+    // Verify the constant includes all three stale statuses
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.DISPATCHED'),
       '_STALE_PRD_STATUSES must include WI_STATUS.DISPATCHED');
-    assert.ok(src.includes('WI_STATUS.FAILED') && src.includes('_STALE_PRD_STATUSES'),
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.FAILED'),
       '_STALE_PRD_STATUSES must include WI_STATUS.FAILED');
-    assert.ok(src.includes('WI_STATUS.PENDING') && src.includes('_STALE_PRD_STATUSES'),
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.PENDING'),
       '_STALE_PRD_STATUSES must include WI_STATUS.PENDING');
   });
 
   await test('runPostCompletionHooks syncs PRD status via PR prdItems on fix completion (#984)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function runPostCompletionHooks'), src.indexOf('function syncPrdFromPrs'));
+    const fn = src.slice(src.indexOf('async function runPostCompletionHooks'), src.indexOf('function syncPrdFromPrs'));
     // Fix completion must check meta.pr.prdItems
     assert.ok(fn.includes('meta?.pr?.prdItems'),
       'runPostCompletionHooks must check meta.pr.prdItems for fix completions');
-    // Must look up work items and check DONE_STATUSES
+    // Must verify work item is done before syncing
     assert.ok(fn.includes('DONE_STATUSES.has(wi.status)'),
       'runPostCompletionHooks must verify work item is done before syncing PRD after fix');
     // Must call syncPrdItemStatus for each prdItem
     assert.ok(fn.includes('syncPrdItemStatus(prdItemId, WI_STATUS.DONE'),
       'runPostCompletionHooks must call syncPrdItemStatus for PR-linked prdItems on fix completion');
   });
+
 }
 
 // ─── Consolidation Tests ─────────────────────────────────────────────────────
@@ -8082,6 +8083,102 @@ async function testRenderMdTables() {
   });
 }
 
+async function testRenderMdUnclosedFences() {
+  const utilsSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'utils.js'), 'utf8');
+
+  // Source assertions — normalizeCodeFences exists and is called
+  await test('_normalizeCodeFences helper exists in utils.js', () => {
+    assert.ok(utilsSrc.includes('function _normalizeCodeFences'), '_normalizeCodeFences must be defined');
+  });
+
+  await test('_renderMdCore calls _normalizeCodeFences before regex processing', () => {
+    const coreFn = utilsSrc.match(/function _renderMdCore[\s\S]*?^}/m)[0];
+    const normIdx = coreFn.indexOf('_normalizeCodeFences');
+    const regexIdx = coreFn.indexOf('/```(');
+    assert.ok(normIdx !== -1, '_renderMdCore must call _normalizeCodeFences');
+    assert.ok(normIdx < regexIdx, '_normalizeCodeFences must be called before code block regex');
+  });
+
+  await test('_renderMdChunked calls _normalizeCodeFences before chunking', () => {
+    const chunkedFn = utilsSrc.match(/function _renderMdChunked[\s\S]*?^}/m)[0];
+    const normIdx = chunkedFn.indexOf('_normalizeCodeFences');
+    const chunkIdx = chunkedFn.indexOf('var chunks');
+    assert.ok(normIdx !== -1, '_renderMdChunked must call _normalizeCodeFences');
+    assert.ok(normIdx < chunkIdx, '_normalizeCodeFences must be called before chunking');
+  });
+
+  await test('_renderMdCore closes lone unclosed backticks per-line', () => {
+    const coreFn = utilsSrc.match(/function _renderMdCore[\s\S]*?^}/m)[0];
+    assert.ok(coreFn.includes('ticks % 2'), 'must check odd backtick count per-line');
+  });
+
+  // Behavioral tests — extract functions and test actual rendering
+  const escHtmlBody = utilsSrc.match(/function escHtml[\s\S]*?^}/m)[0];
+  const normBody = utilsSrc.match(/function _normalizeCodeFences[\s\S]*?^}/m)[0];
+  const coreBody = utilsSrc.match(/function _renderMdCore[\s\S]*?^}/m)[0];
+  const renderBody = utilsSrc.match(/function renderMd[\s\S]*?^}/m)[0];
+  const renderMd = new Function(escHtmlBody + '\n' + normBody + '\n' + coreBody + '\n' + renderBody + '\nreturn renderMd;')();
+
+  await test('renderMd: unclosed code fence renders all preceding text with block closed', () => {
+    const input = 'Text before\n\n```python\ndef foo():\n    return 42';
+    const html = renderMd(input);
+    assert.ok(html.includes('Text before'), 'text before fence must be present');
+    assert.ok(html.includes('<pre'), 'code block should be rendered as <pre>');
+    assert.ok(html.includes('def foo():'), 'code content must be present');
+    assert.ok(html.includes('return 42'), 'code content after fence must not be truncated');
+  });
+
+  await test('renderMd: response ending with lone backtick renders preceding text', () => {
+    const input = 'Here is my response with a lone `';
+    const html = renderMd(input);
+    assert.ok(html.includes('Here is my response'), 'text before lone backtick must be present');
+    assert.ok(!html.includes('undefined'), 'must not inject undefined into output');
+  });
+
+  await test('renderMd: well-formed markdown is unchanged by fence normalization', () => {
+    const input = 'Hello **bold** and `code`\n\n```js\nconst x = 1;\n```\n\nDone.';
+    const html = renderMd(input);
+    assert.ok(html.includes('<strong>bold</strong>'), 'bold should render');
+    assert.ok(html.includes('<code'), 'inline code should render');
+    assert.ok(html.includes('<pre'), 'code block should render');
+    assert.ok(html.includes('const x = 1;'), 'code block content should render');
+    assert.ok(html.includes('Done.'), 'text after code block should render');
+  });
+
+  await test('renderMd: multiple code blocks with one unclosed still renders all', () => {
+    const input = '```js\nfirst block\n```\n\nMiddle text\n\n```py\nunclosed block';
+    const html = renderMd(input);
+    assert.ok(html.includes('first block'), 'first closed block must render');
+    assert.ok(html.includes('Middle text'), 'middle text must render');
+    assert.ok(html.includes('unclosed block'), 'unclosed block content must render');
+    // Both blocks should be rendered as <pre> (2 occurrences)
+    const preCount = (html.match(/<pre/g) || []).length;
+    assert.strictEqual(preCount, 2, 'both code blocks should render as <pre>');
+  });
+
+  await test('renderMd: backticks inside unclosed fence do not corrupt output', () => {
+    const input = 'Before\n\n```js\nconst x = `hello ${name}`;\nconst y = 42;';
+    const html = renderMd(input);
+    assert.ok(html.includes('Before'), 'text before fence must survive');
+    assert.ok(html.includes('const y = 42'), 'code after template literal backticks must survive');
+  });
+
+  await test('_normalizeCodeFences: even fence count is unchanged', () => {
+    const normFn = new Function(normBody + '\nreturn _normalizeCodeFences;')();
+    const even = '```js\ncode\n```';
+    assert.strictEqual(normFn(even), even, 'even count should not append a fence');
+  });
+
+  await test('_normalizeCodeFences: odd fence count gets closing fence appended', () => {
+    const normFn = new Function(normBody + '\nreturn _normalizeCodeFences;')();
+    const odd = '```js\nsome code';
+    const result = normFn(odd);
+    assert.ok(result.endsWith('\n```'), 'should append closing fence');
+    const fences = (result.match(/```/g) || []).length;
+    assert.strictEqual(fences % 2, 0, 'fence count should be even after normalization');
+  });
+}
+
 async function testScheduleDetailModal() {
   await test('render-schedules has openScheduleDetail and pagination', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'render-schedules.js'), 'utf8');
@@ -8373,6 +8470,7 @@ async function testSessionFeatures() {
   await testNoRetryPrCompletion();
   await testKbCatConstants();
   await testRenderMdTables();
+  await testRenderMdUnclosedFences();
   await testScheduleDetailModal();
   await testPlanArchiveApi();
   await testPrWaitingResolve();

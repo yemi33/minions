@@ -617,7 +617,7 @@ function updateWorkItemStatus(meta, status, reason) {
 }
 
 const _VALID_PRD_STATUSES = new Set([...Object.values(WI_STATUS), 'missing']);
-// PRD statuses that are stale when the work item is actually done (#984)
+// (#984) PRD statuses that are stale when the work item is actually done
 const _STALE_PRD_STATUSES = new Set([WI_STATUS.DISPATCHED, WI_STATUS.FAILED, WI_STATUS.PENDING]);
 function syncPrdItemStatus(itemId, status, sourcePlan) {
   if (!itemId) return;
@@ -677,9 +677,8 @@ function reconcilePrdStatuses(config) {
           modified = true;
           log('info', `PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
         }
-        // Stale status reconciliation (#984): PRD item stuck at dispatched/failed/pending
-        // while the actual work item is done — happens when fix work items complete with
-        // a different ID than the original PRD feature ID
+        // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
+        // happens when fix work items complete with a different ID than the original PRD feature
         else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
           const prev = feature.status;
           feature.status = WI_STATUS.DONE;
@@ -1804,13 +1803,14 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) {
     updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
-    // Sync PRD status for PR-linked features (#984): fix work items have a different ID
+    // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
     // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.
     // Use the PR's prdItems to propagate done status when the original work item is done.
     if (effectiveSuccess && meta?.pr?.prdItems?.length) {
       try {
+        const allWis = queries.getWorkItems(config);
         for (const prdItemId of meta.pr.prdItems) {
-          const wi = queries.getWorkItems(config).find(w => w.id === prdItemId);
+          const wi = allWis.find(w => w.id === prdItemId);
           if (wi && DONE_STATUSES.has(wi.status) && wi.sourcePlan) {
             syncPrdItemStatus(prdItemId, WI_STATUS.DONE, wi.sourcePlan);
           }

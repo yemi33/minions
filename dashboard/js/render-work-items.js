@@ -48,6 +48,7 @@ function wiRow(item) {
     '<td>' + typeBadge(item.type) + '</td>' +
     '<td>' + priBadge(item.priority) + '</td>' +
     '<td>' + statusBadge(item.status || 'pending') +
+      (item._reopened ? ' <span style="font-size:9px;color:var(--purple);margin-left:4px" title="This item was reopened from a previously completed state">reopened</span>' : '') +
       (item._pendingReason && item.status === 'pending' && item._pendingReason !== 'already_dispatched' ? ' <span style="font-size:9px;color:var(--muted);margin-left:4px" title="Pending reason: ' + escHtml(item._pendingReason) + '">' + escHtml(item._pendingReason.replace(/_/g, ' ')) + '</span>' : '') +
       (item._pendingReason === 'already_dispatched' && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--blue);margin-left:4px" title="In dispatch queue, waiting to be assigned">queued</span>' : '') +
       (item._skipReason && item.status === 'pending' ? ' <span style="font-size:9px;color:var(--yellow);margin-left:4px" title="Dispatch blocked: ' + escHtml(item._skipReason) + (item._blockedBy ? ' (by ' + escHtml(item._blockedBy) + ')' : '') + '">' + escHtml(item._skipReason.replace(/_/g, ' ')) + (item._blockedBy ? ' <span style="color:var(--muted)">(' + escHtml(item._blockedBy) + ')</span>' : '') + '</span>' : '') +
@@ -431,7 +432,8 @@ function openWorkItemDetail(id) {
 
   let html = '<div style="display:flex;flex-direction:column;gap:4px;font-size:13px">';
   html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">' +
-    badge(statusCls, item.status || 'pending') + ' ' +
+    badge(statusCls, item.status || 'pending') +
+    (item._reopened ? ' <span style="font-size:9px;color:var(--purple);margin-left:4px" title="This item was reopened from a previously completed state">reopened</span>' : '') + ' ' +
     '<span class="dispatch-type ' + (item.type || 'implement') + '">' + escHtml(item.type || 'implement') + '</span>' +
     '<span class="prd-item-priority ' + (item.priority || '') + '">' + escHtml(item.priority || 'medium') + '</span>' +
     '</div>';
