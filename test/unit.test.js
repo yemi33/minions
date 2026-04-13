@@ -2424,6 +2424,56 @@ async function testStateIntegrity() {
       'engine dispatch writes should use lock-backed mutation');
   });
 
+  await test('mutateDispatch uses nullish coalescing (??) not OR (||) for mutator fallback', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    // Find the mutateDispatch function definition
+    const fnStart = src.indexOf('function mutateDispatch(');
+    assert.ok(fnStart > -1, 'mutateDispatch function should exist');
+    const fnEnd = src.indexOf('\n}', fnStart);
+    const fnBody = src.slice(fnStart, fnEnd + 2);
+    // Must use ?? (nullish coalescing) — not || which treats 0, false, '' as falsy
+    assert.ok(fnBody.includes('mutator(dispatch) ?? dispatch'),
+      'mutateDispatch must use ?? (nullish coalescing) for mutator fallback, not ||');
+    assert.ok(!fnBody.includes('mutator(dispatch) || dispatch'),
+      'mutateDispatch must NOT use || for mutator fallback — || treats falsy returns incorrectly');
+  });
+
+  await test('mutateDispatch falls back to dispatch when mutator returns undefined (in-place mutation)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Mutator that modifies in-place and returns undefined (implicit return)
+      testDispatch.mutateDispatch((dp) => {
+        dp.pending.push({ id: 'test-undef-1', agent: 'test', type: 'implement' });
+        // no return — undefined
+      });
+
+      const dp = testQueries.getDispatch();
+      assert.strictEqual(dp.pending.length, 1, 'Should have 1 pending item after in-place mutation');
+      assert.strictEqual(dp.pending[0].id, 'test-undef-1', 'Pending item should be the one we added');
+    } finally { restore(); }
+  });
+
+  await test('mutateDispatch uses returned value when mutator returns a dispatch object', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Mutator that returns a new dispatch object
+      testDispatch.mutateDispatch((dp) => {
+        dp.pending.push({ id: 'test-return-1', agent: 'test', type: 'implement' });
+        return dp;
+      });
+
+      const dp = testQueries.getDispatch();
+      assert.strictEqual(dp.pending.length, 1, 'Should have 1 pending item from returned dispatch');
+      assert.strictEqual(dp.pending[0].id, 'test-return-1', 'Pending item should be the one we added');
+    } finally { restore(); }
+  });
+
   await test('All mutateDispatch callbacks return dispatch object on every path', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     const dispatchSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
