@@ -627,6 +627,28 @@ async function spawnAgent(dispatchItem, config) {
 
   updateAgentStatus(id, AGENT_STATUS.READY, 'Worktree ready, preparing to spawn process');
 
+  // Inject dirty file list when worktree has uncommitted changes (e.g., max_turns retry)
+  // This signals to the respawned agent that prior work exists in the worktree (#960)
+  if (worktreePath && fs.existsSync(worktreePath)) {
+    try {
+      const dirtyResult = await execAsync('git status --porcelain', { ..._gitOpts, cwd: worktreePath, timeout: 10000 });
+      const dirtyOutput = (dirtyResult.stdout || '').trim();
+      if (dirtyOutput) {
+        const dirtyFiles = dirtyOutput.split('\n').map(l => l.trim()).filter(Boolean);
+        const dirtySection = [
+          '\n## Uncommitted Work in Worktree\n',
+          'The worktree has uncommitted changes from a previous agent run. Review these files and continue from where the previous agent left off.\n',
+          '```',
+          ...dirtyFiles,
+          '```\n',
+        ].join('\n');
+        // Append dirty file list to the already-written prompt file
+        try { fs.appendFileSync(promptPath, dirtySection); } catch (e) { log('warn', `dirty files inject: ${e.message}`); }
+        log('info', `Injected ${dirtyFiles.length} dirty files into prompt for ${id}`);
+      }
+    } catch (e) { log('warn', `git status --porcelain for dirty files: ${e.message}`); }
+  }
+
   // Safety check: warn if a write-capable task is running in the main repo without a worktree
   if (cwd === rootDir && ['implement', 'implement:large', 'fix', 'test', 'verify', 'plan-to-prd'].includes(type)) {
     log('warn', `Agent ${agentId} running ${type} task in main repo (no worktree) for ${id} — changes may land on master directly`);

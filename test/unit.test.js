@@ -13306,7 +13306,7 @@ async function testFailureClassEnum() {
   console.log('\n── FAILURE_CLASS enum and classifyFailure() ──');
   const lifecycle = require('../engine/lifecycle');
 
-  await test('FAILURE_CLASS enum has all 10 required values', () => {
+  await test('FAILURE_CLASS enum has all 11 required values', () => {
     const { FAILURE_CLASS } = shared;
     assert.ok(FAILURE_CLASS, 'FAILURE_CLASS should be exported from shared.js');
     assert.strictEqual(FAILURE_CLASS.CONFIG_ERROR, 'config-error');
@@ -13318,8 +13318,9 @@ async function testFailureClassEnum() {
     assert.strictEqual(FAILURE_CLASS.SPAWN_ERROR, 'spawn-error');
     assert.strictEqual(FAILURE_CLASS.NETWORK_ERROR, 'network-error');
     assert.strictEqual(FAILURE_CLASS.OUT_OF_CONTEXT, 'out-of-context');
+    assert.strictEqual(FAILURE_CLASS.MAX_TURNS, 'max-turns');
     assert.strictEqual(FAILURE_CLASS.UNKNOWN, 'unknown');
-    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 10, 'FAILURE_CLASS should have exactly 10 values');
+    assert.strictEqual(Object.keys(FAILURE_CLASS).length, 11, 'FAILURE_CLASS should have exactly 11 values');
   });
 
   await test('ESCALATION_POLICY enum has all 5 values', () => {
@@ -13371,9 +13372,12 @@ async function testFailureClassEnum() {
       shared.FAILURE_CLASS.NETWORK_ERROR);
   });
 
-  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
+  await test('classifyFailure: max turns reached → MAX_TURNS', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, 'Error: max turns reached', ''),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+      shared.FAILURE_CLASS.MAX_TURNS);
+  });
+
+  await test('classifyFailure: context exhausted → OUT_OF_CONTEXT', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, 'context window exceeded', ''),
       shared.FAILURE_CLASS.OUT_OF_CONTEXT);
   });
@@ -14338,18 +14342,18 @@ async function testIssue716HeartbeatFeedbackLoop() {
   console.log('\n── #716: Heartbeat feedback loop + max_turns lifecycle cleanup ──');
   const lifecycle = require('../engine/lifecycle');
 
-  // 1. classifyFailure with exact Claude CLI error_max_turns output
-  await test('classifyFailure: exact error_max_turns JSON → OUT_OF_CONTEXT', () => {
+  // 1. classifyFailure with exact Claude CLI error_max_turns output → MAX_TURNS (retryable)
+  await test('classifyFailure: exact error_max_turns JSON → MAX_TURNS', () => {
     // Exact format from Claude CLI when agent exhausts turn limit
     const exactOutput = '{"type":"result","subtype":"error_max_turns","is_error":true,"terminal_reason":"max_turns"}';
     assert.strictEqual(lifecycle.classifyFailure(1, exactOutput, ''),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT,
-      'Exact error_max_turns JSON from Claude CLI should classify as OUT_OF_CONTEXT');
+      shared.FAILURE_CLASS.MAX_TURNS,
+      'Exact error_max_turns JSON from Claude CLI should classify as MAX_TURNS');
   });
 
-  await test('classifyFailure: terminal_reason max_turns in stderr → OUT_OF_CONTEXT', () => {
+  await test('classifyFailure: terminal_reason max_turns in stderr → MAX_TURNS', () => {
     assert.strictEqual(lifecycle.classifyFailure(1, '', 'terminal_reason: max_turns'),
-      shared.FAILURE_CLASS.OUT_OF_CONTEXT);
+      shared.FAILURE_CLASS.MAX_TURNS);
   });
 
   // 2. realActivityMap tracked in engine.js (prevents heartbeat feedback loop)
