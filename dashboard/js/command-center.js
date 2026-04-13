@@ -538,12 +538,11 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
     });
 
     if (!res.ok) {
-      // 429 = server still processing previous request (abort race) — retry silently up to 3 times
+      // 429 = server still releasing previous request (abort race) — retry silently up to 3 times
       if (res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
         activeTab._429retries = (activeTab._429retries || 0) + 1;
-        _cleanupStreamDiv();
         await new Promise(function(r) { setTimeout(r, 1500); });
-        return await _ccDoSend(message, true);
+        return await _ccDoSend(message, true); // retry with skipUserMsg=true (already displayed)
       }
       activeTab._429retries = 0;
       _cleanupStreamDiv();
