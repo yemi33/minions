@@ -6955,6 +6955,43 @@ async function testAgentSteering() {
       'Should write confirmation to live-output.log so user sees it in dashboard');
   });
 
+  // ── Steering no-session re-queue (#1014) ─────────────────────────────────────
+
+  await test('close handler detects _steeringNoSession and re-queues dispatch instead of erroring', () => {
+    // When steering kills an agent with no session, the close handler should
+    // move the dispatch item back to pending instead of completing as error.
+    // This ensures the engine retries and the agent picks up the inbox message.
+    assert.ok(engineSrc.includes('_steeringNoSession'),
+      'Close handler should check _steeringNoSession flag from timeout.js');
+    // Should re-queue (move to pending), not complete as error
+    const noSessionBlock = engineSrc.slice(
+      engineSrc.indexOf('_steeringNoSession'),
+      engineSrc.indexOf('_steeringNoSession') + 600
+    );
+    assert.ok(noSessionBlock.includes('pending'),
+      'Should move dispatch item back to pending queue');
+    assert.ok(!noSessionBlock.includes('DISPATCH_RESULT.ERROR'),
+      'Should NOT complete as error — re-queue instead');
+  });
+
+  await test('steering no-session re-queue cleans up activeProcesses and realActivityMap', () => {
+    const noSessionIdx = engineSrc.indexOf('_steeringNoSession');
+    const noSessionBlock = engineSrc.slice(noSessionIdx, noSessionIdx + 600);
+    assert.ok(noSessionBlock.includes('activeProcesses.delete'),
+      'Should remove from activeProcesses on re-queue');
+    assert.ok(noSessionBlock.includes('realActivityMap.delete'),
+      'Should clean up realActivityMap on re-queue');
+  });
+
+  await test('steering no-session re-queue logs the re-queue action', () => {
+    const noSessionIdx = engineSrc.indexOf('_steeringNoSession');
+    const noSessionBlock = engineSrc.slice(noSessionIdx, noSessionIdx + 600);
+    assert.ok(noSessionBlock.includes('log(') || noSessionBlock.includes("log('"),
+      'Should log the re-queue action for observability');
+    assert.ok(noSessionBlock.includes('re-queue'),
+      'Log message should mention re-queuing');
+  });
+
   // ── Steering resume failure handling ─────────────────────────────────────────
 
   await test('steering resume non-zero exit calls onAgentClose (not SUCCESS)', () => {
