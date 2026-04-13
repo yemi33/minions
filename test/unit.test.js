@@ -7537,6 +7537,9 @@ async function main() {
     // Dashboard audit: critical functional bugs
     await testDashboardAuditCritical();
 
+    // P-9e1a4c6b: Plan pause nested lock violation fix
+    await testPlanPauseNoNestedLocks();
+
     // Dashboard audit: XSS fixes
     await testDashboardAuditXss();
 
@@ -8324,16 +8327,30 @@ async function testDashboardBugFixes() {
       'handlePrdItemsUpdate should not use safeWrite(planPath) — use mutateJsonFileLocked instead');
   });
 
-  // Bug #18: dispatch PID read inside mutateJsonFileLocked
-  await test('plan pause reads dispatch inside mutateJsonFileLocked callback', () => {
-    // The old pattern was: const dispatch = JSON.parse(safeRead(dispatchPath)...) followed by mutateJsonFileLocked
-    // New pattern: all dispatch reads happen inside the mutateJsonFileLocked callback
-    const pauseSection = src.slice(src.indexOf('kill any active agent process'));
-    const nextFn = pauseSection.indexOf('\n  async function');
-    const pauseBody = pauseSection.slice(0, nextFn > -1 ? nextFn : 1500);
-    // Should NOT have standalone dispatch read before the lock
-    assert.ok(!pauseBody.includes('const dispatch = JSON.parse(safeRead(dispatchPath)'),
-      'Should not read dispatch.json outside the lock — read inside mutateJsonFileLocked callback');
+  // Bug #18 → P-9e1a4c6b: plan pause uses collect-then-release-then-act — no nested locks
+  await test('plan pause has no nested mutateWorkItems inside mutateJsonFileLocked', () => {
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+    // mutateJsonFileLocked callback should NOT contain mutateWorkItems
+    const lockStart = pauseBody.indexOf('mutateJsonFileLocked(dispatchPath');
+    assert.ok(lockStart > -1, 'Should have mutateJsonFileLocked(dispatchPath) call');
+    const lockBlock = pauseBody.slice(lockStart, pauseBody.indexOf('});', lockStart + 100) + 3);
+    assert.ok(!lockBlock.includes('mutateWorkItems'),
+      'mutateWorkItems must NOT appear inside mutateJsonFileLocked callback — no nested locks');
+  });
+
+  await test('plan pause kills processes outside any lock callback', () => {
+    const fnStart = src.indexOf('handlePlansPause');
+    const fnEnd = src.indexOf('async function', fnStart + 1);
+    const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+    // taskkill/process.kill should appear BEFORE mutateJsonFileLocked and BEFORE mutateWorkItems
+    const killPos = pauseBody.indexOf('taskkill') || pauseBody.indexOf('process.kill');
+    const lockPos = pauseBody.indexOf('mutateJsonFileLocked(dispatchPath');
+    const wiLockPos = pauseBody.indexOf('mutateWorkItems(wiPath');
+    assert.ok(killPos > -1, 'Should have taskkill/process.kill');
+    assert.ok(lockPos > killPos, 'mutateJsonFileLocked should come AFTER process kills');
+    assert.ok(wiLockPos > killPos, 'mutateWorkItems should come AFTER process kills');
   });
 
   // Bug #24: watcher cleanup in try-finally
@@ -14430,6 +14447,141 @@ async function testPrReviewFixFlows() {
     assert.ok(engineSrc.includes('Fix ${pr.id}: ${pr.title'), 'Fix label should have title');
     assert.ok(!engineSrc.includes('Review PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
     assert.ok(!engineSrc.includes('Fix PR ${pr.id}'), 'Should NOT have redundant "PR" before PR-xxx');
+  });
+}
+
+// ─── P-9e1a4c6b: Plan pause nested lock violation fix ──────────────────────
+
+async function testPlanPauseNoNestedLocks() {
+  console.log('\n── P-9e1a4c6b: Plan Pause No Nested Locks ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+  const fnStart = src.indexOf('async function handlePlansPause');
+  const fnEnd = src.indexOf('\n  async function', fnStart + 30);
+  const pauseBody = src.slice(fnStart, fnEnd > 0 ? fnEnd : fnStart + 5000);
+
+  await test('handlePlansPause: no mutateWorkItems inside mutateJsonFileLocked', () => {
+    // Find all mutateJsonFileLocked blocks and verify none contain mutateWorkItems
+    const lockRegex = /mutateJsonFileLocked\(dispatchPath[\s\S]*?\n      \}\)/g;
+    let match;
+    while ((match = lockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('mutateWorkItems'),
+        'mutateWorkItems must not appear inside mutateJsonFileLocked callback');
+    }
+  });
+
+  await test('handlePlansPause: no taskkill/execFileSync inside mutateJsonFileLocked', () => {
+    const lockRegex = /mutateJsonFileLocked\(dispatchPath[\s\S]*?\n      \}\)/g;
+    let match;
+    while ((match = lockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('taskkill') && !match[0].includes('execFileSync'),
+        'Process kill operations must not appear inside lock callbacks');
+      assert.ok(!match[0].includes('process.kill'),
+        'process.kill must not appear inside lock callbacks');
+    }
+  });
+
+  await test('handlePlansPause: no taskkill/execFileSync inside mutateWorkItems', () => {
+    const wiLockRegex = /mutateWorkItems\(wiPath[\s\S]*?\n        \}\)/g;
+    let match;
+    while ((match = wiLockRegex.exec(pauseBody)) !== null) {
+      assert.ok(!match[0].includes('taskkill') && !match[0].includes('execFileSync'),
+        'Process kill operations must not appear inside mutateWorkItems callback');
+      assert.ok(!match[0].includes('process.kill'),
+        'process.kill must not appear inside mutateWorkItems callback');
+    }
+  });
+
+  await test('handlePlansPause: still sets WI_STATUS.PAUSED and _pausedBy', () => {
+    assert.ok(pauseBody.includes('w.status = WI_STATUS.PAUSED'), 'must set status to PAUSED');
+    assert.ok(pauseBody.includes("w._pausedBy = 'prd-pause'"), 'must set _pausedBy = prd-pause');
+  });
+
+  await test('handlePlansPause: still cleans up dispatch active entries', () => {
+    assert.ok(pauseBody.includes('mutateJsonFileLocked(dispatchPath'),
+      'must use mutateJsonFileLocked for dispatch cleanup');
+    assert.ok(pauseBody.includes('resetItemIds.has(itemId)'),
+      'must filter dispatch active by resetItemIds');
+    assert.ok(pauseBody.includes('killedAgents.has(d.agent)'),
+      'must filter dispatch active by killedAgents');
+  });
+
+  await test('handlePlansPause: collect-then-act pattern — read before kill before lock', () => {
+    // Verify the ordering: dispatchedItemIds collection → killTargets collection → kills → mutateWorkItems → mutateJsonFileLocked
+    const dispatchedItemIdsPos = pauseBody.indexOf('dispatchedItemIds');
+    const killTargetsPos = pauseBody.indexOf('killTargets');
+    const taskkillPos = pauseBody.indexOf('taskkill');
+    const mutateWiPos = pauseBody.indexOf('mutateWorkItems(wiPath');
+    const mutateLockPos = pauseBody.lastIndexOf('mutateJsonFileLocked(dispatchPath');
+    assert.ok(dispatchedItemIdsPos < killTargetsPos, 'dispatchedItemIds collected before killTargets');
+    assert.ok(killTargetsPos < taskkillPos, 'killTargets collected before taskkill');
+    assert.ok(taskkillPos < mutateWiPos, 'kills happen before mutateWorkItems');
+    assert.ok(mutateWiPos < mutateLockPos, 'mutateWorkItems before dispatch cleanup lock');
+  });
+
+  // Behavioral test: simulate the pause logic outside of dashboard context
+  await test('BEHAVIORAL: plan pause collects kill targets and resets items without nesting', () => {
+    // Simulate work items
+    const items = [
+      { id: 'W1', status: 'done', completedAt: '2026-01-01', sourcePlan: 'test.json' },
+      { id: 'W2', status: 'dispatched', sourcePlan: 'test.json' },
+      { id: 'W3', status: 'pending', sourcePlan: 'test.json' },
+      { id: 'W4', status: 'failed', sourcePlan: 'test.json' },
+      { id: 'W5', status: 'dispatched', sourcePlan: 'other.json' },
+    ];
+    const dispatchActive = [
+      { agent: 'dallas', meta: { item: { id: 'W2' }, dispatchKey: 'dk-W2' } },
+      { agent: 'ralph', meta: { item: { id: 'W5' }, dispatchKey: 'dk-W5' } },
+    ];
+
+    // Step 1: Collect dispatched item IDs (read-only)
+    const dispatchedItemIds = new Set();
+    for (const w of items) {
+      if (w.sourcePlan !== 'test.json') continue;
+      if (w.completedAt || w.status === 'done') continue;
+      if (w.status === 'dispatched' && w.id) dispatchedItemIds.add(w.id);
+    }
+    assert.deepStrictEqual([...dispatchedItemIds], ['W2'], 'Only W2 should be dispatched for test.json');
+
+    // Step 2: Collect kill targets from dispatch active
+    const killTargets = [];
+    for (const d of dispatchActive) {
+      const itemId = d.meta?.item?.id;
+      if (itemId && dispatchedItemIds.has(itemId)) {
+        killTargets.push({ agent: d.agent, pid: null });
+      }
+    }
+    assert.strictEqual(killTargets.length, 1, 'Should find 1 kill target');
+    assert.strictEqual(killTargets[0].agent, 'dallas', 'Kill target should be dallas');
+
+    // Step 3: Kill would happen here (not simulated)
+
+    // Step 4: Pause items (mutateWorkItems equivalent)
+    let reset = 0;
+    const resetItemIds = new Set();
+    for (const w of items) {
+      if (w.sourcePlan !== 'test.json') continue;
+      if (w.completedAt || w.status === 'done') continue;
+      if (w.status !== 'paused') reset++;
+      w.status = 'paused';
+      w._pausedBy = 'prd-pause';
+      if (w.id) resetItemIds.add(w.id);
+    }
+    assert.strictEqual(reset, 3, 'Should reset W2, W3, W4');
+    assert.deepStrictEqual([...resetItemIds].sort(), ['W2', 'W3', 'W4'], 'resetItemIds should contain W2, W3, W4');
+
+    // Step 5: Clean dispatch active
+    const killedAgents = new Set(killTargets.map(t => t.agent));
+    const filtered = dispatchActive.filter(d => {
+      const itemId = d.meta?.item?.id;
+      if (itemId && resetItemIds.has(itemId)) return false;
+      if (killedAgents.has(d.agent)) return false;
+      return true;
+    });
+    assert.strictEqual(filtered.length, 1, 'Only W5 dispatch entry should survive');
+    assert.strictEqual(filtered[0].agent, 'ralph', 'ralph (other plan) should survive');
+    assert.strictEqual(items[0].status, 'done', 'Done item W1 should be untouched');
+    assert.strictEqual(items[4].status, 'dispatched', 'Other plan item W5 should be untouched');
   });
 }
 
