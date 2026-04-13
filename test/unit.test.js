@@ -1134,6 +1134,59 @@ async function testSyncPrdItemStatus() {
     // Should not throw — PRD_DIR might not exist or be empty
     lifecycle.reconcilePrdStatuses({});
   });
+
+  await test('reconcilePrdStatuses promotes stale dispatched/failed/pending PRD items to done (#984)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function reconcilePrdStatuses'), src.indexOf('// ─── PR Sync from Output'));
+    // Must check for stale PRD statuses (dispatched/failed/pending)
+    assert.ok(fn.includes('_STALE_PRD_STATUSES'),
+      'reconcilePrdStatuses must check _STALE_PRD_STATUSES for stale status reconciliation');
+    // Must promote stale statuses to WI_STATUS.DONE
+    assert.ok(fn.includes('WI_STATUS.DONE'),
+      'reconcilePrdStatuses must promote stale statuses to WI_STATUS.DONE');
+    // Must log the promotion
+    assert.ok(fn.includes('promoted') && fn.includes('→done'),
+      'reconcilePrdStatuses must log stale status→done promotions');
+  });
+
+  await test('_STALE_PRD_STATUSES constant includes dispatched, failed, and pending (#984)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Verify the constant includes all three stale statuses
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.DISPATCHED'),
+      '_STALE_PRD_STATUSES must include WI_STATUS.DISPATCHED');
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.FAILED'),
+      '_STALE_PRD_STATUSES must include WI_STATUS.FAILED');
+    assert.ok(src.includes('_STALE_PRD_STATUSES') && src.includes('WI_STATUS.PENDING'),
+      '_STALE_PRD_STATUSES must include WI_STATUS.PENDING');
+  });
+
+  await test('runPostCompletionHooks syncs PRD status via PR prdItems on fix completion (#984)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function runPostCompletionHooks'), src.indexOf('function syncPrdFromPrs'));
+    // Fix completion must check meta.pr.prdItems
+    assert.ok(fn.includes('meta?.pr?.prdItems'),
+      'runPostCompletionHooks must check meta.pr.prdItems for fix completions');
+    // Must verify work item is done before syncing
+    assert.ok(fn.includes('DONE_STATUSES.has(wi.status)'),
+      'runPostCompletionHooks must verify work item is done before syncing PRD after fix');
+    // Must call syncPrdItemStatus for each prdItem
+    assert.ok(fn.includes('syncPrdItemStatus(prdItemId, WI_STATUS.DONE'),
+      'runPostCompletionHooks must call syncPrdItemStatus for PR-linked prdItems on fix completion');
+  });
+
+  await test('updateWorkItemStatus syncs PRD via PR prdItems when fix WI completes (#984)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function updateWorkItemStatus'), src.indexOf('const _VALID_PRD_STATUSES'));
+    // Must look up PR prdItems on done status
+    assert.ok(fn.includes('pr.prdItems'),
+      'updateWorkItemStatus must look up PR prdItems when work item completes');
+    // Must match by branch
+    assert.ok(fn.includes('pr.branch') && fn.includes('branchMatch'),
+      'updateWorkItemStatus must match PR by branch when syncing prdItems');
+    // Must call syncPrdItemStatus for each prdItem
+    assert.ok(fn.includes('syncPrdItemStatus(prdItemId, WI_STATUS.DONE)'),
+      'updateWorkItemStatus must call syncPrdItemStatus for each PR-linked prdItem');
+  });
 }
 
 // ─── Consolidation Tests ─────────────────────────────────────────────────────

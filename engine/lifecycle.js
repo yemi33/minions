@@ -614,9 +614,32 @@ function updateWorkItemStatus(meta, status, reason) {
 
   log('info', `Work item ${itemId} → ${status}${reason ? ': ' + reason : ''}`);
   syncPrdItemStatus(itemId, status, meta.item?.sourcePlan);
+
+  // (#984) Fix work items have a different ID than the original PRD feature —
+  // syncPrdItemStatus(fixWiId) finds nothing. Look up the PR's prdItems and sync those too.
+  if (status === WI_STATUS.DONE && meta.project?.name) {
+    try {
+      const prPath = projectPrPath(meta.project);
+      const prs = safeJson(prPath) || [];
+      for (const pr of prs) {
+        if (!Array.isArray(pr.prdItems) || pr.prdItems.length === 0) continue;
+        // Match PR to this work item via branch or prdItems containing itemId
+        const branch = meta.branch || meta.item?.featureBranch;
+        const branchMatch = branch && pr.branch && pr.branch === branch;
+        if (!branchMatch) continue;
+        for (const prdItemId of pr.prdItems) {
+          if (prdItemId !== itemId) {
+            syncPrdItemStatus(prdItemId, WI_STATUS.DONE);
+          }
+        }
+      }
+    } catch (err) { log('warn', `PRD sync via PR prdItems: ${err.message}`); }
+  }
 }
 
 const _VALID_PRD_STATUSES = new Set([...Object.values(WI_STATUS), 'missing']);
+// (#984) PRD statuses that are stale when the work item is actually done
+const _STALE_PRD_STATUSES = new Set([WI_STATUS.DISPATCHED, WI_STATUS.FAILED, WI_STATUS.PENDING]);
 function syncPrdItemStatus(itemId, status, sourcePlan) {
   if (!itemId) return;
   if (!_VALID_PRD_STATUSES.has(status)) return;
@@ -637,11 +660,12 @@ function syncPrdItemStatus(itemId, status, sourcePlan) {
   } catch (err) { log('warn', `PRD status sync: ${err.message}`); }
 }
 
-// ─── PRD Backward-Scan Reconciliation (#929) ────────────────────────────────
-// Proactive counterpart to syncPrdItemStatus. Scans all active PRDs and promotes
-// "missing" items to "updated" when a done work item already exists for that ID.
-// This catches cases where a PRD regeneration incorrectly sets items to "missing"
-// and no subsequent work item state change triggers the reactive sync.
+// ─── PRD Backward-Scan Reconciliation (#929, #984) ─────────────────────────
+// Proactive counterpart to syncPrdItemStatus. Scans all active PRDs and:
+// 1. Promotes "missing" items to "updated" when a done work item already exists (#929)
+// 2. Promotes stale "dispatched"/"failed"/"pending" items to "done" when the work item
+//    is actually done (#984) — catches cases where fix work items complete with a
+//    different ID than the original PRD feature, leaving the PRD status stale.
 
 function reconcilePrdStatuses(config) {
   if (!fs.existsSync(PRD_DIR)) return;
@@ -673,6 +697,14 @@ function reconcilePrdStatuses(config) {
           feature.status = PRD_ITEM_STATUS.UPDATED;
           modified = true;
           log('info', `PRD backward-scan: promoted ${feature.id} from missing→updated in ${file} (done work item exists)`);
+        }
+        // (#984) Stale status: PRD item stuck at dispatched/failed/pending while WI is done —
+        // happens when fix work items complete with a different ID than the original PRD feature
+        else if (_STALE_PRD_STATUSES.has(feature.status) && doneWiById.has(feature.id)) {
+          const prev = feature.status;
+          feature.status = WI_STATUS.DONE;
+          modified = true;
+          log('info', `PRD backward-scan: promoted ${feature.id} from ${prev}→done in ${file} (done work item exists)`);
         }
       }
 
@@ -1790,7 +1822,23 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   }
 
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
-  if (type === WORK_TYPE.FIX) updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+  if (type === WORK_TYPE.FIX) {
+    updatePrAfterFix(meta?.pr, meta?.project, meta?.source);
+    // (#984) Sync PRD status for PR-linked features: fix work items have a different ID
+    // than the original PRD feature, so syncPrdItemStatus(fixWiId, ...) finds nothing.
+    // Use the PR's prdItems to propagate done status when the original work item is done.
+    if (effectiveSuccess && meta?.pr?.prdItems?.length) {
+      try {
+        const allWis = queries.getWorkItems(config);
+        for (const prdItemId of meta.pr.prdItems) {
+          const wi = allWis.find(w => w.id === prdItemId);
+          if (wi && DONE_STATUSES.has(wi.status) && wi.sourcePlan) {
+            syncPrdItemStatus(prdItemId, WI_STATUS.DONE, wi.sourcePlan);
+          }
+        }
+      } catch (err) { log('warn', `PRD sync after fix: ${err.message}`); }
+    }
+  }
   checkForLearnings(agentId, config.agents[agentId], dispatchItem.task);
   if (effectiveSuccess) {
     extractSkillsFromOutput(stdout, agentId, dispatchItem, config);
