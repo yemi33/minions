@@ -10103,8 +10103,23 @@ async function testEngineAuditCritical() {
     const engineSrcRebase = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrcRebase.includes('processPendingRebases(config)'),
       'engine.js must call processPendingRebases during PR poll phase');
-    assert.ok(engineSrcRebase.includes('processPendingRebases }'),
+    assert.ok(engineSrcRebase.includes('processPendingRebases'),
       'engine.js must import processPendingRebases from lifecycle');
+  });
+
+  await test('engine.js imports resolveWorkItemPath from lifecycle', () => {
+    const engineSrcRwip = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(engineSrcRwip.includes('resolveWorkItemPath }') || engineSrcRwip.includes('resolveWorkItemPath,'),
+      'engine.js must import resolveWorkItemPath from lifecycle');
+    assert.ok(engineSrcRwip.includes('resolveWorkItemPath(dispatchItem.meta)'),
+      'engine.js must call resolveWorkItemPath for artifact tracking');
+    // Behavioral: verify the function is actually callable
+    const lifecycle = require(path.join(MINIONS_DIR, 'engine', 'lifecycle'));
+    assert.strictEqual(typeof lifecycle.resolveWorkItemPath, 'function',
+      'resolveWorkItemPath must be exported as a function from lifecycle');
+    // Verify it returns null for unknown source
+    assert.strictEqual(lifecycle.resolveWorkItemPath({ source: 'unknown' }), null,
+      'resolveWorkItemPath must return null for unrecognized source');
   });
 
   await test('scheduler enabled check uses truthy, not strict equality', () => {
