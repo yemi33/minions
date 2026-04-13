@@ -438,12 +438,19 @@ async function _createPlanFromMeeting(id, btn) {
         message: 'Create an actionable implementation plan from this meeting. Extract concrete action items from the conclusion and debates. For each item include: what to do, which files/areas to change, priority (high/medium/low), and estimated complexity (small/medium/large). Structure it as a plan ready for execution. Do NOT include preamble — start with the plan title.' + humanContext,
         document: meetingDoc,
         title: 'Meeting: ' + m.title,
+        freshSession: true,
       })
     });
     const genData = await genRes.json();
     if (!genRes.ok || !genData.ok) { resetBtn(); showToast('cmd-toast', 'Failed to generate plan: ' + (genData.error || 'unknown'), false); return; }
 
     const planContent = genData.answer || '';
+    // Guard: reject doc-chat meta-responses that aren't plan content
+    if (!planContent.trim() || !/^[#*\-]/.test(planContent.trim())) {
+      resetBtn();
+      showToast('cmd-toast', 'Generated content does not look like a plan — try again', false);
+      return;
+    }
     const title = 'Meeting follow-up: ' + (m.title || id);
     const planRes = await fetch('/api/plans/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
