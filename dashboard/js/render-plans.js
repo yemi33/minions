@@ -81,14 +81,14 @@ function derivePlanStatus(prdFile, mdFile, prdJsonStatus, workItems) {
   if (prdJsonStatus === 'rejected') return 'rejected';
   if (prdJsonStatus === 'paused' && !allDone) return 'paused';
   if (prdJsonStatus === 'revision-requested') return 'revision-requested';
+  // PRD awaiting approval overrides WI-derived completion — new items may need materialization (#970)
+  if (prdJsonStatus === 'awaiting-approval') return 'awaiting-approval';
 
   // Derive from work item progress
   if (allDone && !hasActiveWork) return 'completed';
   if (hasActiveWork) return 'dispatched';
   if (hasPendingPrd) return 'converting';
   if (hasFailed && !hasActiveWork) return 'has-failures';
-
-  if (prdJsonStatus === 'awaiting-approval' && implementWi.length === 0) return 'awaiting-approval';
   if (prdJsonStatus === 'approved' && implementWi.length === 0) return 'approved';
 
   // plan-to-prd conversion done but no implement items and PRD is gone — truly completed
