@@ -167,6 +167,68 @@ function parseConflictFiles(mergeOutput) {
   return [...new Set(files)]; // dedupe
 }
 
+// Prune dep branches that are ancestors of other dep branches (#958)
+// When B already contains A's commits, merging both A and B causes conflicts.
+async function pruneAncestorDeps(deps, gitOpts, cwd) {
+  if (deps.length <= 1) return deps;
+  const ancestorIndices = new Set();
+  for (let i = 0; i < deps.length; i++) {
+    if (ancestorIndices.has(i)) continue;
+    for (let j = 0; j < deps.length; j++) {
+      if (i === j || ancestorIndices.has(j)) continue;
+      try {
+        await execAsync(`git merge-base --is-ancestor "origin/${deps[i].branch}" "origin/${deps[j].branch}"`, { ...gitOpts, cwd });
+        // deps[i] is an ancestor of deps[j] — prune deps[i]
+        ancestorIndices.add(i);
+        break;
+      } catch (_) { /* not an ancestor — that's fine */ }
+    }
+  }
+  return deps.filter((_, i) => !ancestorIndices.has(i));
+}
+
+// Pre-flight merge simulation using git merge-tree --write-tree (#958)
+// Simulates sequential merges by chaining output tree SHAs via temporary commits.
+// Returns { ok, conflictBranch, conflictFiles, isInterDep, prevBranch }
+async function preflightMergeSimulation(deps, mainRef, gitOpts, cwd) {
+  if (deps.length === 0) return { ok: true };
+  let currentRef = `origin/${mainRef}`;
+  let prevBranch = mainRef;
+  for (let i = 0; i < deps.length; i++) {
+    const depBranch = deps[i].branch;
+    try {
+      const result = await execAsync(`git merge-tree --write-tree "${currentRef}" "origin/${depBranch}"`, { ...gitOpts, cwd });
+      const treeSha = (typeof result === 'string' ? result : (result.stdout?.toString?.() || '')).trim().split('\n')[0];
+      if (!treeSha) return { ok: true }; // can't parse tree SHA, skip pre-flight
+      // Create temp commit to chain for next dep (skip for last dep — no chaining needed)
+      if (i < deps.length - 1) {
+        try {
+          const commitResult = await execAsync(
+            `git commit-tree "${treeSha}" -p "${currentRef}" -p "origin/${depBranch}" -m "preflight-merge"`,
+            { ...gitOpts, cwd }
+          );
+          const commitSha = (typeof commitResult === 'string' ? commitResult : (commitResult.stdout?.toString?.() || '')).trim();
+          if (commitSha) {
+            prevBranch = depBranch;
+            currentRef = commitSha;
+          }
+        } catch (_) { return { ok: true }; } // commit-tree failed, skip pre-flight gracefully
+      }
+    } catch (err) {
+      const output = (err.stdout?.toString?.() || '') + '\n' + (err.stderr?.toString?.() || '');
+      const isInterDep = prevBranch !== mainRef;
+      return {
+        ok: false,
+        conflictBranch: depBranch,
+        conflictFiles: parseConflictFiles(output),
+        isInterDep,
+        prevBranch,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 const _FAST_WORK_TYPES = new Set([WORK_TYPE.EXPLORE, WORK_TYPE.ASK, WORK_TYPE.REVIEW]);
 const _MAX_TURNS_BY_TYPE = {
   [WORK_TYPE.EXPLORE]: 30, [WORK_TYPE.ASK]: 20, [WORK_TYPE.REVIEW]: 30,
@@ -524,8 +586,41 @@ async function spawnAgent(dispatchItem, config) {
           }
           // Merge successfully-fetched + recovered (local-only pushed) branches sequentially
           const fetched = fetchable.filter((_, i) => fetchResults[i].status === 'fulfilled' || recoveredBranches.has(fetchable[i].branch));
+          // Ancestor pruning: remove dep branches already contained in another (#958)
+          let prunedDeps = fetched;
+          let _isInterDepConflict = false;
+          let _preflightConflictPrev = null;
+          if (fetched.length > 1 && !depMergeFailed) {
+            try {
+              prunedDeps = await pruneAncestorDeps(fetched, _gitOpts, rootDir);
+              if (prunedDeps.length < fetched.length) {
+                const pruned = fetched.filter(d => !prunedDeps.includes(d));
+                log('info', `Ancestor pruning removed ${pruned.length} dep(s): ${pruned.map(d => d.branch).join(', ')}`);
+              }
+            } catch (e) {
+              log('warn', `Ancestor pruning failed, using all deps: ${e.message}`);
+              prunedDeps = fetched;
+            }
+          }
+          // Pre-flight merge simulation: detect conflicts without touching the worktree (#958)
+          if (!depMergeFailed && prunedDeps.length > 0) {
+            const pfMainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+            try {
+              const sim = await preflightMergeSimulation(prunedDeps, pfMainRef, _gitOpts, rootDir);
+              if (!sim.ok) {
+                depMergeFailed = true;
+                depConflictBranch = sim.conflictBranch;
+                depConflictFiles = sim.conflictFiles;
+                _isInterDepConflict = sim.isInterDep;
+                _preflightConflictPrev = sim.prevBranch;
+                log('warn', `Pre-flight merge simulation detected conflict: ${sim.conflictBranch}${sim.isInterDep ? ` (inter-dep with ${sim.prevBranch})` : ''}`);
+              }
+            } catch (e) {
+              log('warn', `Pre-flight simulation failed, proceeding with real merge: ${e.message}`);
+            }
+          }
           if (!depMergeFailed) {
-            for (const { branch: depBranch, prId } of fetched) {
+            for (const { branch: depBranch, prId } of prunedDeps) {
               try {
                 await execAsync(`git merge "origin/${depBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                 log('info', `Merged dependency branch ${depBranch} (${prId}) into worktree ${branchName}`);
@@ -538,30 +633,42 @@ async function spawnAgent(dispatchItem, config) {
                 try {
                   await execAsync(`git reset --hard "origin/${mainRef}"`, { ..._gitOpts, cwd: worktreePath });
                   log('info', `Reset worktree ${branchName} to origin/${mainRef} for clean dep re-merge`);
-                  // Re-merge ALL fetched dep branches from scratch on clean base
-                  for (const { branch: reBranch, prId: rePrId } of fetched) {
+                  // Re-merge ALL pruned dep branches from scratch on clean base
+                  for (const { branch: reBranch, prId: rePrId } of prunedDeps) {
                     await execAsync(`git merge "origin/${reBranch}" --no-edit`, { ..._gitOpts, cwd: worktreePath });
                     log('info', `Re-merged dependency branch ${reBranch} (${rePrId}) into worktree ${branchName}`);
                   }
-                  log('info', `Successfully re-merged all ${fetched.length} dep branches after reset for ${branchName}`);
+                  log('info', `Successfully re-merged all ${prunedDeps.length} dep branches after reset for ${branchName}`);
                 } catch (resetErr) {
                   const errOutput = (resetErr.message || '') + '\n' + (resetErr.stdout?.toString?.() || '') + '\n' + (resetErr.stderr?.toString?.() || '');
                   log('warn', `Failed to reset and re-merge deps for ${branchName}: ${resetErr.message}`);
                   try { await execAsync(`git merge --abort`, { ..._gitOpts, cwd: worktreePath }); } catch (_) { /* no merge in progress */ }
-                  // Identify which dep branch caused the conflict during re-merge
-                  // The last branch attempted in the re-merge loop is the one that failed
-                  for (const { branch: reBranch2 } of fetched) {
-                    try {
-                      const mainRef2 = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
-                      const mergeBase = (await execAsync(`git merge-base "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir })).stdout.toString().trim();
-                      const treeResult = await execAsync(`git merge-tree "${mergeBase}" "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir });
-                      const treeOutput = treeResult.stdout?.toString?.() || '';
-                      if (treeOutput.includes('<<<<<<<') || treeOutput.includes('changed in both')) {
-                        depConflictBranch = reBranch2;
-                        depConflictFiles = parseConflictFiles(treeOutput);
-                        break;
-                      }
-                    } catch (_e) { /* merge-tree may fail — continue checking other branches */ }
+                  // Post-mortem: incremental simulation to identify which dep caused the conflict (#958)
+                  // Uses same chained merge-tree approach as pre-flight to catch inter-dep conflicts
+                  const pmMainRef = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                  try {
+                    const sim = await preflightMergeSimulation(prunedDeps, pmMainRef, _gitOpts, rootDir);
+                    if (!sim.ok) {
+                      depConflictBranch = sim.conflictBranch;
+                      depConflictFiles = sim.conflictFiles;
+                      _isInterDepConflict = sim.isInterDep;
+                      _preflightConflictPrev = sim.prevBranch;
+                    }
+                  } catch (_simErr) {
+                    // Fallback: old per-branch isolation check via 3-arg git merge-tree
+                    for (const { branch: reBranch2 } of prunedDeps) {
+                      try {
+                        const mainRef2 = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                        const mergeBase = (await execAsync(`git merge-base "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir })).stdout.toString().trim();
+                        const treeResult = await execAsync(`git merge-tree "${mergeBase}" "origin/${mainRef2}" "origin/${reBranch2}"`, { ..._gitOpts, cwd: rootDir });
+                        const treeOutput = treeResult.stdout?.toString?.() || '';
+                        if (treeOutput.includes('<<<<<<<') || treeOutput.includes('changed in both')) {
+                          depConflictBranch = reBranch2;
+                          depConflictFiles = parseConflictFiles(treeOutput);
+                          break;
+                        }
+                      } catch (_e) { /* merge-tree may fail — continue checking other branches */ }
+                    }
                   }
                   // Fallback: parse conflict files from the error output if merge-tree didn't identify them
                   if (!depConflictBranch) {
@@ -575,10 +682,15 @@ async function spawnAgent(dispatchItem, config) {
           }
           if (depMergeFailed) {
             _cleanupPromptFiles();
-            // Build actionable failReason identifying the conflicting branch and files
+            // Build actionable failReason identifying the conflicting branch and files (#958)
+            const mainBranch = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
             let failReason = 'Dependency merge failed';
             if (depConflictBranch) {
-              failReason = `Dependency merge failed: ${depConflictBranch} conflicts with ${sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch))}`;
+              if (_isInterDepConflict && _preflightConflictPrev) {
+                failReason = `Dependency merge failed: ${depConflictBranch} conflicts with dep ${_preflightConflictPrev}`;
+              } else {
+                failReason = `Dependency merge failed: ${depConflictBranch} conflicts with ${mainBranch}`;
+              }
               if (depConflictFiles.length > 0) failReason += ` in ${depConflictFiles.slice(0, 5).join(', ')}`;
               failReason += ' — dep branch needs updating';
             }
@@ -594,22 +706,26 @@ async function spawnAgent(dispatchItem, config) {
                 const filesDesc = depConflictFiles.length > 0
                   ? `\n\nConflicting files:\n${depConflictFiles.map(f => '- ' + f).join('\n')}`
                   : '';
-                const mainBranch = sanitizeBranch(shared.resolveMainBranch(rootDir, project.mainBranch));
+                // Inter-dep conflict: rebase onto the conflicting dep; dep-vs-main: merge main (#958)
+                const conflictFixDesc = _isInterDepConflict && _preflightConflictPrev
+                  ? `Branch \`${depConflictBranch}\` conflicts with dependency branch \`${_preflightConflictPrev}\`. Rebase \`${depConflictBranch}\` onto \`${_preflightConflictPrev}\` (or merge \`${_preflightConflictPrev}\` into \`${depConflictBranch}\`) and resolve conflicts, then push.`
+                  : `Branch \`${depConflictBranch}\` conflicts with \`${mainBranch}\`. Merge ${mainBranch} into the branch and resolve conflicts, then push.`;
                 mutateWorkItems(wiPath, items => {
                   // Don't create duplicate conflict-fix items
                   const existing = items.find(i => i.id === conflictFixId && i.status !== WI_STATUS.DONE && i.status !== WI_STATUS.FAILED && i.status !== WI_STATUS.CANCELLED);
                   if (existing) return;
                   items.push({
                     id: conflictFixId,
-                    title: `Fix merge conflict: ${depConflictBranch} conflicts with ${mainBranch}`,
+                    title: `Fix merge conflict: ${depConflictBranch} conflicts with ${_isInterDepConflict ? _preflightConflictPrev : mainBranch}`,
                     type: WORK_TYPE.FIX,
                     priority: 'high',
                     status: WI_STATUS.PENDING,
-                    description: `Branch \`${depConflictBranch}\` conflicts with \`${mainBranch}\`. Merge ${mainBranch} into the branch and resolve conflicts, then push.${filesDesc}\n\nBlocked downstream item: \`${meta.item.id}\` — ${meta.item.title || ''}`,
+                    description: `${conflictFixDesc}${filesDesc}\n\nBlocked downstream item: \`${meta.item.id}\` — ${meta.item.title || ''}`,
                     created: ts(),
                     createdBy: 'engine:dep-conflict-fix',
                     _branch: depConflictBranch,
                     _blockedItem: meta.item.id,
+                    _isInterDepConflict: _isInterDepConflict || false,
                     project: project.name || null,
                   });
                   log('info', `Auto-queued conflict-fix work item ${conflictFixId} for ${depConflictBranch} (blocked: ${meta.item.id})`);
@@ -3201,7 +3317,7 @@ module.exports = {
 
   // Shared helpers (used by lifecycle.js and tests)
   reconcileItemsWithPrs, detectDependencyCycles,
-  parseConflictFiles, // exported for testing
+  parseConflictFiles, pruneAncestorDeps, preflightMergeSimulation, // exported for testing
 
   // Playbooks
   renderPlaybook, validatePlaybookVars, PLAYBOOK_REQUIRED_VARS, buildWorkItemDispatchVars,
