@@ -1141,7 +1141,12 @@ async function spawnAgent(dispatchItem, config) {
     // autoRecovered: agent failed (e.g. heartbeat timeout) but created PRs — treat as success
     const effectiveResult = (code === 0 || autoRecovered) ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR;
     const completeOpts = effectiveResult === DISPATCH_RESULT.ERROR && failureClass ? { failureClass } : {};
-    completeDispatch(id, effectiveResult, '', resultSummary, completeOpts);
+    // Extract last 5 non-empty stderr lines as error context when exit code is non-zero
+    let errorReason = '';
+    if (effectiveResult === DISPATCH_RESULT.ERROR) {
+      errorReason = stderr.split('\n').filter(l => l.trim()).slice(-5).join(' | ').trim().slice(0, 300);
+    }
+    completeDispatch(id, effectiveResult, errorReason, resultSummary, completeOpts);
 
     // Cleanup temp files (including PID file now that dispatch is complete)
     try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }

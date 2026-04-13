@@ -13809,6 +13809,38 @@ async function testRecoveryRecipes() {
       'completeDispatch should call shouldRetry from recovery module');
   });
 
+  await test('completeDispatch uses CLASS_LABELS map for human-readable failure reasons', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes('CLASS_LABELS'),
+      'completeDispatch should define CLASS_LABELS map');
+    assert.ok(src.includes('FAILURE_CLASS.EMPTY_OUTPUT') && src.includes('agent produced no output'),
+      'CLASS_LABELS should map EMPTY_OUTPUT to descriptive label');
+    assert.ok(src.includes('FAILURE_CLASS.BUILD_FAILURE') && src.includes('build/test/lint failure'),
+      'CLASS_LABELS should map BUILD_FAILURE to descriptive label');
+    assert.ok(src.includes('FAILURE_CLASS.MERGE_CONFLICT') && src.includes('merge conflict'),
+      'CLASS_LABELS should map MERGE_CONFLICT to descriptive label');
+    assert.ok(src.includes('FAILURE_CLASS.MAX_TURNS') && src.includes('max turn limit'),
+      'CLASS_LABELS should map MAX_TURNS to descriptive label');
+  });
+
+  await test('completeDispatch appends [FAILURE_CLASS] suffix to failure reason', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'dispatch.js'), 'utf8');
+    assert.ok(src.includes("classSuffix") && src.includes("toUpperCase()") && src.includes("replace(/-/g, '_')"),
+      'Should format failureClass as uppercase with underscores for [SUFFIX]');
+    assert.ok(src.includes('effectiveReason') && src.includes('classLabel'),
+      'Should use classLabel as fallback when reason is empty');
+  });
+
+  await test('engine.js extracts stderr lines as errorReason on failure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    assert.ok(src.includes("stderr.split('\\n').filter(l => l.trim()).slice(-5)"),
+      'Should extract last 5 non-empty stderr lines on failure');
+    assert.ok(src.includes('errorReason') && src.includes('completeDispatch(id, effectiveResult, errorReason'),
+      'Should pass errorReason to completeDispatch instead of empty string');
+    assert.ok(src.includes('effectiveResult === DISPATCH_RESULT.ERROR') && src.includes('.slice(0, 300)'),
+      'Should only extract stderr on error and trim to 300 chars');
+  });
+
   await test('recovery.js has zero external dependencies', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'recovery.js'), 'utf8');
     const requires = src.match(/require\(['"](.*?)['"]\)/g) || [];
