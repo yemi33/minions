@@ -61,6 +61,7 @@ async function openSettings() {
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
       settingsField('Eval Max Cost', 'set-evalMaxCost', e.evalMaxCost === null || e.evalMaxCost === undefined ? '' : e.evalMaxCost, '$', 'USD ceiling per work item across all eval iterations (blank = no limit)') +
       settingsField('Max Build Fix Attempts', 'set-maxBuildFixAttempts', e.maxBuildFixAttempts || 3, '', 'Max auto-fix dispatches per PR before escalating to human (1-10)') +
+      settingsField('Agent Busy Reassign', 'set-agentBusyReassignMs', e.agentBusyReassignMs || 600000, 'ms', 'Reassign work to another agent after it waits this long on a busy agent') +
       settingsField('Version Check Interval', 'set-versionCheckInterval', e.versionCheckInterval || 3600000, 'ms', 'How often to check npm for updates (default: 1 hour)') +
       settingsField('Ignored Comment Authors', 'set-ignoredCommentAuthors', (e.ignoredCommentAuthors || []).join(', '), '', 'Comma-separated usernames — comments auto-closed, never trigger fixes') +
     '</div>' +
@@ -246,6 +247,7 @@ async function saveSettings() {
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,
+      agentBusyReassignMs: document.getElementById('set-agentBusyReassignMs').value,
       ignoredCommentAuthors: document.getElementById('set-ignoredCommentAuthors').value,
       versionCheckInterval: document.getElementById('set-versionCheckInterval').value,
       ccModel: document.getElementById('set-ccModel').value,
