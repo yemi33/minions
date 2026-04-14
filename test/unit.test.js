@@ -7215,6 +7215,34 @@ async function testAgentSteering() {
       'spawn-agent should close stdin after writing prompt');
   });
 
+  // ── Steering kill watcher cancellation on resume (#1052) ───────────────────
+
+  await test('resumed process tracking does NOT carry _steeringAt (#1052)', () => {
+    // Bug: when the engine re-attaches after a successful steering resume spawn,
+    // it sets _steeringAt: Date.now() on the new tracking object. This causes
+    // checkSteering's 30s kill watcher to fire against the resumed session.
+    // Fix: the re-attached tracking must NOT have _steeringAt.
+    const resumeAttachLine = engineSrc.match(/activeProcesses\.set\(id,\s*\{[^}]*proc:\s*resumeProc[^}]*\}/);
+    assert.ok(resumeAttachLine, 'Should find activeProcesses.set for resumed process');
+    assert.ok(!resumeAttachLine[0].includes('_steeringAt'),
+      'Resumed process tracking must NOT include _steeringAt — kill watcher must not fire against resumed session');
+  });
+
+  await test('checkSteering kill watcher only fires when _steeringAt is set (#1052)', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // The kill watcher guard: info._steeringAt must be truthy for kill to fire
+    assert.ok(timeoutSrc.includes('info._steeringAt && Date.now()'),
+      'Kill watcher must check _steeringAt before computing elapsed time');
+  });
+
+  await test('checkSteering skip guard prevents double-steering on resumed process (#1052)', () => {
+    const timeoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'timeout.js'), 'utf8');
+    // Without _steeringAt on the resumed process, the skip guard (line 80) won't block
+    // new steering, which is correct — a resumed process should be steerable again.
+    assert.ok(timeoutSrc.includes('_steeringMessage || info._steeringAt'),
+      'Skip guard should check both _steeringMessage and _steeringAt');
+  });
+
   // Functional test: checkSteering with mock activeProcesses
   await test('checkSteering functional: finds steer.md and sets flags', () => {
     const restore = createTestMinionsDir();
