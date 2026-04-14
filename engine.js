@@ -1110,6 +1110,34 @@ async function spawnAgent(dispatchItem, config) {
       return;
     }
 
+    // Check if this was a no-session steering kill (#1014) — re-queue for retry instead of erroring.
+    // timeout.js sets _steeringNoSession when it kills an agent that hasn't established a sessionId.
+    // The steering message is already saved to inbox, so re-queuing lets the engine retry and the
+    // agent picks up the message on the next dispatch.
+    if (procInfo?._steeringNoSession) {
+      log('info', `Steering no-session: re-queue ${agentId} (${id}) — dispatch moved back to pending`);
+      activeProcesses.delete(id);
+      realActivityMap.delete(id);
+      // Move dispatch item from active back to pending so engine retries
+      mutateDispatch((dp) => {
+        const idx = dp.active.findIndex(d => d.id === id);
+        if (idx >= 0) {
+          const item = dp.active.splice(idx, 1)[0];
+          delete item.started_at;
+          delete item.workerState;
+          delete item.workerStateAt;
+          delete item.workerStateDetail;
+          dp.pending.push(item);
+        }
+        return dp;
+      });
+      // Cleanup temp files
+      try { fs.unlinkSync(sysPromptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath); } catch { /* cleanup */ }
+      try { fs.unlinkSync(promptPath.replace(/prompt-/, 'pid-').replace(/\.md$/, '.pid')); } catch { /* cleanup */ }
+      return;
+    }
+
     activeProcesses.delete(id);
     realActivityMap.delete(id); // Clean up real activity tracking
 
