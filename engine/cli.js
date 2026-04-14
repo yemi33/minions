@@ -493,6 +493,23 @@ const commands = {
 
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+    // Crash handlers — log the error and exit cleanly so the process is detectable as crashed
+    process.on('unhandledRejection', (reason) => {
+      const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+      console.error(`[FATAL] Unhandled promise rejection: ${msg}`);
+      try { shared.log('fatal', `Unhandled promise rejection: ${msg}`); } catch { /* best effort */ }
+      try { shared.flushLogs(); } catch { /* best effort */ }
+      process.exit(1);
+    });
+
+    process.on('uncaughtException', (err) => {
+      const msg = err instanceof Error ? err.stack || err.message : String(err);
+      console.error(`[FATAL] Uncaught exception: ${msg}`);
+      try { shared.log('fatal', `Uncaught exception: ${msg}`); } catch { /* best effort */ }
+      try { shared.flushLogs(); } catch { /* best effort */ }
+      process.exit(1);
+    });
   },
 
   stop() {

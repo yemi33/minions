@@ -10491,6 +10491,39 @@ async function testAuxModuleBugFixes() {
     assert.ok(src.includes('fs.unlinkSync(sysTmpPath)'), 'Cleanup should delete sysTmpPath');
   });
 
+  // cli.js: unhandledRejection and uncaughtException handlers
+  await test('cli.js: registers unhandledRejection handler', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes("process.on('unhandledRejection'"), 'Should register unhandledRejection handler');
+  });
+
+  await test('cli.js: registers uncaughtException handler', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(src.includes("process.on('uncaughtException'"), 'Should register uncaughtException handler');
+  });
+
+  await test('cli.js: unhandledRejection handler logs error and flushes before exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    // Find the unhandledRejection handler block
+    const idx = src.indexOf("process.on('unhandledRejection'");
+    assert.ok(idx > 0, 'Must have unhandledRejection handler');
+    const block = src.slice(idx, idx + 500);
+    assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
+    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
+  });
+
+  await test('cli.js: uncaughtException handler logs error and flushes before exit', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    // Find the uncaughtException handler block
+    const idx = src.indexOf("process.on('uncaughtException'");
+    assert.ok(idx > 0, 'Must have uncaughtException handler');
+    const block = src.slice(idx, idx + 500);
+    assert.ok(block.includes('log(') || block.includes('.log('), 'Handler must log the error');
+    assert.ok(block.includes('flushLogs'), 'Handler must flush logs before exit');
+    assert.ok(block.includes('process.exit(1)'), 'Handler must exit with code 1');
+  });
+
   // Bug #37: consolidation.js word length cap for ReDoS prevention
   await test('consolidation.js: fingerprint words capped at 200 chars for ReDoS prevention', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
