@@ -189,11 +189,6 @@ function evaluateWatch(watch, state) {
     }
   }
 
-  // Branch watches are checked by existence/changes — stubbed for now
-  if (targetType === WATCH_TARGET_TYPE.BRANCH) {
-    return { triggered: false, message: 'Branch watches require git polling (not yet implemented)' };
-  }
-
   return { triggered: false, message: `Unknown target type: ${targetType}` };
 }
 
@@ -220,15 +215,21 @@ function checkWatches(config, state) {
 
         watch.last_checked = ts();
 
+        // Initialize baseline state on first check for change-detection conditions.
+        // Without this, status-change/any conditions would have no previous state to compare.
+        if (!watch._lastState || Object.keys(watch._lastState).length === 0) {
+          watch._lastState = _captureState(watch, state);
+        }
+
         const result = evaluateWatch(watch, state);
         if (result.triggered) {
           watch.triggerCount = (watch.triggerCount || 0) + 1;
           watch.last_triggered = ts();
           watch._lastTriggerMessage = result.message;
 
-          // Fire trigger notification
-          if (watch.notify === 'inbox' && watch.owner && watch.owner !== 'human') {
-            writeToInbox(watch.owner, `watch-${watch.id}`,
+          // Fire trigger notification — unique key per trigger to avoid overwriting previous messages
+          if (watch.notify === 'inbox' && watch.owner) {
+            writeToInbox(watch.owner, `watch-${watch.id}-${watch.triggerCount}`,
               `## Watch Triggered: ${watch.description}\n\n${result.message}\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Condition: ${watch.condition}`);
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
@@ -238,9 +239,9 @@ function checkWatches(config, state) {
             watch.status = WATCH_STATUS.EXPIRED;
             log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
           }
-        } else if (watch.onNotMet === 'notify' && watch.owner && watch.owner !== 'human') {
-          // Per-poll action when condition is not yet met
-          writeToInbox(watch.owner, `watch-poll-${watch.id}`,
+        } else if (watch.onNotMet === 'notify' && watch.owner) {
+          // Per-poll action when condition is not yet met — unique key per poll
+          writeToInbox(watch.owner, `watch-poll-${watch.id}-${Date.now()}`,
             `## Watch Polling: ${watch.description}\n\nCondition not yet met (${watch.condition}) — still watching.\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Checks so far: ${watch.triggerCount || 0}`);
         }
 

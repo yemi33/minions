@@ -12,7 +12,6 @@ const _WATCH_STATUS_BADGES = {
 const _WATCH_TARGET_LABELS = {
   pr: 'PR',
   'work-item': 'Work Item',
-  branch: 'Branch',
 };
 
 const _WATCH_CONDITION_LABELS = {
@@ -66,7 +65,7 @@ function renderWatches(watchesData) {
   window._lastWatches = watches;
 
   if (!watches.length) {
-    el.innerHTML = '<p class="empty">No active watches. Create one to monitor PRs, work items, or branches.</p>';
+    el.innerHTML = '<p class="empty">No active watches. Create one to monitor PRs or work items.</p>';
     return;
   }
 
@@ -214,7 +213,6 @@ function _watchFormHtml() {
   var targetTypes = [
     { value: 'pr', label: 'Pull Request' },
     { value: 'work-item', label: 'Work Item' },
-    { value: 'branch', label: 'Branch' },
   ];
   var conditions = [
     { value: 'merged', label: 'Merged' },
@@ -232,7 +230,7 @@ function _watchFormHtml() {
 
   return '<div style="display:flex;flex-direction:column;gap:12px;font-family:inherit">' +
     '<div id="watch-form-error" style="display:none;color:var(--red);font-size:12px;padding:6px 10px;background:rgba(255,50,50,0.1);border-radius:var(--radius-sm)"></div>' +
-    '<label style="color:var(--text);font-size:var(--text-md)">Target (PR number, Work Item ID, or branch name)<input id="watch-edit-target" placeholder="e.g. 1057, W-abc123, main" style="' + inputStyle + '"></label>' +
+    '<label style="color:var(--text);font-size:var(--text-md)">Target (PR number or Work Item ID)<input id="watch-edit-target" placeholder="e.g. 1057, W-abc123" style="' + inputStyle + '"></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Target Type<select id="watch-edit-target-type" style="' + inputStyle + '">' + ttOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Condition<select id="watch-edit-condition" style="' + inputStyle + '">' + condOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Check Interval <span style="font-size:10px;color:var(--muted)">(e.g. 5m, 15m, 1h — default 5m)</span><input id="watch-edit-interval" placeholder="5m" style="' + inputStyle + '"></label>' +
