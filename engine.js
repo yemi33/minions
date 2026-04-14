@@ -855,6 +855,13 @@ async function spawnAgent(dispatchItem, config) {
   // Spawn the claude process
   const childEnv = shared.cleanChildEnv();
 
+  // Inject cached ADO token so agents skip re-authentication (#998)
+  // getAdoToken() returns cached token (30-min TTL) or null — never blocks on browser auth
+  try {
+    const adoToken = await getAdoToken();
+    if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+  } catch { /* non-fatal — agent can still authenticate on its own */ }
+
   // Spawn via wrapper script — node directly (no bash intermediary)
   // spawn-agent.js handles CLAUDECODE env cleanup and claude binary resolution
   const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
@@ -1023,6 +1030,11 @@ async function spawnAgent(dispatchItem, config) {
 
       const spawnScript = path.join(ENGINE_DIR, 'spawn-agent.js');
       const childEnv = shared.cleanChildEnv();
+      // Inject cached ADO token for steering session too (#998)
+      try {
+        const adoToken = await getAdoToken();
+        if (adoToken) childEnv.MINIONS_ADO_TOKEN = adoToken;
+      } catch { /* non-fatal */ }
       let resumeProc;
       try {
         resumeProc = runFile(process.execPath, [spawnScript, steerPromptPath, sysPromptPath, ...resumeArgs], {
@@ -1405,7 +1417,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 // ─── Inbox Consolidation (extracted to engine/consolidation.js) ──────────────
 
 const { consolidateInbox } = require('./engine/consolidation');
-const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry } = require('./engine/ado');
+const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry, getAdoToken } = require('./engine/ado');
 const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
