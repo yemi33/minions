@@ -799,6 +799,82 @@ async function testQueriesAgents() {
     assert.ok(!src.includes('safeRead(path.join(AGENTS_DIR, agentId, \'live-output.log\'))'),
       'getAgentStatus should NOT use safeRead for live-output.log');
   });
+
+  // ── detectInFlightTool ──
+
+  await test('detectInFlightTool returns null for empty input', () => {
+    assert.strictEqual(queries.detectInFlightTool(''), null);
+    assert.strictEqual(queries.detectInFlightTool(null), null);
+    assert.strictEqual(queries.detectInFlightTool(undefined), null);
+  });
+
+  await test('detectInFlightTool returns description for in-flight task_started', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"abc123","description":"Run unit tests","task_type":"local_bash"}',
+    ].join('\n');
+    const result = queries.detectInFlightTool(tail);
+    assert.ok(result, 'should detect in-flight tool');
+    assert.strictEqual(result.description, 'Run unit tests');
+    assert.strictEqual(result.taskId, 'abc123');
+  });
+
+  await test('detectInFlightTool returns null when task_started has matching task_notification', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"abc123","description":"Run unit tests","task_type":"local_bash"}',
+      '{"type":"system","subtype":"task_notification","task_id":"abc123","status":"completed","summary":"Run unit tests"}',
+    ].join('\n');
+    const result = queries.detectInFlightTool(tail);
+    assert.strictEqual(result, null, 'completed tool should not be detected as in-flight');
+  });
+
+  await test('detectInFlightTool detects in-flight tool after a completed one', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_started","task_id":"task1","description":"First task","task_type":"local_bash"}',
+      '{"type":"system","subtype":"task_notification","task_id":"task1","status":"completed","summary":"First task"}',
+      '{"type":"system","subtype":"task_started","task_id":"task2","description":"Second task still running","task_type":"local_bash"}',
+    ].join('\n');
+    const result = queries.detectInFlightTool(tail);
+    assert.ok(result, 'should detect second task as in-flight');
+    assert.strictEqual(result.description, 'Second task still running');
+    assert.strictEqual(result.taskId, 'task2');
+  });
+
+  await test('detectInFlightTool ignores non-JSON lines (heartbeats, headers)', () => {
+    const tail = [
+      '# Live output for dallas',
+      '[heartbeat] running — no output for 60s',
+      '{"type":"system","subtype":"task_started","task_id":"x1","description":"Building project","task_type":"local_bash"}',
+      '[heartbeat] running — no output for 120s',
+    ].join('\n');
+    const result = queries.detectInFlightTool(tail);
+    assert.ok(result, 'should detect in-flight tool despite non-JSON lines');
+    assert.strictEqual(result.description, 'Building project');
+  });
+
+  await test('detectInFlightTool returns null when only task_notification present (task_started outside tail)', () => {
+    const tail = [
+      '{"type":"system","subtype":"task_notification","task_id":"old1","status":"completed","summary":"Old task"}',
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Done"}]}}',
+    ].join('\n');
+    const result = queries.detectInFlightTool(tail);
+    assert.strictEqual(result, null, 'should return null when only notifications present');
+  });
+
+  await test('getAgentStatus surfaces _runningToolDescription from live-output.log', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('detectInFlightTool'),
+      'getAgentStatus should call detectInFlightTool');
+    assert.ok(src.includes('_runningToolDescription'),
+      'getAgentStatus should set _runningToolDescription');
+  });
+
+  await test('getAgents uses _runningToolDescription for lastAction when available', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'queries.js'), 'utf8');
+    assert.ok(src.includes('Running:'),
+      'getAgents should use "Running:" prefix for in-flight tool descriptions');
+    assert.ok(src.includes('_runningToolDescription'),
+      'getAgents should check _runningToolDescription for lastAction');
+  });
 }
 
 async function testQueriesWorkItems() {
