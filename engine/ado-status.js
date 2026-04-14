@@ -23,7 +23,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { safeJsonArr, projectPrPath, getProjects } = shared;
+const { safeJson, safeJsonArr, projectPrPath, getProjects } = shared;
 
 // ── Arg parsing ──────────────────────────────────────────────────────────────
 
@@ -54,13 +54,6 @@ const prNumber = parseInt(prNumberArg, 10);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function getConfig() {
-  // Avoid pulling in queries.js to keep startup fast; read config directly.
-  const configPath = path.join(__dirname, '..', 'config.json');
-  try { return JSON.parse(require('fs').readFileSync(configPath, 'utf8')); }
-  catch { return {}; }
-}
-
 function findInCache(projects) {
   for (const project of projects) {
     const prs = safeJsonArr(projectPrPath(project));
@@ -88,7 +81,8 @@ function findInCache(projects) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const config = getConfig();
+  // Use safeJson directly — pulling in queries.js would load all cached state unnecessarily
+  const config = safeJson(path.join(__dirname, '..', 'config.json')) || {};
   const allProjects = getProjects(config).filter(p => p.repoHost === 'ado' || !p.repoHost);
   const projects = projectName
     ? allProjects.filter(p => p.name === projectName)
@@ -103,7 +97,6 @@ async function main() {
   }
 
   if (!live) {
-    // Fast path: read engine-maintained pull-requests.json
     const result = findInCache(projects);
     if (result) { console.log(JSON.stringify(result, null, 2)); return; }
     console.error(`PR #${prNumber} not found in cached pull-requests.json`);
@@ -111,26 +104,25 @@ async function main() {
     process.exit(1);
   }
 
-  // Live path: call ADO API via ado.js (handles auth, retry, circuit breaking)
+  // Live path: query all projects in parallel, return first match
   const ado = require('./ado');
+  const settled = await Promise.allSettled(
+    projects.map(p => ado.fetchSinglePrBuildStatus(p, prNumber))
+  );
 
-  // Try each project until we find the PR
-  for (const project of projects) {
-    try {
-      const result = await ado.fetchSinglePrBuildStatus(project, prNumber);
-      if (result) { console.log(JSON.stringify(result, null, 2)); return; }
-    } catch (e) {
-      // 404 or similar — PR not in this project, try the next one
-      if (!e.message?.includes('404') && !e.message?.includes('not found')) {
-        console.error(`Error querying ${project.name}: ${e.message}`);
-      }
+  const found = settled.find(r => r.status === 'fulfilled' && r.value);
+  if (found) { console.log(JSON.stringify(found.value, null, 2)); return; }
+
+  // Log unexpected errors (not 404s — those just mean PR isn't in that project)
+  for (const { status, reason } of settled) {
+    if (status === 'rejected' && !reason?.message?.includes('404') && !reason?.message?.includes('not found')) {
+      console.error(`ADO query error: ${reason.message}`);
     }
   }
 
-  // Live lookup failed — fall back to cache
+  // Fall back to cache with a note that live lookup failed
   const cached = findInCache(projects);
   if (cached) {
-    cached._liveFailed = true;
     cached.source = 'cached (live lookup failed — check ADO auth)';
     console.log(JSON.stringify(cached, null, 2));
     return;

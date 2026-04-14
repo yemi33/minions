@@ -18,6 +18,30 @@ function engine() {
 
 const stripRefsHeads = s => (s || '').replace('refs/heads/', '');
 
+// ── Build/Review Status Helpers ───────────────────────────────────────────────
+
+/** Classify an array of ADO build records into a single status string. */
+function classifyBuildStatus(prBuilds) {
+  if (!prBuilds.length) return 'none';
+  // partiallySucceeded = warnings, not failures — counts as passing
+  const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
+  const allDone = prBuilds.every(b => b.status === 'completed');
+  const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
+  const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
+  if (hasFailed && allDone) return 'failing';
+  if (allDone && allPassed) return 'passing';
+  if (hasRunning) return 'running';
+  return 'none';
+}
+
+/** Map ADO reviewer vote array to a review status string. */
+function votesToReviewStatus(votes) {
+  if (votes.some(v => v === -10)) return 'changes-requested';
+  if (votes.some(v => v >= 5)) return 'approved';
+  if (votes.some(v => v === -5)) return 'waiting';
+  return 'pending';
+}
+
 // ─── ADO Token Cache ─────────────────────────────────────────────────────────
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
@@ -390,14 +414,8 @@ async function pollPrStatus(config) {
         const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
-          // partiallySucceeded = warnings, not failures — counts as passing
-          const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
-          const allDone = prBuilds.every(b => b.status === 'completed');
-          const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
-          const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
-
-          if (hasFailed && allDone) {
-            buildStatus = 'failing';
+          buildStatus = classifyBuildStatus(prBuilds);
+          if (buildStatus === 'failing') {
             const failed = prBuilds.find(b => b.result === 'failed');
             buildFailReason = failed?.definition?.name || 'Build failed';
             // Build fake status objects for error log fetching
@@ -405,10 +423,6 @@ async function pollPrStatus(config) {
               state: 'failed', targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
               _buildId: String(b.id),
             }));
-          } else if (allDone && allPassed) {
-            buildStatus = 'passing';
-          } else if (hasRunning) {
-            buildStatus = 'running';
           }
         }
       } catch (e) { log('warn', `ADO build query for ${pr.id}: ${e.message}`); }
@@ -758,10 +772,7 @@ async function checkLiveReviewStatus(pr, project) {
     const prData = JSON.parse(result);
     const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
     if (votes.length === 0) return 'pending';
-    if (votes.some(v => v === -10)) return 'changes-requested';
-    if (votes.some(v => v >= 5)) return 'approved';
-    if (votes.some(v => v === -5)) return 'waiting';
-    return 'pending';
+    return votesToReviewStatus(votes);
   } catch (e) {
     log('warn', `Live review check for ${pr.id}: ${e.message}`);
     return null;
@@ -794,55 +805,42 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
 
   const orgBase = getAdoOrgBase(project);
   const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}`;
-  const prData = await adoFetch(`${repoBase}/pullrequests/${prNumber}?api-version=7.1`, token);
+  const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
+  const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+
+  // Fetch PR metadata and builds in parallel
+  const [prData, buildsData] = await Promise.all([
+    adoFetch(`${repoBase}/pullrequests/${prNumber}?api-version=7.1`, token),
+    adoFetch(buildsUrl, token).catch(() => null),
+  ]);
   if (!prData) return null;
 
   const mergeCommitId = prData.lastMergeCommit?.commitId;
-  let buildStatus = 'none';
+  const prBuilds = mergeCommitId
+    ? (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId)
+    : [];
+
+  let buildStatus = classifyBuildStatus(prBuilds);
   let buildErrorLog = null;
 
-  if (mergeCommitId) {
+  if (buildStatus === 'failing') {
     try {
-      const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-      const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
-      const buildsData = await adoFetch(buildsUrl, token);
-      const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
-
-      if (prBuilds.length > 0) {
-        const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
-        const allDone = prBuilds.every(b => b.status === 'completed');
-        const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
-        const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
-
-        if (hasFailed && allDone) {
-          buildStatus = 'failing';
-          const failedBuilds = prBuilds.filter(b => b.result === 'failed').map(b => ({
-            state: 'failed', _buildId: String(b.id),
-            targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
-          }));
-          const logParts = [];
-          const seenBuildIds = new Set();
-          for (const fb of failedBuilds.slice(0, 3)) {
-            const errorLog = await fetchAdoBuildErrorLog(orgBase, project, fb, token, { id: `PR-${prNumber}` }, seenBuildIds);
-            if (errorLog) logParts.push(errorLog);
-          }
-          if (logParts.length > 0) buildErrorLog = logParts.join('\n\n');
-        } else if (allDone && allPassed) {
-          buildStatus = 'passing';
-        } else if (hasRunning) {
-          buildStatus = 'running';
-        }
+      const failedBuilds = prBuilds.filter(b => b.result === 'failed').map(b => ({
+        state: 'failed', _buildId: String(b.id),
+        targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
+      }));
+      const logParts = [];
+      const seenBuildIds = new Set();
+      const pr = { id: `PR-${prNumber}`, branch: stripRefsHeads(prData.sourceRefName) };
+      for (const fb of failedBuilds.slice(0, 3)) {
+        const errorLog = await fetchAdoBuildErrorLog(orgBase, project, fb, token, pr, seenBuildIds);
+        if (errorLog) logParts.push(errorLog);
       }
-    } catch (e) { log('warn', `fetchSinglePrBuildStatus build query for PR #${prNumber}: ${e.message}`); }
+      if (logParts.length > 0) buildErrorLog = logParts.join('\n\n');
+    } catch (e) { log('warn', `fetchSinglePrBuildStatus error log for PR #${prNumber}: ${e.message}`); }
   }
 
   const votes = (prData.reviewers || []).map(r => r.vote);
-  let reviewStatus = 'pending';
-  if (votes.some(v => v === -10)) reviewStatus = 'changes-requested';
-  else if (votes.some(v => v >= 5)) reviewStatus = 'approved';
-  else if (votes.some(v => v === -5)) reviewStatus = 'waiting';
-
-  // Reconstruct a human-readable PR URL from the API URL
   const prUrl = `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
 
   return {
@@ -850,9 +848,9 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
     title: prData.title || '',
     branch: stripRefsHeads(prData.sourceRefName),
     status: prData.status || 'unknown',
-    reviewStatus,
+    reviewStatus: votesToReviewStatus(votes),
     buildStatus,
-    buildErrorLog: buildErrorLog || undefined,
+    ...(buildErrorLog ? { buildErrorLog } : {}),
     mergeConflict: prData.mergeStatus === 'conflicts',
     url: prUrl,
     project: project.name,
