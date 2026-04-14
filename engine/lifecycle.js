@@ -940,6 +940,8 @@ function updatePrAfterFix(pr, project, source) {
     if (!target) return prs;
     // Never downgrade from approved — fix was dispatched but PR is already approved
     if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
+    // Advance lastPushedAt so alreadyReviewed resets immediately, without waiting for the poller
+    target.lastPushedAt = ts();
     // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
