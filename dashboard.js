@@ -85,7 +85,7 @@ function buildDashboardHtml() {
 
   // Assemble JS modules (order matters: utils → state → renderers → commands → refresh)
   const jsFiles = [
-    'utils', 'state', 'detail-panel', 'live-stream',
+    'utils', 'state', 'render-utils', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
     'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-pinned',
