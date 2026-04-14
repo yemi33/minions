@@ -7314,13 +7314,14 @@ async function testDashboardUIFunctions() {
   });
 
   await test('live chat renders human steering as blue bubbles', () => {
-    assert.ok(liveSrc.includes('[human-steering]') && liveSrc.includes('var(--blue)'),
-      'Should render human steering messages as right-aligned blue bubbles');
+    // Steering rendering is in sendSteering (immediate feedback) and renderAgentOutput (render-utils.js)
+    assert.ok(liveSrc.includes('var(--blue)'),
+      'sendSteering should render steering messages as blue bubbles');
   });
 
-  await test('live chat renders tool calls as collapsible blocks', () => {
-    assert.ok(liveSrc.includes('tool_use') && liveSrc.includes('display:none'),
-      'Should render tool calls as collapsible blocks');
+  await test('live chat delegates rendering to renderAgentOutput from render-utils.js', () => {
+    assert.ok(liveSrc.includes('renderAgentOutput'),
+      'renderLiveChatMessage should call renderAgentOutput from render-utils.js');
   });
 
   await test('sendSteering function exists', () => {
@@ -9433,6 +9434,9 @@ async function main() {
     // W-mnxu9bvzkc5p: Doc-chat badge visibility on Notes/KB items
     await testDocChatBadgeVisibility();
 
+    // P-b7e3a1d9: render-utils.js shared formatting helpers
+    await testRenderUtils();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -10352,21 +10356,31 @@ async function testDashboardBugFixes() {
       'Should handle zero-byte or missing log file');
   });
 
-  await test('live-stream.js renderLiveChatMessage parses all output formats', () => {
+  await test('live-stream.js renderLiveChatMessage delegates to renderAgentOutput', () => {
     const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
-    assert.ok(liveSrc.includes('"type":"assistant"') || liveSrc.includes("type === 'assistant'"),
+    assert.ok(liveSrc.includes('renderAgentOutput'),
+      'renderLiveChatMessage should delegate JSONL parsing to renderAgentOutput from render-utils.js');
+    assert.ok(!liveSrc.includes('innerHTML +='),
+      'live-stream.js must not use innerHTML += (CLAUDE.md violation) — use insertAdjacentHTML');
+    assert.ok(liveSrc.includes('insertAdjacentHTML'),
+      'Should use insertAdjacentHTML for DOM insertion');
+  });
+
+  await test('render-utils.js renderAgentOutput parses all output formats', () => {
+    const renderUtilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-utils.js'), 'utf8');
+    assert.ok(renderUtilsSrc.includes("type === 'assistant'") || renderUtilsSrc.includes("obj.type === 'assistant'"),
       'Should parse assistant messages from stream-json');
-    assert.ok(liveSrc.includes('"tool_use"') || liveSrc.includes("type === 'tool_use'"),
+    assert.ok(renderUtilsSrc.includes("'tool_use'") || renderUtilsSrc.includes('"tool_use"'),
       'Should parse tool_use blocks');
-    assert.ok(liveSrc.includes('[human-steering]'),
+    assert.ok(renderUtilsSrc.includes('[human-steering]'),
       'Should render human steering messages');
-    assert.ok(liveSrc.includes('[heartbeat]'),
+    assert.ok(renderUtilsSrc.includes('[heartbeat]'),
       'Should handle heartbeat lines');
-    assert.ok(liveSrc.includes('[steering-failed]') || liveSrc.includes('steering-failed'),
+    assert.ok(renderUtilsSrc.includes('[steering-failed]') || renderUtilsSrc.includes('steering-failed'),
       'Should handle steering failure notices');
-    assert.ok(liveSrc.includes('startsWith(\'{\')') || liveSrc.includes('startsWith("{")'),
+    assert.ok(renderUtilsSrc.includes('startsWith(\'{\')') || renderUtilsSrc.includes('startsWith("{")'),
       'Should parse single JSON objects (stream-json format)');
-    assert.ok(liveSrc.includes('startsWith(\'[\')') || liveSrc.includes('startsWith("[")'),
+    assert.ok(renderUtilsSrc.includes('startsWith(\'[\')') || renderUtilsSrc.includes('startsWith("[")'),
       'Should parse JSON arrays (json format)');
   });
 
@@ -17120,4 +17134,403 @@ async function testDocChatBadgeVisibility() {
       'Must have CSS rule .notes-preview > .notif-badge for badge position override (notes-preview has overflow-y:auto)');
   });
 }
+// ─── P-b7e3a1d9: render-utils.js shared formatting helpers ──────────────────
+
+async function testRenderUtils() {
+  console.log('\n── render-utils.js: formatToolSummary + renderAgentOutput ──');
+
+  const renderUtilsPath = path.join(MINIONS_DIR, 'dashboard', 'js', 'render-utils.js');
+
+  await test('render-utils.js file exists', () => {
+    assert.ok(fs.existsSync(renderUtilsPath), 'dashboard/js/render-utils.js must exist');
+  });
+
+  const src = fs.readFileSync(renderUtilsPath, 'utf8');
+
+  // ── Source structure assertions ──
+
+  await test('render-utils.js defines formatToolSummary function', () => {
+    assert.ok(src.includes('function formatToolSummary'), 'formatToolSummary must be defined');
+  });
+
+  await test('render-utils.js defines renderAgentOutput function', () => {
+    assert.ok(src.includes('function renderAgentOutput'), 'renderAgentOutput must be defined');
+  });
+
+  await test('render-utils.js exposes functions on window', () => {
+    assert.ok(src.includes('window.') || src.includes('window['), 'must expose helpers on window');
+  });
+
+  // ── Registration in dashboard.js ──
+
+  await test('render-utils.js is registered in dashboard.js jsFiles before detail-panel and live-stream', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const jsFilesMatch = dashSrc.match(/const jsFiles\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(jsFilesMatch, 'jsFiles array must exist in dashboard.js');
+    const items = jsFilesMatch[1];
+    const renderUtilsIdx = items.indexOf("'render-utils'");
+    const detailPanelIdx = items.indexOf("'detail-panel'");
+    const liveStreamIdx = items.indexOf("'live-stream'");
+    assert.ok(renderUtilsIdx > -1, 'render-utils must be in jsFiles array');
+    assert.ok(renderUtilsIdx < detailPanelIdx, 'render-utils must appear before detail-panel');
+    assert.ok(renderUtilsIdx < liveStreamIdx, 'render-utils must appear before live-stream');
+  });
+
+  // ── Behavioral tests: extract and run formatToolSummary ──
+
+  const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+  const escHtmlBody = utilsSrc.match(/function escHtml[\s\S]*?^}/m)[0];
+  const formatFnMatch = src.match(/function formatToolSummary[\s\S]*?^}/m);
+  assert.ok(formatFnMatch, 'formatToolSummary function must be extractable');
+  const formatToolSummary = new Function(escHtmlBody + '\n' + formatFnMatch[0] + '\nreturn formatToolSummary;')();
+
+  await test('formatToolSummary: Bash tool shows truncated command', () => {
+    const result = formatToolSummary('Bash', { command: 'npm test --verbose --all' });
+    assert.ok(result.includes('$'), 'Bash summary should include $ prefix');
+    assert.ok(result.includes('npm test'), 'Bash summary should include command text');
+  });
+
+  await test('formatToolSummary: Bash truncates long commands to 80 chars', () => {
+    const longCmd = 'a'.repeat(120);
+    const result = formatToolSummary('Bash', { command: longCmd });
+    assert.ok(result.length < 120, 'Should truncate long commands');
+  });
+
+  await test('formatToolSummary: Read tool shows file path', () => {
+    const result = formatToolSummary('Read', { file_path: '/src/engine.js' });
+    assert.ok(result.includes('Reading'), 'Read summary should say Reading');
+    assert.ok(result.includes('/src/engine.js'), 'Read summary should include file path');
+  });
+
+  await test('formatToolSummary: Edit tool shows file path', () => {
+    const result = formatToolSummary('Edit', { file_path: '/src/shared.js' });
+    assert.ok(result.includes('Editing'), 'Edit summary should say Editing');
+    assert.ok(result.includes('/src/shared.js'), 'Edit summary should include file path');
+  });
+
+  await test('formatToolSummary: Write tool shows file path', () => {
+    const result = formatToolSummary('Write', { file_path: '/src/new-file.js' });
+    assert.ok(result.includes('Writing'), 'Write summary should say Writing');
+    assert.ok(result.includes('/src/new-file.js'), 'Write summary should include file path');
+  });
+
+  await test('formatToolSummary: Grep tool shows pattern and path', () => {
+    const result = formatToolSummary('Grep', { pattern: 'TODO', path: 'src/' });
+    assert.ok(result.includes('Searching'), 'Grep summary should say Searching');
+    assert.ok(result.includes('TODO'), 'Grep summary should include pattern');
+    assert.ok(result.includes('src/'), 'Grep summary should include path');
+  });
+
+  await test('formatToolSummary: Glob tool shows pattern', () => {
+    const result = formatToolSummary('Glob', { pattern: '**/*.js' });
+    assert.ok(result.includes('Glob'), 'Glob summary should say Glob');
+    assert.ok(result.includes('**/*.js'), 'Glob summary should include pattern');
+  });
+
+  await test('formatToolSummary: Agent tool shows description', () => {
+    const result = formatToolSummary('Agent', { description: 'Search for config files' });
+    assert.ok(result.includes('Spawning agent'), 'Agent summary should say Spawning agent');
+    assert.ok(result.includes('Search for config files'), 'Agent summary should include description');
+  });
+
+  await test('formatToolSummary: WebFetch tool shows url', () => {
+    const result = formatToolSummary('WebFetch', { url: 'https://example.com/api' });
+    assert.ok(result.includes('Fetch'), 'WebFetch summary should say Fetch');
+    assert.ok(result.includes('https://example.com/api'), 'WebFetch summary should include url');
+  });
+
+  await test('formatToolSummary: WebSearch tool shows query', () => {
+    const result = formatToolSummary('WebSearch', { query: 'node.js async patterns' });
+    assert.ok(result.includes('Search'), 'WebSearch summary should say Search');
+    assert.ok(result.includes('node.js async patterns'), 'WebSearch summary should include query');
+  });
+
+  await test('formatToolSummary: TodoWrite tool shows item count', () => {
+    const result = formatToolSummary('TodoWrite', { todos: [{ task: 'a' }, { task: 'b' }, { task: 'c' }] });
+    assert.ok(result.includes('Update todos'), 'TodoWrite summary should say Update todos');
+    assert.ok(result.includes('3'), 'TodoWrite summary should show count');
+  });
+
+  await test('formatToolSummary: unknown tool falls back to name(firstKey: firstVal)', () => {
+    const result = formatToolSummary('CustomTool', { foo: 'bar value here' });
+    assert.ok(result.includes('CustomTool'), 'Fallback should include tool name');
+    assert.ok(result.includes('foo'), 'Fallback should include first key');
+    assert.ok(result.includes('bar value'), 'Fallback should include first value');
+  });
+
+  await test('formatToolSummary: fallback truncates long values to 40 chars', () => {
+    const longVal = 'x'.repeat(80);
+    const result = formatToolSummary('CustomTool', { key: longVal });
+    assert.ok(result.length < 100, 'Fallback should truncate long values');
+  });
+
+  await test('formatToolSummary: handles null/undefined input gracefully', () => {
+    const result = formatToolSummary('Bash', null);
+    assert.ok(typeof result === 'string', 'Should return string even with null input');
+    const result2 = formatToolSummary('Bash', undefined);
+    assert.ok(typeof result2 === 'string', 'Should return string even with undefined input');
+  });
+
+  // ── Behavioral tests: extract and run renderAgentOutput ──
+
+  // We need escHtml and renderMd for renderAgentOutput
+  const normBody = utilsSrc.match(/function _normalizeCodeFences[\s\S]*?^}/m)[0];
+  const coreBody = utilsSrc.match(/function _renderMdCore[\s\S]*?^}/m)[0];
+  const renderMdBody = utilsSrc.match(/function renderMd[\s\S]*?^}/m)[0];
+  // renderAgentOutput needs formatToolSummary + escHtml + renderMd
+  const renderFnMatch = src.match(/function renderAgentOutput[\s\S]*?^}/m);
+  assert.ok(renderFnMatch, 'renderAgentOutput function must be extractable');
+  // Also extract any helper used within renderAgentOutput (like _renderJsonObj if it exists)
+  const helperMatch = src.match(/function _renderJsonObj[\s\S]*?^}/m);
+  const helperBody = helperMatch ? helperMatch[0] : '';
+  const renderAgentOutput = new Function(
+    escHtmlBody + '\n' + normBody + '\n' + coreBody + '\n' + renderMdBody + '\n' +
+    formatFnMatch[0] + '\n' + helperBody + '\n' + renderFnMatch[0] + '\nreturn renderAgentOutput;'
+  )();
+
+  await test('renderAgentOutput: returns string', () => {
+    const html = renderAgentOutput('some text');
+    assert.ok(typeof html === 'string', 'renderAgentOutput must return a string');
+  });
+
+  await test('renderAgentOutput: handles empty input', () => {
+    const html = renderAgentOutput('');
+    assert.ok(typeof html === 'string', 'Should handle empty string');
+  });
+
+  await test('renderAgentOutput: parses assistant text with ● prefix', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('●') || html.includes('&#9679;'), 'Assistant text should have ● prefix');
+    assert.ok(html.includes('Hello world'), 'Assistant text should be rendered');
+  });
+
+  await test('renderAgentOutput: parses tool_use with ● prefix and formatToolSummary', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/foo.js' } }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('●') || html.includes('&#9679;'), 'Tool use should have ● prefix');
+    assert.ok(html.includes('Reading'), 'Tool use should show formatted summary');
+    assert.ok(html.includes('/foo.js'), 'Tool use should include file path');
+  });
+
+  await test('renderAgentOutput: tool_use has [+] toggle for raw JSON', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('[+]'), 'Tool use should have [+] toggle');
+    assert.ok(html.includes('display:none') || html.includes('display: none'), 'Raw JSON should be hidden by default');
+  });
+
+  await test('renderAgentOutput: tool_result with surface tint and 160px max-height', () => {
+    const jsonl = JSON.stringify({ type: 'tool_result', message: { content: [{ type: 'tool_result', content: 'some result text here that is long enough' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('160px') || html.includes('max-height'), 'Tool result should have 160px max-height');
+    assert.ok(html.includes('surface'), 'Tool result should have surface background tint');
+  });
+
+  await test('renderAgentOutput: tool_result enforces 3000 char truncation', () => {
+    const longContent = 'x'.repeat(5000);
+    const jsonl = JSON.stringify({ type: 'tool_result', message: { content: [{ type: 'tool_result', content: longContent }] } });
+    const html = renderAgentOutput(jsonl);
+    // The rendered content shouldn't contain the full 5000 chars
+    assert.ok(!html.includes('x'.repeat(4000)), 'Tool result should truncate at 3000 chars');
+    assert.ok(html.includes('...'), 'Truncated tool result should show ellipsis');
+  });
+
+  await test('renderAgentOutput: steering bubble has ❯ prefix', () => {
+    const text = '[human-steering] please check the tests';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('❯') || html.includes('&#10095;'), 'Steering bubble should have ❯ prefix');
+    assert.ok(html.includes('please check the tests'), 'Steering message should be visible');
+  });
+
+  await test('renderAgentOutput: result type shows completion indicator', () => {
+    const jsonl = JSON.stringify({ type: 'result' });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('✓') || html.includes('&#10003;') || html.includes('complete'), 'Result should show completion indicator');
+  });
+
+  await test('renderAgentOutput: stderr lines shown in red', () => {
+    const text = '[stderr] Error: something failed';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('red'), 'Stderr should be styled red');
+    assert.ok(html.includes('Error: something failed'), 'Stderr content should be visible');
+  });
+
+  await test('renderAgentOutput: heartbeat lines are filtered out', () => {
+    const text = '[heartbeat] ping\n' + JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } });
+    const html = renderAgentOutput(text);
+    assert.ok(!html.includes('[heartbeat]'), 'Heartbeat lines should be filtered out');
+    assert.ok(html.includes('Hello'), 'Non-heartbeat content should still render');
+  });
+
+  await test('renderAgentOutput: thinking blocks are rendered', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('Thinking'), 'Thinking block should be rendered');
+  });
+
+  await test('renderAgentOutput: steering-failed lines are rendered', () => {
+    const text = '[steering-failed] Connection lost';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('Connection lost'), 'Steering-failed message should be visible');
+  });
+
+  await test('renderAgentOutput: handles multi-line JSONL correctly', () => {
+    const line1 = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Line one' }] } });
+    const line2 = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Line two' }] } });
+    const html = renderAgentOutput(line1 + '\n' + line2);
+    assert.ok(html.includes('Line one'), 'First line should render');
+    assert.ok(html.includes('Line two'), 'Second line should render');
+  });
+
+  await test('renderAgentOutput: handles JSON array lines', () => {
+    const arr = [{ type: 'assistant', message: { content: [{ type: 'text', text: 'Array item' }] } }];
+    const html = renderAgentOutput(JSON.stringify(arr));
+    assert.ok(html.includes('Array item'), 'JSON array items should render');
+  });
+
+  // ─── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──
+  console.log('\n── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──');
+
+  const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('CC SSE tool handler stores { name, input } objects, not plain strings', () => {
+    // The push should use an object with name and input, not just evt.name
+    assert.ok(ccSrc.includes('toolsUsed.push({') || ccSrc.includes('toolsUsed.push({ '),
+      'toolsUsed.push should push an object, not a plain string');
+    assert.ok(!ccSrc.match(/toolsUsed\.push\(evt\.name\)/),
+      'Should not push plain evt.name — must push object with name and input');
+  });
+
+  await test('CC updateStreamDiv uses formatToolSummary for tool display', () => {
+    assert.ok(ccSrc.includes('formatToolSummary('),
+      'updateStreamDiv should use formatToolSummary for formatted tool display');
+    // Should not use the old 🔧 emoji pattern for tool display in updateStreamDiv
+    const updateStreamSection = ccSrc.slice(ccSrc.indexOf('function updateStreamDiv'));
+    assert.ok(!updateStreamSection.includes('\\uD83D\\uDD27') || !updateStreamSection.includes('🔧'),
+      'updateStreamDiv should not use old wrench emoji pattern');
+  });
+
+  await test('CC _restoreStreamHtml uses formatToolSummary for tool display', () => {
+    const restoreSection = ccSrc.slice(ccSrc.indexOf('_restoreStreamHtml'));
+    assert.ok(restoreSection.includes('formatToolSummary('),
+      '_restoreStreamHtml should use formatToolSummary for formatted tool display');
+  });
+
+  await test('CC tool display uses ● prefix (not 🔧)', () => {
+    // Both updateStreamDiv and _restoreStreamHtml should use ● prefix
+    assert.ok(ccSrc.includes('&#9679;') || ccSrc.includes('●'),
+      'Tool display should use ● (bullet) prefix');
+  });
+
+  await test('CC SSE tool handler captures evt.input', () => {
+    // The push should reference evt.input
+    assert.ok(ccSrc.includes('evt.input'),
+      'SSE tool handler should capture evt.input from the server event');
+  });
+
+  await test('Server SSE tool event sends input as object, not flat string', () => {
+    // The onToolUse handler should use _lightToolInput to send a structured object
+    // It should NOT just JSON.stringify(input).slice(0, 200) as a flat string
+    assert.ok(dashSrc.includes('_lightToolInput'),
+      'dashboard.js should have _lightToolInput helper for structured input');
+    // All onToolUse handlers should use the helper
+    const toolEventMatches = dashSrc.match(/onToolUse:.*?\n/g);
+    assert.ok(toolEventMatches && toolEventMatches.length >= 2,
+      'dashboard.js should have at least 2 onToolUse handlers (primary + retry)');
+    const allUseLightInput = toolEventMatches.every(m => m.includes('_lightToolInput') || dashSrc.slice(dashSrc.indexOf(m), dashSrc.indexOf(m) + 200).includes('_lightToolInput'));
+    assert.ok(dashSrc.includes('Object.entries'),
+      '_lightToolInput should use Object.entries to iterate input fields');
+  });
+
+  await test('CC tool display uses monospace style matching live output', () => {
+    // The tool display should use font-family:monospace like render-utils.js does
+    const updateSection = ccSrc.slice(ccSrc.indexOf('function updateStreamDiv'), ccSrc.indexOf('function updateStreamDiv') + 1500);
+    assert.ok(updateSection.includes('monospace') || updateSection.includes('font-family'),
+      'Tool display should use monospace font style');
+  });
+
+  // ─── P-d9c3b5f7: detail-panel.js Output Log tab uses renderAgentOutput ──
+  console.log('\n── P-d9c3b5f7: detail-panel.js Output Log tab uses renderAgentOutput ──');
+
+  const detailPanelSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'detail-panel.js'), 'utf8');
+
+  await test('Output Log tab uses renderAgentOutput instead of renderMd', () => {
+    // Extract the output tab branch from renderDetailContent
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'renderDetailContent must exist');
+    // Find the output tab handler section
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    assert.ok(outputTabIdx > -1, 'Output tab handler must exist in renderDetailContent');
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 300);
+    assert.ok(outputSection.includes('renderAgentOutput'),
+      'Output Log tab must use renderAgentOutput for formatted JSONL rendering');
+    assert.ok(!outputSection.includes('renderMd(detail.outputLog'),
+      'Output Log tab must NOT use renderMd for outputLog — should use renderAgentOutput');
+  });
+
+  await test('Output Log tab preserves fallback message when outputLog is falsy', () => {
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 400);
+    assert.ok(outputSection.includes('No output log'),
+      'Output Log tab must show fallback text when outputLog is empty');
+  });
+
+  await test('Output Log tab wraps output in section container', () => {
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 400);
+    assert.ok(outputSection.includes('class="section"') || outputSection.includes("class=\\'section\\'"),
+      'Output Log content must be wrapped in a section container');
+  });
+
+  // ─── P-e2a6c8d4: render-work-items.js output viewer uses renderAgentOutput ──
+  console.log('\n── P-e2a6c8d4: render-work-items.js output viewer uses renderAgentOutput ──');
+
+  const wiSrcForOutput = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+
+  await test('viewAgentOutput uses renderAgentOutput instead of textContent', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('renderAgentOutput'),
+      'viewAgentOutput must use renderAgentOutput for formatted JSONL rendering');
+    assert.ok(!fnMatch[0].includes('.textContent = content'),
+      'viewAgentOutput must NOT use textContent for raw text dump — should use renderAgentOutput');
+  });
+
+  await test('viewAgentOutput sets innerHTML (not textContent) for formatted output', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('.innerHTML'),
+      'viewAgentOutput must use innerHTML to render formatted HTML from renderAgentOutput');
+  });
+
+  await test('viewAgentOutput does not set whiteSpace to pre-wrap (conflicts with HTML block rendering)', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(!fnMatch[0].includes("whiteSpace = 'pre-wrap'") && !fnMatch[0].includes('whiteSpace = "pre-wrap"'),
+      'viewAgentOutput must not set whiteSpace to pre-wrap — renderAgentOutput returns HTML with block-level divs');
+  });
+
+  await test('viewAgentOutput preserves loading and error states', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('Loading'),
+      'viewAgentOutput must show loading state');
+    assert.ok(fnMatch[0].includes('.catch'),
+      'viewAgentOutput must have error handler');
+    assert.ok(fnMatch[0].includes('Failed to load'),
+      'viewAgentOutput must show error state on failure');
+  });
+
+  await test('viewAgentOutput preserves Consolas font family', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('Consolas'),
+      'viewAgentOutput must keep Consolas font family for the modal');
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });
