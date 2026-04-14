@@ -13521,6 +13521,63 @@ async function testAutoRecoveryAndAtomicity() {
     assert.strictEqual(teams._outboundQueue.length, 0, 'queue should be cleared');
   });
 
+  // ── Teams Certificate Auth ──────────────────────────────────────────────
+
+  await test('ENGINE_DEFAULTS.teams has cert auth fields', () => {
+    const teams = shared.ENGINE_DEFAULTS.teams;
+    assert.strictEqual(teams.certPath, '', 'teams.certPath default should be empty string');
+    assert.strictEqual(teams.privateKeyPath, '', 'teams.privateKeyPath default should be empty string');
+    assert.strictEqual(teams.tenantId, '', 'teams.tenantId default should be empty string');
+  });
+
+  await test('isTeamsEnabled returns true for cert-based auth', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function isTeamsEnabled'));
+    assert.ok(fn.includes('certPath'), 'isTeamsEnabled should check certPath');
+    assert.ok(fn.includes('privateKeyPath'), 'isTeamsEnabled should check privateKeyPath');
+    assert.ok(fn.includes('tenantId'), 'isTeamsEnabled should check tenantId');
+  });
+
+  await test('createAdapter uses CertificateServiceClientCredentialsFactory for cert path', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function createAdapter'));
+    assert.ok(fn.includes('CertificateServiceClientCredentialsFactory'), 'createAdapter should use CertificateServiceClientCredentialsFactory');
+    assert.ok(fn.includes('certPath'), 'createAdapter should read certPath');
+    assert.ok(fn.includes('privateKeyPath'), 'createAdapter should read privateKeyPath');
+    assert.ok(fn.includes('tenantId'), 'createAdapter should read tenantId for cert auth');
+  });
+
+  await test('createAdapter reads cert/key from disk for cert auth mode', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'teams.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function createAdapter'));
+    assert.ok(fn.includes('safeRead(cfg.certPath)'), 'createAdapter should read cert via safeRead');
+    assert.ok(fn.includes('safeRead(cfg.privateKeyPath)'), 'createAdapter should read key via safeRead');
+    assert.ok(fn.includes('!cert || !privateKey'), 'createAdapter should guard against empty cert/key');
+  });
+
+  await test('preflight validates cert auth as alternative to appPassword', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'preflight.js'), 'utf8');
+    assert.ok(src.includes('certPath'), 'preflight should check certPath');
+    assert.ok(src.includes('privateKeyPath'), 'preflight should check privateKeyPath');
+  });
+
+  await test('docs/teams-setup.md has Certificate Auth section', () => {
+    const doc = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'teams-setup.md'), 'utf8');
+    assert.ok(doc.includes('Certificate Auth'), 'should have Certificate Auth section');
+    assert.ok(doc.includes('certPath'), 'should document certPath config field');
+    assert.ok(doc.includes('privateKeyPath'), 'should document privateKeyPath config field');
+    assert.ok(doc.includes('tenantId'), 'should document tenantId config field');
+    assert.ok(doc.includes('openssl'), 'should include openssl instructions');
+  });
+
+  await test('settings.js has Teams section with cert fields', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes('Teams'), 'settings should have Teams section');
+    assert.ok(src.includes('set-teams-certPath'), 'settings should have certPath field');
+    assert.ok(src.includes('set-teams-privateKeyPath'), 'settings should have privateKeyPath field');
+    assert.ok(src.includes('set-teams-tenantId'), 'settings should have tenantId field');
+  });
+
   await test('doc-chat restricts tools — no Bash for read-only, no WebSearch', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     const docCallFn = src.slice(src.indexOf('async function ccDocCall('));

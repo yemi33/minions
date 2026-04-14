@@ -14,6 +14,7 @@ async function openSettings() {
   const e = data.engine || {};
   const c = data.claude || {};
   const agents = data.agents || {};
+  const t = data.teams || {};
 
   const agentRows = Object.entries(agents).map(function([id, a]) {
     return '<tr>' +
@@ -94,6 +95,28 @@ async function openSettings() {
         '</select>' +
         '<div style="font-size:9px;color:var(--muted);margin-top:1px">Controls response depth and reasoning effort</div>' +
       '</div>' +
+    '</div>' +
+
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Teams Integration</h3>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">' +
+      settingsToggle('Enable Teams', 'set-teams-enabled', !!t.enabled, 'Connect Minions to Microsoft Teams') +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
+      settingsField('App ID', 'set-teams-appId', t.appId || '', '', 'Microsoft App ID from Azure Bot Configuration') +
+      settingsField('App Password', 'set-teams-appPassword', t.appPassword || '', '', 'Client secret (leave blank for certificate auth)') +
+    '</div>' +
+    '<div style="font-size:10px;color:var(--muted);margin-bottom:4px;font-weight:600">Certificate Auth (alternative to client secret)</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
+      settingsField('Certificate Path', 'set-teams-certPath', t.certPath || '', '', 'Path to PEM certificate file') +
+      settingsField('Private Key Path', 'set-teams-privateKeyPath', t.privateKeyPath || '', '', 'Path to PEM private key file') +
+      settingsField('Tenant ID', 'set-teams-tenantId', t.tenantId || '', '', 'Azure AD tenant ID (required for cert auth)') +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+      settingsField('Notify Events', 'set-teams-notifyEvents', (t.notifyEvents || []).join(', '), '', 'Comma-separated event types to notify') +
+      settingsField('Inbox Poll Interval', 'set-teams-inboxPollInterval', t.inboxPollInterval || 15000, 'ms', 'How often to check for Teams messages') +
+    '</div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px">' +
+      settingsToggle('CC Mirror', 'set-teams-ccMirror', t.ccMirror !== false, 'Mirror Command Center responses to Teams') +
     '</div>' +
 
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Claude CLI</h3>' +
@@ -236,6 +259,18 @@ async function saveSettings() {
       permissionMode: document.getElementById('set-permissionMode').value,
     };
 
+    const teamsPayload = {
+      enabled: document.getElementById('set-teams-enabled').checked,
+      appId: document.getElementById('set-teams-appId').value,
+      appPassword: document.getElementById('set-teams-appPassword').value,
+      certPath: document.getElementById('set-teams-certPath').value,
+      privateKeyPath: document.getElementById('set-teams-privateKeyPath').value,
+      tenantId: document.getElementById('set-teams-tenantId').value,
+      notifyEvents: document.getElementById('set-teams-notifyEvents').value,
+      inboxPollInterval: document.getElementById('set-teams-inboxPollInterval').value,
+      ccMirror: document.getElementById('set-teams-ccMirror').checked,
+    };
+
     const agentsPayload = {};
     document.querySelectorAll('[data-agent][data-field]').forEach(function(el) {
       const id = el.dataset.agent;
@@ -247,7 +282,7 @@ async function saveSettings() {
     // Save config
     const res = await fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload })
+      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload, teams: teamsPayload })
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error);
