@@ -1300,6 +1300,7 @@ async function spawnAgent(dispatchItem, config) {
     const item = dispatch.pending.splice(idx, 1)[0];
     item.started_at = startedAt;
     delete item.skipReason;
+    delete item._agentBusySince;
     if (!dispatch.active.some(d => d.id === id)) {
       dispatch.active.push(item);
     }
@@ -3316,7 +3317,46 @@ async function tickInner() {
       log('warn', `Duplicate dispatch ID ${item.id} in pending queue — skipping`);
       continue;
     }
-    if (busyAgents.has(item.agent)) continue;
+    if (busyAgents.has(item.agent)) {
+      // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
+      // try to find an alternative agent via routing. Skip explicitly assigned items.
+      const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
+      const isExplicitReassign = !!item.meta?.item?.agent;
+      if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
+        const busySinceMs = new Date(item._agentBusySince).getTime();
+        if (Date.now() - busySinceMs > reassignMs) {
+          const originalAgent = item.agent;
+          const altAgent = resolveAgent(item.type, config);
+          if (altAgent && altAgent !== originalAgent && !busyAgents.has(altAgent)) {
+            log('info', `Reassigning ${item.id} from ${originalAgent} to ${altAgent} — agent busy > ${reassignMs}ms`);
+            item.agent = altAgent;
+            item.agentName = config.agents[altAgent]?.name || tempAgents.get(altAgent)?.name || altAgent;
+            item.agentRole = config.agents[altAgent]?.role || tempAgents.get(altAgent)?.role || 'Agent';
+            delete item._agentBusySince;
+            delete item.skipReason;
+            // Persist reassignment to dispatch.json
+            mutateDispatch((dp) => {
+              const p = (dp.pending || []).find(d => d.id === item.id);
+              if (p) {
+                p.agent = altAgent;
+                p.agentName = item.agentName;
+                p.agentRole = item.agentRole;
+                delete p._agentBusySince;
+                delete p.skipReason;
+              }
+              return dp;
+            });
+            // Fall through to branch mutex / concurrency checks below
+          } else {
+            continue; // No alternative agent available — keep waiting
+          }
+        } else {
+          continue; // Below threshold — keep waiting
+        }
+      } else {
+        continue; // No _agentBusySince set yet or explicitly assigned — skip
+      }
+    }
     // Branch mutex: skip items targeting a branch already locked by an active or newly-dispatched task
     const itemBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
     if (itemBranch && lockedBranches.has(itemBranch)) continue;
@@ -3402,6 +3442,18 @@ async function tickInner() {
       const pendingBranch = item.meta?.branch ? sanitizeBranch(item.meta.branch) : null;
       if (pendingBranch && postLockedBranches.has(pendingBranch)) {
         reason = 'branch_locked';
+      }
+    }
+    // Track when item first became blocked on a busy agent for reassignment threshold
+    if (reason === 'agent_busy') {
+      if (!item._agentBusySince) {
+        item._agentBusySince = ts();
+        skipReasonChanged = true;
+      }
+    } else {
+      if (item._agentBusySince) {
+        delete item._agentBusySince;
+        skipReasonChanged = true;
       }
     }
     if (item.skipReason !== reason) {
