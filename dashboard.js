@@ -382,6 +382,7 @@ function getStatus() {
     verifyGuides: getVerifyGuides(),
     archivedPrds: getArchivedPrds(),
     engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
+    adoThrottle: ado.getAdoThrottleState(),
     dispatch: getDispatchQueue(),
     engineLog: getEngineLog(),
     metrics: getMetrics(),

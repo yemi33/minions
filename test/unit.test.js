@@ -9440,6 +9440,9 @@ async function main() {
     // P-b7c4e5f9: Engine tick guards to skip ADO polls while throttled
     await testAdoThrottleTickGuards();
 
+    // P-c6d9a1b3: Dashboard throttle status exposure and warning banner
+    await testAdoThrottleDashboard();
+
     // P-b7e3a1d9: render-utils.js shared formatting helpers
     await testRenderUtils();
 
@@ -17639,6 +17642,145 @@ async function testAdoThrottleTickGuards() {
       'adoPollStatusEvery must still reference DEFAULTS');
     assert.ok(engineSrc.includes('DEFAULTS.adoPollCommentsEvery'),
       'adoPollCommentsEvery must still reference DEFAULTS');
+  });
+}
+
+// ─── P-c6d9a1b3: Dashboard throttle status exposure and warning banner ───────
+
+async function testAdoThrottleDashboard() {
+  console.log('\n── P-c6d9a1b3: Dashboard throttle status exposure and warning banner ──');
+
+  const dashPath = path.join(MINIONS_DIR, 'dashboard.js');
+  const dashSrc = fs.readFileSync(dashPath, 'utf8');
+
+  // ── Backend: getStatus() includes adoThrottle ──
+
+  await test('getStatus includes adoThrottle field from ado.getAdoThrottleState()', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    assert.ok(statusFn[0].includes('adoThrottle'),
+      'getStatus must include adoThrottle in the status response');
+    assert.ok(statusFn[0].includes('getAdoThrottleState'),
+      'getStatus must call getAdoThrottleState() to populate adoThrottle');
+  });
+
+  await test('adoThrottle calls ado.getAdoThrottleState() (uses ado module)', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    const src = statusFn[0];
+    // Should call via ado.getAdoThrottleState() since ado is already imported
+    assert.ok(src.includes('ado.getAdoThrottleState()') || src.includes('getAdoThrottleState()'),
+      'getStatus must call getAdoThrottleState() from the ado module');
+  });
+
+  // ── Frontend: engine.html has #ado-throttle-alert element ──
+
+  const engineHtmlPath = path.join(MINIONS_DIR, 'dashboard', 'pages', 'engine.html');
+  const engineHtml = fs.readFileSync(engineHtmlPath, 'utf8');
+
+  await test('engine.html contains #ado-throttle-alert element', () => {
+    assert.ok(engineHtml.includes('ado-throttle-alert'),
+      'engine.html must have an element with id="ado-throttle-alert"');
+  });
+
+  // ── Frontend: render-dispatch.js has renderAdoThrottleAlert function ──
+
+  const rdPath = path.join(MINIONS_DIR, 'dashboard', 'js', 'render-dispatch.js');
+  const rdSrc = fs.readFileSync(rdPath, 'utf8');
+
+  await test('render-dispatch.js defines renderAdoThrottleAlert function', () => {
+    assert.ok(rdSrc.includes('function renderAdoThrottleAlert'),
+      'render-dispatch.js must define renderAdoThrottleAlert function');
+  });
+
+  await test('renderAdoThrottleAlert targets #ado-throttle-alert element', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'renderAdoThrottleAlert function must exist');
+    assert.ok(fnMatch[0].includes('ado-throttle-alert'),
+      'renderAdoThrottleAlert must target #ado-throttle-alert element');
+  });
+
+  await test('renderAdoThrottleAlert hides banner when not throttled', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    const src = fnMatch[0];
+    assert.ok(src.includes('display') && (src.includes("'none'") || src.includes('"none"')),
+      'renderAdoThrottleAlert must hide banner (display: none) when not throttled');
+  });
+
+  await test('renderAdoThrottleAlert shows warning when throttled', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    const src = fnMatch[0];
+    assert.ok(src.includes('throttled') && (src.includes('rate-limited') || src.includes('throttl')),
+      'renderAdoThrottleAlert must show throttle/rate-limited message');
+  });
+
+  await test('renderAdoThrottleAlert shows resume time from retryAfter', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    const src = fnMatch[0];
+    assert.ok(src.includes('retryAfter'),
+      'renderAdoThrottleAlert must reference retryAfter to show resume time');
+    // Should format time (HH:MM)
+    assert.ok(src.includes('toLocaleTimeString') || src.includes('getHours') || src.includes('HH:MM') || src.includes('padStart'),
+      'renderAdoThrottleAlert must format retryAfter as a local time');
+  });
+
+  await test('renderAdoThrottleAlert shows consecutive hit count', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    const src = fnMatch[0];
+    assert.ok(src.includes('consecutiveHits'),
+      'renderAdoThrottleAlert must display consecutiveHits count');
+  });
+
+  await test('renderAdoThrottleAlert uses existing CSS classes (no new CSS)', () => {
+    const fnMatch = rdSrc.match(/function renderAdoThrottleAlert[\s\S]*?^}/m);
+    const src = fnMatch[0];
+    assert.ok(src.includes('engine-alert-msg'),
+      'renderAdoThrottleAlert must reuse existing engine-alert-msg CSS class');
+  });
+
+  await test('renderAdoThrottleAlert is exported via window.MinionsDispatch', () => {
+    assert.ok(rdSrc.includes('renderAdoThrottleAlert'),
+      'renderAdoThrottleAlert must be available (either exported or called from render-dispatch.js)');
+    // It should be in the MinionsDispatch export or called internally
+    const exportLine = rdSrc.match(/window\.MinionsDispatch\s*=\s*\{[^}]+\}/);
+    assert.ok(exportLine, 'MinionsDispatch export must exist');
+    assert.ok(exportLine[0].includes('renderAdoThrottleAlert'),
+      'renderAdoThrottleAlert must be exported in window.MinionsDispatch');
+  });
+
+  // ── Frontend: refresh.js calls renderAdoThrottleAlert ──
+
+  const refreshPath = path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js');
+  const refreshSrc = fs.readFileSync(refreshPath, 'utf8');
+
+  await test('refresh.js renders adoThrottle banner on status update', () => {
+    assert.ok(refreshSrc.includes('adoThrottle'),
+      'refresh.js must reference adoThrottle from status data');
+    assert.ok(refreshSrc.includes('renderAdoThrottleAlert'),
+      'refresh.js must call renderAdoThrottleAlert');
+  });
+
+  // ── Existing stale-engine alert is NOT broken ──
+
+  await test('existing engine-alert element and renderEngineAlert are preserved', () => {
+    assert.ok(rdSrc.includes('function renderEngineAlert'),
+      'renderEngineAlert must still exist in render-dispatch.js');
+    assert.ok(rdSrc.includes("document.getElementById('engine-alert')"),
+      'renderEngineAlert must still target #engine-alert');
+  });
+
+  // ── Layout: #ado-throttle-alert is separate from #engine-alert ──
+
+  const layoutPath = path.join(MINIONS_DIR, 'dashboard', 'layout.html');
+  const layoutSrc = fs.readFileSync(layoutPath, 'utf8');
+
+  await test('#ado-throttle-alert is in layout.html or engine.html, separate from #engine-alert', () => {
+    const inLayout = layoutSrc.includes('ado-throttle-alert');
+    const inEngine = engineHtml.includes('ado-throttle-alert');
+    assert.ok(inLayout || inEngine,
+      '#ado-throttle-alert must exist in layout.html or engine.html');
+    // #engine-alert must still exist separately
+    assert.ok(layoutSrc.includes('engine-alert'),
+      '#engine-alert must still exist in layout.html');
   });
 }
 

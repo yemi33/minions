@@ -75,6 +75,7 @@ function _processStatusUpdate(data) {
     }
   }
   if (_changed('version', data.version)) renderVersionBanner(data.version);
+  if (_changed('adoThrottle', data.adoThrottle)) renderAdoThrottleAlert(data.adoThrottle);
   if (_changed('dispatch', data.dispatch)) renderDispatch(data.dispatch);
   window._lastDispatch = data.dispatch;
   window._lastWorkItems = data.workItems || [];
