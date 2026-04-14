@@ -16768,6 +16768,23 @@ async function testPrReviewFixFlows() {
     assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');
   });
 
+  await test('merge conflict fix gated by autoFixConflicts flag', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.includes('autoFixConflicts'), 'Conflict fix dispatch must be gated by autoFixConflicts config flag');
+  });
+
+  await test('autoFixConflicts reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+    const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
+    assert.ok(conflictBlock.includes('DEFAULTS.autoFixConflicts'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
+    assert.ok(!conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+  });
+
+  await test('autoFixConflicts present in ENGINE_DEFAULTS', () => {
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
+    assert.ok('autoFixConflicts' in ENGINE_DEFAULTS, 'ENGINE_DEFAULTS must define autoFixConflicts');
+    assert.strictEqual(ENGINE_DEFAULTS.autoFixConflicts, true, 'autoFixConflicts default must be true');
+  });
+
   // ── Auto-complete ──
 
   console.log('\n── Auto-Complete ──');
