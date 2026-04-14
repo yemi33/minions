@@ -1308,6 +1308,64 @@ async function testContentHashCircuitBreaker() {
   });
 }
 
+// ─── Consolidation Force-Reset Race Condition Tests ─────────────────────────
+
+async function testConsolidationForceResetRace() {
+  console.log('\n── consolidation.js — Force-Reset Timeout Race Condition ──');
+
+  const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'consolidation.js'), 'utf8');
+
+  await test('consolidation.js: force-reset timeout handle is stored in a clearable variable', () => {
+    // The inner 10s setTimeout in the timeout handler must be stored so it can be cancelled
+    // Look for a module-level variable to hold the force-reset timeout handle
+    assert.ok(src.includes('_forceResetTimeout'), 'Should have a _forceResetTimeout variable to store the inner timeout handle');
+  });
+
+  await test('consolidation.js: _clearProcessingState cancels the force-reset timeout', () => {
+    // _clearProcessingState must call clearTimeout on the force-reset handle
+    // to prevent it from firing against a subsequent consolidation
+    const match = src.match(/function _clearProcessingState\(\)\s*\{[\s\S]*?\n  \}/);
+    assert.ok(match, '_clearProcessingState function must exist');
+    assert.ok(match[0].includes('clearTimeout(_forceResetTimeout)'),
+      '_clearProcessingState must call clearTimeout(_forceResetTimeout) to prevent race with new consolidation');
+  });
+
+  await test('consolidation.js: force-reset setTimeout result is assigned to _forceResetTimeout', () => {
+    // The inner setTimeout (10s force-reset after SIGKILL) must be assigned to _forceResetTimeout
+    // so _clearProcessingState can cancel it
+    assert.ok(src.includes('_forceResetTimeout = setTimeout'),
+      'Inner force-reset setTimeout must be assigned to _forceResetTimeout');
+  });
+
+  await test('consolidation.js: _clearProcessingState is idempotent (double-fire guard)', () => {
+    // Both 'error' and 'close' can fire for the same child process.
+    const match = src.match(/function _clearProcessingState\(\)\s*\{[\s\S]*?\n  \}/);
+    assert.ok(match, '_clearProcessingState function must exist');
+    assert.ok(match[0].includes('_cleared'),
+      '_clearProcessingState must have an idempotency guard (_cleared flag) to prevent double-fire from error+close events');
+  });
+
+  await test('consolidation.js: consolidateWithLLM clears stale _forceResetTimeout on entry', () => {
+    // A stale force-reset timeout from a prior run could fire during a new run.
+    // consolidateWithLLM must clearTimeout(_forceResetTimeout) before setting _consolidationInFlight = true.
+    const fnMatch = src.match(/function consolidateWithLLM[\s\S]*?_consolidationInFlight = true/);
+    assert.ok(fnMatch, 'consolidateWithLLM must exist and set _consolidationInFlight');
+    assert.ok(fnMatch[0].includes('clearTimeout(_forceResetTimeout)'),
+      'consolidateWithLLM must clear stale _forceResetTimeout before starting a new consolidation');
+  });
+
+  await test('consolidation.js: force-reset callback delegates to _clearProcessingState (no duplicate cleanup)', () => {
+    // The 10s force-reset callback should call _clearProcessingState() instead of
+    // duplicating the same state mutations inline.
+    const forceResetMatch = src.match(/_forceResetTimeout = setTimeout\(\(\)\s*=>\s*\{[\s\S]*?\}, 10000\)/);
+    assert.ok(forceResetMatch, 'force-reset setTimeout must exist');
+    assert.ok(forceResetMatch[0].includes('_clearProcessingState()'),
+      'force-reset callback must call _clearProcessingState() instead of duplicating cleanup logic');
+    assert.ok(!forceResetMatch[0].includes('_processingFiles.clear()'),
+      'force-reset callback must not have inline _processingFiles.clear() — delegates to _clearProcessingState');
+  });
+}
+
 // ─── Reconciliation Tests ───────────────────────────────────────────────────
 
 async function testReconciliation() {
@@ -9161,6 +9219,7 @@ async function main() {
     // consolidation.js tests
     await testConsolidationHelpers();
     await testContentHashCircuitBreaker();
+    await testConsolidationForceResetRace();
 
     // github.js tests
     await testGithubHelpers();
