@@ -1476,7 +1476,7 @@ const server = http.createServer(async (req, res) => {
       }
       const id = 'W-' + shared.uid();
       const item = {
-        id, title: body.title, type: body.type || 'implement',
+        id, title: body.title.trim(), type: body.type || 'implement',
         priority: body.priority || 'medium', description: body.description || '',
         status: WI_STATUS.PENDING, created: new Date().toISOString(), createdBy: 'dashboard',
       };
