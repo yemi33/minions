@@ -1051,8 +1051,12 @@ async function spawnAgent(dispatchItem, config) {
         return;
       }
 
-      // Re-attach to existing tracking
-      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, _steeringAt: Date.now(), lastRealOutputAt: Date.now() });
+      // Re-attach to existing tracking — do NOT carry _steeringAt forward (#1052).
+      // The kill watcher in timeout.js fires 30s after _steeringAt is set. If we carry it
+      // into the resumed process, it kills the resumed session. The kill watcher only exists
+      // to handle cases where the original kill didn't take effect — once the process has
+      // exited and the resume is spawned, _steeringAt must not be present.
+      activeProcesses.set(id, { proc: resumeProc, agentId, startedAt: procInfo.startedAt, sessionId: steerSessionId, lastRealOutputAt: Date.now() });
 
       // Reset output buffers so post-completion parsing only sees the resumed session
       stdout = '';
