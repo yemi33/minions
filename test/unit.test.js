@@ -17449,6 +17449,41 @@ async function testRenderUtils() {
     assert.ok(updateSection.includes('monospace') || updateSection.includes('font-family'),
       'Tool display should use monospace font style');
   });
+
+  // ─── P-d9c3b5f7: detail-panel.js Output Log tab uses renderAgentOutput ──
+  console.log('\n── P-d9c3b5f7: detail-panel.js Output Log tab uses renderAgentOutput ──');
+
+  const detailPanelSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'detail-panel.js'), 'utf8');
+
+  await test('Output Log tab uses renderAgentOutput instead of renderMd', () => {
+    // Extract the output tab branch from renderDetailContent
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'renderDetailContent must exist');
+    // Find the output tab handler section
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    assert.ok(outputTabIdx > -1, 'Output tab handler must exist in renderDetailContent');
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 300);
+    assert.ok(outputSection.includes('renderAgentOutput'),
+      'Output Log tab must use renderAgentOutput for formatted JSONL rendering');
+    assert.ok(!outputSection.includes('renderMd(detail.outputLog'),
+      'Output Log tab must NOT use renderMd for outputLog — should use renderAgentOutput');
+  });
+
+  await test('Output Log tab preserves fallback message when outputLog is falsy', () => {
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 400);
+    assert.ok(outputSection.includes('No output log'),
+      'Output Log tab must show fallback text when outputLog is empty');
+  });
+
+  await test('Output Log tab wraps output in section container', () => {
+    const fnMatch = detailPanelSrc.match(/function renderDetailContent[\s\S]*?^}/m);
+    const outputTabIdx = fnMatch[0].indexOf("tab === 'output'");
+    const outputSection = fnMatch[0].slice(outputTabIdx, outputTabIdx + 400);
+    assert.ok(outputSection.includes('class="section"') || outputSection.includes("class=\\'section\\'"),
+      'Output Log content must be wrapped in a section container');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

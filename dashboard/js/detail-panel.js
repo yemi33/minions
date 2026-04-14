@@ -141,7 +141,7 @@ function renderDetailContent(detail, tab) {
     html += '<h4>Task History</h4><div class="section">' + renderMd(detail.history || 'No history yet.') + '</div>';
     el.innerHTML = html;
   } else if (tab === 'output') {
-    el.innerHTML = '<div class="section">' + renderMd(detail.outputLog || 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
+    el.innerHTML = '<div class="section">' + (detail.outputLog ? renderAgentOutput(detail.outputLog) : 'No output log. The coordinator will save agent output here when tasks complete.') + '</div>';
   }
 }
 
