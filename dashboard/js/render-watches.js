@@ -34,6 +34,24 @@ function _intervalToHuman(ms) {
   return Math.floor(min / 60) + 'h ' + (min % 60) + 'm';
 }
 
+// Parse human-friendly interval strings: "15m", "2h", "30s", "90000" (ms)
+function _parseIntervalStr(s) {
+  if (!s) return 300000;
+  s = String(s).trim().toLowerCase();
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10);
+    return n >= 1000 ? n : n * 1000; // bare numbers: ≥1000 treated as ms, else seconds
+  }
+  const match = s.match(/^(\d+(?:\.\d+)?)\s*(s|sec|m|min|h|hr|hours?)$/);
+  if (!match) return 300000;
+  const n = parseFloat(match[1]);
+  const unit = match[2][0];
+  if (unit === 's') return Math.round(n * 1000);
+  if (unit === 'm') return Math.round(n * 60000);
+  if (unit === 'h') return Math.round(n * 3600000);
+  return 300000;
+}
+
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 let _watchPage = 0;
@@ -206,18 +224,8 @@ function _watchFormHtml() {
     { value: 'status-change', label: 'Status Change' },
     { value: 'any', label: 'Any Change' },
   ];
-  var intervals = [
-    { value: 60000, label: '1 minute' },
-    { value: 120000, label: '2 minutes' },
-    { value: 300000, label: '5 minutes (default)' },
-    { value: 600000, label: '10 minutes' },
-    { value: 1800000, label: '30 minutes' },
-    { value: 3600000, label: '1 hour' },
-  ];
-
   var ttOpts = targetTypes.map(function(t) { return '<option value="' + t.value + '">' + t.label + '</option>'; }).join('');
   var condOpts = conditions.map(function(c) { return '<option value="' + c.value + '">' + c.label + '</option>'; }).join('');
-  var intOpts = intervals.map(function(iv) { return '<option value="' + iv.value + '"' + (iv.value === 300000 ? ' selected' : '') + '>' + iv.label + '</option>'; }).join('');
   var agentOpts = '<option value="">human</option>' + (cmdAgents || []).map(function(a) { return '<option value="' + escHtml(a.id) + '">' + escHtml(a.name) + '</option>'; }).join('');
   var projOpts = '<option value="">Any</option>' + (cmdProjects || []).map(function(p) { return '<option value="' + escHtml(p.name) + '">' + escHtml(p.name) + '</option>'; }).join('');
 
@@ -226,7 +234,7 @@ function _watchFormHtml() {
     '<label style="color:var(--text);font-size:var(--text-md)">Target (PR number, Work Item ID, or branch name)<input id="watch-edit-target" placeholder="e.g. 1057, W-abc123, main" style="' + inputStyle + '"></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Target Type<select id="watch-edit-target-type" style="' + inputStyle + '">' + ttOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Condition<select id="watch-edit-condition" style="' + inputStyle + '">' + condOpts + '</select></label>' +
-    '<label style="color:var(--text);font-size:var(--text-md)">Check Interval<select id="watch-edit-interval" style="' + inputStyle + '">' + intOpts + '</select></label>' +
+    '<label style="color:var(--text);font-size:var(--text-md)">Check Interval <span style="font-size:10px;color:var(--muted)">(e.g. 5m, 15m, 1h — default 5m)</span><input id="watch-edit-interval" placeholder="5m" style="' + inputStyle + '"></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Owner (who gets notified)<select id="watch-edit-owner" style="' + inputStyle + '">' + agentOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Project<select id="watch-edit-project" style="' + inputStyle + '">' + projOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Description<input id="watch-edit-desc" placeholder="Optional description" style="' + inputStyle + '"></label>' +
@@ -247,7 +255,7 @@ function submitWatch() {
   var target = (document.getElementById('watch-edit-target') || {}).value || '';
   var targetType = (document.getElementById('watch-edit-target-type') || {}).value || 'pr';
   var condition = (document.getElementById('watch-edit-condition') || {}).value || 'merged';
-  var interval = parseInt((document.getElementById('watch-edit-interval') || {}).value, 10) || 300000;
+  var interval = _parseIntervalStr((document.getElementById('watch-edit-interval') || {}).value);
   var owner = (document.getElementById('watch-edit-owner') || {}).value || '';
   var project = (document.getElementById('watch-edit-project') || {}).value || '';
   var description = (document.getElementById('watch-edit-desc') || {}).value || '';

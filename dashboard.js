@@ -598,6 +598,18 @@ function parseCCActions(text) {
 // Actions are executed server-side so all clients (frontend, curl, Teams) get the same behavior.
 // The frontend still shows status toasts but no longer needs to fire the API calls.
 
+// Parse interval from CC action — accepts ms number, "15m", "1h", "30s", or null (default 5m).
+function _parseWatchInterval(val) {
+  if (!val) return 300000;
+  if (typeof val === 'number') return Math.max(60000, val);
+  const s = String(val).trim().toLowerCase();
+  if (/^\d+$/.test(s)) { const n = parseInt(s, 10); return Math.max(60000, n >= 1000 ? n : n * 1000); }
+  const m = s.match(/^(\d+(?:\.\d+)?)\s*(s|sec|m|min|h|hr|hours?)$/);
+  if (!m) return 300000;
+  const n = parseFloat(m[1]), u = m[2][0];
+  return Math.max(60000, Math.round(u === 's' ? n * 1000 : u === 'm' ? n * 60000 : n * 3600000));
+}
+
 async function executeCCActions(actions) {
   const results = [];
   for (const action of actions) {
@@ -672,6 +684,22 @@ async function executeCCActions(actions) {
             invalidateStatusCache();
           }
           results.push({ type: 'reopen-work-item', id: action.id, ...(reopenResult || { error: 'unexpected' }) });
+          break;
+        }
+        case 'create-watch': {
+          const intervalMs = _parseWatchInterval(action.interval);
+          const watch = watchesMod.createWatch({
+            target: action.target,
+            targetType: action.targetType || 'pr',
+            condition: action.condition || 'build-pass',
+            interval: intervalMs,
+            owner: action.owner || 'human',
+            description: action.description || null,
+            project: action.project || null,
+            notify: 'inbox',
+            maxTriggers: Number(action.maxTriggers) || 0,
+          });
+          results.push({ type: 'create-watch', id: watch.id, ok: true });
           break;
         }
         default:

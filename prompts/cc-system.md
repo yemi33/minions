@@ -82,6 +82,8 @@ Additional actions (all take `id` or `file` as primary key):
 - Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), unarchive-meeting (id), delete-meeting (id)
 - Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment), reopen-work-item (id, project[, description] — reopen a done/failed item back to pending)
 - PRD ops: edit-prd-item, remove-prd-item, reopen-prd-item (id, file — re-dispatches on existing branch)
+- **create-watch**: target, targetType (pr/work-item/branch), condition (merged/build-fail/build-pass/completed/failed/status-change/any), interval ("15m", "1h", "30s" — default "5m"), owner (agent id or "human"), description, project, maxTriggers (0=unlimited, 1=fire-once-then-expire)
+  Example: user says "watch PR 1065 until build is green every 15 min" → `{"type":"create-watch","target":"1065","targetType":"pr","condition":"build-pass","interval":"15m","maxTriggers":1,"description":"Watch PR 1065 build until green"}`
 - KB/Inbox: promote-to-kb (file, category), kb-sweep, toggle-kb-pin (key)
 - Plan lifecycle: revise-plan (file, feedback — dispatches agent to revise)
 - Pipeline: continue-pipeline (id — resume past wait stage)
