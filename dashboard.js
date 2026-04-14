@@ -3579,6 +3579,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             }
           });
           _ccStreamAbort = retryPromise.abort;
+          ccInFlightAborts.set(tabId, _ccStreamAbort);
           const retryResult = await retryPromise;
           trackUsage('command-center', retryResult.usage);
           if (retryResult.text) {
