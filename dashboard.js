@@ -21,6 +21,7 @@ const _dashboardVersion = {
 const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const teams = require('./engine/teams');
+const ado = require('./engine/ado');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
@@ -4228,8 +4229,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           } else if (adoMatch) {
             const [, adoOrg, adoProj, adoRepo] = adoMatch;
             try {
-              const { fetchAdoPrMetadata } = require('./engine/ado');
-              prData = await fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo);
+              prData = await ado.fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo);
             } catch { /* ADO token may not be available */ }
           }
           if (!prData) return;

@@ -371,19 +371,17 @@ async function pollPrStatus(config) {
 
     if (newStatus !== PR_STATUS.ACTIVE) return updated;
 
-    // Query builds API directly — status checks (/statuses) are unreliable (stale codecoverage postbacks)
-    // Use refs/pull/{id}/merge — the synthetic merge ref ADO creates for each PR — to scope builds exactly
+    // Query builds API directly — /statuses is unreliable (stale codecoverage postbacks).
+    // refs/pull/{id}/merge scopes server-side to this PR; sourceVersion narrows to the current
+    // merge commit (same ref accumulates builds across all prior pushes to the PR).
     const prNumber = pr.prNumber;
+    const mergeCommitId = prData.lastMergeCommit?.commitId;
     let buildStatus = 'none';
     let buildFailReason = '';
     let buildStatuses = []; // for error log fetching
 
-    const mergeCommitId = prData.lastMergeCommit?.commitId;
     if (prNumber && mergeCommitId) {
       try {
-        // branchName=refs/pull/{id}/merge scopes server-side to this PR's builds.
-        // sourceVersion filter then narrows to the current merge commit — a PR updated
-        // multiple times accumulates builds on the same ref across different commits.
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
@@ -768,19 +766,17 @@ async function checkLiveReviewStatus(pr, project) {
   }
 }
 
-// Fetch basic PR metadata (title, description, branch, author) for a manually-linked ADO PR.
-// Uses adoFetch so retry logic and circuit breaker apply — dashboard.js PR enrichment calls this.
 async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
   const token = await getAdoToken();
   if (!token) return null;
   const url = `https://dev.azure.com/${adoOrg}/${adoProj}/_apis/git/repositories/${adoRepo}/pullrequests/${prNum}?api-version=7.1`;
-  const d = await adoFetch(url, token);
-  if (!d) return null;
+  const pr = await adoFetch(url, token);
+  if (!pr) return null;
   return {
-    title: d.title || '',
-    description: d.description || '',
-    branch: d.sourceRefName?.replace('refs/heads/', '') || '',
-    author: d.createdBy?.displayName || '',
+    title: pr.title || '',
+    description: pr.description || '',
+    branch: pr.sourceRefName?.replace('refs/heads/', '') || '',
+    author: pr.createdBy?.displayName || '',
   };
 }
 
