@@ -509,12 +509,12 @@ function viewAgentOutput(logPath) {
   document.getElementById('modal-title').textContent = 'Agent Output';
   document.getElementById('modal-body').innerHTML = '<p style="color:var(--muted)">Loading...</p>';
   document.getElementById('modal-body').style.fontFamily = 'Consolas, monospace';
-  document.getElementById('modal-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('modal-body').style.whiteSpace = 'normal';
   document.getElementById('modal').classList.add('open');
   fetch('/api/agent-output?file=' + encodeURIComponent(logPath))
     .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
     .then(function(content) {
-      document.getElementById('modal-body').textContent = content;
+      document.getElementById('modal-body').innerHTML = renderAgentOutput(content);
     })
     .catch(function() {
       document.getElementById('modal-body').innerHTML = '<p style="color:var(--red)">Failed to load output.</p>';
