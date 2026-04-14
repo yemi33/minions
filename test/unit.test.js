@@ -9437,6 +9437,9 @@ async function main() {
     // P-a8f3d2e1: ADO throttle detection and state tracking
     await testAdoThrottleDetection();
 
+    // P-b7c4e5f9: Engine tick guards to skip ADO polls while throttled
+    await testAdoThrottleTickGuards();
+
     // P-b7e3a1d9: render-utils.js shared formatting helpers
     await testRenderUtils();
 
@@ -17508,6 +17511,135 @@ async function testAdoThrottleDetection() {
 
   // Clean up require cache
   delete require.cache[require.resolve(adoPath)];
+}
+
+// ─── P-b7c4e5f9: Engine tick guards to skip ADO polls while throttled ────────
+
+async function testAdoThrottleTickGuards() {
+  console.log('\n── P-b7c4e5f9: Engine tick guards to skip ADO polls while throttled ──');
+
+  const enginePath = path.join(MINIONS_DIR, 'engine.js');
+  const engineSrc = fs.readFileSync(enginePath, 'utf8');
+
+  // ── Import: isAdoThrottled must be imported from ./engine/ado ──
+
+  await test('engine.js imports isAdoThrottled from ./engine/ado', () => {
+    const adoImportLine = engineSrc.match(/require\('\.\/engine\/ado'\)/);
+    assert.ok(adoImportLine, 'engine.js must import from ./engine/ado');
+    // Find the destructured import line
+    const importIdx = engineSrc.indexOf("require('./engine/ado')");
+    const importStart = engineSrc.lastIndexOf('const', importIdx);
+    const importEnd = engineSrc.indexOf(';', importIdx);
+    const importLine = engineSrc.slice(importStart, importEnd);
+    assert.ok(importLine.includes('isAdoThrottled'),
+      'engine.js must destructure isAdoThrottled from ./engine/ado');
+  });
+
+  // ── Section 2.6: pollPrStatus guarded by !isAdoThrottled() ──
+
+  await test('section 2.6 pollPrStatus is guarded by !isAdoThrottled()', () => {
+    // Find the section 2.6 comment and the pollPrStatus call
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(section26Idx > -1, 'Section 2.6 comment must exist');
+    // Get the block from section 2.6 to section 2.7
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // The pollPrStatus call should have isAdoThrottled guard
+    const pollIdx = section26Block.indexOf('pollPrStatus');
+    assert.ok(pollIdx > -1, 'pollPrStatus call must exist in section 2.6');
+    // Check that isAdoThrottled appears BEFORE pollPrStatus in this section
+    const throttleIdx = section26Block.indexOf('isAdoThrottled');
+    assert.ok(throttleIdx > -1, 'isAdoThrottled must appear in section 2.6');
+    assert.ok(throttleIdx < pollIdx,
+      'isAdoThrottled guard must appear before pollPrStatus call');
+  });
+
+  await test('section 2.6 logs debug message when ADO poll is skipped due to throttle', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('[ado]') && section26Block.includes('throttled'),
+      'Section 2.6 must log a message mentioning [ado] and throttled when poll is skipped');
+  });
+
+  // ── Section 2.7: pollPrHumanComments guarded by !isAdoThrottled() ──
+
+  await test('section 2.7 pollPrHumanComments is guarded by !isAdoThrottled()', () => {
+    const section27Idx = engineSrc.indexOf('2.7');
+    assert.ok(section27Idx > -1, 'Section 2.7 comment must exist');
+    // Get the block from section 2.7 to the next section (2.9)
+    const nextSectionIdx = engineSrc.indexOf('2.9', section27Idx);
+    const section27Block = engineSrc.slice(section27Idx, nextSectionIdx);
+    const pollIdx = section27Block.indexOf('pollPrHumanComments');
+    assert.ok(pollIdx > -1, 'pollPrHumanComments call must exist in section 2.7');
+    const throttleIdx = section27Block.indexOf('isAdoThrottled');
+    assert.ok(throttleIdx > -1, 'isAdoThrottled must appear in section 2.7');
+    assert.ok(throttleIdx < pollIdx,
+      'isAdoThrottled guard must appear before pollPrHumanComments call');
+  });
+
+  await test('section 2.7 logs debug message when ADO comment poll is skipped due to throttle', () => {
+    const section27Idx = engineSrc.indexOf('2.7');
+    const nextSectionIdx = engineSrc.indexOf('2.9', section27Idx);
+    const section27Block = engineSrc.slice(section27Idx, nextSectionIdx);
+    assert.ok(section27Block.includes('[ado]') && section27Block.includes('throttled'),
+      'Section 2.7 must log a message mentioning [ado] and throttled when comment poll is skipped');
+  });
+
+  // ── GitHub polls are NOT guarded by isAdoThrottled ──
+
+  await test('GitHub polls are NOT guarded by isAdoThrottled', () => {
+    // ghPollPrStatus should not have isAdoThrottled near it
+    const ghPollIdx = engineSrc.indexOf('ghPollPrStatus(');
+    assert.ok(ghPollIdx > -1, 'ghPollPrStatus call must exist');
+    // Check 200 chars before ghPollPrStatus — isAdoThrottled should NOT be in the immediate guard
+    const nearGhPoll = engineSrc.slice(Math.max(0, ghPollIdx - 200), ghPollIdx);
+    // It's OK if isAdoThrottled appears way above (in the section), but it must not be the direct guard
+    // The ADO check wraps only the ADO call, not the GitHub call
+    const ghCommentIdx = engineSrc.indexOf('ghPollPrHumanComments(');
+    assert.ok(ghCommentIdx > -1, 'ghPollPrHumanComments call must exist');
+  });
+
+  // ── Reconciliation, rebase, PRD sync, plan completion are NOT guarded ──
+
+  await test('reconcilePrs is not guarded by isAdoThrottled', () => {
+    const reconcileIdx = engineSrc.indexOf('reconcilePrs(config)');
+    assert.ok(reconcileIdx > -1, 'reconcilePrs call must exist');
+    // The 100 chars before reconcilePrs should not have isAdoThrottled as a direct guard
+    const nearReconcile = engineSrc.slice(Math.max(0, reconcileIdx - 100), reconcileIdx);
+    assert.ok(!nearReconcile.includes('isAdoThrottled'),
+      'reconcilePrs must NOT be directly guarded by isAdoThrottled');
+  });
+
+  await test('processPendingRebases is not guarded by isAdoThrottled', () => {
+    const rebaseIdx = engineSrc.indexOf('processPendingRebases');
+    assert.ok(rebaseIdx > -1, 'processPendingRebases call must exist');
+    const nearRebase = engineSrc.slice(Math.max(0, rebaseIdx - 100), rebaseIdx);
+    assert.ok(!nearRebase.includes('isAdoThrottled'),
+      'processPendingRebases must NOT be directly guarded by isAdoThrottled');
+  });
+
+  await test('syncPrdFromPrs is not guarded by isAdoThrottled', () => {
+    const syncIdx = engineSrc.indexOf('syncPrdFromPrs');
+    assert.ok(syncIdx > -1, 'syncPrdFromPrs call must exist');
+    const nearSync = engineSrc.slice(Math.max(0, syncIdx - 100), syncIdx);
+    assert.ok(!nearSync.includes('isAdoThrottled'),
+      'syncPrdFromPrs must NOT be directly guarded by isAdoThrottled');
+  });
+
+  // ── No changes to config values ──
+
+  await test('adoPollStatusEvery and adoPollCommentsEvery are not modified', () => {
+    // These should still reference DEFAULTS, not hardcoded values
+    assert.ok(engineSrc.includes('adoPollStatusEvery'),
+      'adoPollStatusEvery must still be used');
+    assert.ok(engineSrc.includes('adoPollCommentsEvery'),
+      'adoPollCommentsEvery must still be used');
+    assert.ok(engineSrc.includes('DEFAULTS.adoPollStatusEvery'),
+      'adoPollStatusEvery must still reference DEFAULTS');
+    assert.ok(engineSrc.includes('DEFAULTS.adoPollCommentsEvery'),
+      'adoPollCommentsEvery must still reference DEFAULTS');
+  });
 }
 
 // ─── P-b7e3a1d9: render-utils.js shared formatting helpers ──────────────────

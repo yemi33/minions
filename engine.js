@@ -1445,7 +1445,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 // ─── Inbox Consolidation (extracted to engine/consolidation.js) ──────────────
 
 const { consolidateInbox } = require('./engine/consolidation');
-const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry, getAdoToken } = require('./engine/ado');
+const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry, getAdoToken, isAdoThrottled } = require('./engine/ado');
 const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
@@ -3129,8 +3129,10 @@ async function tickInner() {
   // Awaited so PR state is consistent before discoverWork reads it
   // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
   if (tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()) {
-    if (adoPollEnabled) {
+    if (adoPollEnabled && !isAdoThrottled()) {
       try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    } else if (adoPollEnabled && isAdoThrottled()) {
+      log('info', '[ado] PR status poll skipped — throttled');
     }
     if (ghPollEnabled) {
       try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
@@ -3156,8 +3158,10 @@ async function tickInner() {
 
   // 2.7. Poll PR threads for human comments (every adoPollCommentsEvery ticks, default ~12 minutes)
   if (tickCount % adoPollCommentsEvery === 0) {
-    if (adoPollEnabled) {
+    if (adoPollEnabled && !isAdoThrottled()) {
       try { await pollPrHumanComments(config); } catch (err) { log('warn', `ADO PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    } else if (adoPollEnabled && isAdoThrottled()) {
+      log('info', '[ado] PR comment poll skipped — throttled');
     }
     if (ghPollEnabled) {
       try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
