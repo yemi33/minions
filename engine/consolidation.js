@@ -18,6 +18,7 @@ const { getInboxFiles, getNotes, INBOX_DIR, ENGINE_DIR, MINIONS_DIR,
 // Track in-flight LLM consolidation to prevent concurrent runs
 let _consolidationInFlight = false;
 let _consolidationStartedAt = 0;
+let _forceResetTimeout = null; // force-reset handle; cancelled by _clearProcessingState
 const _processingFiles = new Set(); // files currently being consolidated (race guard)
 
 function consolidateInbox(config) {
@@ -113,6 +114,9 @@ Use today's date: ${dateStamp()}`;
 
 function consolidateWithLLM(items, existingNotes, files, config) {
 
+  // Cancel any stale force-reset from a prior run before starting fresh
+  clearTimeout(_forceResetTimeout);
+  _forceResetTimeout = null;
   _consolidationInFlight = true;
   _consolidationStartedAt = Date.now();
   for (const f of files) _processingFiles.add(f);
@@ -180,18 +184,21 @@ function consolidateWithLLM(items, existingNotes, files, config) {
   const timeout = setTimeout(() => {
     log('warn', 'LLM consolidation timed out after 3m — killing and falling back to regex');
     shared.killGracefully(proc, 10000);
-    setTimeout(() => {
-      if (_consolidationInFlight) {
-        _consolidationInFlight = false;
-        _processingFiles.clear();
-        log('warn', 'Consolidation flag force-reset after SIGKILL');
-      }
+    _forceResetTimeout = setTimeout(() => {
+      if (!_cleared) log('warn', 'Consolidation flag force-reset after SIGKILL');
+      _clearProcessingState();
     }, 10000);
   }, 180000);
 
+  let _cleared = false; // idempotency guard — both 'error' and 'close' can fire for the same process
   function _clearProcessingState() {
+    if (_cleared) return;
+    _cleared = true;
+    clearTimeout(_forceResetTimeout);
+    _forceResetTimeout = null;
     for (const f of files) _processingFiles.delete(f);
     _consolidationInFlight = false;
+    _consolidationStartedAt = 0;
   }
 
   proc.on('close', (code) => {
