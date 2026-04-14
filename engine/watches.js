@@ -35,7 +35,7 @@ function getWatches() {
  * @param {object} opts - Watch definition
  * @returns {object} - Created watch
  */
-function createWatch({ target, targetType, condition, interval, owner, description, project, notify, maxTriggers }) {
+function createWatch({ target, targetType, condition, interval, owner, description, project, notify, stopAfter, onNotMet }) {
   if (!target) throw new Error('target is required');
   if (!targetType || !Object.values(WATCH_TARGET_TYPE).includes(targetType)) {
     throw new Error(`targetType must be one of: ${Object.values(WATCH_TARGET_TYPE).join(', ')}`);
@@ -55,7 +55,8 @@ function createWatch({ target, targetType, condition, interval, owner, descripti
     description: description || `Watch ${target} for ${condition}`,
     project: project || null,
     notify: notify || 'inbox',
-    maxTriggers: Number(maxTriggers) || 0,
+    stopAfter: Number(stopAfter) || 0,   // 0 = run forever; N = expire after N triggers
+    onNotMet: onNotMet || null,          // null | 'notify' — action per poll when condition not met
     triggerCount: 0,
     created_at: ts(),
     last_checked: null,
@@ -91,7 +92,7 @@ function updateWatch(id, updates) {
     const watch = watches.find(w => w.id === id);
     if (!watch) return watches;
     // Only allow safe field updates
-    const allowed = ['status', 'interval', 'description', 'notify', 'maxTriggers', 'condition'];
+    const allowed = ['status', 'interval', 'description', 'notify', 'stopAfter', 'onNotMet', 'condition'];
     for (const key of allowed) {
       if (updates[key] !== undefined) watch[key] = updates[key];
     }
@@ -225,18 +226,22 @@ function checkWatches(config, state) {
           watch.last_triggered = ts();
           watch._lastTriggerMessage = result.message;
 
-          // Fire notification
+          // Fire trigger notification
           if (watch.notify === 'inbox' && watch.owner && watch.owner !== 'human') {
             writeToInbox(watch.owner, `watch-${watch.id}`,
               `## Watch Triggered: ${watch.description}\n\n${result.message}\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Condition: ${watch.condition}`);
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Check max triggers → expire
-          if (watch.maxTriggers > 0 && watch.triggerCount >= watch.maxTriggers) {
+          // Expire once stopAfter limit is reached (0 = never expire automatically)
+          if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
             watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (max triggers reached): ${watch.id}`);
+            log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
           }
+        } else if (watch.onNotMet === 'notify' && watch.owner && watch.owner !== 'human') {
+          // Per-poll action when condition is not yet met
+          writeToInbox(watch.owner, `watch-poll-${watch.id}`,
+            `## Watch Polling: ${watch.description}\n\nCondition not yet met (${watch.condition}) — still watching.\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Checks so far: ${watch.triggerCount || 0}`);
         }
 
         // Capture state for change detection on next check

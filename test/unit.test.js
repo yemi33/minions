@@ -18696,7 +18696,7 @@ async function testWatchesModule() {
       assert.strictEqual(w.owner, 'human');
       assert.strictEqual(w.notify, 'inbox');
       assert.strictEqual(w.triggerCount, 0);
-      assert.strictEqual(w.maxTriggers, 0);
+      assert.strictEqual(w.stopAfter, 0);
       assert.ok(w.created_at, 'created_at should be set');
       assert.ok(w.interval >= 60000, 'interval should be at least 60s');
     } finally { restore(); }
@@ -18929,7 +18929,7 @@ async function testWatchesModule() {
     } finally { restore(); }
   });
 
-  await test('checkWatches expires watch when maxTriggers reached', () => {
+  await test('checkWatches expires watch when stopAfter limit reached', () => {
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -18938,7 +18938,7 @@ async function testWatchesModule() {
         target: '70',
         targetType: shared.WATCH_TARGET_TYPE.PR,
         condition: shared.WATCH_CONDITION.MERGED,
-        maxTriggers: 1,
+        stopAfter: 1,
         interval: 60000,
       });
       const state = { pullRequests: [{ prNumber: 70, status: 'merged' }], workItems: [] };

@@ -86,7 +86,7 @@ function renderWatches(watchesData) {
     var condLabel = _WATCH_CONDITION_LABELS[w.condition] || escHtml(w.condition || '');
     var lastChecked = w.last_checked ? timeAgo(w.last_checked) : 'never';
     var lastTriggered = w.last_triggered ? timeAgo(w.last_triggered) : 'never';
-    var triggerInfo = (w.triggerCount || 0) + (w.maxTriggers > 0 ? '/' + w.maxTriggers : '');
+    var triggerInfo = (w.triggerCount || 0) + (w.stopAfter > 0 ? '/' + w.stopAfter : '');
 
     html += '<tr style="cursor:pointer" onclick="openWatchDetail(\'' + escHtml(w.id) + '\')">' +
       '<td><span class="pr-id">' + escHtml(w.id) + '</span></td>' +
@@ -158,7 +158,8 @@ function openWatchDetail(id) {
     '<div><strong style="color:var(--muted)">Owner:</strong> ' + escHtml(w.owner || 'human') + '</div>' +
     '<div><strong style="color:var(--muted)">Status:</strong> ' + statusBadge + '</div>' +
     '<div><strong style="color:var(--muted)">Notify:</strong> ' + escHtml(w.notify || 'inbox') + '</div>' +
-    '<div><strong style="color:var(--muted)">Triggers:</strong> ' + (w.triggerCount || 0) + (w.maxTriggers > 0 ? ' / ' + w.maxTriggers : ' (unlimited)') + '</div>' +
+    '<div><strong style="color:var(--muted)">Triggers:</strong> ' + (w.triggerCount || 0) + (w.stopAfter > 0 ? ' / ' + w.stopAfter + ' (expires after)' : ' (runs forever)') + '</div>' +
+    (w.onNotMet ? '<div><strong style="color:var(--muted)">On Each Poll (not met):</strong> ' + escHtml(w.onNotMet) + '</div>' : '') +
     '<div><strong style="color:var(--muted)">Created:</strong> ' + escHtml(createdAt) + '</div>' +
     '<div><strong style="color:var(--muted)">Last Checked:</strong> ' + escHtml(lastChecked) + '</div>' +
     '<div><strong style="color:var(--muted)">Last Triggered:</strong> ' + escHtml(lastTriggered) + '</div>' +
@@ -238,7 +239,8 @@ function _watchFormHtml() {
     '<label style="color:var(--text);font-size:var(--text-md)">Owner (who gets notified)<select id="watch-edit-owner" style="' + inputStyle + '">' + agentOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Project<select id="watch-edit-project" style="' + inputStyle + '">' + projOpts + '</select></label>' +
     '<label style="color:var(--text);font-size:var(--text-md)">Description<input id="watch-edit-desc" placeholder="Optional description" style="' + inputStyle + '"></label>' +
-    '<label style="color:var(--text);font-size:var(--text-md)">Max Triggers (0 = unlimited)<input id="watch-edit-max" type="number" value="0" min="0" style="' + inputStyle + '"></label>' +
+    '<label style="color:var(--text);font-size:var(--text-md)">Stop After N Triggers <span style="font-size:10px;color:var(--muted)">(0 = run forever, 1 = expire on first match)</span><input id="watch-edit-stop-after" type="number" value="0" min="0" style="' + inputStyle + '"></label>' +
+    '<label style="color:var(--text);font-size:var(--text-md)">On Each Poll (if condition not met)<select id="watch-edit-on-not-met" style="' + inputStyle + '"><option value="">None — do nothing</option><option value="notify">Notify — write to inbox each poll</option></select></label>' +
   '</div>';
 }
 
@@ -259,7 +261,8 @@ function submitWatch() {
   var owner = (document.getElementById('watch-edit-owner') || {}).value || '';
   var project = (document.getElementById('watch-edit-project') || {}).value || '';
   var description = (document.getElementById('watch-edit-desc') || {}).value || '';
-  var maxTriggers = parseInt((document.getElementById('watch-edit-max') || {}).value, 10) || 0;
+  var stopAfter = parseInt((document.getElementById('watch-edit-stop-after') || {}).value, 10) || 0;
+  var onNotMet = (document.getElementById('watch-edit-on-not-met') || {}).value || '';
 
   if (!target.trim()) {
     var errEl = document.getElementById('watch-form-error');
@@ -280,7 +283,8 @@ function submitWatch() {
       project: project || null,
       description: description || null,
       notify: 'inbox',
-      maxTriggers: maxTriggers,
+      stopAfter: stopAfter,
+      onNotMet: onNotMet || null,
     })
   }).then(function(res) { return res.json(); }).then(function(data) {
     if (data.error) {

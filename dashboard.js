@@ -697,7 +697,8 @@ async function executeCCActions(actions) {
             description: action.description || null,
             project: action.project || null,
             notify: 'inbox',
-            maxTriggers: Number(action.maxTriggers) || 0,
+            stopAfter: Number(action.stopAfter) || 0,
+            onNotMet: action.onNotMet || null,
           });
           results.push({ type: 'create-watch', id: watch.id, ok: true });
           break;
@@ -3783,10 +3784,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleWatchesCreate(req, res) {
     const body = await readBody(req);
-    const { target, targetType, condition, interval, owner, description, project, notify, maxTriggers } = body;
+    const { target, targetType, condition, interval, owner, description, project, notify, stopAfter, onNotMet } = body;
     if (!target) return jsonReply(res, 400, { error: 'target is required' });
     try {
-      const watch = watchesMod.createWatch({ target, targetType, condition, interval, owner, description, project, notify, maxTriggers });
+      const watch = watchesMod.createWatch({ target, targetType, condition, interval, owner, description, project, notify, stopAfter, onNotMet });
       invalidateStatusCache();
       return jsonReply(res, 200, { ok: true, watch });
     } catch (e) {
@@ -4517,8 +4518,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Watches
     { method: 'GET', path: '/api/watches', desc: 'List all watches', handler: handleWatchesList },
-    { method: 'POST', path: '/api/watches', desc: 'Create a new watch', params: 'target, targetType, condition, interval?, owner?, description?, project?, notify?, maxTriggers?', handler: handleWatchesCreate },
-    { method: 'POST', path: '/api/watches/update', desc: 'Update a watch (pause/resume/modify)', params: 'id, status?, interval?, description?, notify?, maxTriggers?, condition?', handler: handleWatchesUpdate },
+    { method: 'POST', path: '/api/watches', desc: 'Create a new watch', params: 'target, targetType, condition, interval?, owner?, description?, project?, notify?, stopAfter?, onNotMet?', handler: handleWatchesCreate },
+    { method: 'POST', path: '/api/watches/update', desc: 'Update a watch (pause/resume/modify)', params: 'id, status?, interval?, description?, notify?, stopAfter?, onNotMet?, condition?', handler: handleWatchesUpdate },
     { method: 'POST', path: '/api/watches/delete', desc: 'Delete a watch', params: 'id', handler: handleWatchesDelete },
 
     // Pipelines
