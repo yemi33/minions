@@ -22,70 +22,8 @@ function _updateRuntimeCounter() {
 function renderLiveChatMessage(raw) {
   const el = document.getElementById('live-messages');
   if (!el) return;
-  const fragments = [];
-
-  function renderJsonObj(obj) {
-    if (obj.type === 'assistant' && obj.message?.content) {
-      for (const block of obj.message.content) {
-        if (block.type === 'thinking') {
-          fragments.push('<div style="font-size:10px;color:var(--muted);padding:2px 8px;font-style:italic">\u{1F4AD} Thinking...</div>');
-        }
-        if (block.type === 'text' && block.text) {
-          fragments.push('<div style="background:var(--surface2);padding:8px 12px;border-radius:12px 12px 12px 2px;max-width:90%;margin:4px 0;font-size:12px;word-break:break-word">' + renderMd(block.text) + '</div>');
-        }
-        if (block.type === 'tool_use') {
-          fragments.push('<div style="background:var(--surface);border:1px solid var(--border);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:10px;color:var(--muted);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'">' +
-            '\u{1F527} ' + escHtml(block.name || 'tool') + '</div>' +
-            '<div style="display:none;background:var(--bg);padding:4px 8px;border-radius:4px;margin:0 0 4px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto;color:var(--muted)">' + escHtml(JSON.stringify(block.input || {}, null, 2).slice(0, 500)) + '</div>');
-        }
-      }
-    }
-    if (obj.type === 'tool_result' || (obj.type === 'user' && obj.message?.content?.[0]?.type === 'tool_result')) {
-      const content = obj.message?.content?.[0]?.content || obj.content || '';
-      const text = typeof content === 'string' ? content : JSON.stringify(content);
-      if (text.length > 10) {
-        fragments.push('<div style="background:var(--bg);border-left:2px solid var(--border);padding:2px 8px;margin:0 0 2px 16px;font-size:9px;font-family:monospace;color:var(--muted);max-height:100px;overflow-y:auto;white-space:pre-wrap;cursor:pointer" onclick="this.style.maxHeight=this.style.maxHeight===\'100px\'?\'none\':\'100px\'">' + escHtml(text.slice(0, 1000)) + (text.length > 1000 ? '...' : '') + '</div>');
-      }
-    }
-    if (obj.type === 'result') {
-      fragments.push('<div style="background:rgba(63,185,80,0.1);border:1px solid var(--green);padding:8px 12px;border-radius:8px;margin:8px 0;font-size:12px;color:var(--green)">\u2713 Task complete</div>');
-    }
-  }
-
-  const lines = raw.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    if (trimmed.startsWith('[human-steering]')) {
-      const msg = trimmed.replace('[human-steering] ', '');
-      fragments.push('<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(msg) +
-        '<div style="font-size:9px;opacity:0.7;margin-top:2px">\u2713 Queued</div></div>');
-      continue;
-    }
-    if (trimmed.startsWith('[heartbeat]')) continue;
-    if (trimmed.startsWith('[steering-failed]')) {
-      const msg = trimmed.replace('[steering-failed] ', '');
-      fragments.push('<div style="background:rgba(248,81,73,0.1);border:1px solid var(--red);color:var(--red);padding:6px 12px;border-radius:8px;margin:4px 0;font-size:11px">\u26A0 ' + escHtml(msg) + '</div>');
-      continue;
-    }
-    if (trimmed.startsWith('[')) {
-      try {
-        const arr = JSON.parse(trimmed);
-        if (Array.isArray(arr)) { for (const obj of arr) renderJsonObj(obj); continue; }
-      } catch { /* fall through */ }
-    }
-    if (trimmed.startsWith('{')) {
-      try { renderJsonObj(JSON.parse(trimmed)); continue; } catch { /* fall through */ }
-    }
-    if (trimmed.startsWith('[stderr]')) {
-      fragments.push('<div style="font-size:9px;color:var(--red);font-family:monospace;padding:1px 4px">' + escHtml(trimmed) + '</div>');
-    } else {
-      fragments.push('<div style="font-size:10px;color:var(--muted);font-family:monospace;padding:1px 4px">' + escHtml(trimmed) + '</div>');
-    }
-  }
-
-  if (fragments.length > 0) el.innerHTML += fragments.join('');
+  const html = renderAgentOutput(raw);
+  if (html) el.insertAdjacentHTML('beforeend', html);
 
   // Auto-scroll
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) {
@@ -162,8 +100,8 @@ async function sendSteering() {
   // Immediate feedback — show the message right away
   const el = document.getElementById('live-messages');
   if (el) {
-    el.innerHTML += '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) +
-      '<div id="steer-pending" style="font-size:9px;opacity:0.7;margin-top:2px">\u2197 Sending...</div></div>';
+    el.insertAdjacentHTML('beforeend', '<div style="align-self:flex-end;background:var(--blue);color:#fff;padding:6px 12px;border-radius:12px 12px 2px 12px;max-width:80%;margin:4px 0;font-size:12px">' + escHtml(message) +
+      '<div id="steer-pending" style="font-size:9px;opacity:0.7;margin-top:2px">\u2197 Sending...</div></div>');
     el.scrollTop = el.scrollHeight;
   }
   showToast('cmd-toast', 'Steering message sent to ' + currentAgentId, true);
