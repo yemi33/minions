@@ -11608,6 +11608,21 @@ async function testDashboardAuditMedium() {
       'work item create must copy skipPr from body to item');
   });
 
+  await test('handleWorkItemsCreate deduplicates by title for pending/dispatched items', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
+    assert.ok(createFn.includes('i.title === item.title'),
+      'create must check for existing item with same title');
+    assert.ok(createFn.includes("i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED"),
+      'dedup must only block pending or dispatched items');
+    assert.ok(createFn.includes('dupId = existing.id'),
+      'must capture existing id on duplicate');
+    assert.ok(createFn.includes('duplicate: true'),
+      'duplicate response must include duplicate: true flag');
+    assert.ok(createFn.includes('jsonReply(res, 200') && createFn.match(/dupId.*jsonReply|jsonReply.*dupId/s),
+      'duplicate response must return 200 so callers handle it as success');
+  });
+
   await test('handleWorkItemsDelete uses mutateJsonFileLocked', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Find delete handler — it's after "Remove item from work-items file" or uses splice

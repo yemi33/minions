@@ -1497,7 +1497,7 @@ const server = http.createServer(async (req, res) => {
         items.push(item);
         return items;
       });
-      if (dupId) return jsonReply(res, 409, { ok: true, id: dupId, duplicate: true });
+      if (dupId) return jsonReply(res, 200, { ok: true, id: dupId, duplicate: true });
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
