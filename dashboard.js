@@ -23,6 +23,7 @@ const queries = require('./engine/queries');
 const teams = require('./engine/teams');
 const ado = require('./engine/ado');
 const gh = require('./engine/github');
+const watchesMod = require('./engine/watches');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
@@ -77,7 +78,7 @@ function buildDashboardHtml() {
   const css = safeRead(path.join(dashDir, 'styles.css'));
 
   // Assemble page fragments
-  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'pipelines', 'meetings', 'engine'];
+  const pages = ['home', 'work', 'prs', 'plans', 'inbox', 'tools', 'schedule', 'watches', 'pipelines', 'meetings', 'engine'];
   let pageHtml = '';
   for (const p of pages) {
     const content = safeRead(path.join(dashDir, 'pages', p + '.html'));
@@ -90,7 +91,7 @@ function buildDashboardHtml() {
     'utils', 'state', 'render-utils', 'detail-panel', 'live-stream',
     'render-agents', 'render-dispatch', 'render-work-items', 'render-prd',
     'render-prs', 'render-plans', 'render-inbox', 'render-kb', 'render-skills',
-    'render-other', 'render-schedules', 'render-pipelines', 'render-meetings', 'render-pinned',
+    'render-other', 'render-schedules', 'render-watches', 'render-pipelines', 'render-meetings', 'render-pinned',
     'command-parser', 'command-input', 'command-center', 'command-history',
     'modal', 'modal-qa', 'settings', 'refresh'
   ];
@@ -396,6 +397,7 @@ function getStatus() {
       const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
       return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
     })(),
+    watches: watchesMod.getWatches(),
     meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
     pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
     pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
@@ -3710,6 +3712,49 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     }
   }
 
+  // ── Watches API Handlers ─────────────────────────────────────────────────
+
+  async function handleWatchesList(req, res) {
+    return jsonReply(res, 200, { watches: watchesMod.getWatches() });
+  }
+
+  async function handleWatchesCreate(req, res) {
+    const body = await readBody(req);
+    const { target, targetType, condition, interval, owner, description, project, notify, maxTriggers } = body;
+    if (!target) return jsonReply(res, 400, { error: 'target is required' });
+    try {
+      const watch = watchesMod.createWatch({ target, targetType, condition, interval, owner, description, project, notify, maxTriggers });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, watch });
+    } catch (e) {
+      return jsonReply(res, 400, { error: e.message });
+    }
+  }
+
+  async function handleWatchesUpdate(req, res) {
+    const body = await readBody(req);
+    const { id, ...updates } = body;
+    if (!id) return jsonReply(res, 400, { error: 'id is required' });
+    try {
+      const watch = watchesMod.updateWatch(id, updates);
+      if (!watch) return jsonReply(res, 404, { error: 'Watch not found' });
+      invalidateStatusCache();
+      return jsonReply(res, 200, { ok: true, watch });
+    } catch (e) {
+      return jsonReply(res, 400, { error: e.message });
+    }
+  }
+
+  async function handleWatchesDelete(req, res) {
+    const body = await readBody(req);
+    const { id } = body;
+    if (!id) return jsonReply(res, 400, { error: 'id is required' });
+    const deleted = watchesMod.deleteWatch(id);
+    if (!deleted) return jsonReply(res, 404, { error: 'Watch not found' });
+    invalidateStatusCache();
+    return jsonReply(res, 200, { ok: true });
+  }
+
   async function handleEngineRestart(req, res) {
     try {
       const newPid = restartEngine();
@@ -4406,6 +4451,12 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'POST', path: '/api/schedules', desc: 'Create a new schedule', params: 'cron, title, id?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesCreate },
     { method: 'POST', path: '/api/schedules/update', desc: 'Update an existing schedule', params: 'id, cron?, title?, type?, project?, agent?, description?, priority?, enabled?', handler: handleSchedulesUpdate },
     { method: 'POST', path: '/api/schedules/delete', desc: 'Delete a schedule', params: 'id', handler: handleSchedulesDelete },
+
+    // Watches
+    { method: 'GET', path: '/api/watches', desc: 'List all watches', handler: handleWatchesList },
+    { method: 'POST', path: '/api/watches', desc: 'Create a new watch', params: 'target, targetType, condition, interval?, owner?, description?, project?, notify?, maxTriggers?', handler: handleWatchesCreate },
+    { method: 'POST', path: '/api/watches/update', desc: 'Update a watch (pause/resume/modify)', params: 'id, status?, interval?, description?, notify?, maxTriggers?, condition?', handler: handleWatchesUpdate },
+    { method: 'POST', path: '/api/watches/delete', desc: 'Delete a watch', params: 'id', handler: handleWatchesDelete },
 
     // Pipelines
     { method: 'GET', path: '/api/pipelines', desc: 'List all pipelines with runs', handler: async (req, res) => {
