@@ -193,14 +193,20 @@ function doctor(minionsHome) {
       runtimeResults.push({ name: 'Agents configured', ok: false, message: 'no agents in config.json' });
     }
 
-    // Check Teams integration
+    // Check Teams integration — supports client secret OR certificate auth
     const teams = config.teams;
     if (teams && teams.enabled === true) {
-      if (!teams.appId || !teams.appPassword) {
-        const missing = [!teams.appId && 'appId', !teams.appPassword && 'appPassword'].filter(Boolean).join(', ');
+      const hasSecret = !!teams.appId && !!teams.appPassword;
+      const hasCert = !!teams.appId && !!teams.certPath && !!teams.privateKeyPath && !!teams.tenantId;
+      if (!hasSecret && !hasCert) {
+        const missing = [
+          !teams.appId && 'appId',
+          !teams.appPassword && !teams.certPath && 'appPassword or certPath+privateKeyPath+tenantId',
+        ].filter(Boolean).join(', ');
         runtimeResults.push({ name: 'Teams integration', ok: 'warn', message: `enabled but missing: ${missing}` });
       } else {
-        runtimeResults.push({ name: 'Teams integration', ok: true, message: 'configured' });
+        const authMode = hasCert ? 'certificate' : 'client secret';
+        runtimeResults.push({ name: 'Teams integration', ok: true, message: `configured (${authMode})` });
       }
     } else {
       runtimeResults.push({ name: 'Teams integration', ok: 'warn', message: 'disabled — see docs/teams-setup.md' });

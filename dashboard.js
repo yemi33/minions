@@ -3702,6 +3702,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         engine: { ...shared.ENGINE_DEFAULTS, ...(config.engine || {}) },
         claude: { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) },
         agents: config.agents || {},
+        teams: { ...shared.ENGINE_DEFAULTS.teams, ...(config.teams || {}) },
         routing,
       });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
@@ -3793,6 +3794,22 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             else config.agents[id].monthlyBudgetUsd = Math.max(0, val);
           }
         }
+      }
+
+      if (body.teams) {
+        if (!config.teams) config.teams = {};
+        const tm = body.teams;
+        if (tm.enabled !== undefined) config.teams.enabled = !!tm.enabled;
+        for (const key of ['appId', 'appPassword', 'certPath', 'privateKeyPath', 'tenantId']) {
+          if (tm[key] !== undefined) config.teams[key] = String(tm[key] || '');
+        }
+        if (tm.notifyEvents !== undefined) {
+          config.teams.notifyEvents = Array.isArray(tm.notifyEvents) ? tm.notifyEvents : String(tm.notifyEvents || '').split(',').map(s => s.trim()).filter(Boolean);
+        }
+        if (tm.inboxPollInterval !== undefined) config.teams.inboxPollInterval = Math.max(5000, Number(tm.inboxPollInterval) || 15000);
+        if (tm.ccMirror !== undefined) config.teams.ccMirror = !!tm.ccMirror;
+        // Invalidate cached adapter so credential changes take effect
+        teams._resetAdapter();
       }
 
       safeWrite(configPath, config);
@@ -4571,7 +4588,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Settings
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
-    { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent config', params: 'engine?, claude?, agents?', handler: handleSettingsUpdate },
+    { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent + teams config', params: 'engine?, claude?, agents?, teams?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
 

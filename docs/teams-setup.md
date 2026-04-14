@@ -84,7 +84,10 @@ Add a `teams` section to your `config.json`:
 |-------|-------------|
 | `enabled` | Master switch — `true` to activate Teams integration |
 | `appId` | Microsoft App ID from the Azure Bot Configuration page |
-| `appPassword` | Client secret value from Entra ID Certificates & secrets |
+| `appPassword` | Client secret value from Entra ID Certificates & secrets (leave blank for certificate auth) |
+| `certPath` | Path to PEM certificate file (certificate auth only) |
+| `privateKeyPath` | Path to PEM private key file (certificate auth only) |
+| `tenantId` | Azure AD tenant ID (required for certificate auth) |
 | `notifyEvents` | Which events trigger Teams notifications (see below) |
 | `ccMirror` | Mirror CC dashboard responses to Teams (`true`/`false`) |
 | `inboxPollInterval` | How often to check for new Teams messages, in ms (default: 15000) |
@@ -92,6 +95,55 @@ Add a `teams` section to your `config.json`:
 **Available notification events:** `pr-merged`, `agent-completed`, `plan-completed`, `agent-failed`, `pr-abandoned`, `pr-approved`, `pr-build-failed`, `plan-approved`, `plan-rejected`, `verify-created`
 
 > **Security note:** `config.json` is gitignored by default and should never be committed. For shared machines, consider setting the app password via an environment variable and reading it in your config setup.
+
+### Certificate Auth (Alternative to Client Secret)
+
+Some tenants prohibit creating client secrets in Entra ID. Use certificate-based authentication instead — no client secret needed.
+
+#### Generate a Self-Signed Certificate
+
+```bash
+# Generate a private key and self-signed certificate (valid for 1 year)
+openssl req -x509 -newkey rsa:2048 -keyout bot-private-key.pem -out bot-cert.pem -days 365 -nodes -subj "/CN=minions-bot"
+
+# Verify the certificate
+openssl x509 -in bot-cert.pem -text -noout
+```
+
+This creates two files:
+- `bot-cert.pem` — the public certificate (upload to Entra ID)
+- `bot-private-key.pem` — the private key (keep secret, do not commit)
+
+#### Upload the Certificate to Entra ID
+
+1. In the [Azure Portal](https://portal.azure.com), go to **Entra ID** > **App registrations**.
+2. Find and click the app registration for your bot (same App ID from Step 3).
+3. Click **Certificates & secrets** in the left sidebar.
+4. Click the **Certificates** tab, then **Upload certificate**.
+5. Select your `bot-cert.pem` file and click **Add**.
+
+#### Configure Minions for Certificate Auth
+
+Use certificate fields instead of `appPassword` in your `config.json`:
+
+```json
+{
+  "teams": {
+    "enabled": true,
+    "appId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "certPath": "/path/to/bot-cert.pem",
+    "privateKeyPath": "/path/to/bot-private-key.pem",
+    "tenantId": "your-azure-ad-tenant-id",
+    "notifyEvents": ["pr-merged", "agent-completed", "plan-completed", "agent-failed"],
+    "ccMirror": true,
+    "inboxPollInterval": 15000
+  }
+}
+```
+
+> **Finding your Tenant ID:** In the Azure Portal, go to **Entra ID** > **Overview**. The **Tenant ID** is listed under Basic Information.
+
+> When both `appPassword` and cert fields are configured, certificate auth takes precedence.
 
 ## Step 4: Set the Messaging Endpoint
 

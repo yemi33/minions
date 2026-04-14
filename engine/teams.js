@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { log, safeJson, mutateJsonFileLocked, ENGINE_DEFAULTS } = shared;
+const { log, safeRead, safeJson, mutateJsonFileLocked, ENGINE_DEFAULTS } = shared;
 const { ENGINE_DIR, getConfig } = queries;
 const cards = require('./teams-cards');
 
@@ -50,10 +50,16 @@ function getTeamsConfig() {
 
 /**
  * Returns true if Teams integration is enabled and has required credentials.
+ * Supports two auth modes:
+ *   (1) Client secret: appId + appPassword
+ *   (2) Certificate:   appId + certPath + privateKeyPath + tenantId
  */
 function isTeamsEnabled() {
   const cfg = getTeamsConfig();
-  return cfg.enabled === true && !!cfg.appId && !!cfg.appPassword;
+  if (cfg.enabled !== true || !cfg.appId) return false;
+  const hasSecret = !!cfg.appPassword;
+  const hasCert = !!cfg.certPath && !!cfg.privateKeyPath && !!cfg.tenantId;
+  return hasSecret || hasCert;
 }
 
 // Cached adapter instance — created once per process
@@ -62,6 +68,9 @@ let _adapter = null;
 /**
  * Create and return a BotFrameworkAdapter instance.
  * Returns null when Teams is disabled or botbuilder is not installed.
+ * Supports two auth modes:
+ *   (1) Client secret: uses ConfigurationBotFrameworkAuthentication with appPassword
+ *   (2) Certificate:   uses CertificateServiceClientCredentialsFactory with PEM cert + key
  */
 function createAdapter() {
   if (_adapter) return _adapter;
@@ -75,15 +84,43 @@ function createAdapter() {
   if (!botbuilder) return null;
 
   const cfg = getTeamsConfig();
+  const useCert = !!cfg.certPath && !!cfg.privateKeyPath && !!cfg.tenantId;
+
   try {
-    _adapter = new botbuilder.CloudAdapter(
-      new botbuilder.ConfigurationBotFrameworkAuthentication({
-        MicrosoftAppId: cfg.appId,
-        MicrosoftAppPassword: cfg.appPassword,
-        MicrosoftAppType: 'SingleTenant',
-      })
-    );
-    log('info', 'Teams adapter created successfully');
+    if (useCert) {
+      let connector;
+      try {
+        connector = require('botframework-connector');
+      } catch {
+        log('warn', 'botframework-connector not installed — certificate auth unavailable. Install via: npm install botframework-connector');
+        return null;
+      }
+      const cert = safeRead(cfg.certPath);
+      const privateKey = safeRead(cfg.privateKeyPath);
+      if (!cert || !privateKey) {
+        log('warn', `Teams cert auth failed — could not read cert (${cfg.certPath}) or key (${cfg.privateKeyPath})`);
+        return null;
+      }
+      const credentialsFactory = new connector.CertificateServiceClientCredentialsFactory(
+        cfg.appId, cert, privateKey, cfg.tenantId
+      );
+      _adapter = new botbuilder.CloudAdapter(
+        new botbuilder.ConfigurationBotFrameworkAuthentication(
+          { MicrosoftAppId: cfg.appId, MicrosoftAppType: 'SingleTenant', MicrosoftAppTenantId: cfg.tenantId },
+          credentialsFactory
+        )
+      );
+      log('info', 'Teams adapter created (certificate auth)');
+    } else {
+      _adapter = new botbuilder.CloudAdapter(
+        new botbuilder.ConfigurationBotFrameworkAuthentication({
+          MicrosoftAppId: cfg.appId,
+          MicrosoftAppPassword: cfg.appPassword,
+          MicrosoftAppType: 'SingleTenant',
+        })
+      );
+      log('info', 'Teams adapter created (client secret auth)');
+    }
     return _adapter;
   } catch (err) {
     log('warn', `Teams adapter creation failed: ${err.message}`);

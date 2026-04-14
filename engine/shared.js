@@ -556,11 +556,15 @@ const ENGINE_DEFAULTS = {
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
-  // Teams integration — config.teams shape: { enabled, appId, appPassword, notifyEvents, ccMirror, inboxPollInterval }
+  // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
+  // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
   teams: {
     enabled: false,
     appId: '',
     appPassword: '',
+    certPath: '',          // PEM certificate file path (certificate auth)
+    privateKeyPath: '',    // PEM private key file path (certificate auth)
+    tenantId: '',          // Azure AD tenant ID (required for certificate auth)
     notifyEvents: ['pr-merged', 'agent-completed', 'plan-completed', 'agent-failed'],
     ccMirror: true,
     inboxPollInterval: 15000,
