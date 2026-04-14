@@ -1981,7 +1981,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) { newWork.push(item); }
     }
 
     // PRs with changes requested → route back to author for fix
@@ -1997,7 +1997,7 @@ async function discoverFromPrs(config, project) {
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
-        newWork.push(item); setCooldown(key); fixDispatched = true;
+        newWork.push(item); fixDispatched = true;
         // Increment review→fix cycle counter
         try {
           mutatePullRequests(projectPrPath(project), prs => {
@@ -2035,7 +2035,7 @@ async function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
       }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      if (item) { newWork.push(item); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
@@ -2084,7 +2084,7 @@ async function discoverFromPrs(config, project) {
         review_note: reviewNote,
       }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
-        newWork.push(item); setCooldown(key);
+        newWork.push(item);
         // Increment build fix attempts counter
         try {
           const prPath = projectPrPath(project);
@@ -2141,7 +2141,6 @@ async function discoverFromPrs(config, project) {
           }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
           if (item) {
             newWork.push(item);
-            setCooldown(key);
             // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
             try {
               mutatePullRequests(projectPrPath(project), prs => {
@@ -3042,6 +3041,7 @@ async function discoverWork(config) {
 
   for (const item of allWork) {
     addToDispatch(item);
+    if (item.meta?.dispatchKey) setCooldown(item.meta.dispatchKey);
     if (item.meta?.source === 'pr-human-feedback') {
       clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
     }

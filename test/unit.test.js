@@ -4572,6 +4572,38 @@ async function testBuildFixRetryCap() {
       'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
   });
 
+  // ─── Cooldown deferred to post-gating (#setCooldown-gating) ─────────────
+
+  await test('discoverFromPrs does NOT call setCooldown for review items', () => {
+    // Extract only the discoverFromPrs function body (ends where discoverFromWorkItems begins)
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    // setCooldown should not appear in discoverFromPrs — it is deferred to discoverWork post-gating
+    assert.ok(!fnBody.includes('setCooldown(key)'),
+      'discoverFromPrs must NOT call setCooldown(key) — cooldown must be deferred to post-gating in discoverWork');
+  });
+
+  await test('discoverWork calls setCooldown after gating check via dispatchKey', () => {
+    const fnStart = engineSrc.indexOf('async function discoverWork(');
+    const fnBody = engineSrc.slice(fnStart);
+    // The post-gating dispatch loop should call setCooldown using item.meta.dispatchKey
+    assert.ok(fnBody.includes('setCooldown(item.meta') || fnBody.includes('setCooldown(item.meta?.dispatchKey)') || fnBody.includes("setCooldown(item.meta.dispatchKey)"),
+      'discoverWork post-gating loop must call setCooldown using item.meta.dispatchKey');
+  });
+
+  await test('setCooldown for gated reviews/fixes is not set when gated', () => {
+    // Verify that when items are gated (allReviews = [], allFixes = []),
+    // they don't end up in allWork, so setCooldown is never called for them
+    const fnStart = engineSrc.indexOf('async function discoverWork(');
+    const fnBody = engineSrc.slice(fnStart);
+    // The gating check clears allReviews and allFixes BEFORE the dispatch loop
+    const gateIdx = fnBody.indexOf('allReviews = []');
+    const dispatchLoopIdx = fnBody.indexOf('for (const item of allWork)');
+    assert.ok(gateIdx > -1 && dispatchLoopIdx > -1 && gateIdx < dispatchLoopIdx,
+      'Gating (allReviews = []) must happen BEFORE the dispatch loop where setCooldown is called');
+  });
+
   await test('ado.js resets buildFixAttempts when build passes', () => {
     assert.ok(adoSrc.includes('delete pr.buildFixAttempts'),
       'ADO poll should clear buildFixAttempts when build status recovers');
