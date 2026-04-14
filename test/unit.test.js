@@ -9923,15 +9923,14 @@ async function testSettingsComprehensive() {
       'handleSettingsRead should spread DEFAULT_CLAUDE into claude response so UI gets correct defaults');
   });
 
-  await test('handleSettingsUpdate boolean allowlist includes adoPollEnabled and ghPollEnabled', () => {
+  await test('handleSettingsUpdate derives boolean fields from ENGINE_DEFAULTS', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
-    // Extract the boolean fields array from the for-of loop
-    const match = handler.match(/for \(const key of \[([^\]]+)\]/);
-    assert.ok(match, 'handleSettingsUpdate must have a boolean fields for-of loop');
-    const allowlist = match[1];
-    assert.ok(allowlist.includes("'adoPollEnabled'"), "boolean allowlist must include 'adoPollEnabled' — omitting it silently drops the setting on every save");
-    assert.ok(allowlist.includes("'ghPollEnabled'"), "boolean allowlist must include 'ghPollEnabled' — omitting it silently drops the setting on every save");
+    // Must derive from ENGINE_DEFAULTS rather than a hardcoded list, so new boolean flags are picked up automatically
+    assert.ok(
+      handler.includes('ENGINE_DEFAULTS') && handler.includes("typeof") && handler.includes("'boolean'"),
+      "handleSettingsUpdate must derive boolean fields from ENGINE_DEFAULTS (typeof ENGINE_DEFAULTS[k] === 'boolean') — hardcoded lists require manual updates when new flags are added"
+    );
   });
 
   await test('settings UI sends adoPollEnabled and ghPollEnabled to backend', () => {
