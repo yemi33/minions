@@ -9433,6 +9433,9 @@ async function main() {
     // W-mnxu9bvzkc5p: Doc-chat badge visibility on Notes/KB items
     await testDocChatBadgeVisibility();
 
+    // P-b7e3a1d9: render-utils.js shared formatting helpers
+    await testRenderUtils();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -17119,4 +17122,260 @@ async function testDocChatBadgeVisibility() {
       'Must have CSS rule .notes-preview > .notif-badge for badge position override (notes-preview has overflow-y:auto)');
   });
 }
+// ─── P-b7e3a1d9: render-utils.js shared formatting helpers ──────────────────
+
+async function testRenderUtils() {
+  console.log('\n── render-utils.js: formatToolSummary + renderAgentOutput ──');
+
+  const renderUtilsPath = path.join(MINIONS_DIR, 'dashboard', 'js', 'render-utils.js');
+
+  await test('render-utils.js file exists', () => {
+    assert.ok(fs.existsSync(renderUtilsPath), 'dashboard/js/render-utils.js must exist');
+  });
+
+  const src = fs.readFileSync(renderUtilsPath, 'utf8');
+
+  // ── Source structure assertions ──
+
+  await test('render-utils.js defines formatToolSummary function', () => {
+    assert.ok(src.includes('function formatToolSummary'), 'formatToolSummary must be defined');
+  });
+
+  await test('render-utils.js defines renderAgentOutput function', () => {
+    assert.ok(src.includes('function renderAgentOutput'), 'renderAgentOutput must be defined');
+  });
+
+  await test('render-utils.js exposes functions on window', () => {
+    assert.ok(src.includes('window.') || src.includes('window['), 'must expose helpers on window');
+  });
+
+  // ── Registration in dashboard.js ──
+
+  await test('render-utils.js is registered in dashboard.js jsFiles before detail-panel and live-stream', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const jsFilesMatch = dashSrc.match(/const jsFiles\s*=\s*\[([\s\S]*?)\]/);
+    assert.ok(jsFilesMatch, 'jsFiles array must exist in dashboard.js');
+    const items = jsFilesMatch[1];
+    const renderUtilsIdx = items.indexOf("'render-utils'");
+    const detailPanelIdx = items.indexOf("'detail-panel'");
+    const liveStreamIdx = items.indexOf("'live-stream'");
+    assert.ok(renderUtilsIdx > -1, 'render-utils must be in jsFiles array');
+    assert.ok(renderUtilsIdx < detailPanelIdx, 'render-utils must appear before detail-panel');
+    assert.ok(renderUtilsIdx < liveStreamIdx, 'render-utils must appear before live-stream');
+  });
+
+  // ── Behavioral tests: extract and run formatToolSummary ──
+
+  const utilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'utils.js'), 'utf8');
+  const escHtmlBody = utilsSrc.match(/function escHtml[\s\S]*?^}/m)[0];
+  const formatFnMatch = src.match(/function formatToolSummary[\s\S]*?^}/m);
+  assert.ok(formatFnMatch, 'formatToolSummary function must be extractable');
+  const formatToolSummary = new Function(escHtmlBody + '\n' + formatFnMatch[0] + '\nreturn formatToolSummary;')();
+
+  await test('formatToolSummary: Bash tool shows truncated command', () => {
+    const result = formatToolSummary('Bash', { command: 'npm test --verbose --all' });
+    assert.ok(result.includes('$'), 'Bash summary should include $ prefix');
+    assert.ok(result.includes('npm test'), 'Bash summary should include command text');
+  });
+
+  await test('formatToolSummary: Bash truncates long commands to 80 chars', () => {
+    const longCmd = 'a'.repeat(120);
+    const result = formatToolSummary('Bash', { command: longCmd });
+    assert.ok(result.length < 120, 'Should truncate long commands');
+  });
+
+  await test('formatToolSummary: Read tool shows file path', () => {
+    const result = formatToolSummary('Read', { file_path: '/src/engine.js' });
+    assert.ok(result.includes('Reading'), 'Read summary should say Reading');
+    assert.ok(result.includes('/src/engine.js'), 'Read summary should include file path');
+  });
+
+  await test('formatToolSummary: Edit tool shows file path', () => {
+    const result = formatToolSummary('Edit', { file_path: '/src/shared.js' });
+    assert.ok(result.includes('Editing'), 'Edit summary should say Editing');
+    assert.ok(result.includes('/src/shared.js'), 'Edit summary should include file path');
+  });
+
+  await test('formatToolSummary: Write tool shows file path', () => {
+    const result = formatToolSummary('Write', { file_path: '/src/new-file.js' });
+    assert.ok(result.includes('Writing'), 'Write summary should say Writing');
+    assert.ok(result.includes('/src/new-file.js'), 'Write summary should include file path');
+  });
+
+  await test('formatToolSummary: Grep tool shows pattern and path', () => {
+    const result = formatToolSummary('Grep', { pattern: 'TODO', path: 'src/' });
+    assert.ok(result.includes('Searching'), 'Grep summary should say Searching');
+    assert.ok(result.includes('TODO'), 'Grep summary should include pattern');
+    assert.ok(result.includes('src/'), 'Grep summary should include path');
+  });
+
+  await test('formatToolSummary: Glob tool shows pattern', () => {
+    const result = formatToolSummary('Glob', { pattern: '**/*.js' });
+    assert.ok(result.includes('Glob'), 'Glob summary should say Glob');
+    assert.ok(result.includes('**/*.js'), 'Glob summary should include pattern');
+  });
+
+  await test('formatToolSummary: Agent tool shows description', () => {
+    const result = formatToolSummary('Agent', { description: 'Search for config files' });
+    assert.ok(result.includes('Spawning agent'), 'Agent summary should say Spawning agent');
+    assert.ok(result.includes('Search for config files'), 'Agent summary should include description');
+  });
+
+  await test('formatToolSummary: WebFetch tool shows url', () => {
+    const result = formatToolSummary('WebFetch', { url: 'https://example.com/api' });
+    assert.ok(result.includes('Fetch'), 'WebFetch summary should say Fetch');
+    assert.ok(result.includes('https://example.com/api'), 'WebFetch summary should include url');
+  });
+
+  await test('formatToolSummary: WebSearch tool shows query', () => {
+    const result = formatToolSummary('WebSearch', { query: 'node.js async patterns' });
+    assert.ok(result.includes('Search'), 'WebSearch summary should say Search');
+    assert.ok(result.includes('node.js async patterns'), 'WebSearch summary should include query');
+  });
+
+  await test('formatToolSummary: TodoWrite tool shows item count', () => {
+    const result = formatToolSummary('TodoWrite', { todos: [{ task: 'a' }, { task: 'b' }, { task: 'c' }] });
+    assert.ok(result.includes('Update todos'), 'TodoWrite summary should say Update todos');
+    assert.ok(result.includes('3'), 'TodoWrite summary should show count');
+  });
+
+  await test('formatToolSummary: unknown tool falls back to name(firstKey: firstVal)', () => {
+    const result = formatToolSummary('CustomTool', { foo: 'bar value here' });
+    assert.ok(result.includes('CustomTool'), 'Fallback should include tool name');
+    assert.ok(result.includes('foo'), 'Fallback should include first key');
+    assert.ok(result.includes('bar value'), 'Fallback should include first value');
+  });
+
+  await test('formatToolSummary: fallback truncates long values to 40 chars', () => {
+    const longVal = 'x'.repeat(80);
+    const result = formatToolSummary('CustomTool', { key: longVal });
+    assert.ok(result.length < 100, 'Fallback should truncate long values');
+  });
+
+  await test('formatToolSummary: handles null/undefined input gracefully', () => {
+    const result = formatToolSummary('Bash', null);
+    assert.ok(typeof result === 'string', 'Should return string even with null input');
+    const result2 = formatToolSummary('Bash', undefined);
+    assert.ok(typeof result2 === 'string', 'Should return string even with undefined input');
+  });
+
+  // ── Behavioral tests: extract and run renderAgentOutput ──
+
+  // We need escHtml and renderMd for renderAgentOutput
+  const normBody = utilsSrc.match(/function _normalizeCodeFences[\s\S]*?^}/m)[0];
+  const coreBody = utilsSrc.match(/function _renderMdCore[\s\S]*?^}/m)[0];
+  const renderMdBody = utilsSrc.match(/function renderMd[\s\S]*?^}/m)[0];
+  // renderAgentOutput needs formatToolSummary + escHtml + renderMd
+  const renderFnMatch = src.match(/function renderAgentOutput[\s\S]*?^}/m);
+  assert.ok(renderFnMatch, 'renderAgentOutput function must be extractable');
+  // Also extract any helper used within renderAgentOutput (like _renderJsonObj if it exists)
+  const helperMatch = src.match(/function _renderJsonObj[\s\S]*?^}/m);
+  const helperBody = helperMatch ? helperMatch[0] : '';
+  const renderAgentOutput = new Function(
+    escHtmlBody + '\n' + normBody + '\n' + coreBody + '\n' + renderMdBody + '\n' +
+    formatFnMatch[0] + '\n' + helperBody + '\n' + renderFnMatch[0] + '\nreturn renderAgentOutput;'
+  )();
+
+  await test('renderAgentOutput: returns string', () => {
+    const html = renderAgentOutput('some text');
+    assert.ok(typeof html === 'string', 'renderAgentOutput must return a string');
+  });
+
+  await test('renderAgentOutput: handles empty input', () => {
+    const html = renderAgentOutput('');
+    assert.ok(typeof html === 'string', 'Should handle empty string');
+  });
+
+  await test('renderAgentOutput: parses assistant text with ● prefix', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('●') || html.includes('&#9679;'), 'Assistant text should have ● prefix');
+    assert.ok(html.includes('Hello world'), 'Assistant text should be rendered');
+  });
+
+  await test('renderAgentOutput: parses tool_use with ● prefix and formatToolSummary', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/foo.js' } }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('●') || html.includes('&#9679;'), 'Tool use should have ● prefix');
+    assert.ok(html.includes('Reading'), 'Tool use should show formatted summary');
+    assert.ok(html.includes('/foo.js'), 'Tool use should include file path');
+  });
+
+  await test('renderAgentOutput: tool_use has [+] toggle for raw JSON', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('[+]'), 'Tool use should have [+] toggle');
+    assert.ok(html.includes('display:none') || html.includes('display: none'), 'Raw JSON should be hidden by default');
+  });
+
+  await test('renderAgentOutput: tool_result with surface tint and 160px max-height', () => {
+    const jsonl = JSON.stringify({ type: 'tool_result', message: { content: [{ type: 'tool_result', content: 'some result text here that is long enough' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('160px') || html.includes('max-height'), 'Tool result should have 160px max-height');
+    assert.ok(html.includes('surface'), 'Tool result should have surface background tint');
+  });
+
+  await test('renderAgentOutput: tool_result enforces 3000 char truncation', () => {
+    const longContent = 'x'.repeat(5000);
+    const jsonl = JSON.stringify({ type: 'tool_result', message: { content: [{ type: 'tool_result', content: longContent }] } });
+    const html = renderAgentOutput(jsonl);
+    // The rendered content shouldn't contain the full 5000 chars
+    assert.ok(!html.includes('x'.repeat(4000)), 'Tool result should truncate at 3000 chars');
+    assert.ok(html.includes('...'), 'Truncated tool result should show ellipsis');
+  });
+
+  await test('renderAgentOutput: steering bubble has ❯ prefix', () => {
+    const text = '[human-steering] please check the tests';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('❯') || html.includes('&#10095;'), 'Steering bubble should have ❯ prefix');
+    assert.ok(html.includes('please check the tests'), 'Steering message should be visible');
+  });
+
+  await test('renderAgentOutput: result type shows completion indicator', () => {
+    const jsonl = JSON.stringify({ type: 'result' });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('✓') || html.includes('&#10003;') || html.includes('complete'), 'Result should show completion indicator');
+  });
+
+  await test('renderAgentOutput: stderr lines shown in red', () => {
+    const text = '[stderr] Error: something failed';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('red'), 'Stderr should be styled red');
+    assert.ok(html.includes('Error: something failed'), 'Stderr content should be visible');
+  });
+
+  await test('renderAgentOutput: heartbeat lines are filtered out', () => {
+    const text = '[heartbeat] ping\n' + JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } });
+    const html = renderAgentOutput(text);
+    assert.ok(!html.includes('[heartbeat]'), 'Heartbeat lines should be filtered out');
+    assert.ok(html.includes('Hello'), 'Non-heartbeat content should still render');
+  });
+
+  await test('renderAgentOutput: thinking blocks are rendered', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking' }] } });
+    const html = renderAgentOutput(jsonl);
+    assert.ok(html.includes('Thinking'), 'Thinking block should be rendered');
+  });
+
+  await test('renderAgentOutput: steering-failed lines are rendered', () => {
+    const text = '[steering-failed] Connection lost';
+    const html = renderAgentOutput(text);
+    assert.ok(html.includes('Connection lost'), 'Steering-failed message should be visible');
+  });
+
+  await test('renderAgentOutput: handles multi-line JSONL correctly', () => {
+    const line1 = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Line one' }] } });
+    const line2 = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Line two' }] } });
+    const html = renderAgentOutput(line1 + '\n' + line2);
+    assert.ok(html.includes('Line one'), 'First line should render');
+    assert.ok(html.includes('Line two'), 'Second line should render');
+  });
+
+  await test('renderAgentOutput: handles JSON array lines', () => {
+    const arr = [{ type: 'assistant', message: { content: [{ type: 'text', text: 'Array item' }] } }];
+    const html = renderAgentOutput(JSON.stringify(arr));
+    assert.ok(html.includes('Array item'), 'JSON array items should render');
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });
