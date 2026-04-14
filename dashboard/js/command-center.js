@@ -547,8 +547,9 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       // 429 = server still releasing previous request (abort race) — retry silently up to 3 times
       if (res.status === 429 && (!activeTab._429retries || activeTab._429retries < 3)) {
         activeTab._429retries = (activeTab._429retries || 0) + 1;
+        _cleanupStreamDiv(); // remove current thinking div — prevents stacking on each retry
         await new Promise(function(r) { setTimeout(r, 1500); });
-        return await _ccDoSend(message, true); // retry with skipUserMsg=true (already displayed)
+        return await _ccDoSend(message, true, forceTabId || activeTabId); // retry — pass tabId so timer closures don't fight
       }
       activeTab._429retries = 0;
       _cleanupStreamDiv();
