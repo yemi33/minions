@@ -216,10 +216,10 @@ function resolveTaskContext(item, config) {
 
 // ─── Optional Template Variables ────────────────────────────────────────────
 // Variables that legitimately resolve to empty string for ad-hoc work items.
-// These are suppressed from the empty-string warning (downgraded to debug)
-// to avoid masking real warnings. Add new optional vars here when they are
-// contextual (plan-linked, checkpoint-dependent, etc.) and not required for
-// the playbook to function.
+// These are silently filtered out of the empty-string warning to avoid
+// masking real warnings. Add new optional vars here when they are contextual
+// (plan-linked, checkpoint-dependent, etc.) and not required for the playbook
+// to function.
 
 const PLAYBOOK_OPTIONAL_VARS = new Set([
   'source_plan',          // only set when work item is linked to a plan

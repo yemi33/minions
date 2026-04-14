@@ -4445,13 +4445,31 @@ async function testValidatePlaybookVars() {
   });
 
   await test('renderPlaybook does not warn for optional vars that resolve to empty string (#1048)', () => {
-    const pbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
-    // The empty-string warning filter should exclude PLAYBOOK_OPTIONAL_VARS members
-    assert.ok(pbSrc.includes('PLAYBOOK_OPTIONAL_VARS'),
-      'renderPlaybook empty-string warning should reference PLAYBOOK_OPTIONAL_VARS');
-    // The filter should use .has() to skip optional vars
-    assert.ok(pbSrc.includes('PLAYBOOK_OPTIONAL_VARS.has'),
-      'Empty-string warning should use PLAYBOOK_OPTIONAL_VARS.has() to filter optional vars');
+    if (!renderPlaybook || !PLAYBOOK_OPTIONAL_VARS) {
+      skip('optional-vars-no-warn', 'renderPlaybook or PLAYBOOK_OPTIONAL_VARS not available'); return;
+    }
+    // Capture console.log output to detect warnings
+    const captured = [];
+    const origLog = console.log;
+    console.log = (...args) => captured.push(args.join(' '));
+    try {
+      // Call renderPlaybook with required vars + all optional vars set to empty string
+      const vars = {
+        agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+        item_id: 'W-001', item_name: 'Test feature', branch_name: 'work/W-001',
+        project_path: '/tmp/repo', team_root: MINIONS_DIR, date: '2024-01-01',
+      };
+      for (const v of PLAYBOOK_OPTIONAL_VARS) vars[v] = '';
+      renderPlaybook('implement', vars);
+    } finally {
+      console.log = origLog;
+    }
+    // No warning line should mention any optional var name in an "empty string" context
+    const emptyWarnLines = captured.filter(l => l.includes('[warn]') && l.includes('empty string'));
+    for (const v of PLAYBOOK_OPTIONAL_VARS) {
+      const mentioned = emptyWarnLines.some(l => l.includes(v));
+      assert.ok(!mentioned, `Optional var "${v}" should not appear in empty-string warnings`);
+    }
   });
 
   await test('PLAYBOOK_OPTIONAL_VARS does not overlap with any PLAYBOOK_REQUIRED_VARS', () => {
