@@ -3441,6 +3441,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     } catch (e) { ccInFlightTabs.delete(tabId); return jsonReply(res, 500, { error: e.message }); }
   }
 
+  /** Build a lightweight input object for SSE tool events — keeps only the fields formatToolSummary needs, with truncated string values. */
+  function _lightToolInput(input) {
+    if (!input || typeof input !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(input)) {
+      if (Array.isArray(v)) { out[k] = v; }
+      else if (typeof v === 'string') { out[k] = v.length > 200 ? v.slice(0, 197) + '...' : v; }
+      else { out[k] = v; }
+    }
+    return out;
+  }
+
   async function handleCommandCenterStream(req, res) {
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
     try {
@@ -3496,7 +3508,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
           },
           onToolUse: (name, input) => {
-            try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
+            try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
           }
         });
         _ccStreamAbort = llmPromise.abort;
@@ -3519,7 +3531,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
             },
             onToolUse: (name, input) => {
-              try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: typeof input === 'string' ? input.slice(0, 200) : JSON.stringify(input).slice(0, 200) }) + '\n\n'); } catch {}
+              try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
             }
           });
           _ccStreamAbort = retryPromise.abort;

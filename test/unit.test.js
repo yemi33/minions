@@ -17297,6 +17297,68 @@ async function testRenderUtils() {
     const html = renderAgentOutput(JSON.stringify(arr));
     assert.ok(html.includes('Array item'), 'JSON array items should render');
   });
+
+  // ─── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──
+  console.log('\n── P-a1d7e9b3: command-center.js tool input capture & formatted summaries ──');
+
+  const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('CC SSE tool handler stores { name, input } objects, not plain strings', () => {
+    // The push should use an object with name and input, not just evt.name
+    assert.ok(ccSrc.includes('toolsUsed.push({') || ccSrc.includes('toolsUsed.push({ '),
+      'toolsUsed.push should push an object, not a plain string');
+    assert.ok(!ccSrc.match(/toolsUsed\.push\(evt\.name\)/),
+      'Should not push plain evt.name — must push object with name and input');
+  });
+
+  await test('CC updateStreamDiv uses formatToolSummary for tool display', () => {
+    assert.ok(ccSrc.includes('formatToolSummary('),
+      'updateStreamDiv should use formatToolSummary for formatted tool display');
+    // Should not use the old 🔧 emoji pattern for tool display in updateStreamDiv
+    const updateStreamSection = ccSrc.slice(ccSrc.indexOf('function updateStreamDiv'));
+    assert.ok(!updateStreamSection.includes('\\uD83D\\uDD27') || !updateStreamSection.includes('🔧'),
+      'updateStreamDiv should not use old wrench emoji pattern');
+  });
+
+  await test('CC _restoreStreamHtml uses formatToolSummary for tool display', () => {
+    const restoreSection = ccSrc.slice(ccSrc.indexOf('_restoreStreamHtml'));
+    assert.ok(restoreSection.includes('formatToolSummary('),
+      '_restoreStreamHtml should use formatToolSummary for formatted tool display');
+  });
+
+  await test('CC tool display uses ● prefix (not 🔧)', () => {
+    // Both updateStreamDiv and _restoreStreamHtml should use ● prefix
+    assert.ok(ccSrc.includes('&#9679;') || ccSrc.includes('●'),
+      'Tool display should use ● (bullet) prefix');
+  });
+
+  await test('CC SSE tool handler captures evt.input', () => {
+    // The push should reference evt.input
+    assert.ok(ccSrc.includes('evt.input'),
+      'SSE tool handler should capture evt.input from the server event');
+  });
+
+  await test('Server SSE tool event sends input as object, not flat string', () => {
+    // The onToolUse handler should use _lightToolInput to send a structured object
+    // It should NOT just JSON.stringify(input).slice(0, 200) as a flat string
+    assert.ok(dashSrc.includes('_lightToolInput'),
+      'dashboard.js should have _lightToolInput helper for structured input');
+    // All onToolUse handlers should use the helper
+    const toolEventMatches = dashSrc.match(/onToolUse:.*?\n/g);
+    assert.ok(toolEventMatches && toolEventMatches.length >= 2,
+      'dashboard.js should have at least 2 onToolUse handlers (primary + retry)');
+    const allUseLightInput = toolEventMatches.every(m => m.includes('_lightToolInput') || dashSrc.slice(dashSrc.indexOf(m), dashSrc.indexOf(m) + 200).includes('_lightToolInput'));
+    assert.ok(dashSrc.includes('Object.entries'),
+      '_lightToolInput should use Object.entries to iterate input fields');
+  });
+
+  await test('CC tool display uses monospace style matching live output', () => {
+    // The tool display should use font-family:monospace like render-utils.js does
+    const updateSection = ccSrc.slice(ccSrc.indexOf('function updateStreamDiv'), ccSrc.indexOf('function updateStreamDiv') + 1500);
+    assert.ok(updateSection.includes('monospace') || updateSection.includes('font-family'),
+      'Tool display should use monospace font style');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
