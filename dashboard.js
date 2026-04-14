@@ -3783,7 +3783,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           config.engine.maxTurnsByType = mbt;
         }
         // Boolean fields
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents', 'autoArchive', 'autoFixConflicts', 'adoPollEnabled', 'ghPollEnabled']) {
+        const booleanFields = Object.keys(shared.ENGINE_DEFAULTS).filter(k => typeof shared.ENGINE_DEFAULTS[k] === 'boolean');
+        for (const key of booleanFields) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
         // Eval loop settings

@@ -2119,7 +2119,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
-    const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
+    const autoFixConflicts = config.engine?.autoFixConflicts ?? DEFAULTS.autoFixConflicts;
     if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
       const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
