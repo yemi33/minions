@@ -4423,6 +4423,49 @@ async function testValidatePlaybookVars() {
     assert.ok(typeof result === 'string' && result.length > 0,
       'Should return rendered playbook when all required vars are provided');
   });
+
+  // ─── PLAYBOOK_OPTIONAL_VARS Tests (#1048) ──────────────────────────────────
+
+  let PLAYBOOK_OPTIONAL_VARS;
+  try {
+    PLAYBOOK_OPTIONAL_VARS = require(path.join(MINIONS_DIR, 'engine', 'playbook')).PLAYBOOK_OPTIONAL_VARS;
+  } catch {}
+
+  await test('PLAYBOOK_OPTIONAL_VARS is exported as a Set', () => {
+    assert.ok(PLAYBOOK_OPTIONAL_VARS, 'PLAYBOOK_OPTIONAL_VARS should be exported');
+    assert.ok(PLAYBOOK_OPTIONAL_VARS instanceof Set, 'PLAYBOOK_OPTIONAL_VARS should be a Set');
+  });
+
+  await test('PLAYBOOK_OPTIONAL_VARS contains known optional variables', () => {
+    if (!PLAYBOOK_OPTIONAL_VARS) { skip('optional-vars-contents', 'PLAYBOOK_OPTIONAL_VARS not available'); return; }
+    const expected = ['source_plan', 'plan_slug', 'additional_context', 'references', 'acceptance_criteria', 'checkpoint_context'];
+    for (const v of expected) {
+      assert.ok(PLAYBOOK_OPTIONAL_VARS.has(v), `PLAYBOOK_OPTIONAL_VARS should contain "${v}"`);
+    }
+  });
+
+  await test('renderPlaybook does not warn for optional vars that resolve to empty string (#1048)', () => {
+    const pbSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    // The empty-string warning filter should exclude PLAYBOOK_OPTIONAL_VARS members
+    assert.ok(pbSrc.includes('PLAYBOOK_OPTIONAL_VARS'),
+      'renderPlaybook empty-string warning should reference PLAYBOOK_OPTIONAL_VARS');
+    // The filter should use .has() to skip optional vars
+    assert.ok(pbSrc.includes('PLAYBOOK_OPTIONAL_VARS.has'),
+      'Empty-string warning should use PLAYBOOK_OPTIONAL_VARS.has() to filter optional vars');
+  });
+
+  await test('PLAYBOOK_OPTIONAL_VARS does not overlap with any PLAYBOOK_REQUIRED_VARS', () => {
+    if (!PLAYBOOK_OPTIONAL_VARS || !PLAYBOOK_REQUIRED_VARS) {
+      skip('optional-required-overlap', 'PLAYBOOK_OPTIONAL_VARS or PLAYBOOK_REQUIRED_VARS not available');
+      return;
+    }
+    for (const [type, reqVars] of Object.entries(PLAYBOOK_REQUIRED_VARS)) {
+      for (const v of reqVars) {
+        assert.ok(!PLAYBOOK_OPTIONAL_VARS.has(v),
+          `"${v}" is required for "${type}" but listed as optional — conflict`);
+      }
+    }
+  });
 }
 
 // ─── engine.js — completeDispatch Tests ─────────────────────────────────────

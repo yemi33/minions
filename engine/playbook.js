@@ -214,6 +214,22 @@ function resolveTaskContext(item, config) {
 // are optional by design. Only variables that make the playbook non-functional
 // when absent are listed here.
 
+// ─── Optional Template Variables ────────────────────────────────────────────
+// Variables that legitimately resolve to empty string for ad-hoc work items.
+// These are suppressed from the empty-string warning (downgraded to debug)
+// to avoid masking real warnings. Add new optional vars here when they are
+// contextual (plan-linked, checkpoint-dependent, etc.) and not required for
+// the playbook to function.
+
+const PLAYBOOK_OPTIONAL_VARS = new Set([
+  'source_plan',          // only set when work item is linked to a plan
+  'plan_slug',            // derived from source_plan
+  'additional_context',   // only set when item has a prompt
+  'references',           // only set when item.references has entries
+  'acceptance_criteria',  // only set when item.acceptanceCriteria has entries
+  'checkpoint_context',   // only set when resuming from a prior timeout
+]);
+
 const PLAYBOOK_REQUIRED_VARS = {
   'implement':            ['item_id', 'item_name', 'branch_name', 'project_path'],
   'implement-shared':     ['item_id', 'item_name', 'branch_name', 'worktree_path'],
@@ -364,9 +380,9 @@ function renderPlaybook(type, vars) {
     log('warn', `Playbook "${type}": substituted values contain unresolved {{...}} patterns (potential self-reference): ${selfRefVars.join(', ')}`);
   }
 
-  // Warn on variables that resolved to empty string
+  // Warn on variables that resolved to empty string (skip known-optional vars)
   const emptyVars = Object.entries(allVars)
-    .filter(([, val]) => String(val) === '')
+    .filter(([key, val]) => String(val) === '' && !PLAYBOOK_OPTIONAL_VARS.has(key))
     .map(([key]) => key);
   if (emptyVars.length > 0) {
     log('warn', `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`);
@@ -551,6 +567,7 @@ module.exports = {
   renderPlaybook,
   validatePlaybookVars,
   PLAYBOOK_REQUIRED_VARS,
+  PLAYBOOK_OPTIONAL_VARS,
   buildSystemPrompt,
   buildAgentContext,
   selectPlaybook,
