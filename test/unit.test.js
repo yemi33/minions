@@ -9903,6 +9903,32 @@ async function testSettingsComprehensive() {
       'handleSettingsRead should spread DEFAULT_CLAUDE into claude response so UI gets correct defaults');
   });
 
+  await test('handleSettingsUpdate boolean allowlist includes adoPollEnabled and ghPollEnabled', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // Extract the boolean fields array from the for-of loop
+    const match = handler.match(/for \(const key of \[([^\]]+)\]/);
+    assert.ok(match, 'handleSettingsUpdate must have a boolean fields for-of loop');
+    const allowlist = match[1];
+    assert.ok(allowlist.includes("'adoPollEnabled'"), "boolean allowlist must include 'adoPollEnabled' — omitting it silently drops the setting on every save");
+    assert.ok(allowlist.includes("'ghPollEnabled'"), "boolean allowlist must include 'ghPollEnabled' — omitting it silently drops the setting on every save");
+  });
+
+  await test('settings UI sends adoPollEnabled and ghPollEnabled to backend', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes("adoPollEnabled:") && src.includes("set-adoPollEnabled"),
+      'settings.js must include adoPollEnabled in enginePayload and reference set-adoPollEnabled element');
+    assert.ok(src.includes("ghPollEnabled:") && src.includes("set-ghPollEnabled"),
+      'settings.js must include ghPollEnabled in enginePayload and reference set-ghPollEnabled element');
+  });
+
+  await test('ENGINE_DEFAULTS defines adoPollEnabled and ghPollEnabled as booleans', () => {
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.adoPollEnabled, 'boolean',
+      'ENGINE_DEFAULTS.adoPollEnabled must be a boolean so ?? fallback works correctly in engine.js');
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.ghPollEnabled, 'boolean',
+      'ENGINE_DEFAULTS.ghPollEnabled must be a boolean so ?? fallback works correctly in engine.js');
+  });
+
   await test('engine.js outputFormat fallback matches DEFAULT_CLAUDE', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
     const matches = src.match(/outputFormat\s*\|\|\s*'([^']+)'/g) || [];
