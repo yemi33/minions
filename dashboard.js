@@ -471,7 +471,10 @@ setInterval(() => {
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
 const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
+const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
+const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
+function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 
 // _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
 
@@ -3393,14 +3396,18 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenter(req, res) {
     if (checkRateLimit('command-center', 10)) return jsonReply(res, 429, { error: 'Rate limited — max 10 requests/minute' });
+    let tabId;
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
 
       // Per-tab concurrency guard
-      const tabId = body.tabId || 'default';
+      tabId = body.tabId || 'default';
       if (ccInFlightTabs.has(tabId)) {
-        return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
+        await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS));
+        if (ccInFlightTabs.has(tabId)) {
+          return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
+        }
       }
       ccInFlightTabs.add(tabId);
 
@@ -3447,9 +3454,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
-        ccInFlightTabs.delete(tabId);
+        _releaseCCTab(tabId);
       }
-    } catch (e) { ccInFlightTabs.delete(tabId); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, 500, { error: e.message }); }
   }
 
   /** Build a lightweight input object for SSE tool events — keeps only the fields formatToolSummary needs, with truncated string values. */
@@ -3466,24 +3473,35 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenterStream(req, res) {
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
+    let tabId;
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
-      const tabId = body.tabId || 'default';
+      tabId = body.tabId || 'default';
       if (ccInFlightTabs.has(tabId)) {
-        res.statusCode = 429; res.end('This tab is already processing'); return;
+        // Previous request still in-flight — abort its LLM (handles keep-alive abort where close event didn't fire)
+        const prevAbort = ccInFlightAborts.get(tabId);
+        if (prevAbort) { prevAbort(); }
+        await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS)); // let previous finally run and release the lock
+        if (ccInFlightTabs.has(tabId)) {
+          res.statusCode = 429; res.end('This tab is already processing'); return;
+        }
       }
       ccInFlightTabs.add(tabId);
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;
       let _ccStreamEnded = false;
-      // Kill LLM process immediately if client disconnects mid-stream
+      // Kill LLM process immediately if client disconnects mid-stream.
+      // Guard with !_ccStreamEnded: when the stream ends normally, finally already released the lock;
+      // without the guard, this close event (which fires after res.end) could wipe a new request's lock.
       req.on('close', () => {
-        ccInFlightTabs.delete(tabId);
-        if (!_ccStreamEnded && _ccStreamAbort) {
-          console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
-          _ccStreamAbort();
+        if (!_ccStreamEnded) {
+          _releaseCCTab(tabId);
+          if (_ccStreamAbort) {
+            console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
+            _ccStreamAbort();
+          }
         }
       });
 
@@ -3523,6 +3541,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
         });
         _ccStreamAbort = llmPromise.abort;
+        ccInFlightAborts.set(tabId, _ccStreamAbort);
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
@@ -3604,10 +3623,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         _ccStreamEnded = true; res.end();
       } finally {
-        ccInFlightTabs.delete(tabId);
+        _releaseCCTab(tabId);
       }
     } catch (e) {
-      ccInFlightTabs.delete(tabId);
+      _releaseCCTab(tabId);
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
       _ccStreamEnded = true; try { res.end(); } catch {}
     }
