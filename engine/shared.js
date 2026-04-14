@@ -547,6 +547,8 @@ const ENGINE_DEFAULTS = {
   lockRetryBackoffMs: 500, // base backoff between lock retries (doubles each attempt: 500ms, 1s, 2s, ...)
   maxBuildFixAttempts: 3, // max consecutive auto-fix dispatch cycles per PR before escalation to human
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
+  adoPollEnabled: true, // poll ADO PR status, comments, and reconciliation on each tick cycle
+  ghPollEnabled: true, // poll GitHub PR status, comments, and reconciliation on each tick cycle
   autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
   prMergeMethod: 'squash', // merge method: squash, merge, rebase
   ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
