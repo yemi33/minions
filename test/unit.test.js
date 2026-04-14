@@ -18992,6 +18992,63 @@ async function testWatchesModule() {
     assert.deepStrictEqual(captured, {});
   });
 
+  // ── Review feedback regression tests ────────────────────────────────────
+
+  // Bug #1: updateWatch validates status AFTER assigning it — invalid status gets persisted
+  await test('updateWatch rejects invalid status without persisting it', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.strictEqual(w.status, shared.WATCH_STATUS.ACTIVE);
+      // Try to update with an invalid status
+      const result = testWatches.updateWatch(w.id, { status: 'bogus-status' });
+      // Should return null (rejected) — not persist the invalid status
+      assert.strictEqual(result, null, 'updateWatch should return null for invalid status');
+      // Verify the watch on disk still has ACTIVE status
+      const persisted = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(persisted.status, shared.WATCH_STATUS.ACTIVE,
+        'Watch on disk should still have ACTIVE status, not the invalid one');
+    } finally { restore(); }
+  });
+
+  // Bug #2: evaluateWatch and _captureState use divergent PR matching logic
+  await test('_captureState uses same matching logic as evaluateWatch for PRs', () => {
+    // _captureState should match by prNumber (string coercion), same as evaluateWatch
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }] };
+    const captured = watches._captureState(watch, state);
+    // evaluateWatch finds this PR by String(prNumber) === String(target)
+    const evalResult = watches.evaluateWatch({ ...watch, condition: 'merged', _lastState: {} }, state);
+    // If evaluateWatch finds the PR, _captureState must also find it
+    assert.ok(evalResult.message !== 'PR 100 not found', 'evaluateWatch should find the PR');
+    assert.strictEqual(captured.status, 'active', '_captureState should also find the PR');
+  });
+
+  // Bug #3: title.includes(target) is too loose — "1" matches any PR with "1" in title
+  await test('evaluateWatch does not match PRs by loose title substring', () => {
+    const watch = { target: '1', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 999, id: 'other', title: 'Fix bug PR-1001 regression', status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "1" should not match a PR just because its title contains "1"
+    assert.strictEqual(result.triggered, false,
+      'Should not match PR by loose title substring — target "1" should not match title containing "1"');
+  });
+
+  await test('evaluateWatch does not match WI by loose title substring', () => {
+    const watch = { target: 'Fix', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-other', title: 'Fix login button', status: 'done' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "Fix" should not match a WI just because its title contains "Fix"
+    assert.strictEqual(result.triggered, false,
+      'Should not match WI by loose title substring');
+  });
+
   await test('WATCHES_PATH points to engine/watches.json', () => {
     assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
   });

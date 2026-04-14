@@ -80,6 +80,11 @@ function createWatch({ target, targetType, condition, interval, owner, descripti
  */
 function updateWatch(id, updates) {
   if (!id) throw new Error('id is required');
+  // Validate status before entering the lock — reject early, never persist invalid values
+  if (updates.status !== undefined && !Object.values(WATCH_STATUS).includes(updates.status)) {
+    log('warn', `Invalid watch status: ${updates.status}`);
+    return null;
+  }
   let found = null;
   mutateJsonFileLocked(_watchesPath(), (watches) => {
     if (!Array.isArray(watches)) return watches;
@@ -89,11 +94,6 @@ function updateWatch(id, updates) {
     const allowed = ['status', 'interval', 'description', 'notify', 'maxTriggers', 'condition'];
     for (const key of allowed) {
       if (updates[key] !== undefined) watch[key] = updates[key];
-    }
-    // Validate status if changed
-    if (updates.status && !Object.values(WATCH_STATUS).includes(updates.status)) {
-      log('warn', `Invalid watch status: ${updates.status}`);
-      return watches;
     }
     found = { ...watch };
     return watches;
@@ -133,9 +133,7 @@ function evaluateWatch(watch, state) {
 
   if (targetType === WATCH_TARGET_TYPE.PR) {
     const pr = (state.pullRequests || []).find(p =>
-      String(p.prNumber) === String(target) ||
-      p.id === target ||
-      (p.title && p.title.includes(target))
+      String(p.prNumber) === String(target) || p.id === target
     );
     if (!pr) return { triggered: false, message: `PR ${target} not found` };
 
@@ -167,7 +165,7 @@ function evaluateWatch(watch, state) {
   }
 
   if (targetType === WATCH_TARGET_TYPE.WORK_ITEM) {
-    const wi = (state.workItems || []).find(w => w.id === target || (w.title && w.title.includes(target)));
+    const wi = (state.workItems || []).find(w => w.id === target);
     if (!wi) return { triggered: false, message: `Work item ${target} not found` };
 
     const prevState = watch._lastState || {};
