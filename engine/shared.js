@@ -533,6 +533,7 @@ const ENGINE_DEFAULTS = {
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
   autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoReview: true, // auto-dispatch review agents for new PRs (disable for manual review workflow)
+  autoFixConflicts: true, // auto-dispatch fix agents when a PR has merge conflicts
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // max review→fix cycles before escalating to human

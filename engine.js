@@ -2118,8 +2118,9 @@ async function discoverFromPrs(config, project) {
       }
     }
 
-    // PRs with merge conflicts — dispatch fix to resolve
-    if (pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
+    // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
+    const autoFixConflicts = config.engine?.autoFixConflicts ?? DEFAULTS.autoFixConflicts;
+    if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
       const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
       // mergeStatus asynchronously (1–5 min lag), so the flag may stay set even after
