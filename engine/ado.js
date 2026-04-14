@@ -372,19 +372,19 @@ async function pollPrStatus(config) {
     if (newStatus !== PR_STATUS.ACTIVE) return updated;
 
     // Query builds API directly — status checks (/statuses) are unreliable (stale codecoverage postbacks)
-    // Use the merge commit hash to find builds for this PR
-    const mergeCommitId = prData.lastMergeCommit?.commitId;
+    // Use refs/pull/{id}/merge — the synthetic merge ref ADO creates for each PR — to scope builds exactly
+    const prNumber = pr.prNumber;
     let buildStatus = 'none';
     let buildFailReason = '';
     let buildStatuses = []; // for error log fetching
 
-    if (mergeCommitId) {
+    if (prNumber) {
       try {
-        // Find builds for this PR — scope by repositoryId+pullRequest reason to avoid branch-scan window issues
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?reasonFilter=pullRequest&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+        // branchName=refs/pull/{id}/merge targets exactly this PR's merge-commit builds (server-side filter, no client matching needed)
+        const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=10&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        // Match by exact merge commit — only current builds, not stale
-        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
+        const prBuilds = buildsData?.value || [];
 
         if (prBuilds.length > 0) {
           // partiallySucceeded = warnings, not failures — counts as passing

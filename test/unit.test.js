@@ -16709,26 +16709,22 @@ async function testPrReviewFixFlows() {
   });
 
   await test('ADO build detection uses builds API not status checks', () => {
-    assert.ok(adoSrc.includes('_apis/build/builds') && adoSrc.includes('sourceVersion === mergeCommitId'),
-      'ADO should query builds API with merge commit hash');
+    assert.ok(adoSrc.includes('_apis/build/builds'),
+      'ADO should query builds API directly');
+    assert.ok(adoSrc.includes('refs/pull/') && adoSrc.includes('/merge'),
+      'ADO should use the synthetic PR merge ref (refs/pull/{id}/merge) to scope builds');
   });
 
-  await test('ADO build query scopes by repositoryId+pullRequest not branchName', () => {
-    assert.ok(adoSrc.includes('reasonFilter=pullRequest'),
-      'ADO build query should use reasonFilter=pullRequest');
+  await test('ADO build query uses refs/pull/{id}/merge for precise PR scoping', () => {
+    assert.ok(adoSrc.includes('refs/pull/${prNumber}/merge'),
+      'ADO build query should use the PR merge ref (refs/pull/{id}/merge) — server-side scoped to exactly this PR');
     assert.ok(adoSrc.includes('repositoryId=') && adoSrc.includes('project.repositoryId'),
       'ADO build query should scope by repositoryId');
     assert.ok(adoSrc.includes('repositoryType=TfsGit'),
       'ADO build query should specify repositoryType=TfsGit');
-    assert.ok(adoSrc.includes('$top=25'),
-      'ADO build query should use $top=25');
-    // The pollPrStatus build URL should NOT use branchName+$top=10 (fragile window approach)
-    // Note: branchName= still appears in fetchAdoBuildErrorLog (line ~122) which is a different context
-    const pollFn = adoSrc.match(/async function pollPrStatus[\s\S]*?^}/m)?.[0] || '';
-    assert.ok(!pollFn.includes('branchName='),
-      'pollPrStatus should NOT use branchName filter (fragile window approach)');
-    assert.ok(!pollFn.includes('$top=10'),
-      'pollPrStatus should NOT use $top=10 (too small window)');
+    // Should NOT use reasonFilter+$top=25 (old approach)
+    assert.ok(!adoSrc.includes('reasonFilter=pullRequest'),
+      'ADO build query should not use reasonFilter (replaced by merge ref scoping)');
   });
 
 
