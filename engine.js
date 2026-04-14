@@ -1984,6 +1984,43 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); setCooldown(key); }
     }
 
+    // Re-review after fix: fall back to fixedAt > lastReviewedAt when lastPushedAt lags poller
+    const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
+      pr.lastReviewedAt && pr.minionsReview.fixedAt > pr.lastReviewedAt);
+    const needsReReview = autoReview && reviewStatus === 'waiting' &&
+      (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt)) && !evalEscalated;
+    if (needsReReview) {
+      const key = `review-${project?.name || 'default'}-${pr.id}`;
+      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+
+      // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
+      try {
+        const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
+        const liveStatus = await checkFn(pr, project);
+        if (liveStatus && liveStatus !== 'waiting') {
+          log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was waiting) — skipping re-review`);
+          if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
+          try {
+            mutateJsonFileLocked(projectPrPath(project), data => {
+              if (!Array.isArray(data)) return data;
+              const target = data.find(p => p.id === pr.id);
+              if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
+              return data;
+            });
+          } catch {}
+          continue;
+        }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+
+      const agentId = resolveAgent('review', config);
+      if (!agentId) continue;
+      const item = buildPrDispatch(agentId, config, project, pr, 'review', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); setCooldown(key); }
+    }
+
     // PRs with changes requested → route back to author for fix
     let fixDispatched = false;
     if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
