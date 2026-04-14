@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.935 (2026-04-14)
+
+### Features
+- certificate-based auth for Teams integration (#1027)
+-  add adoPollEnabled/ghPollEnabled engine settings
+-  doc-chat abort kills LLM process + queued messages auto-process
+- add /api/work-items/reopen endpoint and reopen-work-item CC action (#982)
+- CC tab unread dot + reopened badge on work items
+- fix dep re-merge failure on retry with existing commits (#977)
+- audit and harden log buffering implementation (#971)
+- replace magic string 'active' with PR_STATUS.ACTIVE in lifecycle.js (#969)
+- fix dashboard plan-pause nested lock violation (#968)
+- add missing branch_name to central dispatch vars (#967)
+- fix dispatch.js mutator fallback to use nullish coalescing (#966)
+- fix stall recovery nested lock violation (#965)
+- fix pending-rebases.json race condition with file locking (#964)
+- add missing resolveWorkItemPath import in engine.js (#963)
+- bump plan-to-prd max turns from 20 to 35
+- add weekly dead code & deprecated cleanup pipeline
+- add red dot notification on CC tab when response completes (#934) (#946)
+
+### Fixes
+-  persist adoPollEnabled/ghPollEnabled in settings save
+- prevent _consolidationInFlight race from stale force-reset timeout (#1023)
+- stop perpetual ADO poll retry when token unavailable (#1021)
+- await discoverPipelineWork instead of fire-and-forget .catch (#1020)
+- add unhandledRejection/uncaughtException handlers to engine process (#1019)
+- show doc-chat badges on Notes and KB items (#1016)
+- steering kill on no-session re-queues dispatch instead of erroring (#1015)
+- inject cached ADO token into spawned agents (#998) (#1012)
+-  qaAbort race + skip kill on completed doc-chat
+-  doc-chat Stop button actually works — release server guard on disconnect
+-  CC streaming auto-retries fresh session when resume fails
+-  429 retry on abort race applies to all sends, not just queued
+- show actionable failure context instead of Unknown error (#1003)
+- prioritize error_max_turns over permission-blocked in classifyFailure (#1001)
+-  optimistic archive hides both PRD and linked source plan simultaneously
+- align CC tab unread dot to same position as working dot
+- pipeline artifact links use pushModalBack instead of setTimeout race (#993)
+- close unclosed code fences and lone backticks in renderMd (#991)
+- PRD item status stuck at dispatched when fix completes (#989)
+- dep merge ancestor pruning + pre-flight simulation (#958) (#979)
+
+### Other
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
