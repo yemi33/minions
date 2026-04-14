@@ -470,11 +470,25 @@ setInterval(() => {
 // Only invalidated by: system prompt change, explicit clear, or tab close.
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
+const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
+function _ccTabIsInFlight(tabId) {
+  if (!ccInFlightTabs.has(tabId)) return false;
+  // Auto-release stale locks — if a request has been in-flight longer than CC_INFLIGHT_TIMEOUT_MS,
+  // the LLM likely hung or the finally block never ran. Release the lock so new requests can proceed.
+  const startedAt = ccInFlightTabs.get(tabId);
+  if (startedAt && Date.now() - startedAt > CC_INFLIGHT_TIMEOUT_MS) {
+    console.log(`[CC] Auto-releasing stale lock for tab ${tabId} (held ${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    const staleAbort = ccInFlightAborts.get(tabId);
+    if (staleAbort) { try { staleAbort(); } catch {} }
+    _releaseCCTab(tabId);
+    return false;
+  }
+  return true;
+}
 
 // _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
 
@@ -3403,13 +3417,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
       // Per-tab concurrency guard
       tabId = body.tabId || 'default';
-      if (ccInFlightTabs.has(tabId)) {
+      if (_ccTabIsInFlight(tabId)) {
         await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS));
-        if (ccInFlightTabs.has(tabId)) {
+        if (_ccTabIsInFlight(tabId)) {
           return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
         }
       }
-      ccInFlightTabs.add(tabId);
+      ccInFlightTabs.set(tabId, Date.now());
 
       try {
         let sessionReset = false;
@@ -3478,16 +3492,16 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
       tabId = body.tabId || 'default';
-      if (ccInFlightTabs.has(tabId)) {
+      if (_ccTabIsInFlight(tabId)) {
         // Previous request still in-flight — abort its LLM (handles keep-alive abort where close event didn't fire)
         const prevAbort = ccInFlightAborts.get(tabId);
         if (prevAbort) { prevAbort(); }
         await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS)); // let previous finally run and release the lock
-        if (ccInFlightTabs.has(tabId)) {
+        if (_ccTabIsInFlight(tabId)) {
           res.statusCode = 429; res.end('This tab is already processing'); return;
         }
       }
-      ccInFlightTabs.add(tabId);
+      ccInFlightTabs.set(tabId, Date.now());
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;

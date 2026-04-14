@@ -388,14 +388,28 @@ async function ccSend() {
   }
   var wasAborted = await _ccDoSend(message, false, originTabId);
 
-  // Flush queued messages to the ORIGINAL tab, even if user switched tabs
+  // Flush queued messages to the ORIGINAL tab, even if user switched tabs.
+  // If the user aborted, drain the queue — the session was killed server-side so sending
+  // queued messages would fail or create confusing behavior.
+  if (wasAborted && tab._queue && tab._queue.length > 0) {
+    var drained = tab._queue.length;
+    tab._queue = [];
+    _renderQueueIndicator();
+    ccAddMessage('system', '<div style="text-align:center;padding:4px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">' + drained + ' queued message' + (drained > 1 ? 's' : '') + ' cleared after stop</div>', false, originTabId);
+  }
   while (tab._queue && tab._queue.length > 0) {
-    if (wasAborted) {
-      await new Promise(function(r) { setTimeout(r, 1500); });
-    }
     var next = tab._queue.shift();
     _renderQueueIndicator();
     wasAborted = await _ccDoSend(next, false, originTabId);
+    if (wasAborted) {
+      var drained2 = tab._queue.length;
+      if (drained2 > 0) {
+        tab._queue = [];
+        _renderQueueIndicator();
+        ccAddMessage('system', '<div style="text-align:center;padding:4px 12px;font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;margin:4px 0">' + drained2 + ' queued message' + (drained2 > 1 ? 's' : '') + ' cleared after stop</div>', false, originTabId);
+      }
+      break;
+    }
   }
 }
 

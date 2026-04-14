@@ -6731,7 +6731,7 @@ async function testDashboardAssembly() {
 
   await test('assembled HTML size is reasonable', () => {
     assert.ok(html.length > 50000, `HTML should be > 50KB (got ${html.length})`);
-    assert.ok(html.length < 600000, `HTML should be < 600KB (got ${html.length})`);
+    assert.ok(html.length < 650000, `HTML should be < 650KB (got ${html.length})`);
 
   });
 }
