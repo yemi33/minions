@@ -1991,7 +1991,9 @@ async function discoverFromPrs(config, project) {
       (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt)) && !evalEscalated;
     if (needsReReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
+      // Skip isAlreadyDispatched — fixedAfterReview/alreadyReviewed already dedup; the 1hr
+      // completed-dispatch window would block legitimate re-reviews within the hour after a fix
+      if (isOnCooldown(key, cooldownMs)) continue;
 
       // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
       try {
