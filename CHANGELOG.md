@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.1.950 (2026-04-14)
+
+### Features
+- add PR/build status CLI shim and agent guidance
+-  make ADO poll frequency configurable and ungate reconcilePrs
+- update render-work-items.js output viewer to use renderAgentOutput
+- update detail-panel.js Output Log tab to use renderAgentOutput
+-  Update command-center.js to capture tool inputs and use formatted summaries
+- certificate-based auth for Teams integration (#1027)
+-  Create render-utils.js with shared formatting helpers
+-  add adoPollEnabled/ghPollEnabled engine settings
+-  doc-chat abort kills LLM process + queued messages auto-process
+- add /api/work-items/reopen endpoint and reopen-work-item CC action (#982)
+- CC tab unread dot + reopened badge on work items
+- fix dep re-merge failure on retry with existing commits (#977)
+- audit and harden log buffering implementation (#971)
+- replace magic string 'active' with PR_STATUS.ACTIVE in lifecycle.js (#969)
+- fix dashboard plan-pause nested lock violation (#968)
+- add missing branch_name to central dispatch vars (#967)
+- fix dispatch.js mutator fallback to use nullish coalescing (#966)
+- fix stall recovery nested lock violation (#965)
+- fix pending-rebases.json race condition with file locking (#964)
+- add missing resolveWorkItemPath import in engine.js (#963)
+
+### Fixes
+- tighten build query guard to require mergeCommitId
+- restore sourceVersion filter after refs/pull merge ref switch
+- use refs/pull/{id}/merge for build status scoping
+- use repositoryId+reasonFilter for ADO build query
+-  deduplicate work item creation by title
+- ADO build query uses repositoryId+pullRequest instead of branchName
+-  persist adoPollEnabled/ghPollEnabled in settings save
+- prevent _consolidationInFlight race from stale force-reset timeout (#1023)
+- stop perpetual ADO poll retry when token unavailable (#1021)
+- await discoverPipelineWork instead of fire-and-forget .catch (#1020)
+- add unhandledRejection/uncaughtException handlers to engine process (#1019)
+- show doc-chat badges on Notes and KB items (#1016)
+- steering kill on no-session re-queues dispatch instead of erroring (#1015)
+- inject cached ADO token into spawned agents (#998) (#1012)
+-  qaAbort race + skip kill on completed doc-chat
+-  doc-chat Stop button actually works — release server guard on disconnect
+-  CC streaming auto-retries fresh session when resume fails
+-  429 retry on abort race applies to all sends, not just queued
+- show actionable failure context instead of Unknown error (#1003)
+- prioritize error_max_turns over permission-blocked in classifyFailure (#1001)
+
+### Other
+- refactor(ado): simplify ado-status and extract build/review status helpers
+- refactor(ado): extract stripRefsHeads helper, deduplicate refs/heads/ stripping
+- refactor(ado): simplify comments, fix declaration order, promote ado import
+- refactor(ado): move PR enrichment fetch into fetchAdoPrMetadata helper
+- refactor: Make renderLiveChatMessage a thin wrapper over renderAgentOutput
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
