@@ -768,6 +768,22 @@ async function checkLiveReviewStatus(pr, project) {
   }
 }
 
+// Fetch basic PR metadata (title, description, branch, author) for a manually-linked ADO PR.
+// Uses adoFetch so retry logic and circuit breaker apply — dashboard.js PR enrichment calls this.
+async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
+  const token = await getAdoToken();
+  if (!token) return null;
+  const url = `https://dev.azure.com/${adoOrg}/${adoProj}/_apis/git/repositories/${adoRepo}/pullrequests/${prNum}?api-version=7.1`;
+  const d = await adoFetch(url, token);
+  if (!d) return null;
+  return {
+    title: d.title || '',
+    description: d.description || '',
+    branch: d.sourceRefName?.replace('refs/heads/', '') || '',
+    author: d.createdBy?.displayName || '',
+  };
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
@@ -777,5 +793,6 @@ module.exports = {
   checkLiveReviewStatus,
   needsAdoPollRetry,
   isAdoAuthError, // exported for testing
+  fetchAdoPrMetadata,
 };
 

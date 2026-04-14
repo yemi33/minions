@@ -4228,14 +4228,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           } else if (adoMatch) {
             const [, adoOrg, adoProj, adoRepo] = adoMatch;
             try {
-              const { getAdoToken } = require('./engine/ado');
-              const token = await getAdoToken();
-              if (token) {
-                const apiUrl = `https://dev.azure.com/${adoOrg}/${adoProj}/_apis/git/repositories/${adoRepo}/pullrequests/${prNum}?api-version=7.1`;
-                const result = await shared.execAsync(`curl -s --max-time 10 -H "Authorization: Bearer ${token}" "${apiUrl}"`, { encoding: 'utf-8', timeout: 15000, windowsHide: true });
-                const d = JSON.parse(result);
-                prData = { title: d.title, description: d.description, branch: d.sourceRefName?.replace('refs/heads/', ''), author: d.createdBy?.displayName };
-              }
+              const { fetchAdoPrMetadata } = require('./engine/ado');
+              prData = await fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo);
             } catch { /* ADO token may not be available */ }
           }
           if (!prData) return;
