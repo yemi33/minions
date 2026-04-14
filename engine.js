@@ -3122,11 +3122,13 @@ async function tickInner() {
 
   const adoPollEnabled = config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled;
   const ghPollEnabled = config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled;
+  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || DEFAULTS.adoPollStatusEvery);
+  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || DEFAULTS.adoPollCommentsEvery);
 
-  // 2.6. Poll PR status: build, review, merge (every 6 ticks = ~3 minutes)
+  // 2.6. Poll PR status: build, review, merge (every adoPollStatusEvery ticks, default ~6 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
   // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
-  if (tickCount % 6 === 0 || needsAdoPollRetry()) {
+  if (tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()) {
     if (adoPollEnabled) {
       try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     }
@@ -3152,16 +3154,17 @@ async function tickInner() {
     } catch (err) { log('warn', `Plan completion check error: ${err?.message || err}`); }
   }
 
-  // 2.7. Poll PR threads for human comments (every 12 ticks = ~6 minutes)
-  if (tickCount % 12 === 0) {
+  // 2.7. Poll PR threads for human comments (every adoPollCommentsEvery ticks, default ~12 minutes)
+  if (tickCount % adoPollCommentsEvery === 0) {
     if (adoPollEnabled) {
       try { await pollPrHumanComments(config); } catch (err) { log('warn', `ADO PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
-      try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     }
     if (ghPollEnabled) {
       try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
-      try { await ghReconcilePrs(config); } catch (err) { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
     }
+    // Reconciliation runs regardless of poll flags — it's a recovery sweep, not a convenience poll
+    try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    try { await ghReconcilePrs(config); } catch (err) { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
   }
 
   // 2.9. Stalled dispatch detection — auto-retry failed items blocking the graph (every 20 ticks = ~10 min)

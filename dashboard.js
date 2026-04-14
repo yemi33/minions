@@ -3730,6 +3730,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           meetingRoundTimeout: [60000],
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
+          adoPollStatusEvery: [1], adoPollCommentsEvery: [1],
         };
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {

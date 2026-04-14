@@ -12560,9 +12560,9 @@ async function testPrDuplicateRaceFix() {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');
     assert.ok(engineSrc.includes('needsAdoPollRetry()'), 'engine.js must call needsAdoPollRetry() in tick loop');
-    // Should be used alongside the 6-tick cadence check
-    assert.ok(engineSrc.includes('tickCount % 6 === 0 || needsAdoPollRetry()'),
-      'engine.js must bypass 6-tick cadence when needsAdoPollRetry() is true');
+    // Should be used alongside the configurable cadence check
+    assert.ok(engineSrc.includes('tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()'),
+      'engine.js must bypass adoPollStatusEvery cadence when needsAdoPollRetry() is true');
   });
 
   await test('dashboard render-prs.js shows stale build status indicator', () => {

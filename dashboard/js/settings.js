@@ -49,8 +49,12 @@ async function openSettings() {
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
       settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
-      settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status, comments, and reconciliation on each tick cycle') +
-      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status, comments, and reconciliation on each tick cycle') +
+      settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status and comments each tick (reconciliation always runs)') +
+      settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
+    '</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
+      settingsField('ADO Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll ADO PR build/review/merge status every N ticks (~6 min at default tick rate)') +
+      settingsField('ADO Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll ADO PR human comments every N ticks (~12 min at default tick rate)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
@@ -235,6 +239,8 @@ async function saveSettings() {
       autoArchive: document.getElementById('set-autoArchive').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,
+      adoPollStatusEvery: document.getElementById('set-adoPollStatusEvery').value,
+      adoPollCommentsEvery: document.getElementById('set-adoPollCommentsEvery').value,
       evalMaxIterations: document.getElementById('set-evalMaxIterations').value,
       evalMaxCost: document.getElementById('set-evalMaxCost').value || null,
       maxBuildFixAttempts: document.getElementById('set-maxBuildFixAttempts').value,

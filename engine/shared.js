@@ -549,6 +549,8 @@ const ENGINE_DEFAULTS = {
   buildFixGracePeriod: 600000, // 10min — wait for CI to run after build fix before re-dispatching
   adoPollEnabled: true, // poll ADO PR status, comments, and reconciliation on each tick cycle
   ghPollEnabled: true, // poll GitHub PR status, comments, and reconciliation on each tick cycle
+  adoPollStatusEvery: 6,   // poll ADO PR build/review/merge status every N ticks (~6 min at default interval)
+  adoPollCommentsEvery: 12, // poll ADO PR human comments every N ticks (~12 min at default interval)
   autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
   prMergeMethod: 'squash', // merge method: squash, merge, rebase
   ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
