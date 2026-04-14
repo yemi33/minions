@@ -17484,6 +17484,52 @@ async function testRenderUtils() {
     assert.ok(outputSection.includes('class="section"') || outputSection.includes("class=\\'section\\'"),
       'Output Log content must be wrapped in a section container');
   });
+
+  // ─── P-e2a6c8d4: render-work-items.js output viewer uses renderAgentOutput ──
+  console.log('\n── P-e2a6c8d4: render-work-items.js output viewer uses renderAgentOutput ──');
+
+  const wiSrcForOutput = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-work-items.js'), 'utf8');
+
+  await test('viewAgentOutput uses renderAgentOutput instead of textContent', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('renderAgentOutput'),
+      'viewAgentOutput must use renderAgentOutput for formatted JSONL rendering');
+    assert.ok(!fnMatch[0].includes('.textContent = content'),
+      'viewAgentOutput must NOT use textContent for raw text dump — should use renderAgentOutput');
+  });
+
+  await test('viewAgentOutput sets innerHTML (not textContent) for formatted output', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('.innerHTML'),
+      'viewAgentOutput must use innerHTML to render formatted HTML from renderAgentOutput');
+  });
+
+  await test('viewAgentOutput does not set whiteSpace to pre-wrap (conflicts with HTML block rendering)', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(!fnMatch[0].includes("whiteSpace = 'pre-wrap'") && !fnMatch[0].includes('whiteSpace = "pre-wrap"'),
+      'viewAgentOutput must not set whiteSpace to pre-wrap — renderAgentOutput returns HTML with block-level divs');
+  });
+
+  await test('viewAgentOutput preserves loading and error states', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('Loading'),
+      'viewAgentOutput must show loading state');
+    assert.ok(fnMatch[0].includes('.catch'),
+      'viewAgentOutput must have error handler');
+    assert.ok(fnMatch[0].includes('Failed to load'),
+      'viewAgentOutput must show error state on failure');
+  });
+
+  await test('viewAgentOutput preserves Consolas font family', () => {
+    const fnMatch = wiSrcForOutput.match(/function viewAgentOutput[\s\S]*?^}/m);
+    assert.ok(fnMatch, 'viewAgentOutput function must exist');
+    assert.ok(fnMatch[0].includes('Consolas'),
+      'viewAgentOutput must keep Consolas font family for the modal');
+  });
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
