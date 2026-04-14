@@ -86,6 +86,20 @@ function renderAdoThrottleAlert(adoThrottle) {
   el.style.display = 'flex';
 }
 
+function renderGhThrottleAlert(ghThrottle) {
+  const el = document.getElementById('gh-throttle-alert');
+  if (!el) return;
+  if (!ghThrottle || !ghThrottle.throttled) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const resumeTime = new Date(ghThrottle.retryAfter).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  el.innerHTML =
+    '<span class="engine-alert-msg">&#x26A0;&#xFE0F; GitHub rate-limited — resume ~' + resumeTime + ' (' + ghThrottle.consecutiveHits + ' consecutive hit' + (ghThrottle.consecutiveHits !== 1 ? 's' : '') + ')</span>';
+  el.style.display = 'flex';
+}
+
 function renderDispatch(dispatch) {
   if (!dispatch) return;
 
@@ -261,4 +275,4 @@ function renderVersionBanner(version) {
   }
 }
 
-window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderAdoThrottleAlert, renderVersionBanner, renderDispatch, renderEngineLog, shortTime, showErrorDetails };
+window.MinionsDispatch = { renderEngineStatus, renderEngineAlert, renderAdoThrottleAlert, renderGhThrottleAlert, renderVersionBanner, renderDispatch, renderEngineLog, shortTime, showErrorDetails };

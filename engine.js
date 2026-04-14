@@ -1446,7 +1446,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 
 const { consolidateInbox } = require('./engine/consolidation');
 const { pollPrStatus, pollPrHumanComments, reconcilePrs, checkLiveReviewStatus: adoCheckLiveReview, needsAdoPollRetry, getAdoToken, isAdoThrottled } = require('./engine/ado');
-const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview } = require('./engine/github');
+const { pollPrStatus: ghPollPrStatus, pollPrHumanComments: ghPollPrHumanComments, reconcilePrs: ghReconcilePrs, checkLiveReviewStatus: ghCheckLiveReview, isGhThrottled } = require('./engine/github');
 
 // ─── State Snapshot ─────────────────────────────────────────────────────────
 
@@ -3134,8 +3134,10 @@ async function tickInner() {
     } else if (adoPollEnabled && isAdoThrottled()) {
       log('info', '[ado] PR status poll skipped — throttled');
     }
-    if (ghPollEnabled) {
+    if (ghPollEnabled && !isGhThrottled()) {
       try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    } else if (ghPollEnabled && isGhThrottled()) {
+      log('info', '[gh] PR status poll skipped — throttled');
     }
     try { await processPendingRebases(config); } catch (err) { log('warn', `Pending rebase processing error: ${err?.message || err}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
@@ -3163,8 +3165,10 @@ async function tickInner() {
     } else if (adoPollEnabled && isAdoThrottled()) {
       log('info', '[ado] PR comment poll skipped — throttled');
     }
-    if (ghPollEnabled) {
+    if (ghPollEnabled && !isGhThrottled()) {
       try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    } else if (ghPollEnabled && isGhThrottled()) {
+      log('info', '[gh] PR comment poll skipped — throttled');
     }
     // Reconciliation runs regardless of poll flags — it's a recovery sweep, not a convenience poll
     try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }

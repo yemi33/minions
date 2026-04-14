@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -49,10 +49,8 @@ let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timest
 
 // ─── ADO Throttle State ─────────────────────────────────────────────────────
 // Tracks rate-limiting (HTTP 429/503) from ADO API responses.
-// backoffMs starts at 60s, doubles each consecutive hit, caps at 32 min.
-let _adoThrottle = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: 60000 };
-
-const ADO_THROTTLE_BACKOFF_CAP = 32 * 60000; // 32 minutes max backoff
+// Uses shared createThrottleTracker factory: backoffMs starts at 60s, doubles, caps at 32 min.
+const _adoThrottle = createThrottleTracker({ label: 'ado', baseBackoffMs: 60000, maxBackoffMs: 32 * 60000 });
 
 // ─── Auth Failure Tracking ──────────────────────────────────────────────────
 // Set when pollPrStatus encounters auth errors mid-loop. The engine checks this
@@ -106,14 +104,11 @@ async function adoFetch(url, token, opts = {}) {
   });
   // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
   if (res.status === 429 || res.status === 503) {
-    _adoThrottle.consecutiveHits++;
-    _adoThrottle.backoffMs = Math.min(_adoThrottle.backoffMs * 2, ADO_THROTTLE_BACKOFF_CAP);
     const retryAfterSec = parseInt(res.headers.get('Retry-After'), 10);
-    const waitMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : _adoThrottle.backoffMs;
-    _adoThrottle.throttled = true;
-    _adoThrottle.retryAfter = Date.now() + waitMs;
-    log('warn', `[ado] Throttled (HTTP ${res.status}) — retry after ${Math.round(waitMs / 1000)}s, consecutive hits: ${_adoThrottle.consecutiveHits}`);
-    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round(waitMs / 1000)}s`);
+    const retryAfterMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : 0;
+    _adoThrottle.recordThrottle(retryAfterMs);
+    const state = _adoThrottle.getState();
+    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round((state.retryAfter - Date.now()) / 1000)}s`);
   }
   if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
@@ -130,13 +125,7 @@ async function adoFetch(url, token, opts = {}) {
   }
   const json = JSON.parse(text);
   // ── Success decay: decrement consecutiveHits, reset when fully recovered ──
-  if (_adoThrottle.consecutiveHits > 0) {
-    _adoThrottle.consecutiveHits--;
-    if (_adoThrottle.consecutiveHits === 0) {
-      _adoThrottle.throttled = false;
-      _adoThrottle.backoffMs = 60000;
-    }
-  }
+  _adoThrottle.recordSuccess();
   return json;
 }
 
@@ -146,6 +135,14 @@ async function adoFetchText(url, token) {
     headers: { 'Authorization': `Bearer ${token}` },
     signal: AbortSignal.timeout(30000),
   });
+  // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
+  if (res.status === 429 || res.status === 503) {
+    const retryAfterSec = parseInt(res.headers.get('Retry-After'), 10);
+    const retryAfterMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : 0;
+    _adoThrottle.recordThrottle(retryAfterMs);
+    const state = _adoThrottle.getState();
+    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round((state.retryAfter - Date.now()) / 1000)}s`);
+  }
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   return res.text();
 }
@@ -888,28 +885,19 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
 // ─── ADO Throttle Queries ────────────────────────────────────────────────────
 
 /** Returns true if ADO is throttled and retryAfter hasn't elapsed. Auto-clears when retryAfter passes. */
-function isAdoThrottled() {
-  if (!_adoThrottle.throttled) return false;
-  if (Date.now() >= _adoThrottle.retryAfter) {
-    _adoThrottle.throttled = false;
-    return false;
-  }
-  return true;
-}
+const isAdoThrottled = () => _adoThrottle.isThrottled();
 
 /** Returns a snapshot of the current throttle state. Calls isAdoThrottled() for a fresh value. */
-function getAdoThrottleState() {
-  return { throttled: isAdoThrottled(), retryAfter: _adoThrottle.retryAfter, consecutiveHits: _adoThrottle.consecutiveHits };
-}
+const getAdoThrottleState = () => _adoThrottle.getState();
 
 /** Reset throttle state — exported for testing only. */
 function _resetAdoThrottle() {
-  _adoThrottle = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: 60000 };
+  _adoThrottle._reset();
 }
 
 /** Set throttle state directly — exported for testing only. */
 function _setAdoThrottleForTest(state) {
-  Object.assign(_adoThrottle, state);
+  _adoThrottle._setForTest(state);
 }
 
 module.exports = {
