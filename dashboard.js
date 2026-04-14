@@ -3586,11 +3586,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Persist tab→session mapping (no global ccSession mutation)
         const now = Date.now();
         const responseSessionId = result.sessionId || tabSessionId;
-        const tabId = body.tabId;
-        if (tabId && responseSessionId) {
+        const _persistTabId = body.tabId;
+        if (_persistTabId && responseSessionId) {
           try {
             const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
-            const existing = sessions.find(s => s.id === tabId);
+            const existing = sessions.find(s => s.id === _persistTabId);
             const preview = (body.message || '').slice(0, 80);
             if (existing) {
               existing.sessionId = responseSessionId;
@@ -3599,7 +3599,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               existing.preview = preview;
               existing._promptHash = _ccPromptHash;
             } else {
-              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
+              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
