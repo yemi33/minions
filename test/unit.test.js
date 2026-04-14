@@ -9913,12 +9913,23 @@ async function testSettingsComprehensive() {
   await test('handleSettingsUpdate boolean allowlist includes adoPollEnabled and ghPollEnabled', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
-    // Extract the boolean fields array from the for-of loop
-    const match = handler.match(/for \(const key of \[([^\]]+)\]/);
-    assert.ok(match, 'handleSettingsUpdate must have a boolean fields for-of loop');
-    const allowlist = match[1];
-    assert.ok(allowlist.includes("'adoPollEnabled'"), "boolean allowlist must include 'adoPollEnabled' — omitting it silently drops the setting on every save");
-    assert.ok(allowlist.includes("'ghPollEnabled'"), "boolean allowlist must include 'ghPollEnabled' — omitting it silently drops the setting on every save");
+    // Boolean fields are derived dynamically from ENGINE_DEFAULTS (typeof === 'boolean')
+    // or listed in a hardcoded array. Either approach must include adoPollEnabled/ghPollEnabled.
+    const hasDynamic = handler.includes('ENGINE_DEFAULTS') && handler.includes("=== 'boolean'");
+    if (hasDynamic) {
+      // Dynamic path: verify the keys exist as booleans in ENGINE_DEFAULTS (auto-included)
+      assert.strictEqual(typeof shared.ENGINE_DEFAULTS.adoPollEnabled, 'boolean',
+        "adoPollEnabled must be a boolean in ENGINE_DEFAULTS so dynamic derivation includes it");
+      assert.strictEqual(typeof shared.ENGINE_DEFAULTS.ghPollEnabled, 'boolean',
+        "ghPollEnabled must be a boolean in ENGINE_DEFAULTS so dynamic derivation includes it");
+    } else {
+      // Hardcoded path: extract the boolean fields array and check it contains the keys
+      const match = handler.match(/(?:boolean|Bool)\w*\s*=\s*\[([^\]]+)\]/);
+      assert.ok(match, 'handleSettingsUpdate must have a boolean fields list');
+      const allowlist = match[1];
+      assert.ok(allowlist.includes("'adoPollEnabled'"), "boolean allowlist must include 'adoPollEnabled' — omitting it silently drops the setting on every save");
+      assert.ok(allowlist.includes("'ghPollEnabled'"), "boolean allowlist must include 'ghPollEnabled' — omitting it silently drops the setting on every save");
+    }
   });
 
   await test('settings UI sends adoPollEnabled and ghPollEnabled to backend', () => {
