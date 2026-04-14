@@ -3560,8 +3560,8 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         trackUsage('command-center', result.usage);
 
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
-        if (!result.text && wasResume && result.code !== 0) {
-          // Resume failed (stale/expired session) — auto-retry as fresh session
+        if (!result.text && wasResume && result.code !== 0 && !req.destroyed) {
+          // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
           console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
           const freshPreamble = buildCCStatePreamble();
           const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
@@ -3587,6 +3587,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
         }
         if (!result.text) {
+          if (req.destroyed) { _ccStreamEnded = true; return; } // client already gone — nothing to send
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
