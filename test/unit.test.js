@@ -9458,6 +9458,9 @@ async function main() {
     await testWatchesModule();
     await testWatchesDashboard();
 
+    // #1049: azureauth --timeout enforcement
+    await testAzureauthTimeout();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -19172,4 +19175,54 @@ async function testWatchesDashboard() {
   });
 }
 
+// ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
+async function testAzureauthTimeout() {
+  console.log('\n── #1049: azureauth --timeout enforcement ──');
+
+  await test('ado.js azureauth exec call includes --timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    // Match only actual exec calls, not comments or error messages
+    const execCalls = src.match(/exec(?:Sync|Async)?\(\s*['"]([^'"]*azureauth[^'"]*)['"]/g) || [];
+    assert.ok(execCalls.length > 0, 'ado.js should have at least one azureauth exec call');
+    for (const call of execCalls) {
+      assert.ok(call.includes('--timeout'), `azureauth exec call missing --timeout: "${call}"`);
+    }
+  });
+
+  await test('ado-mcp-wrapper.js azureauth exec call includes --timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado-mcp-wrapper.js'), 'utf8');
+    // Match only actual exec calls, not error message strings
+    const execCalls = src.match(/exec(?:Sync|Async)?\(\s*['"]([^'"]*azureauth[^'"]*)['"]/g) || [];
+    assert.ok(execCalls.length > 0, 'ado-mcp-wrapper.js should have at least one azureauth exec call');
+    for (const call of execCalls) {
+      assert.ok(call.includes('--timeout'), `azureauth exec call missing --timeout: "${call}"`);
+    }
+  });
+
+  await test('CLAUDE.md documents azureauth with --timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'CLAUDE.md'), 'utf8');
+    // Find all azureauth command references (inline code or code blocks)
+    const azureauthRefs = src.match(/`[^`]*azureauth\s+ado\s+token[^`]*`/g) || [];
+    assert.ok(azureauthRefs.length > 0, 'CLAUDE.md should reference azureauth ado token');
+    for (const ref of azureauthRefs) {
+      assert.ok(ref.includes('--timeout'), `CLAUDE.md azureauth reference missing --timeout: ${ref}`);
+    }
+  });
+
+  await test('docs/auto-discovery.md documents azureauth with --timeout', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'docs', 'auto-discovery.md'), 'utf8');
+    const azureauthRefs = src.match(/`[^`]*azureauth\s+ado\s+token[^`]*`/g) || [];
+    assert.ok(azureauthRefs.length > 0, 'auto-discovery.md should reference azureauth ado token');
+    for (const ref of azureauthRefs) {
+      assert.ok(ref.includes('--timeout'), `auto-discovery.md azureauth reference missing --timeout: ${ref}`);
+    }
+  });
+
+  await test('shared-rules.md warns agents about azureauth --timeout requirement', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'playbooks', 'shared-rules.md'), 'utf8');
+    assert.ok(src.includes('--timeout'), 'shared-rules.md should mention --timeout for azureauth');
+    assert.ok(src.includes('azureauth') && src.includes('timeout'),
+      'shared-rules.md should have explicit guidance about azureauth timeout');
+  });
+}
 main().catch(e => { console.error(e); process.exit(1); });

@@ -555,6 +555,7 @@ const ENGINE_DEFAULTS = {
   autoCompletePrs: false, // auto-merge PRs when builds green + review approved (opt-in)
   prMergeMethod: 'squash', // merge method: squash, merge, rebase
   ignoredCommentAuthors: [], // comments from these authors are auto-closed and never trigger fixes
+  agentBusyReassignMs: 600000, // 10min — reassign work item to another agent if preferred agent is busy beyond this threshold
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)

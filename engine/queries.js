@@ -42,6 +42,34 @@ function readHeadTail(filePath, bytes = 1024) {
   }
 }
 
+/**
+ * Detect in-flight tool calls from live-output.log tail content.
+ * Scans for task_started events with no matching task_notification (by task_id).
+ * Returns { description, taskId } for the most recent in-flight tool, or null.
+ */
+function detectInFlightTool(tail) {
+  if (!tail) return null;
+  const lines = tail.split('\n');
+  const completed = new Set();
+
+  // Reverse scan: collect task_notification ids first (most recent lines),
+  // then the first task_started not in completed is the in-flight tool.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"task_')) continue; // fast skip non-task lines
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.type !== 'system') continue;
+      if (parsed.subtype === 'task_notification') {
+        completed.add(parsed.task_id);
+      } else if (parsed.subtype === 'task_started' && !completed.has(parsed.task_id)) {
+        return { description: parsed.description || null, taskId: parsed.task_id };
+      }
+    } catch { /* not valid JSON — skip heartbeats, headers, partial lines */ }
+  }
+  return null;
+}
+
 // ── Paths ───────────────────────────────────────────────────────────────────
 
 const MINIONS_DIR = shared.MINIONS_DIR;
@@ -220,7 +248,7 @@ function getAgentStatus(agentId) {
     if (active._blockingToolCall) {
       result._blockingToolCall = active._blockingToolCall;
     }
-    // Detect permission-waiting: read only head+tail of live-output.log (max 2KB total)
+    // Detect permission-waiting and in-flight tools: read only head+tail of live-output.log (max 2KB total)
     try {
       const liveLogPath = path.join(AGENTS_DIR, agentId, 'live-output.log');
       const { head, tail } = readHeadTail(liveLogPath, 1024);
@@ -238,6 +266,11 @@ function getAgentStatus(agentId) {
           if (silentMs > 60000 && result._permissionMode) {
             result._warning = 'Possibly waiting for permission approval — agent is not in bypass mode';
           }
+        }
+        // Detect in-flight tool calls (task_started with no task_notification)
+        const inFlight = detectInFlightTool(tail);
+        if (inFlight && inFlight.description) {
+          result._runningToolDescription = inFlight.description;
         }
       }
     } catch { /* optional — don't block status */ }
@@ -328,7 +361,7 @@ function getAgents(config) {
     const s = getAgentStatus(a.id); // derives from dispatch.json
 
     let lastAction = 'Waiting for assignment';
-    if (s.status === 'working') lastAction = `Working: ${s.task}`;
+    if (s.status === 'working') lastAction = s._runningToolDescription ? `Running: ${s._runningToolDescription}` : `Working: ${s.task}`;
     else if (s.status === 'done') lastAction = `Done: ${s.task}`;
     else if (s.status === 'error') lastAction = `Error: ${s.task}`;
     else if (inboxFiles.length > 0) {
@@ -1033,6 +1066,7 @@ module.exports = {
   // Helpers
   timeSince,
   readHeadTail, // exported for testing
+  detectInFlightTool, // exported for testing
   resetPrdInfoCache,
 
   // Core state

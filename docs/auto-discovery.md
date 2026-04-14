@@ -137,7 +137,7 @@ The engine directly polls the Azure DevOps REST API for **all** PR metadata: bui
 | `buildStatus` | PR statuses (codecoverage/deploy/build/ci contexts) | `passing` / `failing` / `running` / `none` |
 | `buildFailReason` | Failed status description | Set on failure, cleared otherwise |
 
-**Auth:** Bearer token via `azureauth ado token --output token` (cached 30 minutes).
+**Auth:** Bearer token via `azureauth ado token --output token --timeout 1` (cached 30 minutes). The `--timeout 1` flag is required — without it, azureauth can hang indefinitely in headless sessions.
 
 This feeds `discoverFromPrs` — when `buildStatus` flips to `"failing"`, the next discovery tick dispatches a fix agent. When `status` becomes `"merged"`, the PR drops out of active polling.
 
