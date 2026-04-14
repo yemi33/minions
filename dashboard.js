@@ -472,8 +472,25 @@ setInterval(() => {
 // Only invalidated by: system prompt change, explicit clear, or tab close.
 const CC_SESSION_MAX_TURNS = Infinity;
 let ccSession = { sessionId: null, createdAt: null, lastActiveAt: null, turnCount: 0 };
-const ccInFlightTabs = new Set(); // per-tab in-flight tracking for parallel CC requests
+const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight tracking for parallel CC requests
+const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
+const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
+function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
+function _ccTabIsInFlight(tabId) {
+  if (!ccInFlightTabs.has(tabId)) return false;
+  // Auto-release stale locks — if a request has been in-flight longer than CC_INFLIGHT_TIMEOUT_MS,
+  // the LLM likely hung or the finally block never ran. Release the lock so new requests can proceed.
+  const startedAt = ccInFlightTabs.get(tabId);
+  if (startedAt && Date.now() - startedAt > CC_INFLIGHT_TIMEOUT_MS) {
+    console.log(`[CC] Auto-releasing stale lock for tab ${tabId} (held ${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    const staleAbort = ccInFlightAborts.get(tabId);
+    if (staleAbort) { try { staleAbort(); } catch {} }
+    _releaseCCTab(tabId);
+    return false;
+  }
+  return true;
+}
 
 // _ccPromptHash computed after CC_STATIC_SYSTEM_PROMPT is defined (see below)
 
@@ -3395,16 +3412,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenter(req, res) {
     if (checkRateLimit('command-center', 10)) return jsonReply(res, 429, { error: 'Rate limited — max 10 requests/minute' });
+    let tabId;
     try {
       const body = await readBody(req);
       if (!body.message) return jsonReply(res, 400, { error: 'message required' });
 
       // Per-tab concurrency guard
-      const tabId = body.tabId || 'default';
-      if (ccInFlightTabs.has(tabId)) {
-        return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
+      tabId = body.tabId || 'default';
+      if (_ccTabIsInFlight(tabId)) {
+        await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS));
+        if (_ccTabIsInFlight(tabId)) {
+          return jsonReply(res, 429, { error: 'This tab is already processing — wait or open a new tab.' });
+        }
       }
-      ccInFlightTabs.add(tabId);
+      ccInFlightTabs.set(tabId, Date.now());
 
       try {
         let sessionReset = false;
@@ -3449,9 +3470,9 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (sessionReset) reply.sessionReset = true;
         return jsonReply(res, 200, reply);
       } finally {
-        ccInFlightTabs.delete(tabId);
+        _releaseCCTab(tabId);
       }
-    } catch (e) { ccInFlightTabs.delete(tabId); return jsonReply(res, 500, { error: e.message }); }
+    } catch (e) { _releaseCCTab(tabId); return jsonReply(res, 500, { error: e.message }); }
   }
 
   /** Build a lightweight input object for SSE tool events — keeps only the fields formatToolSummary needs, with truncated string values. */
@@ -3468,24 +3489,35 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleCommandCenterStream(req, res) {
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
+    let tabId;
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
-      const tabId = body.tabId || 'default';
-      if (ccInFlightTabs.has(tabId)) {
-        res.statusCode = 429; res.end('This tab is already processing'); return;
+      tabId = body.tabId || 'default';
+      if (_ccTabIsInFlight(tabId)) {
+        // Previous request still in-flight — abort its LLM (handles keep-alive abort where close event didn't fire)
+        const prevAbort = ccInFlightAborts.get(tabId);
+        if (prevAbort) { prevAbort(); }
+        await new Promise(r => setTimeout(r, CC_LOCK_WAIT_MS)); // let previous finally run and release the lock
+        if (_ccTabIsInFlight(tabId)) {
+          res.statusCode = 429; res.end('This tab is already processing'); return;
+        }
       }
-      ccInFlightTabs.add(tabId);
+      ccInFlightTabs.set(tabId, Date.now());
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
       let _ccStreamAbort = null;
       let _ccStreamEnded = false;
-      // Kill LLM process immediately if client disconnects mid-stream
+      // Kill LLM process immediately if client disconnects mid-stream.
+      // Guard with !_ccStreamEnded: when the stream ends normally, finally already released the lock;
+      // without the guard, this close event (which fires after res.end) could wipe a new request's lock.
       req.on('close', () => {
-        ccInFlightTabs.delete(tabId);
-        if (!_ccStreamEnded && _ccStreamAbort) {
-          console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
-          _ccStreamAbort();
+        if (!_ccStreamEnded) {
+          _releaseCCTab(tabId);
+          if (_ccStreamAbort) {
+            console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
+            _ccStreamAbort();
+          }
         }
       });
 
@@ -3525,12 +3557,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
         });
         _ccStreamAbort = llmPromise.abort;
+        ccInFlightAborts.set(tabId, _ccStreamAbort);
         const result = await llmPromise;
         trackUsage('command-center', result.usage);
 
         // Handle failure — non-zero exit with text = max_turns or partial success, still usable
-        if (!result.text && wasResume && result.code !== 0) {
-          // Resume failed (stale/expired session) — auto-retry as fresh session
+        if (!result.text && wasResume && result.code !== 0 && !req.destroyed) {
+          // Resume failed (stale/expired session) — auto-retry as fresh session (skip if client already disconnected)
           console.log(`[CC-stream] Resume failed (code=${result.code}) — retrying fresh`);
           const freshPreamble = buildCCStatePreamble();
           const freshPrompt = (freshPreamble ? freshPreamble + '\n\n---\n\n' : '') + body.message;
@@ -3548,6 +3581,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             }
           });
           _ccStreamAbort = retryPromise.abort;
+          ccInFlightAborts.set(tabId, _ccStreamAbort);
           const retryResult = await retryPromise;
           trackUsage('command-center', retryResult.usage);
           if (retryResult.text) {
@@ -3556,6 +3590,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           }
         }
         if (!result.text) {
+          if (req.destroyed) { _ccStreamEnded = true; return; } // client already gone — nothing to send
           const debugInfo = result.code !== 0 ? `(exit code ${result.code})` : '(empty response)';
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
@@ -3569,11 +3604,11 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         // Persist tab→session mapping (no global ccSession mutation)
         const now = Date.now();
         const responseSessionId = result.sessionId || tabSessionId;
-        const tabId = body.tabId;
-        if (tabId && responseSessionId) {
+        const _persistTabId = body.tabId;
+        if (_persistTabId && responseSessionId) {
           try {
             const sessions = shared.safeJsonArr(CC_SESSIONS_PATH);
-            const existing = sessions.find(s => s.id === tabId);
+            const existing = sessions.find(s => s.id === _persistTabId);
             const preview = (body.message || '').slice(0, 80);
             if (existing) {
               existing.sessionId = responseSessionId;
@@ -3582,7 +3617,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
               existing.preview = preview;
               existing._promptHash = _ccPromptHash;
             } else {
-              sessions.push({ id: tabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
+              sessions.push({ id: _persistTabId, title: (body.message || 'New chat').slice(0, 40), sessionId: responseSessionId, createdAt: new Date(now).toISOString(), lastActiveAt: new Date(now).toISOString(), turnCount: 1, preview, _promptHash: _ccPromptHash });
             }
             safeWrite(CC_SESSIONS_PATH, sessions);
           } catch { /* non-critical */ }
@@ -3606,10 +3641,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         _ccStreamEnded = true; res.end();
       } finally {
-        ccInFlightTabs.delete(tabId);
+        _releaseCCTab(tabId);
       }
     } catch (e) {
-      ccInFlightTabs.delete(tabId);
+      _releaseCCTab(tabId);
       try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
       _ccStreamEnded = true; try { res.end(); } catch {}
     }
