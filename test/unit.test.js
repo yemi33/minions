@@ -9371,6 +9371,9 @@ async function main() {
     // #998: ADO token injection into spawned agents
     await testAdoTokenInjection();
 
+    // W-mnxu9bvzkc5p: Doc-chat badge visibility on Notes/KB items
+    await testDocChatBadgeVisibility();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -16838,4 +16841,47 @@ async function testAdoTokenInjection() {
   });
 }
 
+// ─── W-mnxu9bvzkc5p: Doc-chat badge visibility on Notes/KB items ─────────────
+
+async function testDocChatBadgeVisibility() {
+  console.log('\n── Doc-chat badge visibility on Notes/KB ──');
+
+  const inboxSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-inbox.js'), 'utf8');
+  const stylesSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'styles.css'), 'utf8');
+
+  // ── Team Notes must have data-file attribute for badge targeting ──
+
+  await test('renderNotes output includes data-file="notes.md" on .notes-preview', () => {
+    const renderFn = inboxSrc.slice(inboxSrc.indexOf('function renderNotes'));
+    assert.ok(renderFn.includes('data-file="notes.md"'),
+      'notes-preview must have data-file="notes.md" so findCardForFile can target it for badges');
+  });
+
+  // ── Scroll containers must accommodate badge overflow ──
+
+  await test('.kb-list rule has padding to prevent badge clipping by overflow-y:auto', () => {
+    // Extract just the .kb-list CSS rule (single line in this stylesheet)
+    const kbListStart = stylesSrc.indexOf('.kb-list {');
+    const kbListEnd = stylesSrc.indexOf('}', kbListStart) + 1;
+    const kbListRule = stylesSrc.slice(kbListStart, kbListEnd);
+    assert.ok(kbListRule.includes('padding'),
+      '.kb-list { } rule must include padding to accommodate notif-badge overflow (badge uses top:-5px right:-5px)');
+  });
+
+  await test('.inbox-list rule has padding to prevent badge clipping by overflow-y:auto', () => {
+    // Extract just the .inbox-list CSS rule (single line in this stylesheet)
+    const inboxListStart = stylesSrc.indexOf('.inbox-list {');
+    const inboxListEnd = stylesSrc.indexOf('}', inboxListStart) + 1;
+    const inboxListRule = stylesSrc.slice(inboxListStart, inboxListEnd);
+    assert.ok(inboxListRule.includes('padding'),
+      '.inbox-list { } rule must include padding to accommodate notif-badge overflow');
+  });
+
+  // ── Notes preview badge position override ──
+
+  await test('.notes-preview .notif-badge has position override to avoid self-clipping', () => {
+    assert.ok(stylesSrc.includes('.notes-preview > .notif-badge'),
+      'Must have CSS rule .notes-preview > .notif-badge for badge position override (notes-preview has overflow-y:auto)');
+  });
+}
 main().catch(e => { console.error(e); process.exit(1); });

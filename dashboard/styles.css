@@ -150,7 +150,7 @@
   .kb-tab:hover { color: var(--text); border-color: var(--text); }
   .kb-tab.active { color: var(--blue); border-color: var(--blue); background: rgba(88,166,255,0.08); }
   .kb-tab .badge { background: var(--border); color: var(--text); font-size: var(--text-xs); padding: 0 5px; border-radius: var(--radius-lg); margin-left: var(--space-2); }
-  .kb-list { max-height: 400px; overflow-y: auto; }
+  .kb-list { max-height: 400px; overflow-y: auto; padding: var(--space-3) var(--space-4) 0 0; }
   .kb-item { display: flex; align-items: flex-start; gap: var(--space-5); padding: var(--space-4) 0; border-bottom: 1px solid var(--border); cursor: pointer; transition: background var(--transition-fast); }
   .kb-item:hover { background: var(--surface2); }
   .kb-item:last-child { border-bottom: none; }
@@ -164,7 +164,7 @@
   .agent-emoji { font-size: var(--text-stat); margin-right: var(--space-2); }
   .click-hint { font-size: var(--text-sm); color: var(--border); margin-top: var(--space-3); }
 
-  .inbox-list { display: flex; flex-direction: column; gap: var(--space-4); max-height: 320px; overflow-y: auto; }
+  .inbox-list { display: flex; flex-direction: column; gap: var(--space-4); max-height: 320px; overflow-y: auto; padding: var(--space-3) var(--space-4) 0 0; }
 
   /* PRD Progress */
   .prd-progress-bar { width: 100%; height: 20px; background: var(--bg); border-radius: var(--radius-xl); overflow: hidden; display: flex; margin-bottom: var(--space-6); border: 1px solid var(--border); }
@@ -226,6 +226,7 @@
 
   .notes-preview { max-height: 400px; overflow-y: auto; font-size: var(--text-md); line-height: 1.6; color: var(--muted); font-family: 'Segoe UI', system-ui, sans-serif; white-space: normal; word-wrap: break-word; background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-6) var(--space-7); cursor: pointer; transition: border-color var(--transition-base); }
   .notes-preview:hover { border-color: var(--blue); }
+  .notes-preview > .notif-badge { top: var(--space-2); right: var(--space-4); }
   .inbox-item { background: var(--surface2); border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: var(--radius-sm); padding: var(--space-5) var(--space-6); cursor: pointer; }
   .inbox-item:hover { border-color: var(--blue); border-left-color: var(--blue); }
   .item-pinned { border-left-color: var(--yellow); background: rgba(210, 153, 34, 0.05); }

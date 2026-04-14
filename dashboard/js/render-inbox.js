@@ -86,8 +86,9 @@ function renderNotes(notes) {
   }
 
   if (!content || !content.trim()) { el.innerHTML = '<p class="empty">No team notes yet.</p>'; return; }
-  el.innerHTML = '<div class="notes-preview" onclick="openNotesModal()" title="Click to expand">' + renderMd(content) + '</div>';
+  el.innerHTML = '<div class="notes-preview" data-file="notes.md" onclick="openNotesModal()" title="Click to expand">' + renderMd(content) + '</div>';
   el.querySelector('.notes-preview')._rawContent = content;
+  restoreNotifBadges();
 }
 
 function openNotesModal() {
