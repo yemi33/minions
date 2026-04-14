@@ -148,7 +148,11 @@ function ccSwitchTab(id) {
       var tools = tab._toolsUsed || [];
       if (tools.length > 0) {
         html += '<div style="margin-bottom:6px">';
-        tools.forEach(function(t) { html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + '</div>'; });
+        tools.forEach(function(t) {
+          var name = typeof t === 'string' ? t : t.name;
+          var input = typeof t === 'string' ? {} : (t.input || {});
+          html += '<div style="color:var(--muted);font-size:10px;font-family:monospace"><span style="flex-shrink:0">&#9679;</span> ' + formatToolSummary(name, input) + '</div>';
+        });
         html += '</div>';
       }
       var text = tab._streamedText || '';
@@ -512,7 +516,9 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
       if (toolsUsed.length > 0) {
         html += '<div style="margin-bottom:6px">';
         toolsUsed.forEach(function(t) {
-          html += '<div style="color:var(--blue);font-size:11px">\uD83D\uDD27 ' + escHtml(t) + '</div>';
+          var name = typeof t === 'string' ? t : t.name;
+          var input = typeof t === 'string' ? {} : (t.input || {});
+          html += '<div style="color:var(--muted);font-size:10px;font-family:monospace"><span style="flex-shrink:0">&#9679;</span> ' + formatToolSummary(name, input) + '</div>';
         });
         html += '</div>';
       }
@@ -572,7 +578,7 @@ async function _ccDoSend(message, skipUserMsg, forceTabId) {
             if (activeTab) activeTab._streamedText = streamedText;
             updateStreamDiv();
           } else if (evt.type === 'tool') {
-            toolsUsed.push(evt.name);
+            toolsUsed.push({ name: evt.name, input: evt.input || {} });
             if (activeTab) activeTab._toolsUsed = toolsUsed.slice();
             updateStreamDiv();
             if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 150) msgs.scrollTop = msgs.scrollHeight;
