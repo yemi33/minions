@@ -3761,7 +3761,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           config.engine.maxTurnsByType = mbt;
         }
         // Boolean fields
-        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents', 'autoArchive']) {
+        for (const key of ['autoApprovePlans', 'evalLoop', 'autoDecompose', 'allowTempAgents', 'autoArchive', 'adoPollEnabled', 'ghPollEnabled']) {
           if (e[key] !== undefined) config.engine[key] = !!e[key];
         }
         // Eval loop settings
