@@ -4525,6 +4525,17 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+  await test('needsReReview requires fixedAfterReview only — no broad !alreadyReviewed fallback', () => {
+    // The old condition had: (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt))
+    // The fallback (!alreadyReviewed && !!fixedAt) caused infinite re-review loops on GitHub
+    // because reviewStatus stays 'waiting' (self-approval blocked) and any push after review
+    // makes alreadyReviewed=false while fixedAt remains set. Fix: use fixedAfterReview only.
+    assert.ok(!src.includes('!alreadyReviewed && !!pr.minionsReview?.fixedAt'),
+      'needsReReview must NOT have the broad !alreadyReviewed fallback — it causes infinite re-review loops');
+    assert.ok(src.includes('fixedAfterReview && !evalEscalated'),
+      'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────

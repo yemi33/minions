@@ -1984,11 +1984,12 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); }
     }
 
-    // Re-review after fix: fall back to fixedAt > lastReviewedAt when lastPushedAt lags poller
+    // Re-review after fix: only trigger when fixedAt > lastReviewedAt (not a broad !alreadyReviewed
+    // fallback — that caused infinite re-review loops on GitHub where self-approval is blocked)
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       pr.lastReviewedAt && pr.minionsReview.fixedAt > pr.lastReviewedAt);
     const needsReReview = autoReview && reviewStatus === 'waiting' &&
-      (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt)) && !evalEscalated;
+      fixedAfterReview && !evalEscalated;
     if (needsReReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       // Skip isAlreadyDispatched — fixedAfterReview/alreadyReviewed already dedup; the 1hr
