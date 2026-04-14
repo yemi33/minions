@@ -1491,7 +1491,7 @@ const server = http.createServer(async (req, res) => {
         if (!Array.isArray(items)) items = [];
         const existing = items.find(i =>
           i.title === item.title &&
-          (i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED)
+          (i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED || i.status === WI_STATUS.QUEUED)
         );
         if (existing) { dupId = existing.id; return items; }
         items.push(item);

@@ -11613,8 +11613,8 @@ async function testDashboardAuditMedium() {
     const createFn = src.slice(src.indexOf('async function handleWorkItemsCreate'), src.indexOf('async function handleWorkItemsUpdate'));
     assert.ok(createFn.includes('i.title === item.title'),
       'create must check for existing item with same title');
-    assert.ok(createFn.includes("i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED"),
-      'dedup must only block pending or dispatched items');
+    assert.ok(createFn.includes('WI_STATUS.PENDING') && createFn.includes('WI_STATUS.DISPATCHED') && createFn.includes('WI_STATUS.QUEUED'),
+      'dedup must block pending, dispatched, and queued items');
     assert.ok(createFn.includes('dupId = existing.id'),
       'must capture existing id on duplicate');
     assert.ok(createFn.includes('duplicate: true'),
