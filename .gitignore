@@ -18,6 +18,7 @@ engine/kb-checkpoint.json
 engine/pipeline-runs.json
 engine/pr-links.json
 engine/kb-swept.json
+engine/watches.json
 # All transient temp files (prompts, pids, logs) go in engine/tmp/
 engine/tmp/
 # Backup/lock files from safeWrite atomic writes

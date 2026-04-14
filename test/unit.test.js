@@ -19128,37 +19128,48 @@ async function testWatchesModule() {
     } finally { restore(); }
   });
 
-  await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+  await test('stopAfter: 0 never expires change-based watches (runs forever)', () => {
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (change-based) — unlimited makes sense for transitions
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
         stopAfter: 0,   // run forever
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
-      // Trigger multiple times by resetting last_checked between checks
-      testWatches.checkWatches({}, state);
-      // Force last_checked back so interval doesn't block next check
-      const watchesData = testWatches.getWatches();
-      const found = watchesData.find(x => x.id === w.id);
-      assert.strictEqual(found.triggerCount, 1);
-      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
-      // Manually reset last_checked to force another check
-      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const afterInit = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(afterInit.triggerCount, 0, 'First check should init baseline');
+      // Force last_checked back for second check
       shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      testWatches.checkWatches({}, state);
+      // Second check with changed status — triggers
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep change-based watch active after trigger');
+      // Force last_checked back again
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Third check with another status change — triggers again
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for change-based conditions');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
@@ -19264,28 +19275,39 @@ async function testWatchesModule() {
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (change-based condition) — runs forever with stopAfter=0
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
-      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
-      testWatches.checkWatches({}, state);
-      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
-      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
-      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for second trigger
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      // Force last_checked back for second check
       shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Second trigger — key is `watch-${watch.id}-2`, different from first
-      testWatches.checkWatches({}, state);
+      // Second check — status changed → triggers, key is `watch-${watch.id}-1`
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+      // Force last_checked back for third check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Third check — status changed again → triggers, key is `watch-${watch.id}-2`
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
@@ -19310,12 +19332,151 @@ async function testWatchesModule() {
       'render-watches.js _WATCH_TARGET_LABELS should not include branch');
   });
 
-  await test('WATCHES_PATH points to engine/watches.json', () => {
-    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
+  await test('_watchesPath returns dynamic path respecting MINIONS_TEST_DIR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const watchPath = testWatches._watchesPath();
+      // Normalize both to forward slashes for cross-platform comparison
+      const normalizedPath = watchPath.replace(/\\/g, '/');
+      const normalizedTestDir = process.env.MINIONS_TEST_DIR.replace(/\\/g, '/');
+      assert.ok(normalizedPath.includes(normalizedTestDir),
+        `_watchesPath should use MINIONS_TEST_DIR when set (got: ${normalizedPath}, expected to contain: ${normalizedTestDir})`);
+      assert.ok(watchPath.endsWith(path.join('engine', 'watches.json')),
+        '_watchesPath should end with engine/watches.json');
+    } finally { restore(); }
+  });
+
+  await test('WATCHES_PATH static export was removed (MINIONS_TEST_DIR-unsafe)', () => {
+    assert.strictEqual(watches.WATCHES_PATH, undefined,
+      'WATCHES_PATH static export should be removed — it does not respect MINIONS_TEST_DIR');
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
     assert.strictEqual(watches.DEFAULT_WATCH_INTERVAL, 300000);
+  });
+
+  // ── Review fix: absolute conditions auto-expire ──────────────────────────
+
+  await test('WATCH_ABSOLUTE_CONDITIONS is defined in shared.js', () => {
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS instanceof Set,
+      'WATCH_ABSOLUTE_CONDITIONS should be a Set');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('merged'), 'should include merged');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-fail'), 'should include build-fail');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-pass'), 'should include build-pass');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('completed'), 'should include completed');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('failed'), 'should include failed');
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('status-change'), 'should NOT include status-change');
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('any'), 'should NOT include any');
+  });
+
+  await test('absolute condition (merged) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '950',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 0,   // default — for absolute conditions, should auto-expire after first trigger
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 950, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Should trigger once');
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'Absolute condition with stopAfter=0 should auto-expire after first trigger');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition (build-fail) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '951',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.BUILD_FAIL,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 951, status: 'active', buildStatus: 'failing' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'build-fail with stopAfter=0 should auto-expire');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition (completed WI) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'W-exp',
+        targetType: shared.WATCH_TARGET_TYPE.WORK_ITEM,
+        condition: shared.WATCH_CONDITION.COMPLETED,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [], workItems: [{ id: 'W-exp', status: 'done' }] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'completed (absolute) with stopAfter=0 should auto-expire');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition with explicit stopAfter > 1 respects the limit', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '952',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 3,   // explicit — user wants 3 triggers before expiry
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 952, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.ACTIVE,
+        'Explicit stopAfter=3 should NOT auto-expire after first trigger');
+    } finally { restore(); }
+  });
+
+  // ── Review fix: writeToInbox outside lock ──────────────────────────────
+
+  await test('checkWatches fires writeToInbox outside the lock callback', () => {
+    // Verify by reading the source — writeToInbox calls should be AFTER mutateJsonFileLocked
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'watches.js'), 'utf8');
+    // Find the checkWatches function
+    const fnStart = src.indexOf('function checkWatches(');
+    assert.ok(fnStart > -1, 'checkWatches must exist');
+    const fnBody = src.slice(fnStart, fnStart + 5000);
+    // mutateJsonFileLocked callback should NOT contain writeToInbox
+    const lockStart = fnBody.indexOf('mutateJsonFileLocked(');
+    const lockEnd = fnBody.indexOf('}, { defaultValue: [] });');
+    assert.ok(lockStart > -1 && lockEnd > -1, 'Should find lock boundaries');
+    const lockBody = fnBody.slice(lockStart, lockEnd);
+    assert.ok(!lockBody.includes('writeToInbox('),
+      'writeToInbox must NOT be called inside mutateJsonFileLocked callback — fire after lock is released');
+    // writeToInbox should appear after the lock block
+    const afterLock = fnBody.slice(lockEnd);
+    assert.ok(afterLock.includes('writeToInbox('),
+      'writeToInbox should be called after mutateJsonFileLocked returns');
   });
 }
 

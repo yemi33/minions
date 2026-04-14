@@ -11,12 +11,10 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
-// Static export for backward-compat consumers
-const WATCHES_PATH = path.join(__dirname, 'watches.json');
 
 // Default check interval: 5 minutes (300000ms). Engine tick runs every 60s,
 // so watches are checked every N ticks where N = ceil(interval / tickInterval).
@@ -199,6 +197,8 @@ function evaluateWatch(watch, state) {
  */
 function checkWatches(config, state) {
   const now = Date.now();
+  // Collect notifications to fire AFTER lock is released — never do I/O inside the lock callback
+  const notifications = [];
 
   mutateJsonFileLocked(_watchesPath(), (watches) => {
     if (!Array.isArray(watches) || watches.length === 0) return watches;
@@ -227,22 +227,33 @@ function checkWatches(config, state) {
           watch.last_triggered = ts();
           watch._lastTriggerMessage = result.message;
 
-          // Fire trigger notification — unique key per trigger to avoid overwriting previous messages
+          // Queue trigger notification — unique key per trigger to avoid overwriting previous messages
           if (watch.notify === 'inbox' && watch.owner) {
-            writeToInbox(watch.owner, `watch-${watch.id}-${watch.triggerCount}`,
-              `## Watch Triggered: ${watch.description}\n\n${result.message}\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Condition: ${watch.condition}`);
+            notifications.push({
+              type: 'trigger', owner: watch.owner,
+              slug: `watch-${watch.id}-${watch.triggerCount}`,
+              body: `## Watch Triggered: ${watch.description}\n\n${result.message}\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Condition: ${watch.condition}`,
+            });
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Expire once stopAfter limit is reached (0 = never expire automatically)
+          // Expire: absolute conditions auto-expire when stopAfter is 0 (fire-once semantics),
+          // change-based conditions (status-change, any) respect stopAfter literally (0 = run forever).
+          const isAbsolute = WATCH_ABSOLUTE_CONDITIONS.has(watch.condition);
           if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
             watch.status = WATCH_STATUS.EXPIRED;
             log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
+          } else if (isAbsolute && watch.stopAfter === 0) {
+            watch.status = WATCH_STATUS.EXPIRED;
+            log('info', `Watch expired (absolute condition auto-expire): ${watch.id}`);
           }
         } else if (watch.onNotMet === 'notify' && watch.owner) {
-          // Per-poll action when condition is not yet met — unique key per poll
-          writeToInbox(watch.owner, `watch-poll-${watch.id}-${Date.now()}`,
-            `## Watch Polling: ${watch.description}\n\nCondition not yet met (${watch.condition}) — still watching.\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Checks so far: ${watch.triggerCount || 0}`);
+          // Queue per-poll notification when condition is not yet met — unique key per poll
+          notifications.push({
+            type: 'poll', owner: watch.owner,
+            slug: `watch-poll-${watch.id}-${Date.now()}`,
+            body: `## Watch Polling: ${watch.description}\n\nCondition not yet met (${watch.condition}) — still watching.\n\nWatch ID: ${watch.id} | Target: ${watch.target} | Checks so far: ${watch.triggerCount || 0}`,
+          });
         }
 
         // Capture state for change detection on next check
@@ -254,6 +265,15 @@ function checkWatches(config, state) {
 
     return watches;
   }, { defaultValue: [] });
+
+  // Fire notifications outside the lock — writeToInbox does disk I/O
+  for (const n of notifications) {
+    try {
+      writeToInbox(n.owner, n.slug, n.body);
+    } catch (err) {
+      log('warn', `Watch notification error: ${err.message}`);
+    }
+  }
 }
 
 /**
@@ -274,7 +294,6 @@ function _captureState(watch, state) {
 }
 
 module.exports = {
-  WATCHES_PATH,
   DEFAULT_WATCH_INTERVAL,
   getWatches,
   createWatch,
@@ -283,4 +302,5 @@ module.exports = {
   evaluateWatch,
   checkWatches,
   _captureState,  // exported for testing
+  _watchesPath,   // exported for testing — dynamic, respects MINIONS_TEST_DIR
 };
