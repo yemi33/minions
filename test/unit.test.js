@@ -11646,11 +11646,16 @@ async function testEngineAuditCritical() {
       'discoverPipelineWork must be async to use await');
   });
 
-  await test('engine.js handles async discoverPipelineWork', () => {
+  await test('engine.js awaits discoverPipelineWork inside try-catch (not fire-and-forget)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
-    assert.ok(src.includes('discoverPipelineWork(config)'), 'must call discoverPipelineWork');
-    assert.ok(src.includes('.catch(') || src.includes('await discoverPipelineWork'),
-      'must handle the async result (await or .catch)');
+    const pipelineBlock = src.slice(
+      src.indexOf('Pipeline orchestration'),
+      src.indexOf('Periodic plan completion sweep')
+    );
+    assert.ok(pipelineBlock.includes('await discoverPipelineWork(config)'),
+      'discoverPipelineWork must be awaited');
+    assert.ok(!pipelineBlock.includes('.catch('),
+      'must not use fire-and-forget .catch() — outer try-catch handles errors');
   });
 
   await test('render-pipelines.js has _renderMonitoredResources function', () => {
