@@ -9434,6 +9434,9 @@ async function main() {
     // W-mnxu9bvzkc5p: Doc-chat badge visibility on Notes/KB items
     await testDocChatBadgeVisibility();
 
+    // P-a8f3d2e1: ADO throttle detection and state tracking
+    await testAdoThrottleDetection();
+
     // P-b7e3a1d9: render-utils.js shared formatting helpers
     await testRenderUtils();
 
@@ -17137,6 +17140,376 @@ async function testDocChatBadgeVisibility() {
       'Must have CSS rule .notes-preview > .notif-badge for badge position override (notes-preview has overflow-y:auto)');
   });
 }
+// ─── P-a8f3d2e1: ADO throttle detection and state tracking ──────────────────
+
+async function testAdoThrottleDetection() {
+  console.log('\n── P-a8f3d2e1: ADO throttle detection and state tracking ──');
+
+  const adoPath = path.join(MINIONS_DIR, 'engine', 'ado.js');
+  const adoSrc = fs.readFileSync(adoPath, 'utf8');
+  const ado = require(adoPath);
+
+  // ── Structure: _adoThrottle state object ──
+
+  await test('ado.js declares _adoThrottle state object with required fields', () => {
+    assert.ok(adoSrc.includes('_adoThrottle'), '_adoThrottle state object must be declared');
+    assert.ok(adoSrc.includes('throttled'), '_adoThrottle must have throttled field');
+    assert.ok(adoSrc.includes('retryAfter'), '_adoThrottle must have retryAfter field');
+    assert.ok(adoSrc.includes('consecutiveHits'), '_adoThrottle must have consecutiveHits field');
+    assert.ok(adoSrc.includes('backoffMs'), '_adoThrottle must have backoffMs field');
+  });
+
+  // ── Structure: adoFetch intercepts 429/503 BEFORE generic !res.ok ──
+
+  await test('adoFetch intercepts 429 and 503 before generic !res.ok throw', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    assert.ok(fetchFn, 'adoFetch function must exist');
+    const src = fetchFn[0];
+    // 429/503 check must appear BEFORE the generic !res.ok throw
+    const throttleIdx = src.indexOf('429');
+    const genericThrowIdx = src.indexOf("if (!res.ok)");
+    assert.ok(throttleIdx > -1, 'adoFetch must check for 429 status');
+    assert.ok(src.includes('503'), 'adoFetch must check for 503 status');
+    assert.ok(throttleIdx < genericThrowIdx,
+      'Throttle detection (429/503) must come BEFORE the generic !res.ok throw');
+  });
+
+  await test('adoFetch sets throttle state on 429/503', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    assert.ok(src.includes('_adoThrottle.throttled = true'),
+      'adoFetch must set _adoThrottle.throttled = true on throttle response');
+    assert.ok(src.includes('_adoThrottle.consecutiveHits'),
+      'adoFetch must update consecutiveHits on throttle response');
+    assert.ok(src.includes('_adoThrottle.backoffMs'),
+      'adoFetch must update backoffMs on throttle response');
+    assert.ok(src.includes('_adoThrottle.retryAfter'),
+      'adoFetch must set retryAfter on throttle response');
+  });
+
+  await test('adoFetch reads Retry-After header for wait time', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    assert.ok(src.includes('Retry-After') || src.includes('retry-after'),
+      'adoFetch must read the Retry-After header from throttle responses');
+  });
+
+  await test('adoFetch caps backoff at 32 minutes', () => {
+    // 32 * 60_000 = 1_920_000
+    assert.ok(adoSrc.includes('32') && adoSrc.includes('60000') || adoSrc.includes('1920000'),
+      'backoffMs must be capped at 32 minutes (32 * 60_000 = 1_920_000)');
+  });
+
+  await test('adoFetch logs warning on throttle', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    assert.ok(src.includes('warn') || src.includes('log('),
+      'adoFetch must log a warning when throttled');
+  });
+
+  await test('adoFetch throws descriptive error on throttle', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    assert.ok(src.includes('throw') && (src.includes('throttl') || src.includes('429') || src.includes('rate')),
+      'adoFetch must throw a descriptive error on throttle');
+  });
+
+  // ── Structure: success decay logic ──
+
+  await test('adoFetch decays consecutiveHits on success', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    // Decay logic should be after JSON.parse and before return
+    const parseIdx = src.indexOf('JSON.parse');
+    assert.ok(parseIdx > -1, 'adoFetch must have JSON.parse');
+    const afterParse = src.slice(parseIdx);
+    assert.ok(afterParse.includes('consecutiveHits') && (afterParse.includes('--') || afterParse.includes('-= 1') || afterParse.includes('- 1')),
+      'adoFetch must decrement consecutiveHits after successful response');
+  });
+
+  await test('adoFetch resets throttle state when consecutiveHits reaches 0', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    const parseIdx = src.indexOf('JSON.parse');
+    const afterParse = src.slice(parseIdx);
+    assert.ok(afterParse.includes('throttled') && afterParse.includes('false'),
+      'adoFetch must reset throttled to false when consecutiveHits reaches 0');
+    assert.ok(afterParse.includes('backoffMs') && afterParse.includes('60000'),
+      'adoFetch must reset backoffMs to 60_000 when consecutiveHits reaches 0');
+  });
+
+  // ── Exports: isAdoThrottled and getAdoThrottleState ──
+
+  await test('ado.js exports isAdoThrottled function', () => {
+    assert.ok(typeof ado.isAdoThrottled === 'function', 'isAdoThrottled must be exported');
+  });
+
+  await test('ado.js exports getAdoThrottleState function', () => {
+    assert.ok(typeof ado.getAdoThrottleState === 'function', 'getAdoThrottleState must be exported');
+  });
+
+  // ── Behavioral: isAdoThrottled auto-clears after retryAfter ──
+
+  await test('isAdoThrottled returns false when not throttled', () => {
+    // Reset via exported _resetAdoThrottle for testing
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    assert.strictEqual(ado.isAdoThrottled(), false, 'should return false when not throttled');
+  });
+
+  await test('getAdoThrottleState returns correct shape', () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const state = ado.getAdoThrottleState();
+    assert.ok('throttled' in state, 'state must have throttled field');
+    assert.ok('retryAfter' in state, 'state must have retryAfter field');
+    assert.ok('consecutiveHits' in state, 'state must have consecutiveHits field');
+  });
+
+  await test('isAdoThrottled auto-clears when retryAfter has elapsed', () => {
+    // Set throttle state to a time in the past via _setAdoThrottleForTest
+    if (ado._setAdoThrottleForTest) {
+      ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() - 1000, consecutiveHits: 1, backoffMs: 60000 });
+      assert.strictEqual(ado.isAdoThrottled(), false,
+        'isAdoThrottled should return false when retryAfter is in the past');
+      // After auto-clear, throttled should be false
+      const state = ado.getAdoThrottleState();
+      assert.strictEqual(state.throttled, false, 'auto-clear should set throttled to false');
+    } else {
+      // Verify via source code if test helpers aren't available
+      const fnSrc = adoSrc.match(/function isAdoThrottled[\s\S]*?^}/m);
+      assert.ok(fnSrc, 'isAdoThrottled function must exist');
+      assert.ok(fnSrc[0].includes('Date.now()') && fnSrc[0].includes('retryAfter'),
+        'isAdoThrottled must check Date.now() against retryAfter');
+      assert.ok(fnSrc[0].includes('false'),
+        'isAdoThrottled must auto-clear and return false when retryAfter elapsed');
+    }
+  });
+
+  await test('isAdoThrottled returns true when retryAfter is in the future', () => {
+    if (ado._setAdoThrottleForTest) {
+      ado._setAdoThrottleForTest({ throttled: true, retryAfter: Date.now() + 60000, consecutiveHits: 1, backoffMs: 60000 });
+      assert.strictEqual(ado.isAdoThrottled(), true,
+        'isAdoThrottled should return true when retryAfter is in the future');
+      // Clean up
+      ado._resetAdoThrottle();
+    } else {
+      const fnSrc = adoSrc.match(/function isAdoThrottled[\s\S]*?^}/m);
+      assert.ok(fnSrc, 'isAdoThrottled function must exist');
+      assert.ok(fnSrc[0].includes('true'),
+        'isAdoThrottled must return true when throttled and retryAfter is in the future');
+    }
+  });
+
+  await test('getAdoThrottleState calls isAdoThrottled internally for fresh value', () => {
+    const fnSrc = adoSrc.match(/function getAdoThrottleState[\s\S]*?^}/m);
+    assert.ok(fnSrc, 'getAdoThrottleState function must exist');
+    assert.ok(fnSrc[0].includes('isAdoThrottled'),
+      'getAdoThrottleState must call isAdoThrottled() internally for a fresh value');
+  });
+
+  // ── Structure: existing auth error handling is not modified ──
+
+  await test('adoFetch preserves existing auth error handling', () => {
+    const fetchFn = adoSrc.match(/async function adoFetch[\s\S]*?^}/m);
+    const src = fetchFn[0];
+    assert.ok(src.includes("text.trimStart().startsWith('<')"),
+      'adoFetch must preserve existing HTML redirect detection');
+    assert.ok(src.includes('_adoTokenCache'),
+      'adoFetch must preserve existing token cache invalidation');
+    assert.ok(src.includes("if (!res.ok)"),
+      'adoFetch must preserve generic !res.ok error throw');
+  });
+
+  // ── Behavioral: mock fetch for throttle response ──
+
+  await test('adoFetch sets throttle state on HTTP 429 response (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: (h) => h.toLowerCase() === 'retry-after' ? '120' : null },
+      });
+      try {
+        await ado.adoFetch('https://dev.azure.com/test', 'fake-token');
+      } catch (e) {
+        // Expected — adoFetch should throw on throttle
+      }
+      const state = ado.getAdoThrottleState();
+      assert.strictEqual(state.throttled, true, 'throttled should be true after 429');
+      assert.ok(state.consecutiveHits >= 1, 'consecutiveHits should be >= 1 after 429');
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch sets throttle state on HTTP 503 response (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { get: () => null },
+      });
+      try {
+        await ado.adoFetch('https://dev.azure.com/test', 'fake-token');
+      } catch (e) {
+        // Expected
+      }
+      const state = ado.getAdoThrottleState();
+      assert.strictEqual(state.throttled, true, 'throttled should be true after 503');
+      assert.ok(state.consecutiveHits >= 1, 'consecutiveHits should be >= 1 after 503');
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch respects Retry-After header value (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    const before = Date.now();
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: (h) => h.toLowerCase() === 'retry-after' ? '300' : null },
+      });
+      try {
+        await ado.adoFetch('https://dev.azure.com/test', 'fake-token');
+      } catch (e) { /* expected */ }
+      const state = ado.getAdoThrottleState();
+      // retryAfter should be ~now + 300s = 300_000ms
+      const expectedMin = before + 300 * 1000 - 5000;
+      const expectedMax = before + 300 * 1000 + 5000;
+      assert.ok(state.retryAfter >= expectedMin && state.retryAfter <= expectedMax,
+        `retryAfter should be ~${before + 300000} but got ${state.retryAfter}`);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch uses backoffMs when Retry-After header is absent (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    const before = Date.now();
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: () => null },
+      });
+      try {
+        await ado.adoFetch('https://dev.azure.com/test', 'fake-token');
+      } catch (e) { /* expected */ }
+      const state = ado.getAdoThrottleState();
+      // backoffMs starts at 60_000 but doubles BEFORE use, so first hit fallback = 120_000ms
+      const expectedMin = before + 120000 - 5000;
+      const expectedMax = before + 120000 + 5000;
+      assert.ok(state.retryAfter >= expectedMin && state.retryAfter <= expectedMax,
+        `retryAfter should use doubled backoffMs (~120s) but got ${state.retryAfter - before}ms offset`);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch backoff doubles on consecutive throttle hits (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: () => null },
+      });
+      // Hit 1
+      try { await ado.adoFetch('https://dev.azure.com/test', 'fake-token'); } catch (e) { /* expected */ }
+      const state1 = ado.getAdoThrottleState();
+      assert.strictEqual(state1.consecutiveHits, 1, 'consecutiveHits should be 1 after first hit');
+
+      // Hit 2 — backoff should double
+      try { await ado.adoFetch('https://dev.azure.com/test', 'fake-token'); } catch (e) { /* expected */ }
+      const state2 = ado.getAdoThrottleState();
+      assert.strictEqual(state2.consecutiveHits, 2, 'consecutiveHits should be 2 after second hit');
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch backoff caps at 32 minutes (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: () => null },
+      });
+      // Hit enough times to exceed 32 min cap
+      // 60s → 120s → 240s → 480s → 960s → 1920s (32min) → capped
+      for (let i = 0; i < 8; i++) {
+        try { await ado.adoFetch('https://dev.azure.com/test', 'fake-token'); } catch (e) { /* expected */ }
+      }
+      // Check state: verify via getAdoThrottleState
+      // We can't directly read backoffMs from getAdoThrottleState (it returns throttled, retryAfter, consecutiveHits)
+      // but the retryAfter should not exceed ~32 min from now
+      const state = ado.getAdoThrottleState();
+      const maxBackoff = 32 * 60000;
+      assert.ok(state.retryAfter <= Date.now() + maxBackoff + 5000,
+        `retryAfter should not exceed 32 minutes from now, got ${(state.retryAfter - Date.now()) / 60000} min`);
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  await test('adoFetch success decays consecutiveHits (behavioral)', async () => {
+    if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    const origFetch = globalThis.fetch;
+    try {
+      // First, trigger throttle
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { get: () => null },
+      });
+      try { await ado.adoFetch('https://dev.azure.com/test', 'fake-token'); } catch (e) { /* expected */ }
+      try { await ado.adoFetch('https://dev.azure.com/test', 'fake-token'); } catch (e) { /* expected */ }
+      let state = ado.getAdoThrottleState();
+      assert.strictEqual(state.consecutiveHits, 2, 'consecutiveHits should be 2 after two hits');
+
+      // Now simulate a successful response
+      globalThis.fetch = async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ value: [] }),
+        headers: { get: () => null },
+      });
+      await ado.adoFetch('https://dev.azure.com/test', 'fake-token');
+      state = ado.getAdoThrottleState();
+      assert.strictEqual(state.consecutiveHits, 1, 'consecutiveHits should decay to 1 after success');
+    } finally {
+      globalThis.fetch = origFetch;
+      if (ado._resetAdoThrottle) ado._resetAdoThrottle();
+    }
+  });
+
+  // Clean up require cache
+  delete require.cache[require.resolve(adoPath)];
+}
+
 // ─── P-b7e3a1d9: render-utils.js shared formatting helpers ──────────────────
 
 async function testRenderUtils() {

@@ -47,6 +47,13 @@ function votesToReviewStatus(votes) {
 let _adoTokenCache = { token: null, expiresAt: 0 };
 let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
 
+// ─── ADO Throttle State ─────────────────────────────────────────────────────
+// Tracks rate-limiting (HTTP 429/503) from ADO API responses.
+// backoffMs starts at 60s, doubles each consecutive hit, caps at 32 min.
+let _adoThrottle = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: 60000 };
+
+const ADO_THROTTLE_BACKOFF_CAP = 32 * 60000; // 32 minutes max backoff
+
 // ─── Auth Failure Tracking ──────────────────────────────────────────────────
 // Set when pollPrStatus encounters auth errors mid-loop. The engine checks this
 // to bypass the normal 6-tick cadence and re-poll on the next tick.
@@ -97,6 +104,17 @@ async function adoFetch(url, token, opts = {}) {
     signal: AbortSignal.timeout(30000),
     body,
   });
+  // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
+  if (res.status === 429 || res.status === 503) {
+    _adoThrottle.consecutiveHits++;
+    _adoThrottle.backoffMs = Math.min(_adoThrottle.backoffMs * 2, ADO_THROTTLE_BACKOFF_CAP);
+    const retryAfterSec = parseInt(res.headers.get('Retry-After'), 10);
+    const waitMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : _adoThrottle.backoffMs;
+    _adoThrottle.throttled = true;
+    _adoThrottle.retryAfter = Date.now() + waitMs;
+    log('warn', `[ado] Throttled (HTTP ${res.status}) — retry after ${Math.round(waitMs / 1000)}s, consecutive hits: ${_adoThrottle.consecutiveHits}`);
+    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round(waitMs / 1000)}s`);
+  }
   if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
@@ -110,7 +128,16 @@ async function adoFetch(url, token, opts = {}) {
     }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
   }
-  return JSON.parse(text);
+  const json = JSON.parse(text);
+  // ── Success decay: decrement consecutiveHits, reset when fully recovered ──
+  if (_adoThrottle.consecutiveHits > 0) {
+    _adoThrottle.consecutiveHits--;
+    if (_adoThrottle.consecutiveHits === 0) {
+      _adoThrottle.throttled = false;
+      _adoThrottle.backoffMs = 60000;
+    }
+  }
+  return json;
 }
 
 /** Fetch raw text from ADO API (for build logs which aren't JSON). */
@@ -858,6 +885,33 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   };
 }
 
+// ─── ADO Throttle Queries ────────────────────────────────────────────────────
+
+/** Returns true if ADO is throttled and retryAfter hasn't elapsed. Auto-clears when retryAfter passes. */
+function isAdoThrottled() {
+  if (!_adoThrottle.throttled) return false;
+  if (Date.now() >= _adoThrottle.retryAfter) {
+    _adoThrottle.throttled = false;
+    return false;
+  }
+  return true;
+}
+
+/** Returns a snapshot of the current throttle state. Calls isAdoThrottled() for a fresh value. */
+function getAdoThrottleState() {
+  return { throttled: isAdoThrottled(), retryAfter: _adoThrottle.retryAfter, consecutiveHits: _adoThrottle.consecutiveHits };
+}
+
+/** Reset throttle state — exported for testing only. */
+function _resetAdoThrottle() {
+  _adoThrottle = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: 60000 };
+}
+
+/** Set throttle state directly — exported for testing only. */
+function _setAdoThrottleForTest(state) {
+  Object.assign(_adoThrottle, state);
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
@@ -867,7 +921,11 @@ module.exports = {
   checkLiveReviewStatus,
   needsAdoPollRetry,
   isAdoAuthError, // exported for testing
+  isAdoThrottled,
+  getAdoThrottleState,
   fetchAdoPrMetadata,
   fetchSinglePrBuildStatus,
+  _resetAdoThrottle, // exported for testing
+  _setAdoThrottleForTest, // exported for testing
 };
 
