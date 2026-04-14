@@ -44,12 +44,12 @@ function createTestMinionsDir() {
 
   process.env.MINIONS_TEST_DIR = dir;
   // Bust require cache so modules re-resolve MINIONS_DIR
-  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
     try { delete require.cache[require.resolve(mod)]; } catch {}
   }
   return function restore() {
     delete process.env.MINIONS_TEST_DIR;
-    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
   };
@@ -82,6 +82,7 @@ const MINIONS_DIR = path.resolve(__dirname, '..');
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+const watches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
 const { buildDashboardHtml: _buildDashHtml } = require(path.join(MINIONS_DIR, 'dashboard-build'));
 const _assembledDashHtml = _buildDashHtml();
 
@@ -9499,6 +9500,10 @@ async function main() {
     await testGhThrottleEngineGuards();
     await testGhThrottleDashboard();
 
+    // W-mnywbzjj7rz5: Watches module & dashboard integration
+    await testWatchesModule();
+    await testWatchesDashboard();
+
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
 
@@ -18883,6 +18888,964 @@ async function testGhThrottleDashboard() {
   });
 }
 
+// ─── W-mnywbzjj7rz5: Watches module tests ──────────────────────────────────
+
+async function testWatchesModule() {
+  console.log('\n── watches.js — Core module ──');
+
+  // Constants tests
+  await test('WATCH_STATUS constants are defined', () => {
+    assert.strictEqual(shared.WATCH_STATUS.ACTIVE, 'active');
+    assert.strictEqual(shared.WATCH_STATUS.PAUSED, 'paused');
+    assert.strictEqual(shared.WATCH_STATUS.TRIGGERED, 'triggered');
+    assert.strictEqual(shared.WATCH_STATUS.EXPIRED, 'expired');
+  });
+
+  await test('WATCH_TARGET_TYPE constants are defined', () => {
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.PR, 'pr');
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.WORK_ITEM, 'work-item');
+    // BRANCH was removed — only PR and work-item are supported target types
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.BRANCH, undefined);
+  });
+
+  await test('WATCH_CONDITION constants are defined', () => {
+    assert.strictEqual(shared.WATCH_CONDITION.MERGED, 'merged');
+    assert.strictEqual(shared.WATCH_CONDITION.BUILD_FAIL, 'build-fail');
+    assert.strictEqual(shared.WATCH_CONDITION.BUILD_PASS, 'build-pass');
+    assert.strictEqual(shared.WATCH_CONDITION.COMPLETED, 'completed');
+    assert.strictEqual(shared.WATCH_CONDITION.FAILED, 'failed');
+    assert.strictEqual(shared.WATCH_CONDITION.STATUS_CHANGE, 'status-change');
+    assert.strictEqual(shared.WATCH_CONDITION.ANY, 'any');
+  });
+
+  // createWatch validation
+  await test('createWatch requires target', () => {
+    assert.throws(() => watches.createWatch({ targetType: 'pr', condition: 'merged' }), /target is required/);
+  });
+
+  await test('createWatch requires valid targetType', () => {
+    assert.throws(() => watches.createWatch({ target: 'PR-1', targetType: 'invalid', condition: 'merged' }), /targetType must be one of/);
+  });
+
+  await test('createWatch requires valid condition', () => {
+    assert.throws(() => watches.createWatch({ target: 'PR-1', targetType: 'pr', condition: 'invalid' }), /condition must be one of/);
+  });
+
+  await test('createWatch creates valid watch with defaults', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-100',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.ok(w.id.startsWith('watch-'), 'ID should start with watch-');
+      assert.strictEqual(w.target, 'PR-100');
+      assert.strictEqual(w.targetType, 'pr');
+      assert.strictEqual(w.condition, 'merged');
+      assert.strictEqual(w.status, shared.WATCH_STATUS.ACTIVE);
+      assert.strictEqual(w.owner, 'human');
+      assert.strictEqual(w.notify, 'inbox');
+      assert.strictEqual(w.triggerCount, 0);
+      assert.strictEqual(w.stopAfter, 0);
+      assert.ok(w.created_at, 'created_at should be set');
+      assert.ok(w.interval >= 60000, 'interval should be at least 60s');
+    } finally { restore(); }
+  });
+
+  await test('createWatch persists to watches.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Re-require watches with test isolation
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'W-abc123',
+        targetType: shared.WATCH_TARGET_TYPE.WORK_ITEM,
+        condition: shared.WATCH_CONDITION.COMPLETED,
+        owner: 'dallas',
+        description: 'Watch for completion',
+      });
+      // Re-read from disk
+      const all = testWatches.getWatches();
+      assert.strictEqual(all.length, 1, 'Should have 1 watch');
+      assert.strictEqual(all[0].id, w.id);
+      assert.strictEqual(all[0].target, 'W-abc123');
+      assert.strictEqual(all[0].owner, 'dallas');
+    } finally { restore(); }
+  });
+
+  await test('createWatch enforces minimum interval of 60s', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 1000,  // too low
+      });
+      assert.ok(w.interval >= 60000, 'interval should be clamped to min 60s');
+    } finally { restore(); }
+  });
+
+  // updateWatch
+  await test('updateWatch pauses an active watch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      const updated = testWatches.updateWatch(w.id, { status: shared.WATCH_STATUS.PAUSED });
+      assert.ok(updated, 'updateWatch should return updated watch');
+      assert.strictEqual(updated.status, shared.WATCH_STATUS.PAUSED);
+    } finally { restore(); }
+  });
+
+  await test('updateWatch returns null for nonexistent ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const result = testWatches.updateWatch('watch-nonexistent', { status: 'paused' });
+      assert.strictEqual(result, null);
+    } finally { restore(); }
+  });
+
+  await test('updateWatch requires id', () => {
+    assert.throws(() => watches.updateWatch(null, {}), /id is required/);
+  });
+
+  // deleteWatch
+  await test('deleteWatch removes a watch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.strictEqual(testWatches.getWatches().length, 1);
+      const deleted = testWatches.deleteWatch(w.id);
+      assert.strictEqual(deleted, true);
+      assert.strictEqual(testWatches.getWatches().length, 0);
+    } finally { restore(); }
+  });
+
+  await test('deleteWatch returns false for nonexistent ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const deleted = testWatches.deleteWatch('watch-nonexistent');
+      assert.strictEqual(deleted, false);
+    } finally { restore(); }
+  });
+
+  // evaluateWatch — PR conditions
+  await test('evaluateWatch: PR merged triggers when PR status is merged', () => {
+    const watch = { target: '100', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 100, status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('merged'));
+  });
+
+  await test('evaluateWatch: PR merged does not trigger when PR active', () => {
+    const watch = { target: '100', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR build-fail triggers when build failing', () => {
+    const watch = { target: '200', targetType: 'pr', condition: 'build-fail', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 200, status: 'active', buildStatus: 'failing' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('failing'));
+  });
+
+  await test('evaluateWatch: PR build-pass triggers when build passing', () => {
+    const watch = { target: '200', targetType: 'pr', condition: 'build-pass', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 200, status: 'active', buildStatus: 'passing' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: PR status-change triggers on change', () => {
+    const watch = { target: '300', targetType: 'pr', condition: 'status-change', _lastState: { status: 'active' } };
+    const state = { pullRequests: [{ prNumber: 300, status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('active'));
+    assert.ok(result.message.includes('merged'));
+  });
+
+  await test('evaluateWatch: PR status-change does not trigger when unchanged', () => {
+    const watch = { target: '300', targetType: 'pr', condition: 'status-change', _lastState: { status: 'active' } };
+    const state = { pullRequests: [{ prNumber: 300, status: 'active' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR not found returns triggered=false', () => {
+    const watch = { target: '999', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+    assert.ok(result.message.includes('not found'));
+  });
+
+  // evaluateWatch — Work Item conditions
+  await test('evaluateWatch: WI completed triggers when done', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-abc', status: 'done' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('completed'));
+  });
+
+  await test('evaluateWatch: WI completed does not trigger when pending', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-abc', status: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: WI failed triggers on failure', () => {
+    const watch = { target: 'W-def', targetType: 'work-item', condition: 'failed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-def', status: 'failed' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: WI status-change triggers on change', () => {
+    const watch = { target: 'W-ghi', targetType: 'work-item', condition: 'status-change', _lastState: { status: 'pending' } };
+    const state = { workItems: [{ id: 'W-ghi', status: 'dispatched' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: WI not found returns triggered=false', () => {
+    const watch = { target: 'W-missing', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  // checkWatches
+  await test('checkWatches skips paused watches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-50',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      testWatches.updateWatch(w.id, { status: shared.WATCH_STATUS.PAUSED });
+      const state = { pullRequests: [{ prNumber: 50, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 0, 'Paused watch should not trigger');
+    } finally { restore(); }
+  });
+
+  await test('checkWatches triggers active watch and increments count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '60',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 60, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Should have triggered once');
+      assert.ok(after.last_triggered, 'last_triggered should be set');
+      assert.ok(after.last_checked, 'last_checked should be set');
+    } finally { restore(); }
+  });
+
+  await test('checkWatches expires watch when stopAfter limit reached', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '70',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 1,
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 70, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED);
+      assert.strictEqual(after.triggerCount, 1);
+    } finally { restore(); }
+  });
+
+  await test('checkWatches respects interval — skips recently checked', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '80',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.BUILD_FAIL,
+        interval: 300000,  // 5 min
+      });
+      // First check — no trigger (build passing)
+      const state1 = { pullRequests: [{ prNumber: 80, status: 'active', buildStatus: 'passing' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const afterFirst = testWatches.getWatches().find(x => x.id === w.id);
+      assert.ok(afterFirst.last_checked, 'Should have last_checked set');
+
+      // Second check immediately — should skip due to interval
+      const state2 = { pullRequests: [{ prNumber: 80, status: 'active', buildStatus: 'failing' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const afterSecond = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(afterSecond.triggerCount, 0, 'Should not trigger due to interval');
+    } finally { restore(); }
+  });
+
+  // _captureState
+  await test('_captureState captures PR state', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.status, 'active');
+    assert.strictEqual(captured.buildStatus, 'passing');
+    assert.strictEqual(captured.reviewStatus, 'waiting');
+  });
+
+  await test('_captureState captures WI state', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item' };
+    const state = { workItems: [{ id: 'W-abc', status: 'dispatched' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.status, 'dispatched');
+  });
+
+  await test('_captureState returns empty for missing target', () => {
+    const watch = { target: 'W-missing', targetType: 'work-item' };
+    const captured = watches._captureState(watch, { workItems: [] });
+    assert.deepStrictEqual(captured, {});
+  });
+
+  // ── Review feedback regression tests ────────────────────────────────────
+
+  // Bug #1: updateWatch validates status AFTER assigning it — invalid status gets persisted
+  await test('updateWatch rejects invalid status without persisting it', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.strictEqual(w.status, shared.WATCH_STATUS.ACTIVE);
+      // Try to update with an invalid status
+      const result = testWatches.updateWatch(w.id, { status: 'bogus-status' });
+      // Should return null (rejected) — not persist the invalid status
+      assert.strictEqual(result, null, 'updateWatch should return null for invalid status');
+      // Verify the watch on disk still has ACTIVE status
+      const persisted = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(persisted.status, shared.WATCH_STATUS.ACTIVE,
+        'Watch on disk should still have ACTIVE status, not the invalid one');
+    } finally { restore(); }
+  });
+
+  // Bug #2: evaluateWatch and _captureState use divergent PR matching logic
+  await test('_captureState uses same matching logic as evaluateWatch for PRs', () => {
+    // _captureState should match by prNumber (string coercion), same as evaluateWatch
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }] };
+    const captured = watches._captureState(watch, state);
+    // evaluateWatch finds this PR by String(prNumber) === String(target)
+    const evalResult = watches.evaluateWatch({ ...watch, condition: 'merged', _lastState: {} }, state);
+    // If evaluateWatch finds the PR, _captureState must also find it
+    assert.ok(evalResult.message !== 'PR 100 not found', 'evaluateWatch should find the PR');
+    assert.strictEqual(captured.status, 'active', '_captureState should also find the PR');
+  });
+
+  // Bug #3: title.includes(target) is too loose — "1" matches any PR with "1" in title
+  await test('evaluateWatch does not match PRs by loose title substring', () => {
+    const watch = { target: '1', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 999, id: 'other', title: 'Fix bug PR-1001 regression', status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "1" should not match a PR just because its title contains "1"
+    assert.strictEqual(result.triggered, false,
+      'Should not match PR by loose title substring — target "1" should not match title containing "1"');
+  });
+
+  await test('evaluateWatch does not match WI by loose title substring', () => {
+    const watch = { target: 'Fix', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-other', title: 'Fix login button', status: 'done' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "Fix" should not match a WI just because its title contains "Fix"
+    assert.strictEqual(result.triggered, false,
+      'Should not match WI by loose title substring');
+  });
+
+  // ── W-mnz3ww9ao5lt: Test gap fills ─────────────────────────────────────────
+
+  await test('onNotMet: notify fires writeToInbox when condition not met (agent owner)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '500',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        onNotMet: 'notify',
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // PR is NOT merged — condition not met, so onNotMet should fire
+      const state = { pullRequests: [{ prNumber: 500, status: 'active' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      // Verify inbox file was created for dallas
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const pollFile = files.find(f => f.startsWith('dallas-watch-poll-'));
+      assert.ok(pollFile, 'onNotMet should write to inbox for agent owner');
+      const content = fs.readFileSync(path.join(inboxDir, pollFile), 'utf8');
+      assert.ok(content.includes('Condition not yet met'), 'Inbox note should describe condition not met');
+    } finally { restore(); }
+  });
+
+  await test('human owner receives trigger notifications (guard removed)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '510',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        owner: 'human',
+        interval: 60000,
+      });
+      // PR IS merged — should trigger and write to human inbox
+      const state = { pullRequests: [{ prNumber: 510, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const triggerFile = files.find(f => f.startsWith('human-watch-'));
+      assert.ok(triggerFile, 'Human owner should receive trigger notification (owner !== human guard removed)');
+    } finally { restore(); }
+  });
+
+  await test('human owner receives onNotMet notifications', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '520',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        onNotMet: 'notify',
+        owner: 'human',
+        interval: 60000,
+      });
+      // PR is NOT merged — onNotMet should fire for human
+      const state = { pullRequests: [{ prNumber: 520, status: 'active' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const pollFile = files.find(f => f.startsWith('human-watch-poll-'));
+      assert.ok(pollFile, 'Human owner should receive onNotMet notification');
+    } finally { restore(); }
+  });
+
+  await test('stopAfter: 0 never expires change-based watches (runs forever)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (change-based) — unlimited makes sense for transitions
+      const w = testWatches.createWatch({
+        target: '600',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        stopAfter: 0,   // run forever
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const afterInit = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(afterInit.triggerCount, 0, 'First check should init baseline');
+      // Force last_checked back for second check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Second check with changed status — triggers
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep change-based watch active after trigger');
+      // Force last_checked back again
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Third check with another status change — triggers again
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state3);
+      const after2 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for change-based conditions');
+      assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
+    } finally { restore(); }
+  });
+
+  await test('create-watch CC action in executeCCActions creates a watch', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find executeCCActions function — create-watch case may be far into the switch
+    const fnStart = dashSrc.indexOf('async function executeCCActions');
+    assert.ok(fnStart > -1, 'executeCCActions must exist in dashboard.js');
+    const fnSlice = dashSrc.slice(fnStart, fnStart + 5000);
+    assert.ok(fnSlice.includes("case 'create-watch'"),
+      'executeCCActions must handle create-watch action type');
+    assert.ok(fnSlice.includes('watchesMod.createWatch') || fnSlice.includes('createWatch('),
+      'create-watch action must call createWatch');
+    assert.ok(fnSlice.includes('_parseWatchInterval'),
+      'create-watch action must parse interval');
+  });
+
+  await test('updateWatch updates interval, onNotMet, and stopAfter fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-700',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 60000,
+        stopAfter: 0,
+        onNotMet: null,
+      });
+      // Update all three fields
+      const updated = testWatches.updateWatch(w.id, {
+        interval: 120000,
+        stopAfter: 5,
+        onNotMet: 'notify',
+      });
+      assert.ok(updated, 'updateWatch should return updated watch');
+      assert.strictEqual(updated.interval, 120000, 'interval should be updated');
+      assert.strictEqual(updated.stopAfter, 5, 'stopAfter should be updated');
+      assert.strictEqual(updated.onNotMet, 'notify', 'onNotMet should be updated');
+      // Verify persisted to disk
+      const persisted = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(persisted.interval, 120000, 'interval should persist');
+      assert.strictEqual(persisted.stopAfter, 5, 'stopAfter should persist');
+      assert.strictEqual(persisted.onNotMet, 'notify', 'onNotMet should persist');
+    } finally { restore(); }
+  });
+
+  await test('status-change first-check initializes _lastState without triggering', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '800',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — should initialize _lastState but NOT trigger
+      const state = { pullRequests: [{ prNumber: 800, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 0, 'First check should NOT trigger for status-change');
+      assert.ok(after._lastState, '_lastState should be initialized');
+      assert.strictEqual(after._lastState.status, 'active', '_lastState should capture current status');
+    } finally { restore(); }
+  });
+
+  await test('status-change second-check triggers after state change', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '810',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 810, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      // Force last_checked back for second check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Second check with changed status — should trigger
+      const state2 = { pullRequests: [{ prNumber: 810, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Second check should trigger after status change');
+    } finally { restore(); }
+  });
+
+  await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (change-based condition) — runs forever with stopAfter=0
+      const w = testWatches.createWatch({
+        target: '900',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      // Force last_checked back for second check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Second check — status changed → triggers, key is `watch-${watch.id}-1`
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+      // Force last_checked back for third check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Third check — status changed again → triggers, key is `watch-${watch.id}-2`
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state3);
+      const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterSecond.length, 2,
+        'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
+        filesAfterSecond.length + ' files');
+    } finally { restore(); }
+  });
+
+  await test('createWatch rejects branch targetType (removed from constants)', () => {
+    assert.throws(
+      () => watches.createWatch({ target: 'main', targetType: 'branch', condition: 'any' }),
+      /targetType must be one of/,
+      'branch is no longer a valid targetType'
+    );
+  });
+
+  await test('render-watches.js does not include branch in target types', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    // The form should not offer 'branch' as an option
+    assert.ok(!src.includes("value: 'branch'"),
+      'render-watches.js should not have branch as a target type option');
+    assert.ok(!src.includes("branch: 'Branch'"),
+      'render-watches.js _WATCH_TARGET_LABELS should not include branch');
+  });
+
+  await test('_watchesPath returns dynamic path respecting MINIONS_TEST_DIR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const watchPath = testWatches._watchesPath();
+      // Normalize both to forward slashes for cross-platform comparison
+      const normalizedPath = watchPath.replace(/\\/g, '/');
+      const normalizedTestDir = process.env.MINIONS_TEST_DIR.replace(/\\/g, '/');
+      assert.ok(normalizedPath.includes(normalizedTestDir),
+        `_watchesPath should use MINIONS_TEST_DIR when set (got: ${normalizedPath}, expected to contain: ${normalizedTestDir})`);
+      assert.ok(watchPath.endsWith(path.join('engine', 'watches.json')),
+        '_watchesPath should end with engine/watches.json');
+    } finally { restore(); }
+  });
+
+  await test('WATCHES_PATH static export was removed (MINIONS_TEST_DIR-unsafe)', () => {
+    assert.strictEqual(watches.WATCHES_PATH, undefined,
+      'WATCHES_PATH static export should be removed — it does not respect MINIONS_TEST_DIR');
+  });
+
+  await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
+    assert.strictEqual(watches.DEFAULT_WATCH_INTERVAL, 300000);
+  });
+
+  // ── Review fix: absolute conditions auto-expire ──────────────────────────
+
+  await test('WATCH_ABSOLUTE_CONDITIONS is defined in shared.js', () => {
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS instanceof Set,
+      'WATCH_ABSOLUTE_CONDITIONS should be a Set');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('merged'), 'should include merged');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-fail'), 'should include build-fail');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-pass'), 'should include build-pass');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('completed'), 'should include completed');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('failed'), 'should include failed');
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('status-change'), 'should NOT include status-change');
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('any'), 'should NOT include any');
+  });
+
+  await test('absolute condition (merged) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '950',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 0,   // default — for absolute conditions, should auto-expire after first trigger
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 950, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Should trigger once');
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'Absolute condition with stopAfter=0 should auto-expire after first trigger');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition (build-fail) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '951',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.BUILD_FAIL,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 951, status: 'active', buildStatus: 'failing' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'build-fail with stopAfter=0 should auto-expire');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition (completed WI) auto-expires when stopAfter is 0', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'W-exp',
+        targetType: shared.WATCH_TARGET_TYPE.WORK_ITEM,
+        condition: shared.WATCH_CONDITION.COMPLETED,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [], workItems: [{ id: 'W-exp', status: 'done' }] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
+        'completed (absolute) with stopAfter=0 should auto-expire');
+    } finally { restore(); }
+  });
+
+  await test('absolute condition with explicit stopAfter > 1 respects the limit', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '952',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 3,   // explicit — user wants 3 triggers before expiry
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 952, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.ACTIVE,
+        'Explicit stopAfter=3 should NOT auto-expire after first trigger');
+    } finally { restore(); }
+  });
+
+  // ── Review fix: writeToInbox outside lock ──────────────────────────────
+
+  await test('checkWatches fires writeToInbox outside the lock callback', () => {
+    // Verify by reading the source — writeToInbox calls should be AFTER mutateJsonFileLocked
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'watches.js'), 'utf8');
+    // Find the checkWatches function
+    const fnStart = src.indexOf('function checkWatches(');
+    assert.ok(fnStart > -1, 'checkWatches must exist');
+    const fnBody = src.slice(fnStart, fnStart + 5000);
+    // mutateJsonFileLocked callback should NOT contain writeToInbox
+    const lockStart = fnBody.indexOf('mutateJsonFileLocked(');
+    const lockEnd = fnBody.indexOf('}, { defaultValue: [] });');
+    assert.ok(lockStart > -1 && lockEnd > -1, 'Should find lock boundaries');
+    const lockBody = fnBody.slice(lockStart, lockEnd);
+    assert.ok(!lockBody.includes('writeToInbox('),
+      'writeToInbox must NOT be called inside mutateJsonFileLocked callback — fire after lock is released');
+    // writeToInbox should appear after the lock block
+    const afterLock = fnBody.slice(lockEnd);
+    assert.ok(afterLock.includes('writeToInbox('),
+      'writeToInbox should be called after mutateJsonFileLocked returns');
+  });
+}
+
+async function testWatchesDashboard() {
+  console.log('\n── watches — Dashboard integration ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('dashboard.js requires engine/watches', () => {
+    assert.ok(dashSrc.includes("require('./engine/watches')"),
+      'dashboard.js must import ./engine/watches');
+  });
+
+  await test('getStatus includes watches field', () => {
+    assert.ok(dashSrc.includes('watches:'),
+      'getStatus must include watches in the status response');
+    assert.ok(dashSrc.includes('getWatches'),
+      'getStatus must call getWatches()');
+  });
+
+  await test('dashboard has GET /api/watches endpoint', () => {
+    assert.ok(dashSrc.includes('/api/watches'),
+      'dashboard must have /api/watches endpoint');
+    assert.ok(dashSrc.includes('handleWatchesList'),
+      'dashboard must have handleWatchesList handler');
+  });
+
+  await test('dashboard has POST /api/watches endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesCreate'),
+      'dashboard must have handleWatchesCreate handler');
+  });
+
+  await test('dashboard has POST /api/watches/update endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesUpdate'),
+      'dashboard must have handleWatchesUpdate handler');
+  });
+
+  await test('dashboard has POST /api/watches/delete endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesDelete'),
+      'dashboard must have handleWatchesDelete handler');
+  });
+
+  // Layout tests
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+
+  await test('layout.html has watches sidebar link', () => {
+    assert.ok(layoutSrc.includes('data-page="watches"'),
+      'layout.html must have a sidebar link with data-page="watches"');
+    assert.ok(layoutSrc.includes('href="/watches"'),
+      'layout.html must have href="/watches" link');
+  });
+
+  // Page HTML tests
+  await test('watches.html page exists', () => {
+    const exists = fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'watches.html'));
+    assert.ok(exists, 'dashboard/pages/watches.html must exist');
+  });
+
+  await test('watches.html has watches-content element', () => {
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'watches.html'), 'utf8');
+    assert.ok(html.includes('watches-content'),
+      'watches.html must have a #watches-content element');
+    assert.ok(html.includes('watches-count'),
+      'watches.html must have a #watches-count element');
+  });
+
+  // JS renderer tests
+  await test('render-watches.js exists', () => {
+    const exists = fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'));
+    assert.ok(exists, 'dashboard/js/render-watches.js must exist');
+  });
+
+  await test('render-watches.js defines renderWatches function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('function renderWatches'),
+      'render-watches.js must define renderWatches function');
+  });
+
+  await test('render-watches.js defines createWatch UI function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('openCreateWatchModal') || src.includes('submitWatch'),
+      'render-watches.js must have a create watch UI function');
+  });
+
+  await test('render-watches.js exports via window.MinionsWatches', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('window.MinionsWatches'),
+      'render-watches.js must export via window.MinionsWatches');
+  });
+
+  // Refresh integration
+  const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+
+  await test('refresh.js renders watches on status update', () => {
+    assert.ok(refreshSrc.includes('renderWatches'),
+      'refresh.js must call renderWatches');
+    assert.ok(refreshSrc.includes("'watches'"),
+      'refresh.js must check watches in _changed');
+  });
+
+  // Dashboard assembly includes render-watches.js
+  await test('dashboard assembly includes render-watches.js', () => {
+    assert.ok(dashSrc.includes('render-watches'),
+      'dashboard.js jsFiles must include render-watches');
+  });
+
+  // Engine tick integration
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('engine.js integrates watches check in tick cycle', () => {
+    assert.ok(engineSrc.includes('checkWatches'),
+      'engine.js must call checkWatches in tick cycle');
+    assert.ok(engineSrc.includes("require('./engine/watches')"),
+      'engine.js must import watches module');
+  });
+}
+
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
 async function testAzureauthTimeout() {
   console.log('\n── #1049: azureauth --timeout enforcement ──');
@@ -18933,5 +19896,4 @@ async function testAzureauthTimeout() {
       'shared-rules.md should have explicit guidance about azureauth timeout');
   });
 }
-
 main().catch(e => { console.error(e); process.exit(1); });
