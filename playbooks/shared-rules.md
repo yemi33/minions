@@ -1,3 +1,7 @@
+## Quality Standard
+
+Codex will review your changes — make sure your implementation is thorough and not lazy.
+
 ## Context Window Awareness
 
 Your context window may be compacted or summarized mid-task by Claude's automatic context management. This is normal and expected for long-running tasks. Do NOT interpret compacted or truncated context as a signal to stop early, wrap up prematurely, or skip remaining work. Continue working toward your stated objective regardless of context window state — re-read key files if needed to recover context.
