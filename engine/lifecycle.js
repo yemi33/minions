@@ -940,8 +940,6 @@ function updatePrAfterFix(pr, project, source) {
     if (!target) return prs;
     // Never downgrade from approved — fix was dispatched but PR is already approved
     if (target.reviewStatus !== 'approved') target.reviewStatus = 'waiting';
-    // Advance lastPushedAt so alreadyReviewed resets immediately, without waiting for the poller
-    target.lastPushedAt = ts();
     // Always clear pendingFix — a fix dispatch (regardless of source) addresses all pending feedback
     if (target.humanFeedback) target.humanFeedback.pendingFix = false;
     if (source === 'pr-human-feedback') {
@@ -1599,6 +1597,41 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
     // If decomposition produced nothing, fall through to mark parent as done
   }
 
+  // Verify review work items include a verdict — must run BEFORE updateWorkItemStatus(DONE),
+  // same pattern as plan-to-prd (#893): updateWorkItemStatus deletes _retryCount, so the check
+  // must read/increment it before that happens. Also sets skipDoneStatus so completedAt isn't
+  // written and then left dangling when status is reset to pending for retry.
+  if (effectiveSuccess && type === WORK_TYPE.REVIEW && meta?.item?.id) {
+    const verdict = parseReviewVerdict(resultSummary);
+    if (!verdict) {
+      skipDoneStatus = true;
+      const wiPath = resolveWorkItemPath(meta);
+      if (wiPath) {
+        try {
+          mutateJsonFileLocked(wiPath, data => {
+            if (!Array.isArray(data)) return data;
+            const w = data.find(i => i.id === meta.item.id);
+            if (!w) return data;
+            const retries = w._retryCount || 0;
+            if (retries < ENGINE_DEFAULTS.maxRetries) {
+              w.status = WI_STATUS.PENDING;
+              w._retryCount = retries + 1;
+              delete w.dispatched_at;
+              delete w.completedAt;
+              log('warn', `Review ${meta.item.id} completed without verdict — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
+            } else {
+              w.status = WI_STATUS.FAILED;
+              w.failReason = 'No review verdict after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
+              w.failedAt = ts();
+              log('warn', `Review ${meta.item.id} failed — no verdict after ${ENGINE_DEFAULTS.maxRetries} retries`);
+            }
+            return data;
+          });
+        } catch (err) { log('warn', `review verdict check: ${err.message}`); }
+      }
+    }
+  }
+
   // Verify plan-to-prd actually created the PRD file before marking done (#893)
   // Must run BEFORE updateWorkItemStatus(DONE) — otherwise _retryCount is deleted and retries never advance
   if (effectiveSuccess && type === WORK_TYPE.PLAN_TO_PRD && meta?.item?.id) {
@@ -1772,35 +1805,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   // Old plan-to-prd PRD check removed — moved before updateWorkItemStatus(DONE) to fix #893
   // (retryCount was being deleted by done-marking before the check could read it)
-
-  // Verify review work items include a verdict — mirrors the PRD file existence check pattern.
-  // If agent completed (exit 0) but output has no VERDICT: APPROVE/REQUEST_CHANGES, the review
-  // is incomplete. Auto-retry up to maxRetries, then fail.
-  if (effectiveSuccess && type === WORK_TYPE.REVIEW && meta?.item?.id) {
-    const verdict = parseReviewVerdict(resultSummary);
-    if (!verdict) {
-      const wiPath = resolveWorkItemPath(meta);
-      if (wiPath) {
-        mutateJsonFileLocked(wiPath, data => {
-          if (!Array.isArray(data)) return data;
-          const w = data.find(i => i.id === meta.item.id);
-          if (!w) return data;
-          const retries = w._retryCount || 0;
-          if (retries < ENGINE_DEFAULTS.maxRetries) {
-            w.status = WI_STATUS.PENDING;
-            w._retryCount = retries + 1;
-            delete w.dispatched_at;
-            log('warn', `Review ${meta.item.id} completed without verdict — auto-retry ${retries + 1}/${ENGINE_DEFAULTS.maxRetries}`);
-          } else {
-            w.status = WI_STATUS.FAILED;
-            w.failReason = 'No review verdict after ' + ENGINE_DEFAULTS.maxRetries + ' attempts';
-            log('warn', `Review ${meta.item.id} failed — no verdict after ${ENGINE_DEFAULTS.maxRetries} retries`);
-          }
-          return data;
-        });
-      }
-    }
-  }
+  // Review verdict check similarly moved before updateWorkItemStatus(DONE) — same root cause.
 
   if (type === WORK_TYPE.REVIEW) await updatePrAfterReview(agentId, meta?.pr, meta?.project, config, resultSummary);
   if (type === WORK_TYPE.FIX) {
