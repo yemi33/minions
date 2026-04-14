@@ -17111,6 +17111,8 @@ async function testAdoTokenInjection() {
 
   await test('SessionStart hook uses http type (not command with curl)', () => {
     // The SessionStart hook should use type: http to avoid curl exit code propagation
+    // Skip on CI — the runner's settings.json is not managed by this project
+    if (process.env.CI) { skipped++; return; }
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (!fs.existsSync(settingsPath)) { skipped++; return; }
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
