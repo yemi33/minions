@@ -1486,11 +1486,18 @@ const server = http.createServer(async (req, res) => {
       if (body.references) item.references = body.references;
       if (body.acceptanceCriteria) item.acceptanceCriteria = body.acceptanceCriteria;
       if (body.skipPr) item.skipPr = true;
+      let dupId = null;
       mutateJsonFileLocked(wiPath, (items) => {
         if (!Array.isArray(items)) items = [];
+        const existing = items.find(i =>
+          i.title === item.title &&
+          (i.status === WI_STATUS.PENDING || i.status === WI_STATUS.DISPATCHED)
+        );
+        if (existing) { dupId = existing.id; return items; }
         items.push(item);
         return items;
       });
+      if (dupId) return jsonReply(res, 409, { ok: true, id: dupId, duplicate: true });
       return jsonReply(res, 200, { ok: true, id });
     } catch (e) { return jsonReply(res, 400, { error: e.message }); }
   }
