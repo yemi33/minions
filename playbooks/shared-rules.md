@@ -54,3 +54,5 @@ node engine/ado-status.js <prNumber> --live --project MyProject
 Output is JSON with the same fields. Exit 0 on success, 1 if not found.
 
 **Never make raw `curl` calls to ADO APIs directly.** Use `node engine/ado-status.js` which routes through `ado.js` — authenticated, retried, circuit-broken. Raw `azureauth` + curl bypasses all of that.
+
+**If you must run `azureauth` directly, ALWAYS include `--timeout 1`.** Without this flag, `azureauth ado token` can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions. This causes the Claude Code process to silently exit and the engine to declare the agent orphaned. Example: `azureauth ado token --mode iwa --mode broker --output token --timeout 1`.
