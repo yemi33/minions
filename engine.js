@@ -1981,7 +1981,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) { newWork.push(item); }
     }
 
     // PRs with changes requested → route back to author for fix
@@ -3042,6 +3042,7 @@ async function discoverWork(config) {
 
   for (const item of allWork) {
     addToDispatch(item);
+    if (item.meta?.dispatchKey) setCooldown(item.meta.dispatchKey);
     if (item.meta?.source === 'pr-human-feedback') {
       clearPendingHumanFeedbackFlag(item.meta.project, item.meta.pr?.id);
     }
