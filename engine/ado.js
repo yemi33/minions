@@ -379,7 +379,7 @@ async function pollPrStatus(config) {
     let buildStatuses = []; // for error log fetching
 
     const mergeCommitId = prData.lastMergeCommit?.commitId;
-    if (prNumber) {
+    if (prNumber && mergeCommitId) {
       try {
         // branchName=refs/pull/{id}/merge scopes server-side to this PR's builds.
         // sourceVersion filter then narrows to the current merge commit — a PR updated
@@ -387,7 +387,7 @@ async function pollPrStatus(config) {
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
         const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        const prBuilds = (buildsData?.value || []).filter(b => !mergeCommitId || b.sourceVersion === mergeCommitId);
+        const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
           // partiallySucceeded = warnings, not failures — counts as passing

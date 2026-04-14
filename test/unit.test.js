@@ -16728,6 +16728,10 @@ async function testPrReviewFixFlows() {
     // builds across multiple PR updates (each push creates a new merge commit on the same ref)
     assert.ok(adoSrc.includes('b.sourceVersion === mergeCommitId'),
       'ADO build query must filter by sourceVersion to exclude builds from previous PR updates');
+    // Guard must require both prNumber AND mergeCommitId — no merge commit means PR is in conflict
+    // or not yet computed; skip the query entirely rather than accepting stale builds
+    assert.ok(adoSrc.includes('prNumber && mergeCommitId'),
+      'ADO build query guard must require both prNumber and mergeCommitId');
   });
 
 
