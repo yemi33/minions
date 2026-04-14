@@ -16,6 +16,8 @@ function engine() {
   return _engine;
 }
 
+const stripRefsHeads = s => (s || '').replace('refs/heads/', '');
+
 // ─── ADO Token Cache ─────────────────────────────────────────────────────────
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
@@ -117,7 +119,7 @@ async function fetchAdoBuildErrorLog(orgBase, project, failedStatus, token, pr, 
     if (!buildId) {
       // Fallback: query recent failed builds for this PR's source branch
       try {
-        const branch = pr?.branch || pr?.sourceRefName?.replace('refs/heads/', '');
+        const branch = pr?.branch || stripRefsHeads(pr?.sourceRefName);
         if (branch) {
           const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=refs/heads/${encodeURIComponent(branch)}&statusFilter=completed&resultFilter=failed&$top=3&api-version=7.1`;
           const builds = await adoFetch(buildsUrl, token);
@@ -648,7 +650,7 @@ async function reconcilePrs(config) {
     let projectUpdated = 0;
     for (const adoPr of adoPrs) {
       const prId = `PR-${adoPr.pullRequestId}`;
-      const branch = (adoPr.sourceRefName || '').replace('refs/heads/', '');
+      const branch = stripRefsHeads(adoPr.sourceRefName);
       const title = adoPr.title || '';
       // Extract item ID from branch name or PR title (e.g., feat(P-2cafdc2a): ...)
       const branchMatch = branch.match(/(P-[a-z0-9]{6,})/i) || branch.match(/(W-[a-z0-9]{6,})/i) || branch.match(/(PL-[a-z0-9]{6,})/i);
@@ -775,7 +777,7 @@ async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
   return {
     title: pr.title || '',
     description: pr.description || '',
-    branch: pr.sourceRefName?.replace('refs/heads/', '') || '',
+    branch: stripRefsHeads(pr.sourceRefName),
     author: pr.createdBy?.displayName || '',
   };
 }
