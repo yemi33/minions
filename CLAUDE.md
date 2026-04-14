@@ -317,7 +317,7 @@ Context-only PRs: PRs with `_contextOnly: true` are polled (status, votes, build
 
 ## ADO Integration
 
-Token via `azureauth ado token --mode iwa --mode broker`. Cached 30 min, 10-min backoff on failure. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking derived from `pull-requests.json` prdItems.
+Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it, the command can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions, causing agent orphans. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking derived from `pull-requests.json` prdItems.
 
 ## Dashboard
 
