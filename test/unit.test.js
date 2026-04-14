@@ -12411,6 +12411,28 @@ async function testPrDuplicateRaceFix() {
     assert.ok(resetIdx < fetchIdx, 'reset must happen before any adoFetch calls');
   });
 
+  await test('ado.js pollPrStatus null-token early-return does NOT set _adoPollHadAuthFailure', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    // Extract the null-token early-return block
+    const tokenCheckMatch = pollFn[0].match(/if \(!token\)\s*\{[\s\S]*?\}/);
+    assert.ok(tokenCheckMatch, 'pollPrStatus must have a null-token check');
+    // The null-token early-return should NOT set the retry flag — backoff in getAdoToken handles timing
+    assert.ok(!tokenCheckMatch[0].includes('_adoPollHadAuthFailure = true'),
+      'null-token early-return must NOT set _adoPollHadAuthFailure (avoids perpetual retry hammering during backoff)');
+  });
+
+  await test('ado.js pollPrStatus sets _adoPollHadAuthFailure only in auth error catch block', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'ado.js'), 'utf8');
+    const pollFn = src.match(/async function pollPrStatus[\s\S]*?^}/m);
+    assert.ok(pollFn, 'pollPrStatus must exist');
+    // Count occurrences — should be exactly 1 (in catch block only, not in null-token early-return)
+    const setCount = (pollFn[0].match(/_adoPollHadAuthFailure = true/g) || []).length;
+    assert.strictEqual(setCount, 1,
+      '_adoPollHadAuthFailure = true should appear exactly once in pollPrStatus (in auth error catch block only)');
+  });
+
   await test('engine.js imports needsAdoPollRetry and uses it in tick cadence', () => {
     const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
     assert.ok(engineSrc.includes('needsAdoPollRetry'), 'engine.js must import needsAdoPollRetry');

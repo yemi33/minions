@@ -252,7 +252,8 @@ async function pollPrStatus(config) {
   const token = await getAdoToken();
   if (!token) {
     log('warn', 'Skipping PR status poll — no ADO token available');
-    _adoPollHadAuthFailure = true; // trigger retry on next tick
+    // Don't set _adoPollHadAuthFailure — getAdoToken() has its own 10-min backoff,
+    // and setting the flag would hammer pollPrStatus() every tick with no useful work.
     return;
   }
 
