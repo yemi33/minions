@@ -782,6 +782,84 @@ async function fetchAdoPrMetadata(prNum, adoOrg, adoProj, adoRepo) {
   };
 }
 
+/**
+ * Fetch live PR and build status for a single PR number.
+ * Used by engine/ado-status.js so agents can check CI without raw curl calls.
+ * Returns { prNumber, title, branch, status, reviewStatus, buildStatus, buildErrorLog?,
+ *           mergeConflict, url, project } or null on auth failure.
+ */
+async function fetchSinglePrBuildStatus(project, prNumber) {
+  const token = await getAdoToken();
+  if (!token) return null;
+
+  const orgBase = getAdoOrgBase(project);
+  const repoBase = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}`;
+  const prData = await adoFetch(`${repoBase}/pullrequests/${prNumber}?api-version=7.1`, token);
+  if (!prData) return null;
+
+  const mergeCommitId = prData.lastMergeCommit?.commitId;
+  let buildStatus = 'none';
+  let buildErrorLog = null;
+
+  if (mergeCommitId) {
+    try {
+      const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
+      const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
+      const buildsData = await adoFetch(buildsUrl, token);
+      const prBuilds = (buildsData?.value || []).filter(b => b.sourceVersion === mergeCommitId);
+
+      if (prBuilds.length > 0) {
+        const hasFailed = prBuilds.some(b => b.result === 'failed' || b.result === 'canceled');
+        const allDone = prBuilds.every(b => b.status === 'completed');
+        const allPassed = prBuilds.every(b => b.result === 'succeeded' || b.result === 'partiallySucceeded');
+        const hasRunning = prBuilds.some(b => b.status === 'inProgress' || b.status === 'notStarted');
+
+        if (hasFailed && allDone) {
+          buildStatus = 'failing';
+          const failedBuilds = prBuilds.filter(b => b.result === 'failed').map(b => ({
+            state: 'failed', _buildId: String(b.id),
+            targetUrl: `${orgBase}/${project.adoProject}/_build/results?buildId=${b.id}`,
+          }));
+          const logParts = [];
+          const seenBuildIds = new Set();
+          for (const fb of failedBuilds.slice(0, 3)) {
+            const errorLog = await fetchAdoBuildErrorLog(orgBase, project, fb, token, { id: `PR-${prNumber}` }, seenBuildIds);
+            if (errorLog) logParts.push(errorLog);
+          }
+          if (logParts.length > 0) buildErrorLog = logParts.join('\n\n');
+        } else if (allDone && allPassed) {
+          buildStatus = 'passing';
+        } else if (hasRunning) {
+          buildStatus = 'running';
+        }
+      }
+    } catch (e) { log('warn', `fetchSinglePrBuildStatus build query for PR #${prNumber}: ${e.message}`); }
+  }
+
+  const votes = (prData.reviewers || []).map(r => r.vote);
+  let reviewStatus = 'pending';
+  if (votes.some(v => v === -10)) reviewStatus = 'changes-requested';
+  else if (votes.some(v => v >= 5)) reviewStatus = 'approved';
+  else if (votes.some(v => v === -5)) reviewStatus = 'waiting';
+
+  // Reconstruct a human-readable PR URL from the API URL
+  const prUrl = `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
+
+  return {
+    prNumber,
+    title: prData.title || '',
+    branch: stripRefsHeads(prData.sourceRefName),
+    status: prData.status || 'unknown',
+    reviewStatus,
+    buildStatus,
+    buildErrorLog: buildErrorLog || undefined,
+    mergeConflict: prData.mergeStatus === 'conflicts',
+    url: prUrl,
+    project: project.name,
+    source: 'live',
+  };
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
@@ -792,5 +870,6 @@ module.exports = {
   needsAdoPollRetry,
   isAdoAuthError, // exported for testing
   fetchAdoPrMetadata,
+  fetchSinglePrBuildStatus,
 };
 

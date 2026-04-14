@@ -32,3 +32,25 @@ Your context window may be compacted or summarized mid-task by Claude's automati
   ````
   The `name` and `description` fields are required. `scope` defaults to `minions` (global). Use `scope: project` + `project: ProjectName` for project-specific skills.
 - Do TDD where it makes sense — write failing tests first, then implement, then verify tests pass. Especially for bug fixes (write a test that reproduces the bug) and new utility functions.
+
+## Checking PR and Build Status
+
+When asked to check build status, CI results, or review state for a PR:
+
+**Preferred — read cached state (always fresh within ~3 min when engine is running):**
+Find the PR in `projects/<project-name>/pull-requests.json` by `prNumber`. Key fields:
+- `buildStatus` — `passing` | `failing` | `running` | `none`
+- `buildErrorLog` — compiler/pipeline errors when `buildStatus` is `failing`
+- `reviewStatus` — `approved` | `changes-requested` | `waiting` | `pending`
+- `status` — `active` | `merged` | `abandoned`
+- `url` — link to the PR in ADO
+
+**Live status (when engine isn't running or you need up-to-the-moment results):**
+```bash
+node engine/ado-status.js <prNumber>              # reads cached pull-requests.json
+node engine/ado-status.js <prNumber> --live       # fresh ADO API call
+node engine/ado-status.js <prNumber> --live --project MyProject
+```
+Output is JSON with the same fields. Exit 0 on success, 1 if not found.
+
+**Never make raw `curl` calls to ADO APIs directly.** Use `node engine/ado-status.js` which routes through `ado.js` — authenticated, retried, circuit-broken. Raw `azureauth` + curl bypasses all of that.
