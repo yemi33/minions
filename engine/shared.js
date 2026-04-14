@@ -1050,6 +1050,59 @@ function formatTranscriptEntry(t) {
   return '### ' + (t.agent || 'agent') + ' (' + (t.type || '') + ', Round ' + (t.round || '?') + ')\n\n' + (t.content || '');
 }
 
+// ── Throttle Tracker Factory ────────────────────────────────────────────────
+// Generic rate-limit tracker reusable by both ADO and GitHub integrations.
+// Returns an object with recordThrottle, recordSuccess, isThrottled, getState.
+
+function createThrottleTracker({ label, baseBackoffMs = 60000, maxBackoffMs = 32 * 60000 } = {}) {
+  let state = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: baseBackoffMs };
+
+  function recordThrottle(retryAfterMs) {
+    state.consecutiveHits++;
+    state.backoffMs = Math.min(state.backoffMs * 2, maxBackoffMs);
+    const waitMs = (retryAfterMs > 0) ? retryAfterMs : state.backoffMs;
+    state.throttled = true;
+    state.retryAfter = Date.now() + waitMs;
+    log('warn', `[${label}] Throttled — retry after ${Math.round(waitMs / 1000)}s, consecutive hits: ${state.consecutiveHits}`);
+  }
+
+  function recordSuccess() {
+    if (state.consecutiveHits > 0) {
+      state.consecutiveHits--;
+      if (state.consecutiveHits === 0) {
+        state.throttled = false;
+        state.backoffMs = baseBackoffMs;
+      }
+    }
+  }
+
+  function isThrottled() {
+    if (!state.throttled) return false;
+    if (Date.now() >= state.retryAfter) {
+      // Auto-clear ALL state when retryAfter has elapsed
+      state.throttled = false;
+      state.backoffMs = baseBackoffMs;
+      state.consecutiveHits = 0;
+      return false;
+    }
+    return true;
+  }
+
+  function getState() {
+    return { throttled: isThrottled(), retryAfter: state.retryAfter, consecutiveHits: state.consecutiveHits };
+  }
+
+  // Testing helpers
+  function _reset() {
+    state = { throttled: false, retryAfter: 0, consecutiveHits: 0, backoffMs: baseBackoffMs };
+  }
+  function _setForTest(overrides) {
+    Object.assign(state, overrides);
+  }
+
+  return { recordThrottle, recordSuccess, isThrottled, getState, _reset, _setForTest };
+}
+
 module.exports = {
   MINIONS_DIR,
   PR_LINKS_PATH,
@@ -1113,5 +1166,6 @@ module.exports = {
   slugify,
   formatTranscriptEntry,
   _logBuffer, // exported for testing
+  createThrottleTracker,
 };
 

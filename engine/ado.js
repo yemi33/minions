@@ -5,7 +5,7 @@
 
 const path = require('path');
 const shared = require('./shared');
-const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS } = shared;
+const { exec, execAsync, getAdoOrgBase, addPrLink, log, ts, dateStamp, PR_STATUS, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const { mutateJsonFileLocked } = shared;
 
@@ -46,6 +46,11 @@ function votesToReviewStatus(votes) {
 
 let _adoTokenCache = { token: null, expiresAt: 0 };
 let _adoTokenFailedUntil = 0; // backoff: skip azureauth calls until this timestamp
+
+// ─── ADO Throttle State ─────────────────────────────────────────────────────
+// Tracks rate-limiting (HTTP 429/503) from ADO API responses.
+// Uses shared createThrottleTracker factory: backoffMs starts at 60s, doubles, caps at 32 min.
+const _adoThrottle = createThrottleTracker({ label: 'ado', baseBackoffMs: 60000, maxBackoffMs: 32 * 60000 });
 
 // ─── Auth Failure Tracking ──────────────────────────────────────────────────
 // Set when pollPrStatus encounters auth errors mid-loop. The engine checks this
@@ -97,6 +102,14 @@ async function adoFetch(url, token, opts = {}) {
     signal: AbortSignal.timeout(30000),
     body,
   });
+  // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
+  if (res.status === 429 || res.status === 503) {
+    const retryAfterSec = parseInt(res.headers.get('Retry-After'), 10);
+    const retryAfterMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : 0;
+    _adoThrottle.recordThrottle(retryAfterMs);
+    const state = _adoThrottle.getState();
+    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round((state.retryAfter - Date.now()) / 1000)}s`);
+  }
   if (!res.ok) throw new Error(`ADO API ${method} ${res.status}: ${res.statusText}`);
   const text = await res.text();
   if (!text || text.trimStart().startsWith('<')) {
@@ -110,7 +123,10 @@ async function adoFetch(url, token, opts = {}) {
     }
     throw new Error(`ADO returned HTML instead of JSON (likely auth redirect) for ${url.split('?')[0]}`);
   }
-  return JSON.parse(text);
+  const json = JSON.parse(text);
+  // ── Success decay: decrement consecutiveHits, reset when fully recovered ──
+  _adoThrottle.recordSuccess();
+  return json;
 }
 
 /** Fetch raw text from ADO API (for build logs which aren't JSON). */
@@ -119,6 +135,14 @@ async function adoFetchText(url, token) {
     headers: { 'Authorization': `Bearer ${token}` },
     signal: AbortSignal.timeout(30000),
   });
+  // ── Throttle detection: intercept 429/503 BEFORE generic !res.ok ──
+  if (res.status === 429 || res.status === 503) {
+    const retryAfterSec = parseInt(res.headers.get('Retry-After'), 10);
+    const retryAfterMs = (retryAfterSec > 0) ? retryAfterSec * 1000 : 0;
+    _adoThrottle.recordThrottle(retryAfterMs);
+    const state = _adoThrottle.getState();
+    throw new Error(`ADO API throttled (${res.status}): retry after ${Math.round((state.retryAfter - Date.now()) / 1000)}s`);
+  }
   if (!res.ok) throw new Error(`ADO API ${res.status}: ${res.statusText}`);
   return res.text();
 }
@@ -858,6 +882,24 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   };
 }
 
+// ─── ADO Throttle Queries ────────────────────────────────────────────────────
+
+/** Returns true if ADO is throttled and retryAfter hasn't elapsed. Auto-clears when retryAfter passes. */
+const isAdoThrottled = () => _adoThrottle.isThrottled();
+
+/** Returns a snapshot of the current throttle state. Calls isAdoThrottled() for a fresh value. */
+const getAdoThrottleState = () => _adoThrottle.getState();
+
+/** Reset throttle state — exported for testing only. */
+function _resetAdoThrottle() {
+  _adoThrottle._reset();
+}
+
+/** Set throttle state directly — exported for testing only. */
+function _setAdoThrottleForTest(state) {
+  _adoThrottle._setForTest(state);
+}
+
 module.exports = {
   getAdoToken,
   adoFetch,
@@ -867,7 +909,11 @@ module.exports = {
   checkLiveReviewStatus,
   needsAdoPollRetry,
   isAdoAuthError, // exported for testing
+  isAdoThrottled,
+  getAdoThrottleState,
   fetchAdoPrMetadata,
   fetchSinglePrBuildStatus,
+  _resetAdoThrottle, // exported for testing
+  _setAdoThrottleForTest, // exported for testing
 };
 

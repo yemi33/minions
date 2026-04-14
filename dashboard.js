@@ -22,6 +22,7 @@ const shared = require('./engine/shared');
 const queries = require('./engine/queries');
 const teams = require('./engine/teams');
 const ado = require('./engine/ado');
+const gh = require('./engine/github');
 const os = require('os');
 
 const { safeRead, safeReadDir, safeWrite, safeJson, safeJsonObj, safeJsonArr, safeUnlink, mutateJsonFileLocked, mutateWorkItems, getProjects: _getProjects, DONE_STATUSES, WI_STATUS, reopenWorkItem } = shared;
@@ -382,6 +383,8 @@ function getStatus() {
     verifyGuides: getVerifyGuides(),
     archivedPrds: getArchivedPrds(),
     engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
+    adoThrottle: ado.getAdoThrottleState(),
+    ghThrottle: gh.getGhThrottleState(),
     dispatch: getDispatchQueue(),
     engineLog: getEngineLog(),
     metrics: getMetrics(),

@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -68,13 +68,34 @@ function resetSlugBackoff(slug) {
   }
 }
 
+// ─── GitHub Rate-Limit Throttle ────────────────────────────────────────────
+// Tracks rate-limiting from GitHub API (gh CLI exits non-zero with rate-limit messages).
+// GitHub rate limits reset hourly, so cap at 60 min.
+const _ghThrottle = createThrottleTracker({ label: 'gh', baseBackoffMs: 60000, maxBackoffMs: 60 * 60000 });
+
+/** Returns true if GitHub is rate-limited and retryAfter hasn't elapsed. */
+const isGhThrottled = () => _ghThrottle.isThrottled();
+
+/** Returns a snapshot of the current GitHub throttle state. */
+const getGhThrottleState = () => _ghThrottle.getState();
+
 /** Run a `gh api` call and parse JSON result. Returns null on failure. */
 async function ghApi(endpoint, slug) {
   try {
     const cmd = `gh api "repos/${slug}${endpoint}"`;
     const result = await execAsync(cmd, { timeout: 30000, encoding: 'utf-8' });
-    return JSON.parse(result);
+    const parsed = JSON.parse(result);
+    _ghThrottle.recordSuccess();
+    return parsed;
   } catch (e) {
+    const msg = e?.message || e?.stderr || '';
+    // Detect GitHub rate-limit errors from gh CLI output
+    if (/rate.?limit|secondary rate|429/i.test(msg)) {
+      // Try to extract retry seconds from "N seconds" pattern in error message
+      const secMatch = msg.match(/(\d+)\s*seconds?/i);
+      const retryAfterMs = secMatch ? parseInt(secMatch[1], 10) * 1000 : 0;
+      _ghThrottle.recordThrottle(retryAfterMs);
+    }
     log('warn', `GitHub API error (${endpoint}): ${e.message}`);
     return null;
   }
@@ -731,10 +752,13 @@ module.exports = {
   pollPrHumanComments,
   reconcilePrs,
   checkLiveReviewStatus,
+  isGhThrottled,
+  getGhThrottleState,
   // Exported for testing
   isSlugInBackoff,
   recordSlugFailure,
   resetSlugBackoff,
   _ghPollBackoff,
+  _ghThrottle, // exported for testing
 };
 
