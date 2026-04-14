@@ -16722,9 +16722,12 @@ async function testPrReviewFixFlows() {
       'ADO build query should scope by repositoryId');
     assert.ok(adoSrc.includes('repositoryType=TfsGit'),
       'ADO build query should specify repositoryType=TfsGit');
-    // Should NOT use reasonFilter+$top=25 (old approach)
     assert.ok(!adoSrc.includes('reasonFilter=pullRequest'),
       'ADO build query should not use reasonFilter (replaced by merge ref scoping)');
+    // sourceVersion filter must still narrow to current merge commit — same PR ref accumulates
+    // builds across multiple PR updates (each push creates a new merge commit on the same ref)
+    assert.ok(adoSrc.includes('b.sourceVersion === mergeCommitId'),
+      'ADO build query must filter by sourceVersion to exclude builds from previous PR updates');
   });
 
 

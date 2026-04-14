@@ -378,13 +378,16 @@ async function pollPrStatus(config) {
     let buildFailReason = '';
     let buildStatuses = []; // for error log fetching
 
+    const mergeCommitId = prData.lastMergeCommit?.commitId;
     if (prNumber) {
       try {
-        // branchName=refs/pull/{id}/merge targets exactly this PR's merge-commit builds (server-side filter, no client matching needed)
+        // branchName=refs/pull/{id}/merge scopes server-side to this PR's builds.
+        // sourceVersion filter then narrows to the current merge commit — a PR updated
+        // multiple times accumulates builds on the same ref across different commits.
         const mergeRef = encodeURIComponent(`refs/pull/${prNumber}/merge`);
-        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=10&api-version=7.1`;
+        const buildsUrl = `${orgBase}/${project.adoProject}/_apis/build/builds?branchName=${mergeRef}&repositoryId=${project.repositoryId}&repositoryType=TfsGit&$top=25&api-version=7.1`;
         const buildsData = await adoFetch(buildsUrl, token);
-        const prBuilds = buildsData?.value || [];
+        const prBuilds = (buildsData?.value || []).filter(b => !mergeCommitId || b.sourceVersion === mergeCommitId);
 
         if (prBuilds.length > 0) {
           // partiallySucceeded = warnings, not failures — counts as passing
