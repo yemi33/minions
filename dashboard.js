@@ -3863,7 +3863,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           versionCheckInterval: [60000],
           maxBuildFixAttempts: [1, 10],
           adoPollStatusEvery: [1], adoPollCommentsEvery: [1],
-          agentBusyReassignMs: [60000],
+          agentBusyReassignMs: [0],
         };
         for (const [key, [min, max]] of Object.entries(numericFields)) {
           if (e[key] !== undefined) {

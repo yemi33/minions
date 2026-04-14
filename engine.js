@@ -1984,6 +1984,46 @@ async function discoverFromPrs(config, project) {
       if (item) { newWork.push(item); }
     }
 
+    // Re-review after fix: only trigger when fixedAt > lastReviewedAt (not a broad !alreadyReviewed
+    // fallback — that caused infinite re-review loops on GitHub where self-approval is blocked)
+    const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
+      pr.lastReviewedAt && pr.minionsReview.fixedAt > pr.lastReviewedAt);
+    const needsReReview = autoReview && reviewStatus === 'waiting' &&
+      fixedAfterReview && !evalEscalated;
+    if (needsReReview) {
+      const key = `review-${project?.name || 'default'}-${pr.id}`;
+      // Skip isAlreadyDispatched — fixedAfterReview/alreadyReviewed already dedup; the 1hr
+      // completed-dispatch window would block legitimate re-reviews within the hour after a fix
+      if (isOnCooldown(key, cooldownMs)) continue;
+
+      // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
+      try {
+        const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
+        const liveStatus = await checkFn(pr, project);
+        if (liveStatus && liveStatus !== 'waiting') {
+          log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was waiting) — skipping re-review`);
+          if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
+          try {
+            mutateJsonFileLocked(projectPrPath(project), data => {
+              if (!Array.isArray(data)) return data;
+              const target = data.find(p => p.id === pr.id);
+              if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
+              return data;
+            });
+          } catch {}
+          continue;
+        }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+
+      const agentId = resolveAgent('review', config);
+      if (!agentId) continue;
+      const item = buildPrDispatch(agentId, config, project, pr, 'review', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); }
+    }
+
     // PRs with changes requested → route back to author for fix
     let fixDispatched = false;
     if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
@@ -1997,7 +2037,7 @@ async function discoverFromPrs(config, project) {
         review_note: pr.minionsReview?.note || pr.reviewNote || 'See PR thread comments',
       }, `Fix ${pr.id}: ${pr.title || ''} — review feedback`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
-        newWork.push(item); setCooldown(key); fixDispatched = true;
+        newWork.push(item); fixDispatched = true;
         // Increment review→fix cycle counter
         try {
           mutatePullRequests(projectPrPath(project), prs => {
@@ -2035,7 +2075,7 @@ async function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
       }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      if (item) { newWork.push(item); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
@@ -2084,7 +2124,7 @@ async function discoverFromPrs(config, project) {
         review_note: reviewNote,
       }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
-        newWork.push(item); setCooldown(key);
+        newWork.push(item);
         // Increment build fix attempts counter
         try {
           const prPath = projectPrPath(project);
@@ -2141,7 +2181,6 @@ async function discoverFromPrs(config, project) {
           }, `Fix merge conflicts on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
           if (item) {
             newWork.push(item);
-            setCooldown(key);
             // Record dispatch timestamp so re-dispatch is suppressed during ADO lag window
             try {
               mutatePullRequests(projectPrPath(project), prs => {

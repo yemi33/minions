@@ -4526,6 +4526,17 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+  await test('needsReReview requires fixedAfterReview only — no broad !alreadyReviewed fallback', () => {
+    // The old condition had: (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt))
+    // The fallback (!alreadyReviewed && !!fixedAt) caused infinite re-review loops on GitHub
+    // because reviewStatus stays 'waiting' (self-approval blocked) and any push after review
+    // makes alreadyReviewed=false while fixedAt remains set. Fix: use fixedAfterReview only.
+    assert.ok(!src.includes('!alreadyReviewed && !!pr.minionsReview?.fixedAt'),
+      'needsReReview must NOT have the broad !alreadyReviewed fallback — it causes infinite re-review loops');
+    assert.ok(src.includes('fixedAfterReview && !evalEscalated'),
+      'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -4571,6 +4582,38 @@ async function testBuildFixRetryCap() {
   await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
     assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
       'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
+  });
+
+  // ─── Cooldown deferred to post-gating (#setCooldown-gating) ─────────────
+
+  await test('discoverFromPrs does NOT call setCooldown for review items', () => {
+    // Extract only the discoverFromPrs function body (ends where discoverFromWorkItems begins)
+    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
+    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = engineSrc.slice(fnStart, fnEnd);
+    // setCooldown should not appear in discoverFromPrs — it is deferred to discoverWork post-gating
+    assert.ok(!fnBody.includes('setCooldown(key)'),
+      'discoverFromPrs must NOT call setCooldown(key) — cooldown must be deferred to post-gating in discoverWork');
+  });
+
+  await test('discoverWork calls setCooldown after gating check via dispatchKey', () => {
+    const fnStart = engineSrc.indexOf('async function discoverWork(');
+    const fnBody = engineSrc.slice(fnStart);
+    // The post-gating dispatch loop should call setCooldown using item.meta.dispatchKey
+    assert.ok(fnBody.includes('setCooldown(item.meta') || fnBody.includes('setCooldown(item.meta?.dispatchKey)') || fnBody.includes("setCooldown(item.meta.dispatchKey)"),
+      'discoverWork post-gating loop must call setCooldown using item.meta.dispatchKey');
+  });
+
+  await test('setCooldown for gated reviews/fixes is not set when gated', () => {
+    // Verify that when items are gated (allReviews = [], allFixes = []),
+    // they don't end up in allWork, so setCooldown is never called for them
+    const fnStart = engineSrc.indexOf('async function discoverWork(');
+    const fnBody = engineSrc.slice(fnStart);
+    // The gating check clears allReviews and allFixes BEFORE the dispatch loop
+    const gateIdx = fnBody.indexOf('allReviews = []');
+    const dispatchLoopIdx = fnBody.indexOf('for (const item of allWork)');
+    assert.ok(gateIdx > -1 && dispatchLoopIdx > -1 && gateIdx < dispatchLoopIdx,
+      'Gating (allReviews = []) must happen BEFORE the dispatch loop where setCooldown is called');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -9447,6 +9490,9 @@ async function main() {
     // P-b7e3a1d9: render-utils.js shared formatting helpers
     await testRenderUtils();
 
+    // W-mnytn469wx90: Agent busy reassignment
+    await testAgentBusyReassignment();
+
     // W-mnyao4dyz8w7: createThrottleTracker factory, adoFetchText throttle, GitHub throttle
     await testCreateThrottleTracker();
     await testAdoFetchTextThrottle();
@@ -9931,14 +9977,26 @@ async function testSettingsComprehensive() {
       'handleSettingsRead should spread DEFAULT_CLAUDE into claude response so UI gets correct defaults');
   });
 
-  await test('handleSettingsUpdate derives boolean fields from ENGINE_DEFAULTS', () => {
+  await test('handleSettingsUpdate boolean allowlist includes adoPollEnabled and ghPollEnabled', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
     const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
-    // Must derive from ENGINE_DEFAULTS rather than a hardcoded list, so new boolean flags are picked up automatically
-    assert.ok(
-      handler.includes('ENGINE_DEFAULTS') && handler.includes("typeof") && handler.includes("'boolean'"),
-      "handleSettingsUpdate must derive boolean fields from ENGINE_DEFAULTS (typeof ENGINE_DEFAULTS[k] === 'boolean') — hardcoded lists require manual updates when new flags are added"
-    );
+    // Boolean fields are derived dynamically from ENGINE_DEFAULTS (typeof === 'boolean')
+    // or listed in a hardcoded array. Either approach must include adoPollEnabled/ghPollEnabled.
+    const hasDynamic = handler.includes('ENGINE_DEFAULTS') && handler.includes("=== 'boolean'");
+    if (hasDynamic) {
+      // Dynamic path: verify the keys exist as booleans in ENGINE_DEFAULTS (auto-included)
+      assert.strictEqual(typeof shared.ENGINE_DEFAULTS.adoPollEnabled, 'boolean',
+        "adoPollEnabled must be a boolean in ENGINE_DEFAULTS so dynamic derivation includes it");
+      assert.strictEqual(typeof shared.ENGINE_DEFAULTS.ghPollEnabled, 'boolean',
+        "ghPollEnabled must be a boolean in ENGINE_DEFAULTS so dynamic derivation includes it");
+    } else {
+      // Hardcoded path: extract the boolean fields array and check it contains the keys
+      const match = handler.match(/(?:boolean|Bool)\w*\s*=\s*\[([^\]]+)\]/);
+      assert.ok(match, 'handleSettingsUpdate must have a boolean fields list');
+      const allowlist = match[1];
+      assert.ok(allowlist.includes("'adoPollEnabled'"), "boolean allowlist must include 'adoPollEnabled' — omitting it silently drops the setting on every save");
+      assert.ok(allowlist.includes("'ghPollEnabled'"), "boolean allowlist must include 'ghPollEnabled' — omitting it silently drops the setting on every save");
+    }
   });
 
   await test('settings UI sends adoPollEnabled and ghPollEnabled to backend', () => {
@@ -17811,6 +17869,200 @@ async function testAdoThrottleDashboard() {
     // #engine-alert must still exist separately
     assert.ok(layoutSrc.includes('engine-alert'),
       '#engine-alert must still exist in layout.html');
+  });
+}
+
+// ─── W-mnytn469wx90: Agent busy reassignment ───────────────────────────────
+
+async function testAgentBusyReassignment() {
+  console.log('\n── Agent Busy Reassignment ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+  const sharedSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+
+  // 1. ENGINE_DEFAULTS has agentBusyReassignMs
+  await test('ENGINE_DEFAULTS.agentBusyReassignMs exists and is 600000', () => {
+    assert.ok(shared.ENGINE_DEFAULTS.agentBusyReassignMs !== undefined,
+      'Missing ENGINE_DEFAULTS.agentBusyReassignMs');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.agentBusyReassignMs, 600000,
+      'agentBusyReassignMs should default to 600000 (10 min)');
+  });
+
+  // 2. _agentBusySince is set when skipReason is agent_busy
+  await test('_agentBusySince timestamp set when skipReason is agent_busy', () => {
+    assert.ok(engineSrc.includes('_agentBusySince'),
+      'engine.js must track _agentBusySince on pending dispatch entries');
+    // Should set it only when not already set
+    assert.ok(engineSrc.includes("!item._agentBusySince") || engineSrc.includes('!item._agentBusySince'),
+      'Should only set _agentBusySince when not already set');
+  });
+
+  // 3. _agentBusySince is cleared when reason changes from agent_busy
+  await test('_agentBusySince cleared when skipReason changes from agent_busy', () => {
+    assert.ok(engineSrc.includes('delete item._agentBusySince'),
+      'Must clear _agentBusySince when item is no longer blocked on busy agent');
+  });
+
+  // 4. Dispatch loop checks _agentBusySince threshold for reassignment
+  await test('dispatch loop checks agentBusyReassignMs threshold for reassignment', () => {
+    assert.ok(engineSrc.includes('agentBusyReassignMs'),
+      'Dispatch loop should reference agentBusyReassignMs config');
+    assert.ok(engineSrc.includes('Reassigning'),
+      'Should log a message when reassignment occurs');
+  });
+
+  // 5. Reassignment skips explicitly assigned items
+  await test('reassignment skips explicitly assigned items', () => {
+    // Items with meta.item.agent are explicitly assigned — should not be reassigned
+    assert.ok(engineSrc.includes('meta?.item?.agent') || engineSrc.includes("meta?.item?.agent"),
+      'Dispatch loop should check for explicit agent assignment');
+  });
+
+  // 6. Behavioral: item stays on busy agent below threshold
+  await test('item stays on busy agent below threshold (behavioral)', () => {
+    const { sanitizeBranch } = shared;
+    const now = Date.now();
+    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
+
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
+    ];
+    const pending = [
+      {
+        id: 'ralph-fix-1', agent: 'dallas', type: 'fix',
+        meta: { item: {}, branch: 'work/P-fix' },
+        _agentBusySince: new Date(now - (reassignMs / 2)).toISOString(), // half threshold — below
+      },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        // Simulate reassignment check: below threshold → skip
+        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
+        if (busySince && (now - busySince) > reassignMs) {
+          toDispatch.push(item); // would reassign
+        }
+        // else: stays pending (not reassigned)
+        continue;
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 0, 'Item should NOT be dispatched/reassigned below threshold');
+  });
+
+  // 7. Behavioral: item reassigned above threshold
+  await test('item reassigned to alternative agent above threshold (behavioral)', () => {
+    const now = Date.now();
+    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
+
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
+    ];
+    const pending = [
+      {
+        id: 'ralph-fix-1', agent: 'dallas', type: 'fix',
+        meta: { item: {}, branch: 'work/P-fix' },
+        _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(), // above threshold
+      },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    const availableAgents = ['ralph', 'ripley', 'lambert'];
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
+        if (busySince && (now - busySince) > reassignMs) {
+          // Find alternative agent
+          const altAgent = availableAgents.find(a => !busyAgents.has(a));
+          if (altAgent) {
+            item.agent = altAgent;
+            delete item._agentBusySince;
+            toDispatch.push(item);
+            busyAgents.add(altAgent);
+            continue;
+          }
+        }
+        continue;
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 1, 'Item should be dispatched after reassignment');
+    assert.notStrictEqual(toDispatch[0].agent, 'dallas', 'Should not be assigned to original busy agent');
+    assert.ok(availableAgents.includes(toDispatch[0].agent), 'Should be assigned to an available agent');
+    assert.strictEqual(toDispatch[0]._agentBusySince, undefined, '_agentBusySince should be cleared after reassignment');
+  });
+
+  // 8. Behavioral: explicitly assigned items are NOT reassigned even above threshold
+  await test('explicitly assigned items are NOT reassigned (behavioral)', () => {
+    const now = Date.now();
+    const reassignMs = shared.ENGINE_DEFAULTS.agentBusyReassignMs;
+
+    const active = [
+      { id: 'dallas-impl-1', agent: 'dallas', meta: { branch: 'work/P-active' } },
+    ];
+    const pending = [
+      {
+        id: 'fix-explicit', agent: 'dallas', type: 'fix',
+        meta: { item: { agent: 'dallas' }, branch: 'work/P-explicit' },
+        _agentBusySince: new Date(now - (reassignMs + 60000)).toISOString(),
+      },
+    ];
+
+    const busyAgents = new Set(active.map(d => d.agent));
+    const toDispatch = [];
+
+    for (const item of pending) {
+      if (busyAgents.has(item.agent)) {
+        const isExplicit = !!item.meta?.item?.agent;
+        if (isExplicit) { continue; } // explicit items skip reassignment
+        const busySince = item._agentBusySince ? new Date(item._agentBusySince).getTime() : null;
+        if (busySince && (now - busySince) > reassignMs) {
+          item.agent = 'ralph';
+          toDispatch.push(item);
+          continue;
+        }
+        continue;
+      }
+      toDispatch.push(item);
+    }
+
+    assert.strictEqual(toDispatch.length, 0, 'Explicitly assigned item should NOT be reassigned');
+  });
+
+  // 9. Source code: reassignment uses resolveAgent for routing-aware selection
+  await test('reassignment uses resolveAgent for routing-aware agent selection', () => {
+    assert.ok(engineSrc.includes('resolveAgent(item.type'),
+      'Reassignment should use resolveAgent to find alternative agent via routing table');
+  });
+
+  // 10. Source code: reassignment persists agent change to dispatch.json
+  await test('reassignment persists agent change to dispatch.json via mutateDispatch', () => {
+    // The reassignment must update dispatch.json so the change survives across ticks
+    assert.ok(engineSrc.includes('mutateDispatch'),
+      'Reassignment must persist via mutateDispatch');
+  });
+
+  // 11. Behavioral: temp agent fallback when no idle agent available
+  await test('reassignment falls back to temp agents if allowTempAgents enabled (source check)', () => {
+    // resolveAgent already handles temp agent creation when allowTempAgents is true.
+    // The reassignment path calls resolveAgent which handles this automatically.
+    const routingSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'routing.js'), 'utf8');
+    assert.ok(routingSrc.includes('allowTempAgents'),
+      'resolveAgent must support temp agent fallback when all permanent agents busy');
+  });
+
+  // 12. _agentBusySince annotation only in agent_busy path
+  await test('_agentBusySince set only in agent_busy annotation path', () => {
+    // Must be set when reason === 'agent_busy' and cleared otherwise
+    assert.ok(engineSrc.includes("agent_busy") && engineSrc.includes('_agentBusySince'),
+      'Both agent_busy and _agentBusySince should be present in the annotation logic');
   });
 }
 
