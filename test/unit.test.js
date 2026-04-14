@@ -7314,13 +7314,14 @@ async function testDashboardUIFunctions() {
   });
 
   await test('live chat renders human steering as blue bubbles', () => {
-    assert.ok(liveSrc.includes('[human-steering]') && liveSrc.includes('var(--blue)'),
-      'Should render human steering messages as right-aligned blue bubbles');
+    // Steering rendering is in sendSteering (immediate feedback) and renderAgentOutput (render-utils.js)
+    assert.ok(liveSrc.includes('var(--blue)'),
+      'sendSteering should render steering messages as blue bubbles');
   });
 
-  await test('live chat renders tool calls as collapsible blocks', () => {
-    assert.ok(liveSrc.includes('tool_use') && liveSrc.includes('display:none'),
-      'Should render tool calls as collapsible blocks');
+  await test('live chat delegates rendering to renderAgentOutput from render-utils.js', () => {
+    assert.ok(liveSrc.includes('renderAgentOutput'),
+      'renderLiveChatMessage should call renderAgentOutput from render-utils.js');
   });
 
   await test('sendSteering function exists', () => {
@@ -10355,21 +10356,31 @@ async function testDashboardBugFixes() {
       'Should handle zero-byte or missing log file');
   });
 
-  await test('live-stream.js renderLiveChatMessage parses all output formats', () => {
+  await test('live-stream.js renderLiveChatMessage delegates to renderAgentOutput', () => {
     const liveSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
-    assert.ok(liveSrc.includes('"type":"assistant"') || liveSrc.includes("type === 'assistant'"),
+    assert.ok(liveSrc.includes('renderAgentOutput'),
+      'renderLiveChatMessage should delegate JSONL parsing to renderAgentOutput from render-utils.js');
+    assert.ok(!liveSrc.includes('innerHTML +='),
+      'live-stream.js must not use innerHTML += (CLAUDE.md violation) — use insertAdjacentHTML');
+    assert.ok(liveSrc.includes('insertAdjacentHTML'),
+      'Should use insertAdjacentHTML for DOM insertion');
+  });
+
+  await test('render-utils.js renderAgentOutput parses all output formats', () => {
+    const renderUtilsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-utils.js'), 'utf8');
+    assert.ok(renderUtilsSrc.includes("type === 'assistant'") || renderUtilsSrc.includes("obj.type === 'assistant'"),
       'Should parse assistant messages from stream-json');
-    assert.ok(liveSrc.includes('"tool_use"') || liveSrc.includes("type === 'tool_use'"),
+    assert.ok(renderUtilsSrc.includes("'tool_use'") || renderUtilsSrc.includes('"tool_use"'),
       'Should parse tool_use blocks');
-    assert.ok(liveSrc.includes('[human-steering]'),
+    assert.ok(renderUtilsSrc.includes('[human-steering]'),
       'Should render human steering messages');
-    assert.ok(liveSrc.includes('[heartbeat]'),
+    assert.ok(renderUtilsSrc.includes('[heartbeat]'),
       'Should handle heartbeat lines');
-    assert.ok(liveSrc.includes('[steering-failed]') || liveSrc.includes('steering-failed'),
+    assert.ok(renderUtilsSrc.includes('[steering-failed]') || renderUtilsSrc.includes('steering-failed'),
       'Should handle steering failure notices');
-    assert.ok(liveSrc.includes('startsWith(\'{\')') || liveSrc.includes('startsWith("{")'),
+    assert.ok(renderUtilsSrc.includes('startsWith(\'{\')') || renderUtilsSrc.includes('startsWith("{")'),
       'Should parse single JSON objects (stream-json format)');
-    assert.ok(liveSrc.includes('startsWith(\'[\')') || liveSrc.includes('startsWith("[")'),
+    assert.ok(renderUtilsSrc.includes('startsWith(\'[\')') || renderUtilsSrc.includes('startsWith("[")'),
       'Should parse JSON arrays (json format)');
   });
 
