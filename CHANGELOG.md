@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.1.974 (2026-04-14)
+
+### Features
+-  flush queued CC messages as single combined request
+-  add quality standard reminder to all agent and CC prompts
+- surface in-flight tool calls in lastAction (#1064)
+- wire agentBusyReassignMs into settings UI and persist
+-  ADO throttle detection, poll guards, and dashboard banner (#1051)
+- gate auto-fix conflict dispatch behind autoFixConflicts flag
+- add PR/build status CLI shim and agent guidance
+-  make ADO poll frequency configurable and ungate reconcilePrs
+- update render-work-items.js output viewer to use renderAgentOutput
+- update detail-panel.js Output Log tab to use renderAgentOutput
+-  Update command-center.js to capture tool inputs and use formatted summaries
+- certificate-based auth for Teams integration (#1027)
+-  Create render-utils.js with shared formatting helpers
+-  add adoPollEnabled/ghPollEnabled engine settings
+-  doc-chat abort kills LLM process + queued messages auto-process
+- add /api/work-items/reopen endpoint and reopen-work-item CC action (#982)
+- CC tab unread dot + reopened badge on work items
+- fix dep re-merge failure on retry with existing commits (#977)
+- audit and harden log buffering implementation (#971)
+- replace magic string 'active' with PR_STATUS.ACTIVE in lifecycle.js (#969)
+
+### Fixes
+-  skip isAlreadyDispatched in needsReReview to allow re-review within 1hr
+-  loop queue flush so messages queued during combined send aren't orphaned
+-  set lastPushedAt on fix completion to unblock re-review without poller
+-  trigger second-pass re-review after fix agent completes
+-  update ccInFlightAborts when retry LLM replaces original
+-  skip orphaned LLM retry when client disconnected during CC stream
+-  restore queue flush after abort — queued messages are user intent
+-  CC stale lock auto-release + queue drain on abort
+-  CC streaming 'tabId' TDZ error on new tab first message
+- fix tabId scope and close-event lock race in CC handlers
+- defer setCooldown to post-gating in discoverWork
+- fix CC queued message 'already processing' and thinking UX stacking
+- enforce --timeout 1 on all azureauth calls to prevent agent orphans (#1063)
+- cancel steering kill watcher on resume spawn (#1052) (#1062)
+- suppress warn for optional template variables (#1061)
+- fix ENGINE_DEFAULTS ref and derive boolean settings from defaults
+- add autoFixConflicts to boolean settings persist list
+- tighten build query guard to require mergeCommitId
+- restore sourceVersion filter after refs/pull merge ref switch
+- use refs/pull/{id}/merge for build status scoping
+
+### Other
+- refactor(dashboard): extract _releaseCCTab helper and CC_LOCK_WAIT_MS constant
+- test(engine): add regression tests for autoFixConflicts flag and DEFAULTS alias
+- refactor(ado): simplify ado-status and extract build/review status helpers
+- refactor(ado): extract stripRefsHeads helper, deduplicate refs/heads/ stripping
+- refactor(ado): simplify comments, fix declaration order, promote ado import
+- refactor(ado): move PR enrichment fetch into fetchAdoPrMetadata helper
+- refactor: Make renderLiveChatMessage a thin wrapper over renderAgentOutput
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
