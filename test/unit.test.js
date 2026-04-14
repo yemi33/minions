@@ -16699,6 +16699,24 @@ async function testPrReviewFixFlows() {
       'ADO should query builds API with merge commit hash');
   });
 
+  await test('ADO build query scopes by repositoryId+pullRequest not branchName', () => {
+    assert.ok(adoSrc.includes('reasonFilter=pullRequest'),
+      'ADO build query should use reasonFilter=pullRequest');
+    assert.ok(adoSrc.includes('repositoryId=') && adoSrc.includes('project.repositoryId'),
+      'ADO build query should scope by repositoryId');
+    assert.ok(adoSrc.includes('repositoryType=TfsGit'),
+      'ADO build query should specify repositoryType=TfsGit');
+    assert.ok(adoSrc.includes('$top=25'),
+      'ADO build query should use $top=25');
+    // The pollPrStatus build URL should NOT use branchName+$top=10 (fragile window approach)
+    // Note: branchName= still appears in fetchAdoBuildErrorLog (line ~122) which is a different context
+    const pollFn = adoSrc.match(/async function pollPrStatus[\s\S]*?^}/m)?.[0] || '';
+    assert.ok(!pollFn.includes('branchName='),
+      'pollPrStatus should NOT use branchName filter (fragile window approach)');
+    assert.ok(!pollFn.includes('$top=10'),
+      'pollPrStatus should NOT use $top=10 (too small window)');
+  });
+
   await test('ADO partiallySucceeded counts as passing', () => {
     assert.ok(adoSrc.includes('partiallySucceeded'), 'ADO should treat partiallySucceeded as passing');
   });
