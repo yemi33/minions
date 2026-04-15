@@ -11,7 +11,7 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
