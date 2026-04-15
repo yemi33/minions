@@ -19684,6 +19684,9 @@ async function testWatchesModule() {
   });
 
   await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+    // Use a non-absolute condition (new-comments) — absolute conditions (merged, build-fail, etc.)
+    // auto-expire when stopAfter is 0 via WATCH_ABSOLUTE_CONDITIONS (fire-once semantics).
+    // First check initializes baseline _lastState without triggering, so we need 3 checks for 2 triggers.
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19691,29 +19694,37 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 0,   // run forever
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,   // run forever (non-absolute conditions)
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
-      // Trigger multiple times by resetting last_checked between checks
-      testWatches.checkWatches({}, state);
-      // Force last_checked back so interval doesn't block next check
-      const watchesData = testWatches.getWatches();
-      const found = watchesData.find(x => x.id === w.id);
-      assert.strictEqual(found.triggerCount, 1);
-      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
-      // Manually reset last_checked to force another check
-      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      testWatches.checkWatches({}, state);
+
+      // Check 1 — initializes baseline _lastState (lastCommentDate = '2026-01-01'), no trigger
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      assert.strictEqual(testWatches.getWatches().find(x => x.id === w.id).triggerCount, 0, 'First check initializes baseline, no trigger');
+
+      // Check 2 — comment date changed → triggers (triggerCount = 1)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+
+      // Check 3 — another comment date change → triggers again (triggerCount = 2)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for non-absolute conditions');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
@@ -19815,6 +19826,8 @@ async function testWatchesModule() {
   });
 
   await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    // Use non-absolute condition (new-comments) so stopAfter: 0 means "run forever"
+    // First check initializes baseline; checks 2 and 3 trigger (new comment dates)
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19822,25 +19835,35 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
+        notify: 'inbox',
       });
-      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
-      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
-      testWatches.checkWatches({}, state);
-      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
-      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
-      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for second trigger
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Second trigger — key is `watch-${watch.id}-2`, different from first
-      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+
+      // Check 1 — baseline initialization, no trigger, no inbox file
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+
+      // Check 2 — first trigger (comment date changed)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+
+      // Check 3 — second trigger (another comment date change)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
