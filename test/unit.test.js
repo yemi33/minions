@@ -19153,6 +19153,18 @@ async function testWatchesModule() {
     assert.strictEqual(shared.WATCH_CONDITION.ANY, 'any');
   });
 
+  await test('WATCH_ABSOLUTE_CONDITIONS contains fire-once conditions', () => {
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS instanceof Set, 'must be a Set');
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.MERGED));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.BUILD_FAIL));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.BUILD_PASS));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.COMPLETED));
+    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.FAILED));
+    // Change-detection conditions must NOT be absolute
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.STATUS_CHANGE));
+    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has(shared.WATCH_CONDITION.ANY));
+  });
+
   // createWatch validation
   await test('createWatch requires target', () => {
     assert.throws(() => watches.createWatch({ targetType: 'pr', condition: 'merged' }), /target is required/);
@@ -19835,6 +19847,7 @@ async function testWatchesModule() {
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      // Use status-change (non-absolute) so stopAfter=0 keeps watch active across multiple triggers
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
@@ -20079,6 +20092,17 @@ async function testWatchesDashboard() {
   await test('WATCH_CONDITION includes vote-change', () => {
     assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
       'WATCH_CONDITION must have VOTE_CHANGE constant');
+  });
+
+  // Regression: #1088 — PROJECTS ReferenceError in checkWatches closure
+  await test('engine.js checkWatches uses getProjects(config), not PROJECTS (regression #1088)', () => {
+    const watchesBlockStart = engineSrc.indexOf("safe('checkWatches'");
+    assert.ok(watchesBlockStart > -1, 'engine.js must contain safe(\'checkWatches\' ...) block');
+    const watchesBlockEnd = engineSrc.indexOf('const adoPollEnabled', watchesBlockStart);
+    assert.ok(watchesBlockEnd > watchesBlockStart, 'Must find end of checkWatches block');
+    const watchesBlock = engineSrc.slice(watchesBlockStart, watchesBlockEnd);
+    assert.ok(!watchesBlock.includes('PROJECTS'),
+      'checkWatches block must NOT reference PROJECTS (undefined variable — causes ReferenceError)');
   });
 }
 
