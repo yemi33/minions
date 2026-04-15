@@ -6641,6 +6641,11 @@ async function testWakeupCoalescing() {
       'Should have function to retrieve coalesced contexts');
   });
 
+  await test('cooldown.js exports clearCooldown helper', () => {
+    assert.ok(cooldownSrc.includes('function clearCooldown(') && cooldownSrc.includes('clearCooldown'),
+      'Should provide clearCooldown helper for stale cooldown recovery');
+  });
+
   await test('discoverFromPrs coalesces on cooldown skip', () => {
     assert.ok(src.includes('setCooldownWithContext') && src.includes('feedbackContent'),
       'Should coalesce feedback content when dispatch is blocked by cooldown');
@@ -9952,6 +9957,32 @@ async function testReviewReDispatchLoop() {
     // When lastPushedAt > lastReviewedAt, alreadyReviewed is false, allowing re-dispatch
     assert.ok(src.includes("pr.lastPushedAt <= pr.lastReviewedAt"),
       'alreadyReviewed should compare lastPushedAt <= lastReviewedAt so new pushes allow re-review');
+  });
+
+  await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(src.includes("const needsReReview = autoReview && reviewStatus === 'waiting'"),
+      'Should define needsReReview for waiting PRs');
+    assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
+      src.includes('!pr.lastReviewedAt ||') &&
+      src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
+      'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const reReviewIdx = src.indexOf("const needsReReview = autoReview && reviewStatus === 'waiting'");
+    assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
+    const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
+    const reReviewBlock = src.slice(reReviewIdx, fixIdx);
+    assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
+      'needsReReview should not be blocked by completed dispatch history');
+    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${pr.id}`"),
+      'needsReReview should use a dedicated re-review dispatch key');
+    assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
+      'needsReReview should still respect cooldown');
+    assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
+      'needsReReview should pre-check live status before dispatching');
   });
 }
 
@@ -16690,6 +16721,20 @@ async function testPrReviewFixFlows() {
   await test('human feedback fix sets fixDispatched', () => {
     const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
     assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
+  });
+
+  await test('human feedback fix clears stale cooldowns with no dispatch history', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(humanBlock.includes('blockedByCooldown && !alreadyDispatched') && humanBlock.includes('clearCooldown(key)'),
+      'Human feedback should clear stale cooldowns when no dispatch history exists');
+    assert.ok(humanBlock.includes('Cleared stale cooldown'),
+      'Human feedback should log stale cooldown recovery');
+  });
+
+  await test('human feedback fix does not set cooldown before post-gating dispatch', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('newWork.push(item); setCooldown(key);'),
+      'Human feedback should not stamp cooldown before discoverWork gating');
   });
 
   // ── Eval escalation ──
