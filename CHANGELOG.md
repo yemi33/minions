@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.1.993 (2026-04-15)
+
+### Features
+- fix doc-chat Clear chat not persisting session deletion to localStorage (#1102)
+- remove DEFAULTS alias from timeout.js (#1101)
+- Per-project workSources toggles in settings modal (#1096)
+- support project-local playbook overrides (#1094)
+- gate review auto-dispatch on adoPollEnabled and evalLoop config flags (#1092)
+- remove DEFAULTS alias from timeout.js — standardize to ENGINE_DEFAULTS
+- complete watches management — new conditions, CC actions, PROJECTS fix (#1103)
+- fix misleading poll frequency field labels in settings modal (#1099)
+- add Auto-complete PRs toggle to settings modal (#1095)
+-  gate build failure auto-fix behind autoFixBuilds flag
+- free-form interval input + CC create-watch action
+-  flush queued CC messages as single combined request
+-  add quality standard reminder to all agent and CC prompts
+- surface in-flight tool calls in lastAction (#1064)
+- implement dashboard loop/watch management panel
+- reassign tasks when preferred agent is busy too long
+- wire agentBusyReassignMs into settings UI and persist
+-  ADO throttle detection, poll guards, and dashboard banner (#1051)
+- gate auto-fix conflict dispatch behind autoFixConflicts flag
+- add PR/build status CLI shim and agent guidance
+
+### Fixes
+-  remove dead 'meeting' row from routing.md — orchestrated by engine/meeting.js directly
+- gate review auto-dispatch on adoPollEnabled and evalLoop (#1116)
+-  updatePrAfterReview preserves fixedAt when writing minionsReview
+- replace undefined PROJECTS with config.projects in checkWatches (#1104)
+- fix syncPrsFromOutput skipping tool_result lines where PR URLs live (#1100)
+- Remove autoReview flag — consolidate into evalLoop (#1093)
+- link scheduled task notes back to originating item (#1090)
+-  restore rereview and human-fix dispatch
+-  build fix sets fixDispatched to block same-tick conflict fix
+-  ENGINE_DEFAULTS undefined in tick + playbook empty-var false positives
+-  defer review setCooldown to post-gating in discoverWork
+-  move review verdict check before updateWorkItemStatus(DONE)
+-  address review feedback — move writeToInbox outside lock, add absolute condition auto-expire
+- fix watches feature gaps — human notifications, branch stub, status-change init, unique keys
+-  skip isAlreadyDispatched in needsReReview to allow re-review within 1hr
+- skip SessionStart hook settings test on CI
+-  loop queue flush so messages queued during combined send aren't orphaned
+-  set lastPushedAt on fix completion to unblock re-review without poller
+-  restore ADO throttle test functions deleted during merge conflict resolution
+-  trigger second-pass re-review after fix agent completes
+
+### Other
+- chore: harden prompt posture
+- refactor(watches): rename maxTriggers→stopAfter, add onNotMet per-poll action
+- refactor(dashboard): extract _releaseCCTab helper and CC_LOCK_WAIT_MS constant
+- merge: resolve conflicts with master on PR-1065
+- test(engine): add regression tests for autoFixConflicts flag and DEFAULTS alias
+- refactor(ado): simplify ado-status and extract build/review status helpers
+- refactor(ado): extract stripRefsHeads helper, deduplicate refs/heads/ stripping
+- refactor(ado): simplify comments, fix declaration order, promote ado import
+- refactor(ado): move PR enrichment fetch into fetchAdoPrMetadata helper
+- refactor: Make renderLiveChatMessage a thin wrapper over renderAgentOutput
+- test(preflight): add unit tests for findClaudeBinary, runPreflight, printPreflight, checkOrExit (#953)
+- test(meeting): add unit tests for key functions (#957)
+- [E2E] Architecture meeting Tier 1+2: 6 correctness bugs + 2 nested lock violations + log buffering (#972)
+
 ## 0.1.901 (2026-04-12)
 
 ### Fixes
