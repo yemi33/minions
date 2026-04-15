@@ -1898,6 +1898,13 @@ async function discoverFromPrs(config, project) {
 
   const projMeta = { name: project?.name, localPath: project?.localPath };
 
+  // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
+  const isAdoProject = project?.repoHost !== 'github';
+  const pollEnabled = isAdoProject
+    ? (config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled)
+    : (config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled);
+  const evalLoopEnabled = config.engine?.evalLoop !== false;
+
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
   const activePrIds = new Set(
@@ -1946,7 +1953,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs needing review: pending review status and not already reviewed without new commits
-    const autoReview = config.engine?.autoReview !== false;
+    const autoReview = config.engine?.autoReview !== false && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
@@ -1972,7 +1979,7 @@ async function discoverFromPrs(config, project) {
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
@@ -1988,7 +1995,7 @@ async function discoverFromPrs(config, project) {
     // fallback — that caused infinite re-review loops on GitHub where self-approval is blocked)
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       pr.lastReviewedAt && pr.minionsReview.fixedAt > pr.lastReviewedAt);
-    const needsReReview = autoReview && reviewStatus === 'waiting' &&
+    const needsReReview = autoReview && evalLoopEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !evalEscalated;
     if (needsReReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
@@ -2013,7 +2020,7 @@ async function discoverFromPrs(config, project) {
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;

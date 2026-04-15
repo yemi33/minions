@@ -4536,6 +4536,47 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('fixedAfterReview && !evalEscalated'),
       'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
   });
+
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77) ─────────────────────────
+
+  await test('discoverFromPrs gates autoReview on pollEnabled', () => {
+    // When adoPollEnabled:false (ADO) or ghPollEnabled:false (GitHub), reviewStatus is stale
+    // (never updated because polling is off). autoReview must be gated on pollEnabled.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('autoReview') && fnBody.includes('pollEnabled'),
+      'autoReview must be gated on pollEnabled — stale reviewStatus is untrustworthy without poller');
+  });
+
+  await test('discoverFromPrs gates needsReReview on evalLoopEnabled', () => {
+    // evalLoop:false should suppress re-review cycles
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('evalLoopEnabled'),
+      'discoverFromPrs must read evalLoop config flag');
+    assert.ok(fnBody.includes('needsReReview') && fnBody.includes('evalLoopEnabled'),
+      'needsReReview must be gated on evalLoopEnabled — evalLoop:false suppresses re-review cycles');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Both pre-dispatch catch blocks should have 'continue' — skipping dispatch on error
+    // Pattern: "skipping dispatch`); continue;" inside catch blocks after live vote checks
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 2,
+      `Both pre-dispatch vote check catch blocks must skip dispatch (continue) on error (found ${matches.length})`);
+    // Also verify no catch blocks fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'No pre-dispatch catch block should fall through without continue');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
