@@ -11,7 +11,7 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
@@ -158,6 +158,16 @@ function evaluateWatch(watch, state) {
         );
         return { triggered: anyChanged, message: anyChanged ? `PR ${target} changed` : '' };
       }
+      case WATCH_CONDITION.NEW_COMMENTS: {
+        const lastCommentDate = pr.humanFeedback?.lastProcessedCommentDate || null;
+        const prevCommentDate = prevState.lastCommentDate || null;
+        const hasNew = lastCommentDate && lastCommentDate !== prevCommentDate;
+        return { triggered: !!hasNew, message: hasNew ? `PR ${target} has a new comment (${lastCommentDate})` : '' };
+      }
+      case WATCH_CONDITION.VOTE_CHANGE: {
+        const changed = prevState.reviewStatus !== undefined && prevState.reviewStatus !== pr.reviewStatus;
+        return { triggered: changed, message: changed ? `PR ${target} vote changed: ${prevState.reviewStatus} → ${pr.reviewStatus}` : '' };
+      }
       default:
         return { triggered: false, message: `Unknown condition: ${condition}` };
     }
@@ -237,15 +247,11 @@ function checkWatches(config, state) {
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Expire: absolute conditions auto-expire when stopAfter is 0 (fire-once semantics),
-          // change-based conditions (status-change, any) respect stopAfter literally (0 = run forever).
-          const isAbsolute = WATCH_ABSOLUTE_CONDITIONS.has(watch.condition);
+          // Expire when stopAfter > 0 and trigger count reaches the limit.
+          // stopAfter: 0 means "run forever" for all condition types.
           if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
             watch.status = WATCH_STATUS.EXPIRED;
             log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
-          } else if (isAbsolute && watch.stopAfter === 0) {
-            watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (absolute condition auto-expire): ${watch.id}`);
           }
         } else if (watch.onNotMet === 'notify' && watch.owner) {
           // Queue per-poll notification when condition is not yet met — unique key per poll
@@ -284,7 +290,7 @@ function _captureState(watch, state) {
     const pr = (state.pullRequests || []).find(p =>
       String(p.prNumber) === String(watch.target) || p.id === watch.target
     );
-    if (pr) return { status: pr.status, buildStatus: pr.buildStatus, reviewStatus: pr.reviewStatus };
+    if (pr) return { status: pr.status, buildStatus: pr.buildStatus, reviewStatus: pr.reviewStatus, lastCommentDate: pr.humanFeedback?.lastProcessedCommentDate || null };
   }
   if (watch.targetType === WATCH_TARGET_TYPE.WORK_ITEM) {
     const wi = (state.workItems || []).find(w => w.id === watch.target);

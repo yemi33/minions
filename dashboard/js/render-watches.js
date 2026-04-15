@@ -22,6 +22,8 @@ const _WATCH_CONDITION_LABELS = {
   failed: 'Failed',
   'status-change': 'Status Change',
   any: 'Any Change',
+  'new-comments': 'New Comments',
+  'vote-change': 'Vote Change',
 };
 
 function _intervalToHuman(ms) {
@@ -222,6 +224,8 @@ function _watchFormHtml() {
     { value: 'failed', label: 'Failed' },
     { value: 'status-change', label: 'Status Change' },
     { value: 'any', label: 'Any Change' },
+    { value: 'new-comments', label: 'New Comments' },
+    { value: 'vote-change', label: 'Vote Change' },
   ];
   var ttOpts = targetTypes.map(function(t) { return '<option value="' + t.value + '">' + t.label + '</option>'; }).join('');
   var condOpts = conditions.map(function(c) { return '<option value="' + c.value + '">' + c.label + '</option>'; }).join('');

@@ -395,7 +395,13 @@ function getStatus() {
     schedules: (() => {
       const scheds = CONFIG.schedules || [];
       const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
-      return scheds.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
+      return scheds.map(s => {
+        const runEntry = runs[s.id];
+        // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
+        const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
+        const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
+        return { ...s, _lastRun, ...extra };
+      });
     })(),
     watches: watchesMod.getWatches(),
     meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
@@ -701,6 +707,24 @@ async function executeCCActions(actions) {
             onNotMet: action.onNotMet || null,
           });
           results.push({ type: 'create-watch', id: watch.id, ok: true });
+          break;
+        }
+        case 'delete-watch': {
+          const deleted = watchesMod.deleteWatch(action.id);
+          if (deleted) invalidateStatusCache();
+          results.push({ type: 'delete-watch', id: action.id, ok: deleted });
+          break;
+        }
+        case 'pause-watch': {
+          const paused = watchesMod.updateWatch(action.id, { status: shared.WATCH_STATUS.PAUSED });
+          if (paused) invalidateStatusCache();
+          results.push({ type: 'pause-watch', id: action.id, ok: !!paused });
+          break;
+        }
+        case 'resume-watch': {
+          const resumed = watchesMod.updateWatch(action.id, { status: shared.WATCH_STATUS.ACTIVE });
+          if (resumed) invalidateStatusCache();
+          results.push({ type: 'resume-watch', id: action.id, ok: !!resumed });
           break;
         }
         default:
@@ -3683,7 +3707,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     reloadConfig();
     const schedules = CONFIG.schedules || [];
     const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
-    const result = schedules.map(s => ({ ...s, _lastRun: runs[s.id] || null }));
+    const result = schedules.map(s => {
+      const runEntry = runs[s.id];
+      // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
+      const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
+      const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
+      return { ...s, _lastRun, ...extra };
+    });
     return jsonReply(res, 200, { schedules: result });
   }
 

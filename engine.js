@@ -1500,7 +1500,7 @@ function updateSnapshot(config) {
 
 const { COOLDOWN_PATH, dispatchCooldowns, loadCooldowns, saveCooldowns,
   isOnCooldown, setCooldown, setCooldownWithContext, getCoalescedContexts,
-  setCooldownFailure, isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
+  setCooldownFailure, clearCooldown, isAlreadyDispatched, isBranchActive } = require('./engine/cooldown');
 
 
 
@@ -1952,11 +1952,10 @@ async function discoverFromPrs(config, project) {
       log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
     }
 
-    // PRs needing review: pending review status and not already reviewed without new commits
-    // Gate on pollEnabled — reviewStatus is stale (never updated) when polling is disabled
-    const autoReview = config.engine?.autoReview !== false && pollEnabled;
+    // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
+    const reviewEnabled = evalLoopEnabled && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
+    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1970,6 +1969,47 @@ async function discoverFromPrs(config, project) {
           // Never downgrade from approved
           if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
           // Persist so next tick doesn't re-check
+          try {
+            mutateJsonFileLocked(projectPrPath(project), data => {
+              if (!Array.isArray(data)) return data;
+              const target = data.find(p => p.id === pr.id);
+              if (target && target.reviewStatus !== 'approved') target.reviewStatus = liveStatus;
+              return data;
+            });
+          } catch {}
+          continue;
+        }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
+
+      const agentId = resolveAgent('review', config);
+      if (!agentId) continue;
+
+      const item = buildPrDispatch(agentId, config, project, pr, 'review', {
+        pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
+        pr_author: pr.agent || '', pr_url: pr.url || '',
+      }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
+      if (item) { newWork.push(item); }
+    }
+
+    // Re-review after fix: trigger when a fix was pushed after the last minions review,
+    // or when no minions review has completed yet (e.g. human-feedback-only fix path).
+    const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
+      (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
+    const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
+      fixedAfterReview && !evalEscalated;
+    if (needsReReview) {
+      const key = `rereview-${project?.name || 'default'}-${pr.id}`;
+      // Skip isAlreadyDispatched — fixedAfterReview/lastReviewedAt already dedupe; the 1hr
+      // completed-dispatch window would block legitimate re-reviews within the hour after a fix
+      if (isOnCooldown(key, cooldownMs)) continue;
+
+      // Pre-dispatch live vote check — cached 'waiting' may be stale if reviewer already acted
+      try {
+        const checkFn = project.repoHost === 'github' ? ghCheckLiveReview : adoCheckLiveReview;
+        const liveStatus = await checkFn(pr, project);
+        if (liveStatus && liveStatus !== 'waiting') {
+          log('info', `Pre-dispatch vote check: ${pr.id} is ${liveStatus} (cached was waiting) — skipping re-review`);
+          if (pr.reviewStatus !== 'approved') pr.reviewStatus = liveStatus;
           try {
             mutateJsonFileLocked(projectPrPath(project), data => {
               if (!Array.isArray(data)) return data;
@@ -2022,7 +2062,15 @@ async function discoverFromPrs(config, project) {
     const hasCoalescedFeedback = (dispatchCooldowns.get(humanFixKey)?.pendingContexts || []).length > 0;
     if ((pr.humanFeedback?.pendingFix || hasCoalescedFeedback) && !awaitingReReview && !fixDispatched) {
       const key = humanFixKey;
-      if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) {
+      let staleCoalesced = [];
+      const alreadyDispatched = isAlreadyDispatched(key);
+      const blockedByCooldown = isOnCooldown(key, cooldownMs);
+      if (blockedByCooldown && !alreadyDispatched) {
+        staleCoalesced = getCoalescedContexts(key);
+        clearCooldown(key);
+        log('info', `Cleared stale cooldown for ${key} — no matching dispatch history`);
+      }
+      if (alreadyDispatched || isOnCooldown(key, cooldownMs)) {
         // Coalesce: save feedback for next dispatch
         if (pr.humanFeedback?.feedbackContent) {
           setCooldownWithContext(key, { feedbackContent: pr.humanFeedback.feedbackContent, timestamp: ts() });
@@ -2032,7 +2080,7 @@ async function discoverFromPrs(config, project) {
       const agentId = resolveAgent('fix', config, pr.agent);
       if (!agentId) continue;
 
-      const coalesced = getCoalescedContexts(key);
+      const coalesced = [...staleCoalesced, ...getCoalescedContexts(key)];
       let reviewNote = pr.humanFeedback.feedbackContent || 'See PR thread comments';
       if (coalesced.length > 0) {
         const earlier = coalesced.map(c => c.feedbackContent).filter(Boolean).join('\n\n---\n\n');
@@ -2044,7 +2092,7 @@ async function discoverFromPrs(config, project) {
         reviewer: 'Human Reviewer',
         review_note: reviewNote,
       }, `Fix ${pr.id}: ${pr.title || ''} — human feedback`, { dispatchKey: key, source: 'pr-human-feedback', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); fixDispatched = true; }
+      if (item) { newWork.push(item); fixDispatched = true; }
     }
 
     // PRs with build failures — route to author (has session context from implementing)
@@ -3141,11 +3189,12 @@ async function tickInner() {
   if (tickCount % 3 === 0) {
     safe('checkWatches', () => {
       const { checkWatches } = require('./engine/watches');
-      const pullRequests = PROJECTS.flatMap(p => {
+      const projects = getProjects(config);
+      const pullRequests = projects.flatMap(p => {
         const prPath = path.join(MINIONS_DIR, 'projects', p.name, 'pull-requests.json');
         return safeJson(prPath) || [];
       });
-      const workItems = PROJECTS.flatMap(p => {
+      const workItems = projects.flatMap(p => {
         const wiPath = path.join(MINIONS_DIR, 'projects', p.name, 'work-items.json');
         return safeJson(wiPath) || [];
       });
@@ -3570,4 +3619,3 @@ if (require.main === module) {
   const [cmd, ...args] = process.argv.slice(2);
   handleCommand(cmd, args);
 }
-
