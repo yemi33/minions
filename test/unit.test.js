@@ -20813,6 +20813,7 @@ async function testWatchesDashboard() {
     assert.ok(engineSrc.includes("require('./engine/watches')"),
       'engine.js must import watches module');
   });
+<<<<<<< HEAD
 
   // CC action tests — dashboard.js must support delete/pause/resume watches from CC
   await test('dashboard.js has delete-watch CC action handler', () => {
