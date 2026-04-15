@@ -16875,6 +16875,27 @@ async function testPrReviewFixFlows() {
       'GitHub should require both conditions');
   });
 
+  await test('settings UI has Auto-complete PRs toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoCompletePrs'),
+      'Settings UI should have an autoCompletePrs toggle with id set-autoCompletePrs');
+    assert.ok(settingsSrc.includes('Auto-complete PRs') || settingsSrc.includes('Auto-complete'),
+      'Settings UI should label the toggle as Auto-complete PRs');
+  });
+
+  await test('settings UI sends autoCompletePrs to backend', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('autoCompletePrs:') && settingsSrc.includes('set-autoCompletePrs'),
+      'settings.js must include autoCompletePrs in enginePayload and reference set-autoCompletePrs element');
+  });
+
+  await test('ENGINE_DEFAULTS defines autoCompletePrs as boolean', () => {
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.autoCompletePrs, 'boolean',
+      'ENGINE_DEFAULTS.autoCompletePrs must be a boolean so dynamic boolean derivation includes it');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoCompletePrs, false,
+      'autoCompletePrs default must be false (opt-in)');
+  });
+
   await test('GitHub merge method validated against whitelist', () => {
     assert.ok(ghSrc.includes("['squash', 'merge', 'rebase']"),
       'Merge method should be validated');
