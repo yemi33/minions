@@ -8,7 +8,7 @@ const path = require('path');
 const shared = require('./shared');
 const queries = require('./queries');
 
-const { exec, execSilent, log, ts } = shared;
+const { exec, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
 const { safeJson, safeWrite, safeReadDir, mutateWorkItems, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
@@ -597,11 +597,23 @@ function runCleanup(config, verbose = false) {
   } catch (e) { log('warn', 'prune doc-sessions: ' + e.message); }
 
   // 11. Cap cooldowns.json — keep at most 500 entries (on top of 24h TTL in cooldown.js)
+  //     Also trim pendingContexts arrays to ENGINE_DEFAULTS.maxPendingContexts to prevent bloat.
   cleaned.cooldowns = 0;
+  cleaned.pendingContextsTrimmed = 0;
   try {
     const cooldownPath = path.join(ENGINE_DIR, 'cooldowns.json');
     const cooldowns = safeJson(cooldownPath);
     if (cooldowns && typeof cooldowns === 'object') {
+      let dirty = false;
+      // Trim oversized pendingContexts arrays (one-time migration + ongoing cap)
+      const pendingCtxCap = ENGINE_DEFAULTS.maxPendingContexts;
+      for (const v of Object.values(cooldowns)) {
+        if (Array.isArray(v.pendingContexts) && v.pendingContexts.length > pendingCtxCap) {
+          v.pendingContexts = v.pendingContexts.slice(-pendingCtxCap);
+          cleaned.pendingContextsTrimmed++;
+          dirty = true;
+        }
+      }
       const entries = Object.entries(cooldowns);
       const COOLDOWN_CAP = 500;
       if (entries.length > COOLDOWN_CAP) {
@@ -610,6 +622,8 @@ function runCleanup(config, verbose = false) {
         const keep = Object.fromEntries(entries.slice(0, COOLDOWN_CAP));
         cleaned.cooldowns = entries.length - COOLDOWN_CAP;
         safeWrite(cooldownPath, keep);
+      } else if (dirty) {
+        safeWrite(cooldownPath, cooldowns);
       }
     }
   } catch (e) { log('warn', 'cap cooldowns: ' + e.message); }
@@ -653,8 +667,8 @@ function runCleanup(config, verbose = false) {
     }
   } catch { /* optional — file may not exist */ }
 
-  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles > 0) {
-    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pidFiles} PID files`);
+  if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed > 0) {
+    log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.pidFiles} PID files`);
   }
 
   return cleaned;

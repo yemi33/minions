@@ -563,6 +563,7 @@ const ENGINE_DEFAULTS = {
   ccModel: 'sonnet', // model for Command Center and doc-chat (sonnet, haiku, opus)
   ccEffort: null, // effort level for CC/doc-chat (null, 'low', 'medium', 'high')
   heartbeatTimeouts: {}, // populated after WORK_TYPE is defined (below)
+  maxPendingContexts: 20, // cap pendingContexts arrays in cooldowns.json to prevent unbounded growth
   ccMaxTurns: 50, // max tool-use turns for CC/doc-chat before CLI stops
   // Teams integration — config.teams shape: { enabled, appId, appPassword, certPath, privateKeyPath, tenantId, notifyEvents, ccMirror, inboxPollInterval }
   // Auth modes: (1) appId + appPassword (client secret), or (2) appId + certPath + privateKeyPath + tenantId (certificate)
