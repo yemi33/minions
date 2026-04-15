@@ -617,6 +617,13 @@ const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', 
 // PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
 const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
 
+// Watch statuses — engine-level persistent watches that survive restarts
+const WATCH_STATUS = { ACTIVE: 'active', PAUSED: 'paused', TRIGGERED: 'triggered', EXPIRED: 'expired' };
+const WATCH_TARGET_TYPE = { PR: 'pr', WORK_ITEM: 'work-item' };
+const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any' };
+// Absolute conditions check point-in-time state, not transitions — auto-expire after first trigger when stopAfter is 0
+const WATCH_ABSOLUTE_CONDITIONS = new Set([WATCH_CONDITION.MERGED, WATCH_CONDITION.BUILD_FAIL, WATCH_CONDITION.BUILD_PASS, WATCH_CONDITION.COMPLETED, WATCH_CONDITION.FAILED]);
+
 /** Update per-agent review metrics (prsApproved/prsRejected). Only writes for configured agents. */
 function trackReviewMetric(pr, newReviewStatus, config) {
   if (newReviewStatus !== 'approved' && newReviewStatus !== 'changes-requested') return;
@@ -1142,6 +1149,7 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,

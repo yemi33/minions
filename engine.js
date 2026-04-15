@@ -2021,7 +2021,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) { newWork.push(item); }
     }
 
     // PRs with changes requested → route back to author for fix
@@ -3164,6 +3164,24 @@ async function tickInner() {
   // 2.5. Periodic cleanup + MCP sync (every 10 ticks = ~5 minutes)
   if (tickCount % 10 === 0) {
     safe('runCleanup', () => runCleanup(config));
+  }
+
+  // 2.55. Check persistent watches (every 3 ticks = ~3 minutes)
+  if (tickCount % 3 === 0) {
+    safe('checkWatches', () => {
+      const { checkWatches } = require('./engine/watches');
+      const pullRequests = PROJECTS.flatMap(p => {
+        const prPath = path.join(MINIONS_DIR, 'projects', p.name, 'pull-requests.json');
+        return safeJson(prPath) || [];
+      });
+      const workItems = PROJECTS.flatMap(p => {
+        const wiPath = path.join(MINIONS_DIR, 'projects', p.name, 'work-items.json');
+        return safeJson(wiPath) || [];
+      });
+      // Also include central work items
+      const centralWi = safeJson(path.join(MINIONS_DIR, 'work-items.json')) || [];
+      checkWatches(config, { pullRequests, workItems: [...workItems, ...centralWi] });
+    });
   }
 
   const adoPollEnabled = config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled;
