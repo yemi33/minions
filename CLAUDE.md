@@ -72,6 +72,7 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 | `engine/cooldown.js` | Exponential backoff for failed dispatches |
 | `engine/timeout.js` | Timeout detection, steering, and idle threshold checks |
 | `engine/llm.js` | Claude CLI invocation wrapper for consolidation/CC (direct spawn for CC/doc-chat, indirect via spawn-agent for engine agents) |
+| `engine/watches.js` | Persistent watch jobs: monitor PRs/work items for conditions, fire inbox notifications when triggered |
 
 ### State Files (all runtime, gitignored)
 
@@ -82,6 +83,7 @@ Agents are **independent processes**. If the engine dies, agents keep running. O
 - `engine/pipeline-runs.json` — pipeline execution state
 - `engine/claude-caps.json` — cached claude CLI binary path and native flag (written by spawn-agent, read by llm.js for direct spawn)
 - `engine/schedule-runs.json` — last-run times for cron schedules
+- `engine/watches.json` — persistent watch job definitions and state
 - `projects/<name>/work-items.json` — per-project work items
 - `projects/<name>/pull-requests.json` — per-project PR tracker
 - `plans/*.md` — plan drafts
@@ -159,6 +161,13 @@ const PR_POLLABLE_STATUSES = new Set([ACTIVE, LINKED]); // polled for status/bui
 
 // Dispatch results
 const DISPATCH_RESULT = { SUCCESS, ERROR, TIMEOUT };
+
+// Watch constants (engine/watches.js)
+const WATCH_STATUS = { ACTIVE, PAUSED, TRIGGERED, EXPIRED };
+const WATCH_TARGET_TYPE = { PR: 'pr', WORK_ITEM: 'work-item' };
+const WATCH_CONDITION = { MERGED, BUILD_FAIL, BUILD_PASS, COMPLETED, FAILED, STATUS_CHANGE, ANY, NEW_COMMENTS, VOTE_CHANGE };
+// Absolute conditions auto-expire on first trigger when stopAfter=0
+const WATCH_ABSOLUTE_CONDITIONS = new Set([MERGED, BUILD_FAIL, BUILD_PASS, COMPLETED, FAILED]);
 ```
 
 ### Usage Rules
@@ -261,7 +270,11 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
     "repoHost": "ado",
     "repositoryId": "GUID",
     "adoOrg": "org", "adoProject": "project",
-    "mainBranch": "main"
+    "mainBranch": "main",
+    "workSources": {
+      "pullRequests": { "enabled": true, "cooldownMinutes": 30 },
+      "workItems": { "enabled": true, "cooldownMinutes": 0 }
+    }
   }],
   "agents": {
     "dallas": { "name": "Dallas", "role": "Engineer", "skills": [] }
@@ -275,8 +288,12 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
     "shutdownTimeout": 300000,
     "allowTempAgents": false,
     "autoDecompose": true,
+    "autoFixBuilds": true,
+    "autoFixConflicts": true,
     "evalLoop": true,
     "evalMaxIterations": 3,
+    "adoPollEnabled": true,
+    "ghPollEnabled": true,
     "ccModel": "sonnet",
     "ccEffort": null
   },
@@ -286,6 +303,13 @@ Work items can declare `depends_on: ["P-001", "P-003"]`. Before spawning, the en
   }]
 }
 ```
+
+Key engine config flags:
+- `autoFixBuilds` — gates build-failure auto-fix dispatch (when `false`, failing builds are notified but not auto-fixed)
+- `autoFixConflicts` — gates merge-conflict auto-fix dispatch
+- `evalLoop` — controls the entire review→fix cycle: auto-review dispatch after implementation, and re-review dispatch after fix. Replaces the now-removed `autoReview` flag. When `false`, no automatic review or fix-cycle dispatch occurs
+- `adoPollEnabled` / `ghPollEnabled` — engine-level toggles that gate all ADO/GitHub PR status and comment polling; when `false`, `reviewStatus` is stale and review dispatch is also suppressed
+- `workSources` (per-project) — per-project toggles for which discovery sources are active (`pullRequests.enabled`, `workItems.enabled`) and their cooldown windows
 
 ## Routing
 
@@ -334,6 +358,8 @@ Context-only PRs: PRs with `_contextOnly: true` are polled (status, votes, build
 ## ADO Integration
 
 Token via `azureauth ado token --mode iwa --mode broker --output token --timeout 1`. Cached 30 min, 10-min backoff on failure. **All `azureauth` calls MUST include `--timeout 1`** — without it, the command can hang indefinitely waiting for interactive broker UI that never appears in headless agent sessions, causing agent orphans. PR status polled every ~3 min, human comments every ~6 min. PR → PRD item linking derived from `pull-requests.json` prdItems.
+
+**evalLoop and polling interaction:** `evalLoop` gates the entire review→fix cycle. `adoPollEnabled` (or `ghPollEnabled` for GitHub projects) gates whether PR status is polled at all. Review auto-dispatch requires *both* to be true — `reviewEnabled = evalLoopEnabled && pollEnabled`. After a fix agent completes, the PR's `reviewStatus` is reset to `'waiting'` and `minionsReview.fixedAt` is set, which triggers a second-pass re-review on the next discovery tick (also gated by `evalLoop`). The `autoReview` flag was removed and consolidated into `evalLoop`.
 
 ## Dashboard
 
@@ -440,6 +466,36 @@ Work items show `_pendingReason` (dependency_unmet, cooldown, no_agent, already_
 ## Build Failure Notifications
 
 When a PR's build fails, the engine writes an inbox alert to the author agent with the failure reason. Deduplicated via `_buildFailNotified` flag, cleared when build status recovers.
+
+## Watches
+
+Watches are persistent monitoring jobs that survive engine restarts. They poll PRs or work items on a schedule and fire inbox notifications when a condition is met (or on every poll while unmet, if configured).
+
+State stored in `engine/watches.json` — mutated via `mutateJsonFileLocked` in `engine/watches.js`. Checked every 3 ticks (~3 minutes) from the engine tick cycle.
+
+### Key Fields
+
+| Field | Description |
+|-------|-------------|
+| `target` | PR number, PR ID, or work item ID to monitor |
+| `targetType` | `'pr'` or `'work-item'` (`WATCH_TARGET_TYPE`) |
+| `condition` | What to watch for (see below) |
+| `interval` | Min milliseconds between checks (default: 300000 / 5 min) |
+| `stopAfter` | `0` = run forever; `N` = expire after N triggers |
+| `owner` | Agent or user who receives inbox notifications |
+| `onNotMet` | `null` (silent until triggered) or `'notify'` (inbox alert each poll while condition is not yet met) |
+| `status` | `active`, `paused`, `triggered`, `expired` |
+
+### Conditions (`WATCH_CONDITION`)
+
+- `merged`, `build-fail`, `build-pass`, `completed`, `failed` — **absolute conditions**: auto-expire on first trigger when `stopAfter=0` (fire-once semantics)
+- `status-change`, `any`, `new-comments`, `vote-change` — **change-based conditions**: run forever when `stopAfter=0`; compare against `_lastState` captured on the previous check
+
+`WATCH_ABSOLUTE_CONDITIONS` is the set of absolute conditions. Change-based conditions require a baseline state from the prior check — on first check the baseline is captured and no notification is fired.
+
+### Lifecycle
+
+CC Actions `create-watch` / `delete-watch` / `pause-watch` / `resume-watch` manage watches. The engine evaluates all `active` watches that are past their interval, fires notifications to the owner's inbox via `writeToInbox`, and marks absolute-condition watches `expired` after their first trigger (or when `stopAfter` is reached).
 
 ## Testing
 
