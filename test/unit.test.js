@@ -16922,6 +16922,11 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('!fixDispatched'), 'Conflict fix should be gated by fixDispatched');
   });
 
+  await test('build fix sets fixDispatched to prevent same-tick conflict fix', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('fixDispatched = true'), 'Build fix must set fixDispatched so conflict fix cannot also go out in the same tick');
+  });
+
   await test('_mergeConflict cleared when conflict resolves', () => {
     assert.ok(ghSrc.includes("delete pr._mergeConflict"), 'GitHub should clear flag');
     assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');

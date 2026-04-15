@@ -2085,7 +2085,7 @@ async function discoverFromPrs(config, project) {
         review_note: reviewNote,
       }, `Fix build failure on ${pr.id}: ${pr.title || ''}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
       if (item) {
-        newWork.push(item); setCooldown(key);
+        newWork.push(item); setCooldown(key); fixDispatched = true;
         // Increment build fix attempts counter
         try {
           const prPath = projectPrPath(project);
