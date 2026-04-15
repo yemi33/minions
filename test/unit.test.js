@@ -10290,6 +10290,23 @@ async function testCcActionTypes() {
     assert.ok(src.includes("case 'create-meeting':"), 'should handle create-meeting action');
     assert.ok(src.includes("case 'set-config':"), 'should handle set-config action');
   });
+
+  await test('parseCCActions ignores inline ===ACTIONS=== mentions and only splits on its own line', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const findBody = src.match(/function findCCActionsDelimiter[\s\S]*?^}/m)[0];
+    const parseBody = src.match(/function parseCCActions[\s\S]*?^}/m)[0];
+    const parseCCActions = new Function(findBody + '\n' + parseBody + '\nreturn parseCCActions;')();
+
+    const inline = '## Action System\nResponses can end with `===ACTIONS===` and still keep rendering.';
+    const inlineResult = parseCCActions(inline);
+    assert.strictEqual(inlineResult.text, inline, 'inline mentions of ===ACTIONS=== must not truncate CC output');
+    assert.deepStrictEqual(inlineResult.actions, [], 'inline mentions of ===ACTIONS=== must not be parsed as actions');
+
+    const withActions = 'Answer first.\n\n===ACTIONS===\n[{\"type\":\"note\",\"title\":\"x\",\"content\":\"y\"}]';
+    const actionResult = parseCCActions(withActions);
+    assert.strictEqual(actionResult.text, 'Answer first.', 'action delimiter on its own line should split display text');
+    assert.strictEqual(actionResult.actions.length, 1, 'action delimiter on its own line should parse actions');
+  });
 }
 
 async function testAutoModeStatus() {
@@ -16162,9 +16179,19 @@ async function testCCMultiTab() {
   });
 
   await test('tab CSS styles exist', () => {
+    assert.ok(stylesSrc.includes('.cc-tab-scroll'), 'Should have .cc-tab-scroll style');
+    assert.ok(stylesSrc.includes('.cc-tab-actions'), 'Should have .cc-tab-actions style');
+    assert.ok(stylesSrc.includes('.cc-all-btn'), 'Should have .cc-all-btn style');
     assert.ok(stylesSrc.includes('.cc-tab'), 'Should have .cc-tab style');
     assert.ok(stylesSrc.includes('.cc-tab.active'), 'Should have .cc-tab.active style');
     assert.ok(stylesSrc.includes('.cc-tab-close'), 'Should have .cc-tab-close style');
+  });
+
+  await test('ccRenderTabBar keeps overflow tabs separate from all-conversations button', () => {
+    assert.ok(ccSrc.includes('cc-tab-scroll'), 'ccRenderTabBar should render a scroll container for tabs');
+    assert.ok(ccSrc.includes('cc-tab-actions'), 'ccRenderTabBar should render a fixed actions container');
+    assert.ok(ccSrc.includes('cc-all-btn') && ccSrc.includes('cc-all-btn" class="cc-all-btn'),
+      'ccRenderTabBar should render the all-conversations button outside the scrolling tab strip');
   });
 
   // ── Integration flow tests ────────────────────────────────────────────────

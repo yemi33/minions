@@ -578,10 +578,17 @@ For all state files, look under \`${MINIONS_DIR}\`.`;
   return result;
 }
 
+function findCCActionsDelimiter(text) {
+  if (!text) return -1;
+  const match = /(?:^|\r?\n)===ACTIONS===[ \t]*(?=\r?\n|$)/m.exec(text);
+  if (!match) return -1;
+  return match.index + match[0].indexOf('===ACTIONS===');
+}
+
 function parseCCActions(text) {
   let actions = [];
   let displayText = text;
-  const delimIdx = text.indexOf('===ACTIONS===');
+  const delimIdx = findCCActionsDelimiter(text);
   if (delimIdx >= 0) {
     displayText = text.slice(0, delimIdx).trim();
     try {
@@ -3601,7 +3608,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
           sessionId, effort: streamEffort, direct: true,
           onChunk: (text) => {
-            const actIdx = text.indexOf('===ACTIONS===');
+            const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
             try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
           },
@@ -3625,7 +3632,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             allowedTools: 'Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch',
             effort: streamEffort, direct: true,
             onChunk: (text) => {
-              const actIdx = text.indexOf('===ACTIONS===');
+              const actIdx = findCCActionsDelimiter(text);
               const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
               try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
             },
@@ -4900,4 +4907,3 @@ server.on('error', e => {
   }
   process.exit(1);
 });
-

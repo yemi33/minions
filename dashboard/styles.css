@@ -625,7 +625,12 @@
   @keyframes notifPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   /* Command Center tab bar */
+  .cc-tab-scroll { display: flex; gap: 4px; align-items: center; overflow-x: auto; overflow-y: hidden; flex: 1 1 auto; min-width: 0; scrollbar-width: thin; }
+  .cc-tab-actions { display: flex; align-items: center; flex: 0 0 auto; margin-left: auto; position: relative; z-index: 1; background: var(--bg); }
+  .cc-all-btn { background: none; border: none; color: var(--muted); font-size: 11px; padding: 4px 6px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+  .cc-all-btn:hover { color: var(--text); }
   .cc-tab { padding: 4px 10px; font-size: 10px; border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--surface2); color: var(--muted); cursor: pointer; white-space: nowrap; max-width: 140px; display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; margin-bottom: -1px; position: relative; }
+  .cc-tab-new { color: var(--muted); padding: 4px 8px; }
   .cc-tab-text { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
   .cc-tab.active { color: var(--text); background: var(--bg); border-color: var(--border); z-index: 1; font-weight: 600; }
   .cc-tab.working { border-color: var(--blue); }
