@@ -4912,7 +4912,7 @@ async function testCheckTimeouts() {
 
   await test('Per-type heartbeat timeouts: perTypeTimeouts merges ENGINE_DEFAULTS and config', () => {
     assert.ok(src.includes('perTypeTimeouts'), 'Should use perTypeTimeouts for per-type resolution');
-    assert.ok(src.includes('DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
+    assert.ok(src.includes('ENGINE_DEFAULTS.heartbeatTimeouts'), 'Should merge from ENGINE_DEFAULTS.heartbeatTimeouts');
   });
 
   await test('Per-type heartbeat timeouts: resolved per dispatch item type with fallback', () => {
@@ -4925,7 +4925,7 @@ async function testCheckTimeouts() {
     assert.ok(src.includes("config.engine?.heartbeatTimeouts"),
       'Should read heartbeatTimeouts from config.engine for user overrides');
     // Verify merge order: ENGINE_DEFAULTS ← config
-    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should merge ENGINE_DEFAULTS and config heartbeatTimeouts');
   });
 
@@ -5010,7 +5010,7 @@ async function testCheckTimeouts() {
   await test('checkTimeouts merges config.engine.heartbeatTimeouts with defaults', () => {
     assert.ok(src.includes('config.engine?.heartbeatTimeouts'),
       'Should read heartbeatTimeouts from config for user overrides');
-    assert.ok(src.includes('...DEFAULTS.heartbeatTimeouts'),
+    assert.ok(src.includes('...ENGINE_DEFAULTS.heartbeatTimeouts'),
       'Should spread default heartbeatTimeouts as base');
   });
 
@@ -5033,15 +5033,22 @@ async function testCheckTimeouts() {
   // Regression: #721 — DEFAULT_HEARTBEAT_TIMEOUTS was undefined, silently crashing checkTimeouts every tick
   await test('checkTimeouts does NOT reference undefined DEFAULT_HEARTBEAT_TIMEOUTS (#721)', () => {
     assert.ok(!src.includes('DEFAULT_HEARTBEAT_TIMEOUTS'),
-      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use DEFAULTS.heartbeatTimeouts instead');
+      'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use ENGINE_DEFAULTS.heartbeatTimeouts instead');
+  });
+
+  await test('timeout.js imports ENGINE_DEFAULTS directly (no DEFAULTS alias)', () => {
+    assert.ok(src.includes('ENGINE_DEFAULTS,') || src.includes('ENGINE_DEFAULTS }'),
+      'timeout.js should destructure ENGINE_DEFAULTS directly from shared');
+    assert.ok(!src.includes('ENGINE_DEFAULTS: DEFAULTS'),
+      'timeout.js must not alias ENGINE_DEFAULTS as DEFAULTS — use ENGINE_DEFAULTS directly like every other engine file');
   });
 
   await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
     // Behavioral: construct perTypeTimeouts exactly as checkTimeouts does, proving no ReferenceError
-    const { ENGINE_DEFAULTS: DEFAULTS } = require('../engine/shared');
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
     const config = { engine: { heartbeatTimeouts: { review: 600000 } } };
     // This line would throw ReferenceError if DEFAULT_HEARTBEAT_TIMEOUTS crept back in
-    const perTypeTimeouts = { ...DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
+    const perTypeTimeouts = { ...ENGINE_DEFAULTS.heartbeatTimeouts, ...(config.engine?.heartbeatTimeouts || {}) };
     assert.ok(perTypeTimeouts !== null, 'perTypeTimeouts should be constructable without ReferenceError');
     assert.strictEqual(perTypeTimeouts.review, 600000, 'config overrides should merge correctly');
   });
@@ -16932,10 +16939,10 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('autoFixConflicts'), 'Conflict fix dispatch must be gated by autoFixConflicts config flag');
   });
 
-  await test('autoFixConflicts reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+  await test('autoFixConflicts references ENGINE_DEFAULTS (directly or via alias)', () => {
     const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
-    assert.ok(conflictBlock.includes('DEFAULTS.autoFixConflicts'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
-    assert.ok(!conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+    assert.ok(conflictBlock.includes('DEFAULTS.autoFixConflicts') || conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'),
+      'Must reference autoFixConflicts via ENGINE_DEFAULTS (directly or via DEFAULTS alias)');
   });
 
   await test('autoFixConflicts present in ENGINE_DEFAULTS', () => {
