@@ -388,15 +388,14 @@ async function ccSend() {
   }
   var wasAborted = await _ccDoSend(message, false, originTabId);
 
-  // Flush all queued messages at once — combine into a single request.
-  // Loop in case user queues more messages while the combined flush is processing.
+  // Flush queued messages to the ORIGINAL tab, even if user switched tabs
   while (tab._queue && tab._queue.length > 0) {
     if (wasAborted) {
       await new Promise(function(r) { setTimeout(r, 1500); });
     }
-    var combined = tab._queue.splice(0);
+    var next = tab._queue.shift();
     _renderQueueIndicator();
-    wasAborted = await _ccDoSend(combined.join('\n\n'), false, originTabId);
+    wasAborted = await _ccDoSend(next, false, originTabId);
   }
 }
 

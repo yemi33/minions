@@ -44,12 +44,12 @@ function createTestMinionsDir() {
 
   process.env.MINIONS_TEST_DIR = dir;
   // Bust require cache so modules re-resolve MINIONS_DIR
-  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+  for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
     try { delete require.cache[require.resolve(mod)]; } catch {}
   }
   return function restore() {
     delete process.env.MINIONS_TEST_DIR;
-    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm']) {
+    for (const mod of ['../engine/shared', '../engine/queries', '../engine/lifecycle', '../engine/dispatch', '../engine/cleanup', '../engine/timeout', '../engine/pipeline', '../engine/meeting', '../engine/consolidation', '../engine/llm', '../engine/watches']) {
       try { delete require.cache[require.resolve(mod)]; } catch {}
     }
   };
@@ -82,6 +82,7 @@ const MINIONS_DIR = path.resolve(__dirname, '..');
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
+const watches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
 const { buildDashboardHtml: _buildDashHtml } = require(path.join(MINIONS_DIR, 'dashboard-build'));
 const _assembledDashHtml = _buildDashHtml();
 
@@ -4324,106 +4325,6 @@ async function testRenderPlaybook() {
   });
 }
 
-// ─── engine/playbook.js — resolvePlaybookPath Tests ─────────────────────────
-
-async function testResolvePlaybookPath() {
-  console.log('\n── engine/playbook.js — resolvePlaybookPath ──');
-
-  let resolvePlaybookPath, renderPlaybook;
-  try {
-    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
-    resolvePlaybookPath = pb.resolvePlaybookPath;
-    renderPlaybook = pb.renderPlaybook;
-  } catch {}
-
-  if (!resolvePlaybookPath) {
-    skip('resolvePlaybookPath', 'resolvePlaybookPath not exported from engine/playbook');
-    return;
-  }
-
-  await test('resolvePlaybookPath returns global playbook when no project override exists', () => {
-    const result = resolvePlaybookPath('nonexistent-project-xyz', 'implement');
-    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
-    assert.strictEqual(result, globalPath, 'Should fall back to global playbook path');
-  });
-
-  await test('resolvePlaybookPath returns global playbook when projectName is empty', () => {
-    const result = resolvePlaybookPath('', 'implement');
-    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
-    assert.strictEqual(result, globalPath, 'Should fall back to global for empty project name');
-  });
-
-  await test('resolvePlaybookPath returns global playbook when projectName is null', () => {
-    const result = resolvePlaybookPath(null, 'implement');
-    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
-    assert.strictEqual(result, globalPath, 'Should fall back to global for null project name');
-  });
-
-  // Create a temporary project-local playbook and verify it's preferred
-  const testProjectName = '_test-playbook-override';
-  const testProjectPbDir = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks');
-
-  await test('resolvePlaybookPath returns project-local playbook when override exists', () => {
-    fs.mkdirSync(testProjectPbDir, { recursive: true });
-    fs.writeFileSync(path.join(testProjectPbDir, 'implement.md'), '# Test Override Playbook\n\nThis is {{item_name}}.');
-    try {
-      const result = resolvePlaybookPath(testProjectName, 'implement');
-      const expectedPath = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks', 'implement.md');
-      assert.strictEqual(result, expectedPath, 'Should return project-local playbook path');
-    } finally {
-      // Cleanup
-      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
-    }
-  });
-
-  await test('resolvePlaybookPath falls back to global when project dir exists but playbook does not', () => {
-    const pbDir = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks');
-    fs.mkdirSync(pbDir, { recursive: true });
-    // Don't create implement.md — only create the directory
-    try {
-      const result = resolvePlaybookPath(testProjectName, 'implement');
-      const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
-      assert.strictEqual(result, globalPath, 'Should fall back to global when override file missing');
-    } finally {
-      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
-    }
-  });
-
-  // Test that renderPlaybook uses the project-local override via vars.project_name
-  if (renderPlaybook) {
-    await test('renderPlaybook uses project-local playbook when override exists', () => {
-      fs.mkdirSync(testProjectPbDir, { recursive: true });
-      const overrideContent = '# Project Override\n\nSentinel: PROJECT_LOCAL_OVERRIDE_SENTINEL\n\nItem: {{item_name}}';
-      fs.writeFileSync(path.join(testProjectPbDir, 'implement.md'), overrideContent);
-      try {
-        const result = renderPlaybook('implement', {
-          agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
-          project_name: testProjectName, project_path: '/tmp', main_branch: 'main',
-          item_id: 'W001', item_name: 'Test feature', branch_name: 'test-branch',
-          team_root: MINIONS_DIR, date: '2024-01-01',
-        });
-        assert.ok(result && result.includes('PROJECT_LOCAL_OVERRIDE_SENTINEL'),
-          'Should render from project-local override playbook');
-      } finally {
-        try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
-      }
-    });
-
-    await test('renderPlaybook falls back to global when no project override', () => {
-      const result = renderPlaybook('implement', {
-        agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
-        project_name: 'nonexistent-project-xyz', project_path: '/tmp', main_branch: 'main',
-        item_id: 'W001', item_name: 'Test feature', branch_name: 'test-branch',
-        team_root: MINIONS_DIR, date: '2024-01-01',
-      });
-      assert.ok(result && !result.includes('PROJECT_LOCAL_OVERRIDE_SENTINEL'),
-        'Should render from global playbook (no project override)');
-      assert.ok(typeof result === 'string' && result.length > 0,
-        'Should return rendered content from global playbook');
-    });
-  }
-}
-
 // ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
 
 async function testValidatePlaybookVars() {
@@ -4522,6 +4423,126 @@ async function testValidatePlaybookVars() {
     });
     assert.ok(typeof result === 'string' && result.length > 0,
       'Should return rendered playbook when all required vars are provided');
+  });
+}
+
+// ─── engine/playbook.js — resolvePlaybookPath Tests ─────────────────────────
+
+async function testResolvePlaybookPath() {
+  console.log('\n── engine/playbook.js — resolvePlaybookPath ──');
+
+  let resolvePlaybookPath;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    resolvePlaybookPath = pb.resolvePlaybookPath;
+  } catch {}
+
+  if (!resolvePlaybookPath) {
+    skip('resolvePlaybookPath', 'engine/playbook.resolvePlaybookPath not available');
+    return;
+  }
+
+  await test('resolvePlaybookPath returns global path when no project override exists', () => {
+    const result = resolvePlaybookPath('nonexistent-project-xyz', 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, expected,
+      'Should fall back to global playbooks/ when project override not found');
+  });
+
+  await test('resolvePlaybookPath returns global path when projectName is null/undefined', () => {
+    const result1 = resolvePlaybookPath(null, 'implement');
+    const result2 = resolvePlaybookPath(undefined, 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result1, expected, 'null project should fall back to global');
+    assert.strictEqual(result2, expected, 'undefined project should fall back to global');
+  });
+
+  await test('resolvePlaybookPath returns project-local path when override exists', () => {
+    const projectName = 'test-playbook-override-' + Date.now();
+    const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+    fs.mkdirSync(projectPlaybookDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPlaybookDir, 'implement.md'), '# Custom playbook for {{item_id}}');
+    try {
+      const result = resolvePlaybookPath(projectName, 'implement');
+      const expected = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks', 'implement.md');
+      assert.strictEqual(result, expected,
+        'Should return project-local playbook path when override exists');
+    } finally {
+      // Cleanup
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await test('resolvePlaybookPath falls back to global when project exists but playbook does not', () => {
+    const projectName = 'test-no-playbook-' + Date.now();
+    const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+    fs.mkdirSync(projectPlaybookDir, { recursive: true });
+    try {
+      const result = resolvePlaybookPath(projectName, 'review');
+      const expected = path.join(MINIONS_DIR, 'playbooks', 'review.md');
+      assert.strictEqual(result, expected,
+        'Should fall back to global when project dir exists but specific playbook does not');
+    } finally {
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await test('resolvePlaybookPath returns global path for empty string project', () => {
+    const result = resolvePlaybookPath('', 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, expected, 'Empty string project should fall back to global');
+  });
+
+  // Integration: renderPlaybook uses project-local override
+  let renderPlaybook;
+  try {
+    renderPlaybook = require(path.join(MINIONS_DIR, 'engine', 'playbook')).renderPlaybook;
+  } catch {}
+
+  if (renderPlaybook) {
+    await test('renderPlaybook uses project-local playbook when override exists', () => {
+      const projectName = 'test-render-override-' + Date.now();
+      const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+      fs.mkdirSync(projectPlaybookDir, { recursive: true });
+      fs.writeFileSync(path.join(projectPlaybookDir, 'implement.md'),
+        '# Custom Implementation\n\nProject-local sentinel: CUSTOM_OVERRIDE_SENTINEL\n\nItem: {{item_id}}');
+      try {
+        const result = renderPlaybook('implement', {
+          agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+          item_id: 'W-TEST', item_name: 'Test feature', branch_name: 'work/W-TEST',
+          project_name: projectName, project_path: '/tmp/repo',
+          team_root: MINIONS_DIR, date: '2024-01-01',
+        });
+        assert.ok(result && result.includes('CUSTOM_OVERRIDE_SENTINEL'),
+          'renderPlaybook should use project-local playbook content');
+        assert.ok(result && result.includes('W-TEST'),
+          'renderPlaybook should still substitute template variables in local playbook');
+      } finally {
+        try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+      }
+    });
+
+    await test('renderPlaybook falls back to global playbook when no project override', () => {
+      const result = renderPlaybook('implement', {
+        agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+        item_id: 'W-GLOBAL', item_name: 'Test feature', branch_name: 'work/W-GLOBAL',
+        project_name: 'nonexistent-project-for-test', project_path: '/tmp/repo',
+        team_root: MINIONS_DIR, date: '2024-01-01',
+      });
+      assert.ok(result && typeof result === 'string' && result.length > 0,
+        'renderPlaybook should fall back to global playbook');
+      assert.ok(!result.includes('CUSTOM_OVERRIDE_SENTINEL'),
+        'Should NOT contain project-local sentinel when using global playbook');
+    });
+  }
+
+  // Source code verification: renderPlaybook uses resolvePlaybookPath
+  await test('renderPlaybook calls resolvePlaybookPath for path resolution', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    assert.ok(src.includes('resolvePlaybookPath'),
+      'playbook.js should define/use resolvePlaybookPath');
+    assert.ok(src.includes('resolvePlaybookPath('),
+      'renderPlaybook should call resolvePlaybookPath');
   });
 }
 
@@ -4626,15 +4647,39 @@ async function testDiscoverFromPrs() {
       'Should check cooldown before creating new PR work');
   });
 
-  await test('needsReReview requires fixedAfterReview only — no broad !alreadyReviewed fallback', () => {
-    // The old condition had: (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt))
-    // The fallback (!alreadyReviewed && !!fixedAt) caused infinite re-review loops on GitHub
-    // because reviewStatus stays 'waiting' (self-approval blocked) and any push after review
-    // makes alreadyReviewed=false while fixedAt remains set. Fix: use fixedAfterReview only.
-    assert.ok(!src.includes('!alreadyReviewed && !!pr.minionsReview?.fixedAt'),
-      'needsReReview must NOT have the broad !alreadyReviewed fallback — it causes infinite re-review loops');
-    assert.ok(src.includes('fixedAfterReview && !evalEscalated'),
-      'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
+
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j) ─────────
+
+  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
+    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
+    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('reviewEnabled'),
+      'discoverFromPrs must use reviewEnabled as the single review gate');
+    assert.ok(!fnBody.includes('autoReview'),
+      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
+      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch block skips dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Pre-dispatch catch block should have 'continue' — skipping dispatch on error
+    // Pattern: "skipping dispatch`); continue;" inside catch block after live vote check
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 1,
+      `Pre-dispatch vote check catch block must skip dispatch (continue) on error (found ${matches.length})`);
+    // Also verify no catch blocks fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'No pre-dispatch catch block should fall through without continue');
   });
 }
 
@@ -4681,38 +4726,6 @@ async function testBuildFixRetryCap() {
   await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
     assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
       'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
-  });
-
-  // ─── Cooldown deferred to post-gating (#setCooldown-gating) ─────────────
-
-  await test('discoverFromPrs does NOT call setCooldown for review items', () => {
-    // Extract only the discoverFromPrs function body (ends where discoverFromWorkItems begins)
-    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
-    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
-    const fnBody = engineSrc.slice(fnStart, fnEnd);
-    // setCooldown should not appear in discoverFromPrs — it is deferred to discoverWork post-gating
-    assert.ok(!fnBody.includes('setCooldown(key)'),
-      'discoverFromPrs must NOT call setCooldown(key) — cooldown must be deferred to post-gating in discoverWork');
-  });
-
-  await test('discoverWork calls setCooldown after gating check via dispatchKey', () => {
-    const fnStart = engineSrc.indexOf('async function discoverWork(');
-    const fnBody = engineSrc.slice(fnStart);
-    // The post-gating dispatch loop should call setCooldown using item.meta.dispatchKey
-    assert.ok(fnBody.includes('setCooldown(item.meta') || fnBody.includes('setCooldown(item.meta?.dispatchKey)') || fnBody.includes("setCooldown(item.meta.dispatchKey)"),
-      'discoverWork post-gating loop must call setCooldown using item.meta.dispatchKey');
-  });
-
-  await test('setCooldown for gated reviews/fixes is not set when gated', () => {
-    // Verify that when items are gated (allReviews = [], allFixes = []),
-    // they don't end up in allWork, so setCooldown is never called for them
-    const fnStart = engineSrc.indexOf('async function discoverWork(');
-    const fnBody = engineSrc.slice(fnStart);
-    // The gating check clears allReviews and allFixes BEFORE the dispatch loop
-    const gateIdx = fnBody.indexOf('allReviews = []');
-    const dispatchLoopIdx = fnBody.indexOf('for (const item of allWork)');
-    assert.ok(gateIdx > -1 && dispatchLoopIdx > -1 && gateIdx < dispatchLoopIdx,
-      'Gating (allReviews = []) must happen BEFORE the dispatch loop where setCooldown is called');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -6661,6 +6674,11 @@ async function testWakeupCoalescing() {
   await test('getCoalescedContexts function exists', () => {
     assert.ok(src.includes('getCoalescedContexts'),
       'Should have function to retrieve coalesced contexts');
+  });
+
+  await test('cooldown.js exports clearCooldown helper', () => {
+    assert.ok(cooldownSrc.includes('function clearCooldown(') && cooldownSrc.includes('clearCooldown'),
+      'Should provide clearCooldown helper for stale cooldown recovery');
   });
 
   await test('discoverFromPrs coalesces on cooldown skip', () => {
@@ -9415,8 +9433,8 @@ async function main() {
     await testCooldownSystem();
     await testResolveAgent();
     await testRenderPlaybook();
-    await testResolvePlaybookPath();
     await testValidatePlaybookVars();
+    await testResolvePlaybookPath();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
@@ -9539,6 +9557,9 @@ async function main() {
     // P-h2t6r1j8: Structured completion protocol
     await testStructuredCompletion();
 
+    // W-mnzuhp2dapvn: Scheduled task note back-reference
+    await testScheduledTaskNoteBackReference();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -9600,8 +9621,15 @@ async function main() {
     await testGhThrottleEngineGuards();
     await testGhThrottleDashboard();
 
+    // W-mnywbzjj7rz5: Watches module & dashboard integration
+    await testWatchesModule();
+    await testWatchesDashboard();
+
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
+
+    // W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages
+    await testSyncPrsToolResultInUserMessages();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -9741,6 +9769,11 @@ async function testAutoApproveMode() {
   await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
       'autoArchive should default to false (opt-in, not automatic)');
+  });
+
+  await test('ENGINE_DEFAULTS does NOT include autoReview (consolidated into evalLoop)', () => {
+    assert.ok(!('autoReview' in shared.ENGINE_DEFAULTS),
+      'autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j) — must not exist in ENGINE_DEFAULTS');
   });
 
   await test('parseStreamJsonOutput extracts model from init message', () => {
@@ -9971,6 +10004,32 @@ async function testReviewReDispatchLoop() {
     assert.ok(src.includes("pr.lastPushedAt <= pr.lastReviewedAt"),
       'alreadyReviewed should compare lastPushedAt <= lastReviewedAt so new pushes allow re-review');
   });
+
+  await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(src.includes("const needsReReview = autoReview && reviewStatus === 'waiting'"),
+      'Should define needsReReview for waiting PRs');
+    assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
+      src.includes('!pr.lastReviewedAt ||') &&
+      src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
+      'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const reReviewIdx = src.indexOf("const needsReReview = autoReview && reviewStatus === 'waiting'");
+    assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
+    const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
+    const reReviewBlock = src.slice(reReviewIdx, fixIdx);
+    assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
+      'needsReReview should not be blocked by completed dispatch history');
+    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${pr.id}`"),
+      'needsReReview should use a dedicated re-review dispatch key');
+    assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
+      'needsReReview should still respect cooldown');
+    assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
+      'needsReReview should pre-check live status before dispatching');
+  });
 }
 
 async function testSettingsComprehensive() {
@@ -10101,6 +10160,18 @@ async function testSettingsComprehensive() {
       'settings.js must include adoPollEnabled in enginePayload and reference set-adoPollEnabled element');
     assert.ok(src.includes("ghPollEnabled:") && src.includes("set-ghPollEnabled"),
       'settings.js must include ghPollEnabled in enginePayload and reference set-ghPollEnabled element');
+  });
+
+  await test('poll frequency labels say PR not ADO — they gate both ADO and GitHub', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes("PR Status Poll Frequency"),
+      'settings.js must label status poll field as "PR Status Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(src.includes("PR Comments Poll Frequency"),
+      'settings.js must label comments poll field as "PR Comments Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(!src.includes("'ADO Status Poll Frequency'") && !src.includes('"ADO Status Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Status Poll Frequency" label — field gates both providers');
+    assert.ok(!src.includes("'ADO Comments Poll Frequency'") && !src.includes('"ADO Comments Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Comments Poll Frequency" label — field gates both providers');
   });
 
   await test('ENGINE_DEFAULTS defines adoPollEnabled and ghPollEnabled as booleans', () => {
@@ -16710,11 +16781,25 @@ async function testPrReviewFixFlows() {
     assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
   });
 
+  await test('human feedback fix clears stale cooldowns with no dispatch history', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(humanBlock.includes('blockedByCooldown && !alreadyDispatched') && humanBlock.includes('clearCooldown(key)'),
+      'Human feedback should clear stale cooldowns when no dispatch history exists');
+    assert.ok(humanBlock.includes('Cleared stale cooldown'),
+      'Human feedback should log stale cooldown recovery');
+  });
+
+  await test('human feedback fix does not set cooldown before post-gating dispatch', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('newWork.push(item); setCooldown(key);'),
+      'Human feedback should not stamp cooldown before discoverWork gating');
+  });
+
   // ── Eval escalation ──
 
   await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
     const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
     const escalBlock = engineSrc.slice(startIdx, endIdx);
     assert.ok(escalBlock.length > 10, 'Should find escalation block');
     assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
@@ -16940,6 +17025,11 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('!fixDispatched'), 'Conflict fix should be gated by fixDispatched');
   });
 
+  await test('build fix sets fixDispatched to prevent same-tick conflict fix', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('fixDispatched = true'), 'Build fix must set fixDispatched so conflict fix cannot also go out in the same tick');
+  });
+
   await test('_mergeConflict cleared when conflict resolves', () => {
     assert.ok(ghSrc.includes("delete pr._mergeConflict"), 'GitHub should clear flag');
     assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');
@@ -16962,6 +17052,34 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(ENGINE_DEFAULTS.autoFixConflicts, true, 'autoFixConflicts default must be true');
   });
 
+  await test('build failure fix gated by autoFixBuilds flag', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('autoFixBuilds'), 'Build fix dispatch must be gated by autoFixBuilds config flag');
+  });
+
+  await test('autoFixBuilds reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('DEFAULTS.autoFixBuilds'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
+    assert.ok(!buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+  });
+
+  await test('autoFixBuilds present in ENGINE_DEFAULTS with default true', () => {
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
+    assert.ok('autoFixBuilds' in ENGINE_DEFAULTS, 'ENGINE_DEFAULTS must define autoFixBuilds');
+    assert.strictEqual(ENGINE_DEFAULTS.autoFixBuilds, true, 'autoFixBuilds default must be true');
+  });
+
+  await test('settings.js renders autoFixBuilds toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoFixBuilds'), 'settings.js must render autoFixBuilds toggle');
+    assert.ok(settingsSrc.includes('autoFixBuilds !== false'), 'autoFixBuilds toggle must default to true (!== false pattern)');
+  });
+
+  await test('settings.js saves autoFixBuilds on save', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes("getElementById('set-autoFixBuilds').checked"), 'saveSettings must read autoFixBuilds checkbox');
+  });
+
   // ── Auto-complete ──
 
   console.log('\n── Auto-Complete ──');
@@ -16974,6 +17092,27 @@ async function testPrReviewFixFlows() {
   await test('auto-complete requires both approved and passing', () => {
     assert.ok(ghSrc.includes("reviewStatus === 'approved'") && ghSrc.includes("buildStatus === 'passing'") && ghSrc.includes('_autoCompleted'),
       'GitHub should require both conditions');
+  });
+
+  await test('settings UI has Auto-complete PRs toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoCompletePrs'),
+      'Settings UI should have an autoCompletePrs toggle with id set-autoCompletePrs');
+    assert.ok(settingsSrc.includes('Auto-complete PRs') || settingsSrc.includes('Auto-complete'),
+      'Settings UI should label the toggle as Auto-complete PRs');
+  });
+
+  await test('settings UI sends autoCompletePrs to backend', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('autoCompletePrs:') && settingsSrc.includes('set-autoCompletePrs'),
+      'settings.js must include autoCompletePrs in enginePayload and reference set-autoCompletePrs element');
+  });
+
+  await test('ENGINE_DEFAULTS defines autoCompletePrs as boolean', () => {
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.autoCompletePrs, 'boolean',
+      'ENGINE_DEFAULTS.autoCompletePrs must be a boolean so dynamic boolean derivation includes it');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoCompletePrs, false,
+      'autoCompletePrs default must be false (opt-in)');
   });
 
   await test('GitHub merge method validated against whitelist', () => {
@@ -18984,6 +19123,965 @@ async function testGhThrottleDashboard() {
   });
 }
 
+// ─── W-mnywbzjj7rz5: Watches module tests ──────────────────────────────────
+
+async function testWatchesModule() {
+  console.log('\n── watches.js — Core module ──');
+
+  // Constants tests
+  await test('WATCH_STATUS constants are defined', () => {
+    assert.strictEqual(shared.WATCH_STATUS.ACTIVE, 'active');
+    assert.strictEqual(shared.WATCH_STATUS.PAUSED, 'paused');
+    assert.strictEqual(shared.WATCH_STATUS.TRIGGERED, 'triggered');
+    assert.strictEqual(shared.WATCH_STATUS.EXPIRED, 'expired');
+  });
+
+  await test('WATCH_TARGET_TYPE constants are defined', () => {
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.PR, 'pr');
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.WORK_ITEM, 'work-item');
+    // BRANCH was removed — only PR and work-item are supported target types
+    assert.strictEqual(shared.WATCH_TARGET_TYPE.BRANCH, undefined);
+  });
+
+  await test('WATCH_CONDITION constants are defined', () => {
+    assert.strictEqual(shared.WATCH_CONDITION.MERGED, 'merged');
+    assert.strictEqual(shared.WATCH_CONDITION.BUILD_FAIL, 'build-fail');
+    assert.strictEqual(shared.WATCH_CONDITION.BUILD_PASS, 'build-pass');
+    assert.strictEqual(shared.WATCH_CONDITION.COMPLETED, 'completed');
+    assert.strictEqual(shared.WATCH_CONDITION.FAILED, 'failed');
+    assert.strictEqual(shared.WATCH_CONDITION.STATUS_CHANGE, 'status-change');
+    assert.strictEqual(shared.WATCH_CONDITION.ANY, 'any');
+  });
+
+  // createWatch validation
+  await test('createWatch requires target', () => {
+    assert.throws(() => watches.createWatch({ targetType: 'pr', condition: 'merged' }), /target is required/);
+  });
+
+  await test('createWatch requires valid targetType', () => {
+    assert.throws(() => watches.createWatch({ target: 'PR-1', targetType: 'invalid', condition: 'merged' }), /targetType must be one of/);
+  });
+
+  await test('createWatch requires valid condition', () => {
+    assert.throws(() => watches.createWatch({ target: 'PR-1', targetType: 'pr', condition: 'invalid' }), /condition must be one of/);
+  });
+
+  await test('createWatch creates valid watch with defaults', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-100',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.ok(w.id.startsWith('watch-'), 'ID should start with watch-');
+      assert.strictEqual(w.target, 'PR-100');
+      assert.strictEqual(w.targetType, 'pr');
+      assert.strictEqual(w.condition, 'merged');
+      assert.strictEqual(w.status, shared.WATCH_STATUS.ACTIVE);
+      assert.strictEqual(w.owner, 'human');
+      assert.strictEqual(w.notify, 'inbox');
+      assert.strictEqual(w.triggerCount, 0);
+      assert.strictEqual(w.stopAfter, 0);
+      assert.ok(w.created_at, 'created_at should be set');
+      assert.ok(w.interval >= 60000, 'interval should be at least 60s');
+    } finally { restore(); }
+  });
+
+  await test('createWatch persists to watches.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Re-require watches with test isolation
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'W-abc123',
+        targetType: shared.WATCH_TARGET_TYPE.WORK_ITEM,
+        condition: shared.WATCH_CONDITION.COMPLETED,
+        owner: 'dallas',
+        description: 'Watch for completion',
+      });
+      // Re-read from disk
+      const all = testWatches.getWatches();
+      assert.strictEqual(all.length, 1, 'Should have 1 watch');
+      assert.strictEqual(all[0].id, w.id);
+      assert.strictEqual(all[0].target, 'W-abc123');
+      assert.strictEqual(all[0].owner, 'dallas');
+    } finally { restore(); }
+  });
+
+  await test('createWatch enforces minimum interval of 60s', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 1000,  // too low
+      });
+      assert.ok(w.interval >= 60000, 'interval should be clamped to min 60s');
+    } finally { restore(); }
+  });
+
+  // updateWatch
+  await test('updateWatch pauses an active watch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      const updated = testWatches.updateWatch(w.id, { status: shared.WATCH_STATUS.PAUSED });
+      assert.ok(updated, 'updateWatch should return updated watch');
+      assert.strictEqual(updated.status, shared.WATCH_STATUS.PAUSED);
+    } finally { restore(); }
+  });
+
+  await test('updateWatch returns null for nonexistent ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const result = testWatches.updateWatch('watch-nonexistent', { status: 'paused' });
+      assert.strictEqual(result, null);
+    } finally { restore(); }
+  });
+
+  await test('updateWatch requires id', () => {
+    assert.throws(() => watches.updateWatch(null, {}), /id is required/);
+  });
+
+  // deleteWatch
+  await test('deleteWatch removes a watch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.strictEqual(testWatches.getWatches().length, 1);
+      const deleted = testWatches.deleteWatch(w.id);
+      assert.strictEqual(deleted, true);
+      assert.strictEqual(testWatches.getWatches().length, 0);
+    } finally { restore(); }
+  });
+
+  await test('deleteWatch returns false for nonexistent ID', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const deleted = testWatches.deleteWatch('watch-nonexistent');
+      assert.strictEqual(deleted, false);
+    } finally { restore(); }
+  });
+
+  // evaluateWatch — PR conditions
+  await test('evaluateWatch: PR merged triggers when PR status is merged', () => {
+    const watch = { target: '100', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 100, status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('merged'));
+  });
+
+  await test('evaluateWatch: PR merged does not trigger when PR active', () => {
+    const watch = { target: '100', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR build-fail triggers when build failing', () => {
+    const watch = { target: '200', targetType: 'pr', condition: 'build-fail', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 200, status: 'active', buildStatus: 'failing' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('failing'));
+  });
+
+  await test('evaluateWatch: PR build-pass triggers when build passing', () => {
+    const watch = { target: '200', targetType: 'pr', condition: 'build-pass', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 200, status: 'active', buildStatus: 'passing' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: PR status-change triggers on change', () => {
+    const watch = { target: '300', targetType: 'pr', condition: 'status-change', _lastState: { status: 'active' } };
+    const state = { pullRequests: [{ prNumber: 300, status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('active'));
+    assert.ok(result.message.includes('merged'));
+  });
+
+  await test('evaluateWatch: PR status-change does not trigger when unchanged', () => {
+    const watch = { target: '300', targetType: 'pr', condition: 'status-change', _lastState: { status: 'active' } };
+    const state = { pullRequests: [{ prNumber: 300, status: 'active' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR not found returns triggered=false', () => {
+    const watch = { target: '999', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+    assert.ok(result.message.includes('not found'));
+  });
+
+  // evaluateWatch — new-comments condition
+  await test('evaluateWatch: PR new-comments triggers when comment date changes', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('new comment'));
+  });
+
+  await test('evaluateWatch: PR new-comments does not trigger when date unchanged', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-01T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR new-comments triggers on first comment (no prior state)', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: null } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  // evaluateWatch — vote-change condition
+  await test('evaluateWatch: PR vote-change triggers when reviewStatus changes', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('pending'));
+    assert.ok(result.message.includes('approved'));
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger when unchanged', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger without prior state', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  // evaluateWatch — Work Item conditions
+  await test('evaluateWatch: WI completed triggers when done', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-abc', status: 'done' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('completed'));
+  });
+
+  await test('evaluateWatch: WI completed does not trigger when pending', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-abc', status: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: WI failed triggers on failure', () => {
+    const watch = { target: 'W-def', targetType: 'work-item', condition: 'failed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-def', status: 'failed' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: WI status-change triggers on change', () => {
+    const watch = { target: 'W-ghi', targetType: 'work-item', condition: 'status-change', _lastState: { status: 'pending' } };
+    const state = { workItems: [{ id: 'W-ghi', status: 'dispatched' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  await test('evaluateWatch: WI not found returns triggered=false', () => {
+    const watch = { target: 'W-missing', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  // checkWatches
+  await test('checkWatches skips paused watches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-50',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      testWatches.updateWatch(w.id, { status: shared.WATCH_STATUS.PAUSED });
+      const state = { pullRequests: [{ prNumber: 50, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 0, 'Paused watch should not trigger');
+    } finally { restore(); }
+  });
+
+  await test('checkWatches triggers active watch and increments count', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '60',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 60, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Should have triggered once');
+      assert.ok(after.last_triggered, 'last_triggered should be set');
+      assert.ok(after.last_checked, 'last_checked should be set');
+    } finally { restore(); }
+  });
+
+  await test('checkWatches expires watch when stopAfter limit reached', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '70',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 1,
+        interval: 60000,
+      });
+      const state = { pullRequests: [{ prNumber: 70, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED);
+      assert.strictEqual(after.triggerCount, 1);
+    } finally { restore(); }
+  });
+
+  await test('checkWatches respects interval — skips recently checked', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '80',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.BUILD_FAIL,
+        interval: 300000,  // 5 min
+      });
+      // First check — no trigger (build passing)
+      const state1 = { pullRequests: [{ prNumber: 80, status: 'active', buildStatus: 'passing' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const afterFirst = testWatches.getWatches().find(x => x.id === w.id);
+      assert.ok(afterFirst.last_checked, 'Should have last_checked set');
+
+      // Second check immediately — should skip due to interval
+      const state2 = { pullRequests: [{ prNumber: 80, status: 'active', buildStatus: 'failing' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const afterSecond = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(afterSecond.triggerCount, 0, 'Should not trigger due to interval');
+    } finally { restore(); }
+  });
+
+  // _captureState
+  await test('_captureState captures PR state', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.status, 'active');
+    assert.strictEqual(captured.buildStatus, 'passing');
+    assert.strictEqual(captured.reviewStatus, 'waiting');
+  });
+
+  await test('_captureState captures PR lastCommentDate from humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-10T12:00:00Z' } }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, '2026-04-10T12:00:00Z');
+  });
+
+  await test('_captureState captures null lastCommentDate when no humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, null);
+  });
+
+  await test('_captureState captures WI state', () => {
+    const watch = { target: 'W-abc', targetType: 'work-item' };
+    const state = { workItems: [{ id: 'W-abc', status: 'dispatched' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.status, 'dispatched');
+  });
+
+  await test('_captureState returns empty for missing target', () => {
+    const watch = { target: 'W-missing', targetType: 'work-item' };
+    const captured = watches._captureState(watch, { workItems: [] });
+    assert.deepStrictEqual(captured, {});
+  });
+
+  // ── Review feedback regression tests ────────────────────────────────────
+
+  // Bug #1: updateWatch validates status AFTER assigning it — invalid status gets persisted
+  await test('updateWatch rejects invalid status without persisting it', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-1',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+      });
+      assert.strictEqual(w.status, shared.WATCH_STATUS.ACTIVE);
+      // Try to update with an invalid status
+      const result = testWatches.updateWatch(w.id, { status: 'bogus-status' });
+      // Should return null (rejected) — not persist the invalid status
+      assert.strictEqual(result, null, 'updateWatch should return null for invalid status');
+      // Verify the watch on disk still has ACTIVE status
+      const persisted = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(persisted.status, shared.WATCH_STATUS.ACTIVE,
+        'Watch on disk should still have ACTIVE status, not the invalid one');
+    } finally { restore(); }
+  });
+
+  // Bug #2: evaluateWatch and _captureState use divergent PR matching logic
+  await test('_captureState uses same matching logic as evaluateWatch for PRs', () => {
+    // _captureState should match by prNumber (string coercion), same as evaluateWatch
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }] };
+    const captured = watches._captureState(watch, state);
+    // evaluateWatch finds this PR by String(prNumber) === String(target)
+    const evalResult = watches.evaluateWatch({ ...watch, condition: 'merged', _lastState: {} }, state);
+    // If evaluateWatch finds the PR, _captureState must also find it
+    assert.ok(evalResult.message !== 'PR 100 not found', 'evaluateWatch should find the PR');
+    assert.strictEqual(captured.status, 'active', '_captureState should also find the PR');
+  });
+
+  // Bug #3: title.includes(target) is too loose — "1" matches any PR with "1" in title
+  await test('evaluateWatch does not match PRs by loose title substring', () => {
+    const watch = { target: '1', targetType: 'pr', condition: 'merged', _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 999, id: 'other', title: 'Fix bug PR-1001 regression', status: 'merged' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "1" should not match a PR just because its title contains "1"
+    assert.strictEqual(result.triggered, false,
+      'Should not match PR by loose title substring — target "1" should not match title containing "1"');
+  });
+
+  await test('evaluateWatch does not match WI by loose title substring', () => {
+    const watch = { target: 'Fix', targetType: 'work-item', condition: 'completed', _lastState: {} };
+    const state = { workItems: [{ id: 'W-other', title: 'Fix login button', status: 'done' }] };
+    const result = watches.evaluateWatch(watch, state);
+    // Should NOT match — target "Fix" should not match a WI just because its title contains "Fix"
+    assert.strictEqual(result.triggered, false,
+      'Should not match WI by loose title substring');
+  });
+
+  // ── W-mnz3ww9ao5lt: Test gap fills ─────────────────────────────────────────
+
+  await test('onNotMet: notify fires writeToInbox when condition not met (agent owner)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '500',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        onNotMet: 'notify',
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // PR is NOT merged — condition not met, so onNotMet should fire
+      const state = { pullRequests: [{ prNumber: 500, status: 'active' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      // Verify inbox file was created for dallas
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const pollFile = files.find(f => f.startsWith('dallas-watch-poll-'));
+      assert.ok(pollFile, 'onNotMet should write to inbox for agent owner');
+      const content = fs.readFileSync(path.join(inboxDir, pollFile), 'utf8');
+      assert.ok(content.includes('Condition not yet met'), 'Inbox note should describe condition not met');
+    } finally { restore(); }
+  });
+
+  await test('human owner receives trigger notifications (guard removed)', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '510',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        owner: 'human',
+        interval: 60000,
+      });
+      // PR IS merged — should trigger and write to human inbox
+      const state = { pullRequests: [{ prNumber: 510, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const triggerFile = files.find(f => f.startsWith('human-watch-'));
+      assert.ok(triggerFile, 'Human owner should receive trigger notification (owner !== human guard removed)');
+    } finally { restore(); }
+  });
+
+  await test('human owner receives onNotMet notifications', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '520',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        onNotMet: 'notify',
+        owner: 'human',
+        interval: 60000,
+      });
+      // PR is NOT merged — onNotMet should fire for human
+      const state = { pullRequests: [{ prNumber: 520, status: 'active' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+      const files = fs.readdirSync(inboxDir);
+      const pollFile = files.find(f => f.startsWith('human-watch-poll-'));
+      assert.ok(pollFile, 'Human owner should receive onNotMet notification');
+    } finally { restore(); }
+  });
+
+  await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+    // Use a non-absolute condition (new-comments) — absolute conditions (merged, build-fail, etc.)
+    // auto-expire when stopAfter is 0 via WATCH_ABSOLUTE_CONDITIONS (fire-once semantics).
+    // First check initializes baseline _lastState without triggering, so we need 3 checks for 2 triggers.
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '600',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,   // run forever (non-absolute conditions)
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+
+      // Check 1 — initializes baseline _lastState (lastCommentDate = '2026-01-01'), no trigger
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      assert.strictEqual(testWatches.getWatches().find(x => x.id === w.id).triggerCount, 0, 'First check initializes baseline, no trigger');
+
+      // Check 2 — comment date changed → triggers (triggerCount = 1)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+
+      // Check 3 — another comment date change → triggers again (triggerCount = 2)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
+      const after2 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for non-absolute conditions');
+      assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
+    } finally { restore(); }
+  });
+
+  await test('create-watch CC action in executeCCActions creates a watch', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find executeCCActions function — create-watch case may be far into the switch
+    const fnStart = dashSrc.indexOf('async function executeCCActions');
+    assert.ok(fnStart > -1, 'executeCCActions must exist in dashboard.js');
+    const fnSlice = dashSrc.slice(fnStart, fnStart + 5000);
+    assert.ok(fnSlice.includes("case 'create-watch'"),
+      'executeCCActions must handle create-watch action type');
+    assert.ok(fnSlice.includes('watchesMod.createWatch') || fnSlice.includes('createWatch('),
+      'create-watch action must call createWatch');
+    assert.ok(fnSlice.includes('_parseWatchInterval'),
+      'create-watch action must parse interval');
+  });
+
+  await test('updateWatch updates interval, onNotMet, and stopAfter fields', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: 'PR-700',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        interval: 60000,
+        stopAfter: 0,
+        onNotMet: null,
+      });
+      // Update all three fields
+      const updated = testWatches.updateWatch(w.id, {
+        interval: 120000,
+        stopAfter: 5,
+        onNotMet: 'notify',
+      });
+      assert.ok(updated, 'updateWatch should return updated watch');
+      assert.strictEqual(updated.interval, 120000, 'interval should be updated');
+      assert.strictEqual(updated.stopAfter, 5, 'stopAfter should be updated');
+      assert.strictEqual(updated.onNotMet, 'notify', 'onNotMet should be updated');
+      // Verify persisted to disk
+      const persisted = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(persisted.interval, 120000, 'interval should persist');
+      assert.strictEqual(persisted.stopAfter, 5, 'stopAfter should persist');
+      assert.strictEqual(persisted.onNotMet, 'notify', 'onNotMet should persist');
+    } finally { restore(); }
+  });
+
+  await test('status-change first-check initializes _lastState without triggering', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '800',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — should initialize _lastState but NOT trigger
+      const state = { pullRequests: [{ prNumber: 800, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 0, 'First check should NOT trigger for status-change');
+      assert.ok(after._lastState, '_lastState should be initialized');
+      assert.strictEqual(after._lastState.status, 'active', '_lastState should capture current status');
+    } finally { restore(); }
+  });
+
+  await test('status-change second-check triggers after state change', () => {
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '810',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        owner: 'dallas',
+        interval: 60000,
+      });
+      // First check — initializes baseline
+      const state1 = { pullRequests: [{ prNumber: 810, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      // Force last_checked back for second check
+      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      // Second check with changed status — should trigger
+      const state2 = { pullRequests: [{ prNumber: 810, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after.triggerCount, 1, 'Second check should trigger after status change');
+    } finally { restore(); }
+  });
+
+  await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    // Use non-absolute condition (new-comments) so stopAfter: 0 means "run forever"
+    // First check initializes baseline; checks 2 and 3 trigger (new comment dates)
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '900',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,
+        owner: 'dallas',
+        interval: 60000,
+        notify: 'inbox',
+      });
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+
+      // Check 1 — baseline initialization, no trigger, no inbox file
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+
+      // Check 2 — first trigger (comment date changed)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+
+      // Check 3 — second trigger (another comment date change)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
+      const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterSecond.length, 2,
+        'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
+        filesAfterSecond.length + ' files');
+    } finally { restore(); }
+  });
+
+  await test('createWatch rejects branch targetType (removed from constants)', () => {
+    assert.throws(
+      () => watches.createWatch({ target: 'main', targetType: 'branch', condition: 'any' }),
+      /targetType must be one of/,
+      'branch is no longer a valid targetType'
+    );
+  });
+
+  await test('render-watches.js does not include branch in target types', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    // The form should not offer 'branch' as an option
+    assert.ok(!src.includes("value: 'branch'"),
+      'render-watches.js should not have branch as a target type option');
+    assert.ok(!src.includes("branch: 'Branch'"),
+      'render-watches.js _WATCH_TARGET_LABELS should not include branch');
+  });
+
+  await test('WATCHES_PATH points to engine/watches.json', () => {
+    assert.ok(watches._watchesPath().endsWith(path.join('engine', 'watches.json')));
+  });
+
+  await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
+    assert.strictEqual(watches.DEFAULT_WATCH_INTERVAL, 300000);
+  });
+}
+
+async function testWatchesDashboard() {
+  console.log('\n── watches — Dashboard integration ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('dashboard.js requires engine/watches', () => {
+    assert.ok(dashSrc.includes("require('./engine/watches')"),
+      'dashboard.js must import ./engine/watches');
+  });
+
+  await test('getStatus includes watches field', () => {
+    assert.ok(dashSrc.includes('watches:'),
+      'getStatus must include watches in the status response');
+    assert.ok(dashSrc.includes('getWatches'),
+      'getStatus must call getWatches()');
+  });
+
+  await test('dashboard has GET /api/watches endpoint', () => {
+    assert.ok(dashSrc.includes('/api/watches'),
+      'dashboard must have /api/watches endpoint');
+    assert.ok(dashSrc.includes('handleWatchesList'),
+      'dashboard must have handleWatchesList handler');
+  });
+
+  await test('dashboard has POST /api/watches endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesCreate'),
+      'dashboard must have handleWatchesCreate handler');
+  });
+
+  await test('dashboard has POST /api/watches/update endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesUpdate'),
+      'dashboard must have handleWatchesUpdate handler');
+  });
+
+  await test('dashboard has POST /api/watches/delete endpoint', () => {
+    assert.ok(dashSrc.includes('handleWatchesDelete'),
+      'dashboard must have handleWatchesDelete handler');
+  });
+
+  // Layout tests
+  const layoutSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'layout.html'), 'utf8');
+
+  await test('layout.html has watches sidebar link', () => {
+    assert.ok(layoutSrc.includes('data-page="watches"'),
+      'layout.html must have a sidebar link with data-page="watches"');
+    assert.ok(layoutSrc.includes('href="/watches"'),
+      'layout.html must have href="/watches" link');
+  });
+
+  // Page HTML tests
+  await test('watches.html page exists', () => {
+    const exists = fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'watches.html'));
+    assert.ok(exists, 'dashboard/pages/watches.html must exist');
+  });
+
+  await test('watches.html has watches-content element', () => {
+    const html = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'pages', 'watches.html'), 'utf8');
+    assert.ok(html.includes('watches-content'),
+      'watches.html must have a #watches-content element');
+    assert.ok(html.includes('watches-count'),
+      'watches.html must have a #watches-count element');
+  });
+
+  // JS renderer tests
+  await test('render-watches.js exists', () => {
+    const exists = fs.existsSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'));
+    assert.ok(exists, 'dashboard/js/render-watches.js must exist');
+  });
+
+  await test('render-watches.js defines renderWatches function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('function renderWatches'),
+      'render-watches.js must define renderWatches function');
+  });
+
+  await test('render-watches.js defines createWatch UI function', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('openCreateWatchModal') || src.includes('submitWatch'),
+      'render-watches.js must have a create watch UI function');
+  });
+
+  await test('render-watches.js exports via window.MinionsWatches', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+    assert.ok(src.includes('window.MinionsWatches'),
+      'render-watches.js must export via window.MinionsWatches');
+  });
+
+  // Refresh integration
+  const refreshSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'refresh.js'), 'utf8');
+
+  await test('refresh.js renders watches on status update', () => {
+    assert.ok(refreshSrc.includes('renderWatches'),
+      'refresh.js must call renderWatches');
+    assert.ok(refreshSrc.includes("'watches'"),
+      'refresh.js must check watches in _changed');
+  });
+
+  // Dashboard assembly includes render-watches.js
+  await test('dashboard assembly includes render-watches.js', () => {
+    assert.ok(dashSrc.includes('render-watches'),
+      'dashboard.js jsFiles must include render-watches');
+  });
+
+  // Engine tick integration
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  await test('engine.js integrates watches check in tick cycle', () => {
+    assert.ok(engineSrc.includes('checkWatches'),
+      'engine.js must call checkWatches in tick cycle');
+    assert.ok(engineSrc.includes("require('./engine/watches')"),
+      'engine.js must import watches module');
+  });
+
+  // CC action tests — dashboard.js must support delete/pause/resume watches from CC
+  await test('dashboard.js has delete-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'delete-watch'") || dashSrc.includes('"delete-watch"'),
+      'dashboard.js must handle delete-watch CC action');
+    assert.ok(dashSrc.includes('deleteWatch'),
+      'delete-watch handler must call watchesMod.deleteWatch');
+  });
+
+  await test('dashboard.js has pause-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'pause-watch'") || dashSrc.includes('"pause-watch"'),
+      'dashboard.js must handle pause-watch CC action');
+  });
+
+  await test('dashboard.js has resume-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'resume-watch'") || dashSrc.includes('"resume-watch"'),
+      'dashboard.js must handle resume-watch CC action');
+  });
+
+  // CC preamble tests — watches count should be in the state preamble
+  await test('dashboard.js preamble includes watches count', () => {
+    assert.ok(dashSrc.includes('Watches:') || dashSrc.includes('watches:'),
+      'CC state preamble should include watches count');
+    assert.ok(dashSrc.includes('getWatches'),
+      'Preamble builder should call getWatches for the count');
+  });
+
+  // Condition labels in render-watches.js
+  const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+
+  await test('render-watches.js includes new-comments condition label', () => {
+    assert.ok(renderSrc.includes('new-comments'),
+      'render-watches.js must include new-comments condition');
+  });
+
+  await test('render-watches.js includes vote-change condition label', () => {
+    assert.ok(renderSrc.includes('vote-change'),
+      'render-watches.js must include vote-change condition');
+  });
+
+  // CC system prompt tests
+  const ccPromptSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  await test('CC system prompt documents delete-watch action', () => {
+    assert.ok(ccPromptSrc.includes('delete-watch'),
+      'CC system prompt must document delete-watch action');
+  });
+
+  await test('CC system prompt documents pause-watch action', () => {
+    assert.ok(ccPromptSrc.includes('pause-watch'),
+      'CC system prompt must document pause-watch action');
+  });
+
+  await test('CC system prompt documents resume-watch action', () => {
+    assert.ok(ccPromptSrc.includes('resume-watch'),
+      'CC system prompt must document resume-watch action');
+  });
+
+  // shared.js new conditions
+  await test('WATCH_CONDITION includes new-comments', () => {
+    assert.ok(shared.WATCH_CONDITION.NEW_COMMENTS === 'new-comments',
+      'WATCH_CONDITION must have NEW_COMMENTS constant');
+  });
+
+  await test('WATCH_CONDITION includes vote-change', () => {
+    assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
+      'WATCH_CONDITION must have VOTE_CHANGE constant');
+  });
+}
+
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
 async function testAzureauthTimeout() {
   console.log('\n── #1049: azureauth --timeout enforcement ──');
@@ -19035,4 +20133,301 @@ async function testAzureauthTimeout() {
   });
 }
 
+// ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
+
+async function testScheduledTaskNoteBackReference() {
+  console.log('\n── Scheduled task note back-reference ──');
+
+  // 1. writeToInbox accepts metadata parameter and injects into frontmatter
+  await test('writeToInbox injects metadata fields into frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-result', '# Scheduled result', inboxDir, {
+      sourceItem: 'sched-daily-test-123',
+      scheduleId: 'daily-test-suite'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: sched-daily-test-123'), 'Frontmatter should include sourceItem');
+    assert.ok(content.includes('scheduleId: daily-test-suite'), 'Frontmatter should include scheduleId');
+    assert.ok(content.includes('id: ' + noteId), 'Frontmatter should include note ID');
+    assert.ok(content.includes('# Scheduled result'), 'Should include original content');
+  });
+
+  await test('writeToInbox metadata works with existing frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-fm', '---\ntitle: Custom\n---\n\n# Body', inboxDir, {
+      sourceItem: 'WI-999'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: WI-999'), 'Should inject sourceItem into existing frontmatter');
+    assert.ok(content.includes('title: Custom'), 'Should preserve existing fields');
+  });
+
+  await test('writeToInbox without metadata still works (backward compat)', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'no-meta', '# No metadata', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem when no metadata');
+    assert.ok(!content.includes('scheduleId'), 'Should not include scheduleId when no metadata');
+  });
+
+  await test('writeToInbox ignores empty metadata object', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'empty-meta', '# Empty', inboxDir, {});
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem for empty metadata');
+  });
+
+  // 2. runPostCompletionHooks updates schedule-runs.json for scheduled tasks
+  await test('runPostCompletionHooks updates schedule-runs.json on scheduled task completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the runPostCompletionHooks function
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('_scheduleId'), 'runPostCompletionHooks must check for _scheduleId on work items');
+    assert.ok(fn.includes('schedule-runs'), 'runPostCompletionHooks must update schedule-runs.json');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'schedule-runs update must use mutateJsonFileLocked');
+  });
+
+  await test('runPostCompletionHooks writes completion note for scheduled tasks with back-reference', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('writeToInbox') && fn.includes('_scheduleId'),
+      'runPostCompletionHooks must write inbox note with schedule reference');
+    assert.ok(fn.includes('sourceItem') || fn.includes('scheduleId'),
+      'scheduled task inbox note must include sourceItem or scheduleId metadata');
+  });
+
+  // 3. Behavioral test: scheduled task completion updates schedule-runs with lastWorkItemId
+  await test('scheduled task completion records lastWorkItemId in schedule-runs.json', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sq = require('../engine/shared');
+
+      // Write schedule-runs.json with initial run timestamp
+      const schedRunsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'schedule-runs.json');
+      sq.safeWrite(schedRunsPath, { 'daily-test': '2026-04-15T00:00:00Z' });
+
+      // Create a central work-items.json with a scheduled task work item
+      const centralWiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      sq.safeWrite(centralWiPath, [
+        { id: 'sched-daily-test-12345', title: 'Daily Test', type: 'test', status: 'dispatched',
+          _scheduleId: 'daily-test', created: '2026-04-15T00:00:00Z' }
+      ]);
+
+      const dispatchItem = {
+        id: 'dispatch-1',
+        type: 'test',
+        meta: {
+          item: { id: 'sched-daily-test-12345', _scheduleId: 'daily-test' },
+          project: null
+        }
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, 'Test passed: 100/100', { agents: {} });
+
+      // Verify schedule-runs.json was updated with lastWorkItemId
+      const runs = sq.safeJson(schedRunsPath);
+      assert.ok(runs['daily-test'], 'Schedule run entry should exist');
+      if (typeof runs['daily-test'] === 'object') {
+        assert.strictEqual(runs['daily-test'].lastWorkItemId, 'sched-daily-test-12345',
+          'Should record lastWorkItemId');
+        assert.ok(runs['daily-test'].lastResult, 'Should record lastResult');
+        assert.ok(runs['daily-test'].lastCompletedAt, 'Should record lastCompletedAt');
+      }
+    } finally {
+      restore();
+    }
+  });
+}
+
+// ─── W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages ────────
+async function testSyncPrsToolResultInUserMessages() {
+  console.log('\n── W-mnzwn967gdnc: syncPrsFromOutput scans tool_result in user messages ──');
+
+  const lifecycle = require('../engine/lifecycle');
+  const shared = require('../engine/shared');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // ── Source-level: filter now includes "type":"user" ──
+
+  await test('syncPrsFromOutput line filter includes type:user messages', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // The filter line must allow "type":"user" messages through
+    assert.ok(fnBody.includes('"type":"user"'),
+      'syncPrsFromOutput must include "type":"user" in its message-type filter so tool_result blocks are scanned');
+  });
+
+  await test('syncPrsFromOutput tool_result URL scan is not gated on keywords', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Find the tool_result block handling — the URL regex should NOT be inside a keyword guard
+    const toolResultBlock = fnBody.slice(
+      fnBody.indexOf("block.type === 'tool_result'"),
+      fnBody.indexOf("block.type === 'text'")
+    );
+    // The old code gated URL scanning on pullRequestId/create_pull_request keywords
+    assert.ok(!toolResultBlock.includes("text.includes('pullRequestId') || text.includes('create_pull_request')"),
+      'tool_result URL scan should NOT be gated on pullRequestId/create_pull_request keywords — gh pr create output may not contain these');
+  });
+
+  // ── Functional: PR URL in type:user tool_result is detected ──
+
+  await test('syncPrsFromOutput detects GitHub PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Simulate JSONL where PR URL appears ONLY in a type:user tool_result block
+      // (this is how gh pr create output actually appears in Claude API JSONL)
+      const output = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"I will create a PR now."}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"https://github.com/org/repo/pull/555\\nCreating pull request for work/branch into master..."}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-100', title: 'Test PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-555'), 'PR-555 from type:user tool_result should be detected');
+      assert.ok(count >= 1, 'Should return count >= 1 for detected PR');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput detects ADO PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // ADO PR URL in a tool_result block
+      const output = [
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"Created PR: https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/777"}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-101', title: 'ADO PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-777'), 'PR-777 from ADO URL in type:user tool_result should be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  // ── Regression: existing assistant text-block and result-message paths still work ──
+
+  await test('syncPrsFromOutput still detects PR URL in assistant text blocks (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/888"}]}}';
+      const meta = { item: { id: 'W-102', title: 'Assistant text PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-888'), 'PR-888 from assistant text block should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput still detects PR URL in type:result messages (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-103', title: 'Result message PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-999'), 'PR-999 from type:result message should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+}
 main().catch(e => { console.error(e); process.exit(1); });

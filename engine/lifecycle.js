@@ -707,15 +707,14 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     const lines = output.split('\n');
     for (const line of lines) {
       try {
-        if (!line.includes('"type":"assistant"') && !line.includes('"type":"result"')) continue;
+        if (!line.includes('"type":"assistant"') && !line.includes('"type":"result"') && !line.includes('"type":"user"')) continue;
         const parsed = JSON.parse(line);
         const content = parsed.message?.content || [];
         for (const block of content) {
+          // Scan tool_result blocks in user messages for PR URLs (gh pr create output lands here)
           if (block.type === 'tool_result' && block.content) {
             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            if (text.includes('pullRequestId') || text.includes('create_pull_request')) {
-              while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
-            }
+            while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
           }
           // Also scan assistant text blocks for PR URLs and "PR created" patterns
           if (block.type === 'text' && block.text) {
@@ -1711,6 +1710,37 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   if (effectiveSuccess && meta?.item?.sourcePlan) checkPlanCompletion(meta, config);
 
   // Archive is manual — user archives plans from the dashboard when ready
+
+  // Scheduled task back-reference: update schedule-runs.json and write linked inbox note
+  if (meta?.item?._scheduleId) {
+    try {
+      const scheduleId = meta.item._scheduleId;
+      const itemId = meta.item.id;
+      const schedRunsPath = path.join(ENGINE_DIR, 'schedule-runs.json');
+      mutateJsonFileLocked(schedRunsPath, (runs) => {
+        runs[scheduleId] = {
+          lastRun: typeof runs[scheduleId] === 'string' ? runs[scheduleId] : (runs[scheduleId]?.lastRun || ts()),
+          lastWorkItemId: itemId,
+          lastResult: effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR,
+          lastCompletedAt: ts(),
+        };
+        return runs;
+      }, { defaultValue: {} });
+      // Write a completion note to inbox with back-references
+      const noteSlug = `sched-completion-${scheduleId}`;
+      const status = effectiveSuccess ? 'succeeded' : 'failed';
+      const noteContent = `# Scheduled Task ${status}: ${meta.item.title || scheduleId}\n\n` +
+        `**Schedule:** \`${scheduleId}\`\n` +
+        `**Work Item:** \`${itemId}\`\n` +
+        `**Result:** ${status}\n` +
+        (resultSummary ? `\n## Summary\n${resultSummary}\n` : '');
+      shared.writeToInbox('engine', noteSlug, noteContent, null, {
+        sourceItem: itemId,
+        scheduleId,
+      });
+      log('info', `Scheduled task ${scheduleId} (${itemId}) → ${status}, back-reference written`);
+    } catch (err) { log('warn', `Scheduled task back-reference: ${err.message}`); }
+  }
 
   // Clean up worktree for non-shared-branch tasks after completion
   if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {

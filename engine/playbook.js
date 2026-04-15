@@ -271,30 +271,30 @@ function validatePlaybookVars(playbookName, vars) {
 // ─── Playbook Path Resolution ───────────────────────────────────────────────
 
 /**
- * Resolve the playbook path for a given project and playbook type.
- * Checks for a project-local override at projects/<projectName>/playbooks/<type>.md
- * first; falls back to the global playbooks/<type>.md.
- * @param {string|null} projectName - The project name (from config)
- * @param {string} playbookType - The playbook type (e.g. 'implement', 'review')
- * @returns {string} Resolved absolute path to the playbook file
+ * Resolve playbook file path, checking project-local override first.
+ * If projects/<projectName>/playbooks/<playbookType>.md exists, use it.
+ * Otherwise fall back to the global playbooks/<playbookType>.md.
+ * @param {string|null|undefined} projectName — project name (directory under projects/)
+ * @param {string} playbookType — playbook type name (e.g. 'implement', 'review')
+ * @returns {string} absolute path to the playbook file
  */
 function resolvePlaybookPath(projectName, playbookType) {
   if (projectName) {
     const localPath = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks', `${playbookType}.md`);
     try {
-      if (fs.existsSync(localPath)) {
-        log('info', `Using project-local playbook: projects/${projectName}/playbooks/${playbookType}.md`);
-        return localPath;
-      }
-    } catch { /* fall through to global */ }
+      fs.accessSync(localPath, fs.constants.R_OK);
+      log('info', `Using project-local playbook: projects/${projectName}/playbooks/${playbookType}.md`);
+      return localPath;
+    } catch { /* no local override — fall through to global */ }
   }
   return path.join(PLAYBOOKS_DIR, `${playbookType}.md`);
 }
 
+
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
-  const projectName = vars.project_name || '';
+  const projectName = vars.project_name || null;
   const pbPath = resolvePlaybookPath(projectName, type);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
@@ -385,6 +385,9 @@ function renderPlaybook(type, vars) {
     return null;
   }
 
+  // Capture which vars are actually referenced in the template before substitution
+  const referencedVars = new Set((content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2)));
+
   // Process conditional blocks: {{#key}}...{{/key}} — include block only if key is truthy
   content = content.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key, block) => {
     const val = allVars[key];
@@ -404,9 +407,9 @@ function renderPlaybook(type, vars) {
     log('warn', `Playbook "${type}": substituted values contain unresolved {{...}} patterns (potential self-reference): ${selfRefVars.join(', ')}`);
   }
 
-  // Warn on variables that resolved to empty string (skip known-optional vars)
+  // Warn on variables that resolved to empty string — only for vars actually used in the template
   const emptyVars = Object.entries(allVars)
-    .filter(([key, val]) => String(val) === '' && !PLAYBOOK_OPTIONAL_VARS.has(key))
+    .filter(([key, val]) => String(val) === '' && referencedVars.has(key) && !PLAYBOOK_OPTIONAL_VARS.has(key))
     .map(([key]) => key);
   if (emptyVars.length > 0) {
     log('warn', `Playbook "${type}": template variables resolved to empty string: ${emptyVars.join(', ')}`);

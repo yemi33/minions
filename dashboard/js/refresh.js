@@ -88,6 +88,7 @@ function _processStatusUpdate(data) {
   if (_changed('skills', data.skills)) renderSkills(data.skills || []);
   if (_changed('mcpServers', data.mcpServers)) renderMcpServers(data.mcpServers || []);
   if (_changed('schedules', data.schedules)) renderSchedules(data.schedules || []);
+  if (_changed('watches', data.watches)) renderWatches(data.watches || []);
   if (_changed('meetings', data.meetings)) renderMeetings(data.meetings || []);
   if (_changed('pipelines', data.pipelines) && typeof renderPipelines === 'function') renderPipelines(data.pipelines || []);
   if (_changed('pinned', data.pinned)) renderPinned(data.pinned || []);

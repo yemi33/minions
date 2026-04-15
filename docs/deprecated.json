@@ -6,5 +6,13 @@
     "reason": "Consolidated into review + evalLoop config. No separate evaluate dispatch.",
     "locations": ["routing.md: evaluate row removed", "CLAUDE.md: evaluate references removed"],
     "cleanup": "Already cleaned — routing.md and CLAUDE.md updated 2026-04-02"
+  },
+  {
+    "id": "autoReview-flag",
+    "summary": "autoReview ENGINE_DEFAULT consolidated into evalLoop",
+    "deprecated": "2026-04-15",
+    "reason": "Redundant with evalLoop; evalLoop is the single gate for the review+fix cycle",
+    "locations": ["engine/shared.js ENGINE_DEFAULTS.autoReview", "engine.js discoverFromPrs autoReview variable"],
+    "cleanup": "Removed from ENGINE_DEFAULTS, removed autoReview variable from engine.js, replaced with reviewEnabled = evalLoopEnabled && pollEnabled"
   }
 ]
