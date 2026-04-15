@@ -20080,6 +20080,17 @@ async function testWatchesDashboard() {
     assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
       'WATCH_CONDITION must have VOTE_CHANGE constant');
   });
+
+  // Regression: #1088 — PROJECTS ReferenceError in checkWatches closure
+  await test('engine.js checkWatches uses getProjects(config), not PROJECTS (regression #1088)', () => {
+    const watchesBlockStart = engineSrc.indexOf("safe('checkWatches'");
+    assert.ok(watchesBlockStart > -1, 'engine.js must contain safe(\'checkWatches\' ...) block');
+    const watchesBlockEnd = engineSrc.indexOf('const adoPollEnabled', watchesBlockStart);
+    assert.ok(watchesBlockEnd > watchesBlockStart, 'Must find end of checkWatches block');
+    const watchesBlock = engineSrc.slice(watchesBlockStart, watchesBlockEnd);
+    assert.ok(!watchesBlock.includes('PROJECTS'),
+      'checkWatches block must NOT reference PROJECTS (undefined variable — causes ReferenceError)');
+  });
 }
 
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
