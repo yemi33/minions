@@ -11,7 +11,7 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
@@ -248,10 +248,13 @@ function checkWatches(config, state) {
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
           // Expire when stopAfter > 0 and trigger count reaches the limit.
-          // stopAfter: 0 means "run forever" for all condition types.
-          if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
+          // Absolute conditions (merged, build-pass, etc.) auto-expire on first trigger
+          // when stopAfter=0 — fire-once semantics. Change-based conditions run forever.
+          const isAbsolute = WATCH_ABSOLUTE_CONDITIONS.has(watch.condition);
+          if ((watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) ||
+              (watch.stopAfter === 0 && isAbsolute)) {
             watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
+            log('info', `Watch expired (${isAbsolute && watch.stopAfter === 0 ? 'absolute condition fire-once' : 'stopAfter limit reached'}): ${watch.id}`);
           }
         } else if (watch.onNotMet === 'notify' && watch.owner) {
           // Queue per-poll notification when condition is not yet met — unique key per poll
