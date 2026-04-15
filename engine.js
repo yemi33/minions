@@ -3081,18 +3081,24 @@ async function discoverWork(config) {
     } catch (e) { log('warn', 'plan completion sweep: ' + e.message); }
   }
 
-  // Gate reviews and fixes: do not dispatch until all implement items are complete
+  // Gate reviews and fixes: only when at max concurrency — idle agents should pick up reviews
+  // even if implement items are in progress (implements get priority via sort order, not by blocking)
   const hasIncompleteImplements = queries.getWorkItems(config).some(i =>
     ['queued', 'pending', 'dispatched'].includes(i.status) && (i.type || '').startsWith('implement')
   );
   if (hasIncompleteImplements) {
-    if (allReviews.length > 0) {
-      log('info', `Gating ${allReviews.length} reviews — implement items still in progress`);
-      allReviews = [];
-    }
-    if (allFixes.length > 0) {
-      log('info', `Gating ${allFixes.length} fixes — implement items still in progress`);
-      allFixes = [];
+    const activeCount = (getDispatch().active || []).length;
+    const maxConcurrent = config.engine?.maxConcurrent ?? DEFAULTS.maxConcurrent;
+    const freeSlots = Math.max(0, maxConcurrent - activeCount);
+    if (freeSlots === 0) {
+      if (allReviews.length > 0) {
+        log('info', `Gating ${allReviews.length} reviews — implement items in progress and no free slots`);
+        allReviews = [];
+      }
+      if (allFixes.length > 0) {
+        log('info', `Gating ${allFixes.length} fixes — implement items in progress and no free slots`);
+        allFixes = [];
+      }
     }
   }
 
