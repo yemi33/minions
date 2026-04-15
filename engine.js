@@ -2033,8 +2033,9 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
+    // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
     let fixDispatched = false;
-    if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
+    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);

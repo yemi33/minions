@@ -4648,7 +4648,7 @@ async function testDiscoverFromPrs() {
   });
 
 
-  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j) ─────────
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j, W-mo0cw3ne8l2t) ─────────
 
   await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
     // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
@@ -4666,17 +4666,31 @@ async function testDiscoverFromPrs() {
       'reviewEnabled must combine evalLoopEnabled and pollEnabled');
   });
 
-  await test('discoverFromPrs pre-dispatch live check catch block skips dispatch on error', () => {
+  await test('discoverFromPrs gates changes-requested fix dispatch on evalLoopEnabled', () => {
+    // evalLoop:false should suppress the review→fix cycle (changes-requested → fix dispatch)
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('evalLoopEnabled'),
+      'discoverFromPrs must read evalLoop config flag');
+    // The changes-requested fix block should check evalLoopEnabled
+    const changesIdx = fnBody.indexOf("changes-requested");
+    assert.ok(changesIdx !== -1, 'discoverFromPrs should handle changes-requested');
+    const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
+    assert.ok(changesBlock.includes('evalLoopEnabled'),
+      'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
     // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
     const fnStart = src.indexOf('async function discoverFromPrs(');
     const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
     const fnBody = src.slice(fnStart, fnEnd);
-    // Pre-dispatch catch block should have 'continue' — skipping dispatch on error
-    // Pattern: "skipping dispatch`); continue;" inside catch block after live vote check
+    // Both pre-dispatch catch blocks (needsReview + needsReReview) should have 'continue'
     const skipPattern = /skipping dispatch.*continue/g;
     const matches = fnBody.match(skipPattern) || [];
-    assert.ok(matches.length >= 1,
-      `Pre-dispatch vote check catch block must skip dispatch (continue) on error (found ${matches.length})`);
+    assert.ok(matches.length >= 2,
+      `Both pre-dispatch vote check catch blocks must skip dispatch (continue) on error (found ${matches.length})`);
     // Also verify no catch blocks fall through without continue
     assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
       'No pre-dispatch catch block should fall through without continue');
