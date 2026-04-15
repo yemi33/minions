@@ -4324,6 +4324,106 @@ async function testRenderPlaybook() {
   });
 }
 
+// ─── engine/playbook.js — resolvePlaybookPath Tests ─────────────────────────
+
+async function testResolvePlaybookPath() {
+  console.log('\n── engine/playbook.js — resolvePlaybookPath ──');
+
+  let resolvePlaybookPath, renderPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    resolvePlaybookPath = pb.resolvePlaybookPath;
+    renderPlaybook = pb.renderPlaybook;
+  } catch {}
+
+  if (!resolvePlaybookPath) {
+    skip('resolvePlaybookPath', 'resolvePlaybookPath not exported from engine/playbook');
+    return;
+  }
+
+  await test('resolvePlaybookPath returns global playbook when no project override exists', () => {
+    const result = resolvePlaybookPath('nonexistent-project-xyz', 'implement');
+    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, globalPath, 'Should fall back to global playbook path');
+  });
+
+  await test('resolvePlaybookPath returns global playbook when projectName is empty', () => {
+    const result = resolvePlaybookPath('', 'implement');
+    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, globalPath, 'Should fall back to global for empty project name');
+  });
+
+  await test('resolvePlaybookPath returns global playbook when projectName is null', () => {
+    const result = resolvePlaybookPath(null, 'implement');
+    const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, globalPath, 'Should fall back to global for null project name');
+  });
+
+  // Create a temporary project-local playbook and verify it's preferred
+  const testProjectName = '_test-playbook-override';
+  const testProjectPbDir = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks');
+
+  await test('resolvePlaybookPath returns project-local playbook when override exists', () => {
+    fs.mkdirSync(testProjectPbDir, { recursive: true });
+    fs.writeFileSync(path.join(testProjectPbDir, 'implement.md'), '# Test Override Playbook\n\nThis is {{item_name}}.');
+    try {
+      const result = resolvePlaybookPath(testProjectName, 'implement');
+      const expectedPath = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks', 'implement.md');
+      assert.strictEqual(result, expectedPath, 'Should return project-local playbook path');
+    } finally {
+      // Cleanup
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await test('resolvePlaybookPath falls back to global when project dir exists but playbook does not', () => {
+    const pbDir = path.join(MINIONS_DIR, 'projects', testProjectName, 'playbooks');
+    fs.mkdirSync(pbDir, { recursive: true });
+    // Don't create implement.md — only create the directory
+    try {
+      const result = resolvePlaybookPath(testProjectName, 'implement');
+      const globalPath = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+      assert.strictEqual(result, globalPath, 'Should fall back to global when override file missing');
+    } finally {
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  // Test that renderPlaybook uses the project-local override via vars.project_name
+  if (renderPlaybook) {
+    await test('renderPlaybook uses project-local playbook when override exists', () => {
+      fs.mkdirSync(testProjectPbDir, { recursive: true });
+      const overrideContent = '# Project Override\n\nSentinel: PROJECT_LOCAL_OVERRIDE_SENTINEL\n\nItem: {{item_name}}';
+      fs.writeFileSync(path.join(testProjectPbDir, 'implement.md'), overrideContent);
+      try {
+        const result = renderPlaybook('implement', {
+          agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+          project_name: testProjectName, project_path: '/tmp', main_branch: 'main',
+          item_id: 'W001', item_name: 'Test feature', branch_name: 'test-branch',
+          team_root: MINIONS_DIR, date: '2024-01-01',
+        });
+        assert.ok(result && result.includes('PROJECT_LOCAL_OVERRIDE_SENTINEL'),
+          'Should render from project-local override playbook');
+      } finally {
+        try { fs.rmSync(path.join(MINIONS_DIR, 'projects', testProjectName), { recursive: true, force: true }); } catch {}
+      }
+    });
+
+    await test('renderPlaybook falls back to global when no project override', () => {
+      const result = renderPlaybook('implement', {
+        agent_name: 'TestAgent', agent_role: 'Engineer', agent_id: 'test',
+        project_name: 'nonexistent-project-xyz', project_path: '/tmp', main_branch: 'main',
+        item_id: 'W001', item_name: 'Test feature', branch_name: 'test-branch',
+        team_root: MINIONS_DIR, date: '2024-01-01',
+      });
+      assert.ok(result && !result.includes('PROJECT_LOCAL_OVERRIDE_SENTINEL'),
+        'Should render from global playbook (no project override)');
+      assert.ok(typeof result === 'string' && result.length > 0,
+        'Should return rendered content from global playbook');
+    });
+  }
+}
+
 // ─── engine/playbook.js — validatePlaybookVars Tests ────────────────────────
 
 async function testValidatePlaybookVars() {
@@ -9315,6 +9415,7 @@ async function main() {
     await testCooldownSystem();
     await testResolveAgent();
     await testRenderPlaybook();
+    await testResolvePlaybookPath();
     await testValidatePlaybookVars();
     await testCompleteDispatch();
     await testDiscoverFromPrs();

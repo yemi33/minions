@@ -53,7 +53,12 @@ notes/inbox/*
 notes/archive/*
 !notes/archive/.gitkeep
 notes.md
-projects/
+projects/*
+!projects/*/
+projects/*/*
+!projects/*/playbooks/
+projects/*/playbooks/*
+!projects/*/playbooks/*.md
 work-items.json
 work-items-archive.json
 work-items.json.backup

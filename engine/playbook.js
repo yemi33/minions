@@ -268,10 +268,34 @@ function validatePlaybookVars(playbookName, vars) {
   return { valid: missing.length === 0, missing };
 }
 
+// ─── Playbook Path Resolution ───────────────────────────────────────────────
+
+/**
+ * Resolve the playbook path for a given project and playbook type.
+ * Checks for a project-local override at projects/<projectName>/playbooks/<type>.md
+ * first; falls back to the global playbooks/<type>.md.
+ * @param {string|null} projectName - The project name (from config)
+ * @param {string} playbookType - The playbook type (e.g. 'implement', 'review')
+ * @returns {string} Resolved absolute path to the playbook file
+ */
+function resolvePlaybookPath(projectName, playbookType) {
+  if (projectName) {
+    const localPath = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks', `${playbookType}.md`);
+    try {
+      if (fs.existsSync(localPath)) {
+        log('info', `Using project-local playbook: projects/${projectName}/playbooks/${playbookType}.md`);
+        return localPath;
+      }
+    } catch { /* fall through to global */ }
+  }
+  return path.join(PLAYBOOKS_DIR, `${playbookType}.md`);
+}
+
 // ─── Playbook Renderer ──────────────────────────────────────────────────────
 
 function renderPlaybook(type, vars) {
-  const pbPath = path.join(PLAYBOOKS_DIR, `${type}.md`);
+  const projectName = vars.project_name || '';
+  const pbPath = resolvePlaybookPath(projectName, type);
   let content;
   try { content = fs.readFileSync(pbPath, 'utf8'); } catch {
     log('warn', `Playbook not found: ${type}`);
@@ -564,6 +588,7 @@ function buildPrDispatch(agentId, config, project, pr, type, extraVars, taskLabe
 }
 
 module.exports = {
+  resolvePlaybookPath,
   renderPlaybook,
   validatePlaybookVars,
   PLAYBOOK_REQUIRED_VARS,
