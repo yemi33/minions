@@ -72,8 +72,8 @@ async function openSettings() {
       return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
         '<div style="font-size:12px;font-weight:600;margin-bottom:8px">' + escHtml(p.name) + '</div>' +
         '<div style="display:flex;flex-direction:column;gap:6px">' +
-        settingsToggle('Discover from PRs', 'set-ws-prs-' + escHtml(p.name), p.workSources.pullRequests.enabled, 'Auto-discover work from open pull requests') +
-        settingsToggle('Discover from Work Items', 'set-ws-wi-' + escHtml(p.name), p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
+        settingsToggle('Discover from PRs', 'set-ws-prs-' + p.name, p.workSources.pullRequests.enabled, 'Auto-discover work from open pull requests') +
+        settingsToggle('Discover from Work Items', 'set-ws-wi-' + p.name, p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
         '</div></div>';
     }).join('') +
     '</div>' +
