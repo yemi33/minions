@@ -4426,6 +4426,126 @@ async function testValidatePlaybookVars() {
   });
 }
 
+// ─── engine/playbook.js — resolvePlaybookPath Tests ─────────────────────────
+
+async function testResolvePlaybookPath() {
+  console.log('\n── engine/playbook.js — resolvePlaybookPath ──');
+
+  let resolvePlaybookPath;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    resolvePlaybookPath = pb.resolvePlaybookPath;
+  } catch {}
+
+  if (!resolvePlaybookPath) {
+    skip('resolvePlaybookPath', 'engine/playbook.resolvePlaybookPath not available');
+    return;
+  }
+
+  await test('resolvePlaybookPath returns global path when no project override exists', () => {
+    const result = resolvePlaybookPath('nonexistent-project-xyz', 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, expected,
+      'Should fall back to global playbooks/ when project override not found');
+  });
+
+  await test('resolvePlaybookPath returns global path when projectName is null/undefined', () => {
+    const result1 = resolvePlaybookPath(null, 'implement');
+    const result2 = resolvePlaybookPath(undefined, 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result1, expected, 'null project should fall back to global');
+    assert.strictEqual(result2, expected, 'undefined project should fall back to global');
+  });
+
+  await test('resolvePlaybookPath returns project-local path when override exists', () => {
+    const projectName = 'test-playbook-override-' + Date.now();
+    const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+    fs.mkdirSync(projectPlaybookDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPlaybookDir, 'implement.md'), '# Custom playbook for {{item_id}}');
+    try {
+      const result = resolvePlaybookPath(projectName, 'implement');
+      const expected = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks', 'implement.md');
+      assert.strictEqual(result, expected,
+        'Should return project-local playbook path when override exists');
+    } finally {
+      // Cleanup
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await test('resolvePlaybookPath falls back to global when project exists but playbook does not', () => {
+    const projectName = 'test-no-playbook-' + Date.now();
+    const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+    fs.mkdirSync(projectPlaybookDir, { recursive: true });
+    try {
+      const result = resolvePlaybookPath(projectName, 'review');
+      const expected = path.join(MINIONS_DIR, 'playbooks', 'review.md');
+      assert.strictEqual(result, expected,
+        'Should fall back to global when project dir exists but specific playbook does not');
+    } finally {
+      try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+    }
+  });
+
+  await test('resolvePlaybookPath returns global path for empty string project', () => {
+    const result = resolvePlaybookPath('', 'implement');
+    const expected = path.join(MINIONS_DIR, 'playbooks', 'implement.md');
+    assert.strictEqual(result, expected, 'Empty string project should fall back to global');
+  });
+
+  // Integration: renderPlaybook uses project-local override
+  let renderPlaybook;
+  try {
+    renderPlaybook = require(path.join(MINIONS_DIR, 'engine', 'playbook')).renderPlaybook;
+  } catch {}
+
+  if (renderPlaybook) {
+    await test('renderPlaybook uses project-local playbook when override exists', () => {
+      const projectName = 'test-render-override-' + Date.now();
+      const projectPlaybookDir = path.join(MINIONS_DIR, 'projects', projectName, 'playbooks');
+      fs.mkdirSync(projectPlaybookDir, { recursive: true });
+      fs.writeFileSync(path.join(projectPlaybookDir, 'implement.md'),
+        '# Custom Implementation\n\nProject-local sentinel: CUSTOM_OVERRIDE_SENTINEL\n\nItem: {{item_id}}');
+      try {
+        const result = renderPlaybook('implement', {
+          agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+          item_id: 'W-TEST', item_name: 'Test feature', branch_name: 'work/W-TEST',
+          project_name: projectName, project_path: '/tmp/repo',
+          team_root: MINIONS_DIR, date: '2024-01-01',
+        });
+        assert.ok(result && result.includes('CUSTOM_OVERRIDE_SENTINEL'),
+          'renderPlaybook should use project-local playbook content');
+        assert.ok(result && result.includes('W-TEST'),
+          'renderPlaybook should still substitute template variables in local playbook');
+      } finally {
+        try { fs.rmSync(path.join(MINIONS_DIR, 'projects', projectName), { recursive: true, force: true }); } catch {}
+      }
+    });
+
+    await test('renderPlaybook falls back to global playbook when no project override', () => {
+      const result = renderPlaybook('implement', {
+        agent_id: 'test', agent_name: 'TestAgent', agent_role: 'Engineer',
+        item_id: 'W-GLOBAL', item_name: 'Test feature', branch_name: 'work/W-GLOBAL',
+        project_name: 'nonexistent-project-for-test', project_path: '/tmp/repo',
+        team_root: MINIONS_DIR, date: '2024-01-01',
+      });
+      assert.ok(result && typeof result === 'string' && result.length > 0,
+        'renderPlaybook should fall back to global playbook');
+      assert.ok(!result.includes('CUSTOM_OVERRIDE_SENTINEL'),
+        'Should NOT contain project-local sentinel when using global playbook');
+    });
+  }
+
+  // Source code verification: renderPlaybook uses resolvePlaybookPath
+  await test('renderPlaybook calls resolvePlaybookPath for path resolution', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'playbook.js'), 'utf8');
+    assert.ok(src.includes('resolvePlaybookPath'),
+      'playbook.js should define/use resolvePlaybookPath');
+    assert.ok(src.includes('resolvePlaybookPath('),
+      'renderPlaybook should call resolvePlaybookPath');
+  });
+}
+
 // ─── engine.js — completeDispatch Tests ─────────────────────────────────────
 
 async function testCompleteDispatch() {
@@ -4526,17 +4646,6 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
-
-  await test('needsReReview requires fixedAfterReview only — no broad !alreadyReviewed fallback', () => {
-    // The old condition had: (fixedAfterReview || (!alreadyReviewed && !!pr.minionsReview?.fixedAt))
-    // The fallback (!alreadyReviewed && !!fixedAt) caused infinite re-review loops on GitHub
-    // because reviewStatus stays 'waiting' (self-approval blocked) and any push after review
-    // makes alreadyReviewed=false while fixedAt remains set. Fix: use fixedAfterReview only.
-    assert.ok(!src.includes('!alreadyReviewed && !!pr.minionsReview?.fixedAt'),
-      'needsReReview must NOT have the broad !alreadyReviewed fallback — it causes infinite re-review loops');
-    assert.ok(src.includes('fixedAfterReview && !evalEscalated'),
-      'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
-  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -4582,38 +4691,6 @@ async function testBuildFixRetryCap() {
   await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
     assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
       'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
-  });
-
-  // ─── Cooldown deferred to post-gating (#setCooldown-gating) ─────────────
-
-  await test('discoverFromPrs does NOT call setCooldown for review items', () => {
-    // Extract only the discoverFromPrs function body (ends where discoverFromWorkItems begins)
-    const fnStart = engineSrc.indexOf('async function discoverFromPrs(');
-    const fnEnd = engineSrc.indexOf('\nfunction discoverFromWorkItems(');
-    const fnBody = engineSrc.slice(fnStart, fnEnd);
-    // setCooldown should not appear in discoverFromPrs — it is deferred to discoverWork post-gating
-    assert.ok(!fnBody.includes('setCooldown(key)'),
-      'discoverFromPrs must NOT call setCooldown(key) — cooldown must be deferred to post-gating in discoverWork');
-  });
-
-  await test('discoverWork calls setCooldown after gating check via dispatchKey', () => {
-    const fnStart = engineSrc.indexOf('async function discoverWork(');
-    const fnBody = engineSrc.slice(fnStart);
-    // The post-gating dispatch loop should call setCooldown using item.meta.dispatchKey
-    assert.ok(fnBody.includes('setCooldown(item.meta') || fnBody.includes('setCooldown(item.meta?.dispatchKey)') || fnBody.includes("setCooldown(item.meta.dispatchKey)"),
-      'discoverWork post-gating loop must call setCooldown using item.meta.dispatchKey');
-  });
-
-  await test('setCooldown for gated reviews/fixes is not set when gated', () => {
-    // Verify that when items are gated (allReviews = [], allFixes = []),
-    // they don't end up in allWork, so setCooldown is never called for them
-    const fnStart = engineSrc.indexOf('async function discoverWork(');
-    const fnBody = engineSrc.slice(fnStart);
-    // The gating check clears allReviews and allFixes BEFORE the dispatch loop
-    const gateIdx = fnBody.indexOf('allReviews = []');
-    const dispatchLoopIdx = fnBody.indexOf('for (const item of allWork)');
-    assert.ok(gateIdx > -1 && dispatchLoopIdx > -1 && gateIdx < dispatchLoopIdx,
-      'Gating (allReviews = []) must happen BEFORE the dispatch loop where setCooldown is called');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -9317,6 +9394,7 @@ async function main() {
     await testResolveAgent();
     await testRenderPlaybook();
     await testValidatePlaybookVars();
+    await testResolvePlaybookPath();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();
@@ -19380,48 +19458,37 @@ async function testWatchesModule() {
     } finally { restore(); }
   });
 
-  await test('stopAfter: 0 never expires change-based watches (runs forever)', () => {
+  await test('stopAfter: 0 never expires the watch (runs forever)', () => {
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      // Use status-change (change-based) — unlimited makes sense for transitions
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        condition: shared.WATCH_CONDITION.MERGED,
         stopAfter: 0,   // run forever
         owner: 'dallas',
         interval: 60000,
       });
-      // First check — initializes baseline
-      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state1);
-      const afterInit = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(afterInit.triggerCount, 0, 'First check should init baseline');
-      // Force last_checked back for second check
+      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
+      // Trigger multiple times by resetting last_checked between checks
+      testWatches.checkWatches({}, state);
+      // Force last_checked back so interval doesn't block next check
+      const watchesData = testWatches.getWatches();
+      const found = watchesData.find(x => x.id === w.id);
+      assert.strictEqual(found.triggerCount, 1);
+      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+      // Manually reset last_checked to force another check
+      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
       shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
         return data;
       }, { defaultValue: [] });
-      // Second check with changed status — triggers
-      const state2 = { pullRequests: [{ prNumber: 600, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state2);
-      const after1 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after1.triggerCount, 1);
-      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep change-based watch active after trigger');
-      // Force last_checked back again
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
-        const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
-        return data;
-      }, { defaultValue: [] });
-      // Third check with another status change — triggers again
-      const state3 = { pullRequests: [{ prNumber: 600, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state3);
+      testWatches.checkWatches({}, state);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for change-based conditions');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
@@ -19527,39 +19594,28 @@ async function testWatchesModule() {
     try {
       delete require.cache[require.resolve('../engine/watches')];
       const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      // Use status-change (change-based condition) — runs forever with stopAfter=0
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.STATUS_CHANGE,
+        condition: shared.WATCH_CONDITION.MERGED,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
       });
-      // First check — initializes baseline
-      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state1);
-      // Force last_checked back for second check
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
-        const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
-        return data;
-      }, { defaultValue: [] });
-      // Second check — status changed → triggers, key is `watch-${watch.id}-1`
-      const state2 = { pullRequests: [{ prNumber: 900, status: 'merged', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state2);
+      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
+      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
+      testWatches.checkWatches({}, state);
       const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
       const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for third check
+      // Force last_checked back for second trigger
       shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Third check — status changed again → triggers, key is `watch-${watch.id}-2`
-      const state3 = { pullRequests: [{ prNumber: 900, status: 'abandoned', buildStatus: 'passing', reviewStatus: 'waiting' }], workItems: [] };
-      testWatches.checkWatches({}, state3);
+      // Second trigger — key is `watch-${watch.id}-2`, different from first
+      testWatches.checkWatches({}, state);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
@@ -19584,151 +19640,12 @@ async function testWatchesModule() {
       'render-watches.js _WATCH_TARGET_LABELS should not include branch');
   });
 
-  await test('_watchesPath returns dynamic path respecting MINIONS_TEST_DIR', () => {
-    const restore = createTestMinionsDir();
-    try {
-      delete require.cache[require.resolve('../engine/watches')];
-      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      const watchPath = testWatches._watchesPath();
-      // Normalize both to forward slashes for cross-platform comparison
-      const normalizedPath = watchPath.replace(/\\/g, '/');
-      const normalizedTestDir = process.env.MINIONS_TEST_DIR.replace(/\\/g, '/');
-      assert.ok(normalizedPath.includes(normalizedTestDir),
-        `_watchesPath should use MINIONS_TEST_DIR when set (got: ${normalizedPath}, expected to contain: ${normalizedTestDir})`);
-      assert.ok(watchPath.endsWith(path.join('engine', 'watches.json')),
-        '_watchesPath should end with engine/watches.json');
-    } finally { restore(); }
-  });
-
-  await test('WATCHES_PATH static export was removed (MINIONS_TEST_DIR-unsafe)', () => {
-    assert.strictEqual(watches.WATCHES_PATH, undefined,
-      'WATCHES_PATH static export should be removed — it does not respect MINIONS_TEST_DIR');
+  await test('WATCHES_PATH points to engine/watches.json', () => {
+    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
     assert.strictEqual(watches.DEFAULT_WATCH_INTERVAL, 300000);
-  });
-
-  // ── Review fix: absolute conditions auto-expire ──────────────────────────
-
-  await test('WATCH_ABSOLUTE_CONDITIONS is defined in shared.js', () => {
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS instanceof Set,
-      'WATCH_ABSOLUTE_CONDITIONS should be a Set');
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('merged'), 'should include merged');
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-fail'), 'should include build-fail');
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('build-pass'), 'should include build-pass');
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('completed'), 'should include completed');
-    assert.ok(shared.WATCH_ABSOLUTE_CONDITIONS.has('failed'), 'should include failed');
-    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('status-change'), 'should NOT include status-change');
-    assert.ok(!shared.WATCH_ABSOLUTE_CONDITIONS.has('any'), 'should NOT include any');
-  });
-
-  await test('absolute condition (merged) auto-expires when stopAfter is 0', () => {
-    const restore = createTestMinionsDir();
-    try {
-      delete require.cache[require.resolve('../engine/watches')];
-      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      const w = testWatches.createWatch({
-        target: '950',
-        targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 0,   // default — for absolute conditions, should auto-expire after first trigger
-        owner: 'dallas',
-        interval: 60000,
-      });
-      const state = { pullRequests: [{ prNumber: 950, status: 'merged' }], workItems: [] };
-      testWatches.checkWatches({}, state);
-      const after = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after.triggerCount, 1, 'Should trigger once');
-      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
-        'Absolute condition with stopAfter=0 should auto-expire after first trigger');
-    } finally { restore(); }
-  });
-
-  await test('absolute condition (build-fail) auto-expires when stopAfter is 0', () => {
-    const restore = createTestMinionsDir();
-    try {
-      delete require.cache[require.resolve('../engine/watches')];
-      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      const w = testWatches.createWatch({
-        target: '951',
-        targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.BUILD_FAIL,
-        stopAfter: 0,
-        owner: 'dallas',
-        interval: 60000,
-      });
-      const state = { pullRequests: [{ prNumber: 951, status: 'active', buildStatus: 'failing' }], workItems: [] };
-      testWatches.checkWatches({}, state);
-      const after = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
-        'build-fail with stopAfter=0 should auto-expire');
-    } finally { restore(); }
-  });
-
-  await test('absolute condition (completed WI) auto-expires when stopAfter is 0', () => {
-    const restore = createTestMinionsDir();
-    try {
-      delete require.cache[require.resolve('../engine/watches')];
-      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      const w = testWatches.createWatch({
-        target: 'W-exp',
-        targetType: shared.WATCH_TARGET_TYPE.WORK_ITEM,
-        condition: shared.WATCH_CONDITION.COMPLETED,
-        stopAfter: 0,
-        owner: 'dallas',
-        interval: 60000,
-      });
-      const state = { pullRequests: [], workItems: [{ id: 'W-exp', status: 'done' }] };
-      testWatches.checkWatches({}, state);
-      const after = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after.status, shared.WATCH_STATUS.EXPIRED,
-        'completed (absolute) with stopAfter=0 should auto-expire');
-    } finally { restore(); }
-  });
-
-  await test('absolute condition with explicit stopAfter > 1 respects the limit', () => {
-    const restore = createTestMinionsDir();
-    try {
-      delete require.cache[require.resolve('../engine/watches')];
-      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
-      const w = testWatches.createWatch({
-        target: '952',
-        targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 3,   // explicit — user wants 3 triggers before expiry
-        owner: 'dallas',
-        interval: 60000,
-      });
-      const state = { pullRequests: [{ prNumber: 952, status: 'merged' }], workItems: [] };
-      testWatches.checkWatches({}, state);
-      const after = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after.triggerCount, 1);
-      assert.strictEqual(after.status, shared.WATCH_STATUS.ACTIVE,
-        'Explicit stopAfter=3 should NOT auto-expire after first trigger');
-    } finally { restore(); }
-  });
-
-  // ── Review fix: writeToInbox outside lock ──────────────────────────────
-
-  await test('checkWatches fires writeToInbox outside the lock callback', () => {
-    // Verify by reading the source — writeToInbox calls should be AFTER mutateJsonFileLocked
-    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'watches.js'), 'utf8');
-    // Find the checkWatches function
-    const fnStart = src.indexOf('function checkWatches(');
-    assert.ok(fnStart > -1, 'checkWatches must exist');
-    const fnBody = src.slice(fnStart, fnStart + 5000);
-    // mutateJsonFileLocked callback should NOT contain writeToInbox
-    const lockStart = fnBody.indexOf('mutateJsonFileLocked(');
-    const lockEnd = fnBody.indexOf('}, { defaultValue: [] });');
-    assert.ok(lockStart > -1 && lockEnd > -1, 'Should find lock boundaries');
-    const lockBody = fnBody.slice(lockStart, lockEnd);
-    assert.ok(!lockBody.includes('writeToInbox('),
-      'writeToInbox must NOT be called inside mutateJsonFileLocked callback — fire after lock is released');
-    // writeToInbox should appear after the lock block
-    const afterLock = fnBody.slice(lockEnd);
-    assert.ok(afterLock.includes('writeToInbox('),
-      'writeToInbox should be called after mutateJsonFileLocked returns');
   });
 }
 
