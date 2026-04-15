@@ -1898,6 +1898,13 @@ async function discoverFromPrs(config, project) {
 
   const projMeta = { name: project?.name, localPath: project?.localPath };
 
+  // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
+  const isAdoProject = project?.repoHost !== 'github';
+  const pollEnabled = isAdoProject
+    ? (config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled)
+    : (config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled);
+  const evalLoopEnabled = config.engine?.evalLoop !== false;
+
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
   const activePrIds = new Set(
@@ -1945,10 +1952,10 @@ async function discoverFromPrs(config, project) {
       log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
     }
 
-    // PRs needing review: pending review status and not already reviewed without new commits
-    const autoReview = config.engine?.autoReview !== false;
+    // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
+    const reviewEnabled = evalLoopEnabled && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
+    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1972,7 +1979,7 @@ async function discoverFromPrs(config, project) {
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;

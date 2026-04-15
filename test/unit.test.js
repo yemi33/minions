@@ -4646,6 +4646,41 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j) ─────────
+
+  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
+    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
+    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('reviewEnabled'),
+      'discoverFromPrs must use reviewEnabled as the single review gate');
+    assert.ok(!fnBody.includes('autoReview'),
+      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
+      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch block skips dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Pre-dispatch catch block should have 'continue' — skipping dispatch on error
+    // Pattern: "skipping dispatch`); continue;" inside catch block after live vote check
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 1,
+      `Pre-dispatch vote check catch block must skip dispatch (continue) on error (found ${matches.length})`);
+    // Also verify no catch blocks fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'No pre-dispatch catch block should fall through without continue');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -9731,6 +9766,11 @@ async function testAutoApproveMode() {
   await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
       'autoArchive should default to false (opt-in, not automatic)');
+  });
+
+  await test('ENGINE_DEFAULTS does NOT include autoReview (consolidated into evalLoop)', () => {
+    assert.ok(!('autoReview' in shared.ENGINE_DEFAULTS),
+      'autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j) — must not exist in ENGINE_DEFAULTS');
   });
 
   await test('parseStreamJsonOutput extracts model from init message', () => {
@@ -16744,7 +16784,7 @@ async function testPrReviewFixFlows() {
 
   await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
     const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
     const escalBlock = engineSrc.slice(startIdx, endIdx);
     assert.ok(escalBlock.length > 10, 'Should find escalation block');
     assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
@@ -19722,7 +19762,7 @@ async function testWatchesModule() {
   });
 
   await test('WATCHES_PATH points to engine/watches.json', () => {
-    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
+    assert.ok(watches._watchesPath().endsWith(path.join('engine', 'watches.json')));
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
