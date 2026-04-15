@@ -620,7 +620,7 @@ const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
 // Watch statuses — engine-level persistent watches that survive restarts
 const WATCH_STATUS = { ACTIVE: 'active', PAUSED: 'paused', TRIGGERED: 'triggered', EXPIRED: 'expired' };
 const WATCH_TARGET_TYPE = { PR: 'pr', WORK_ITEM: 'work-item' };
-const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any' };
+const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any', NEW_COMMENTS: 'new-comments', VOTE_CHANGE: 'vote-change' };
 // Absolute conditions auto-expire on first trigger when stopAfter=0 (fire-once semantics).
 // Change-based conditions (status-change, any) run forever when stopAfter=0.
 const WATCH_ABSOLUTE_CONDITIONS = new Set([
