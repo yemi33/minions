@@ -19714,7 +19714,7 @@ async function testWatchesModule() {
   });
 
   await test('WATCHES_PATH points to engine/watches.json', () => {
-    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
+    assert.ok(watches._watchesPath().endsWith(path.join('engine', 'watches.json')));
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
