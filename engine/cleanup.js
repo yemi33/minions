@@ -667,6 +667,9 @@ function runCleanup(config, verbose = false) {
     }
   } catch { /* optional — file may not exist */ }
 
+  // 14. Scrub stale temp agent keys from metrics.json
+  try { scrubStaleMetrics(); } catch { /* best-effort cleanup */ }
+
   if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed > 0) {
     log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.pidFiles} PID files`);
   }
