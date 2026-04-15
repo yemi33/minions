@@ -135,7 +135,10 @@ function clearQaConversation() {
   var expandBar = document.getElementById('qa-expand-bar');
   if (wrap) wrap.style.display = 'none';
   if (expandBar) expandBar.style.display = 'none';
-  if (_qaSessionKey) _qaSessions.delete(_qaSessionKey);
+  if (_qaSessionKey) {
+    _qaSessions.delete(_qaSessionKey);
+    _saveQaSessions();
+  }
 }
 
 function modalSend() {

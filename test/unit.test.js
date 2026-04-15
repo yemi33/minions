@@ -14820,6 +14820,18 @@ async function testDashboardResilience() {
       'clearQaSelection should hide pill');
   });
 
+  await test('clearQaConversation persists session deletion to localStorage', () => {
+    // clearQaConversation deletes from _qaSessions — must call _saveQaSessions() to persist
+    const clearFn = modalQaSrc.slice(
+      modalQaSrc.indexOf('function clearQaConversation'),
+      modalQaSrc.indexOf('function modalSend')
+    );
+    assert.ok(clearFn.includes('_qaSessions.delete'),
+      'clearQaConversation must delete session from _qaSessions map');
+    assert.ok(clearFn.includes('_saveQaSessions()'),
+      'clearQaConversation must call _saveQaSessions() after deleting session to persist to localStorage');
+  });
+
   // ── Command center overlay dismiss ──
 
   await test('CC overlay exists for click-to-dismiss', () => {
