@@ -11,7 +11,7 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
@@ -237,15 +237,10 @@ function checkWatches(config, state) {
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Expire: absolute conditions auto-expire when stopAfter is 0 (fire-once semantics),
-          // change-based conditions (status-change, any) respect stopAfter literally (0 = run forever).
-          const isAbsolute = WATCH_ABSOLUTE_CONDITIONS.has(watch.condition);
+          // Expire when stopAfter limit reached (stopAfter=0 means run forever for all condition types)
           if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
             watch.status = WATCH_STATUS.EXPIRED;
             log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);
-          } else if (isAbsolute && watch.stopAfter === 0) {
-            watch.status = WATCH_STATUS.EXPIRED;
-            log('info', `Watch expired (absolute condition auto-expire): ${watch.id}`);
           }
         } else if (watch.onNotMet === 'notify' && watch.owner) {
           // Queue per-poll notification when condition is not yet met — unique key per poll
