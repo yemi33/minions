@@ -1712,6 +1712,37 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
 
   // Archive is manual — user archives plans from the dashboard when ready
 
+  // Scheduled task back-reference: update schedule-runs.json and write linked inbox note
+  if (meta?.item?._scheduleId) {
+    try {
+      const scheduleId = meta.item._scheduleId;
+      const itemId = meta.item.id;
+      const schedRunsPath = path.join(ENGINE_DIR, 'schedule-runs.json');
+      mutateJsonFileLocked(schedRunsPath, (runs) => {
+        runs[scheduleId] = {
+          lastRun: typeof runs[scheduleId] === 'string' ? runs[scheduleId] : (runs[scheduleId]?.lastRun || ts()),
+          lastWorkItemId: itemId,
+          lastResult: effectiveSuccess ? DISPATCH_RESULT.SUCCESS : DISPATCH_RESULT.ERROR,
+          lastCompletedAt: ts(),
+        };
+        return runs;
+      }, { defaultValue: {} });
+      // Write a completion note to inbox with back-references
+      const noteSlug = `sched-completion-${scheduleId}`;
+      const status = effectiveSuccess ? 'succeeded' : 'failed';
+      const noteContent = `# Scheduled Task ${status}: ${meta.item.title || scheduleId}\n\n` +
+        `**Schedule:** \`${scheduleId}\`\n` +
+        `**Work Item:** \`${itemId}\`\n` +
+        `**Result:** ${status}\n` +
+        (resultSummary ? `\n## Summary\n${resultSummary}\n` : '');
+      shared.writeToInbox('engine', noteSlug, noteContent, null, {
+        sourceItem: itemId,
+        scheduleId,
+      });
+      log('info', `Scheduled task ${scheduleId} (${itemId}) → ${status}, back-reference written`);
+    } catch (err) { log('warn', `Scheduled task back-reference: ${err.message}`); }
+  }
+
   // Clean up worktree for non-shared-branch tasks after completion
   if (meta?.branch && meta?.branchStrategy !== 'shared-branch') {
     try {
