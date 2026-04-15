@@ -54,8 +54,8 @@ async function openSettings() {
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      settingsField('ADO Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll ADO PR build/review/merge status every N ticks (~6 min at default tick rate)') +
-      settingsField('ADO Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll ADO PR human comments every N ticks (~12 min at default tick rate)') +
+      settingsField('PR Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~6 min at default tick rate)') +
+      settingsField('PR Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +

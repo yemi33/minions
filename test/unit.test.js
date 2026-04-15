@@ -10085,6 +10085,18 @@ async function testSettingsComprehensive() {
       'settings.js must include ghPollEnabled in enginePayload and reference set-ghPollEnabled element');
   });
 
+  await test('poll frequency labels say PR not ADO — they gate both ADO and GitHub', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes("PR Status Poll Frequency"),
+      'settings.js must label status poll field as "PR Status Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(src.includes("PR Comments Poll Frequency"),
+      'settings.js must label comments poll field as "PR Comments Poll Frequency" (gates both ADO and GitHub)');
+    assert.ok(!src.includes("'ADO Status Poll Frequency'") && !src.includes('"ADO Status Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Status Poll Frequency" label — field gates both providers');
+    assert.ok(!src.includes("'ADO Comments Poll Frequency'") && !src.includes('"ADO Comments Poll Frequency"'),
+      'settings.js must NOT use misleading "ADO Comments Poll Frequency" label — field gates both providers');
+  });
+
   await test('ENGINE_DEFAULTS defines adoPollEnabled and ghPollEnabled as booleans', () => {
     assert.strictEqual(typeof shared.ENGINE_DEFAULTS.adoPollEnabled, 'boolean',
       'ENGINE_DEFAULTS.adoPollEnabled must be a boolean so ?? fallback works correctly in engine.js');
