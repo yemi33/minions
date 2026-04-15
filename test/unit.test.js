@@ -4546,6 +4546,75 @@ async function testResolvePlaybookPath() {
   });
 }
 
+// ─── engine/playbook.js — selectPlaybook Tests ──────────────────────────────
+
+async function testSelectPlaybook() {
+  console.log('\n── engine/playbook.js — selectPlaybook ──');
+
+  let selectPlaybook;
+  try {
+    const pb = require(path.join(MINIONS_DIR, 'engine', 'playbook'));
+    selectPlaybook = pb.selectPlaybook;
+  } catch {}
+
+  if (!selectPlaybook) {
+    skip('selectPlaybook', 'engine/playbook.selectPlaybook not available');
+    return;
+  }
+
+  await test('selectPlaybook routes implement type to implement playbook', () => {
+    const result = selectPlaybook('implement', {});
+    assert.strictEqual(result, 'implement',
+      'implement work type should route to implement playbook, not work-item');
+  });
+
+  await test('selectPlaybook routes implement to implement-shared for shared-branch', () => {
+    const result = selectPlaybook('implement', { branchStrategy: 'shared-branch' });
+    assert.strictEqual(result, 'implement-shared',
+      'shared-branch implement should use implement-shared playbook');
+  });
+
+  await test('selectPlaybook routes review type to review playbook', () => {
+    const result = selectPlaybook('review', { _pr: 'PR-1', pr_id: 'PR-1' });
+    assert.strictEqual(result, 'review',
+      'review type with PR should route to review playbook');
+  });
+
+  await test('selectPlaybook routes review without PR to work-item', () => {
+    const result = selectPlaybook('review', {});
+    assert.strictEqual(result, 'work-item',
+      'review type without PR should fall back to work-item');
+  });
+
+  await test('selectPlaybook routes implement:large to implement playbook', () => {
+    const result = selectPlaybook('implement:large', {});
+    assert.strictEqual(result, 'implement',
+      'implement:large should use implement playbook (no separate playbook file)');
+  });
+
+  await test('selectPlaybook routes fix type to work-item (fix.md is for PR fixes)', () => {
+    const result = selectPlaybook('fix', {});
+    assert.strictEqual(result, 'work-item',
+      'fix work items should use work-item playbook (fix.md is PR-fix specific)');
+  });
+
+  await test('selectPlaybook routes explore type to explore playbook', () => {
+    const result = selectPlaybook('explore', {});
+    assert.strictEqual(result, 'explore');
+  });
+
+  await test('selectPlaybook routes verify type to verify playbook', () => {
+    const result = selectPlaybook('verify', {});
+    assert.strictEqual(result, 'verify');
+  });
+
+  await test('selectPlaybook routes unknown type to work-item fallback', () => {
+    const result = selectPlaybook('unknown-type', {});
+    assert.strictEqual(result, 'work-item',
+      'Unknown types should fall back to work-item');
+  });
+}
+
 // ─── engine.js — completeDispatch Tests ─────────────────────────────────────
 
 async function testCompleteDispatch() {
@@ -9400,6 +9469,7 @@ async function main() {
     await testRenderPlaybook();
     await testValidatePlaybookVars();
     await testResolvePlaybookPath();
+    await testSelectPlaybook();
     await testCompleteDispatch();
     await testDiscoverFromPrs();
     await testBuildFixRetryCap();

@@ -565,6 +565,10 @@ function selectPlaybook(workType, item) {
   if (item?.branchStrategy === 'shared-branch' && (workType === WORK_TYPE.IMPLEMENT || workType === WORK_TYPE.IMPLEMENT_LARGE)) {
     return 'implement-shared';
   }
+  // implement:large uses the same playbook as implement (no separate playbook file)
+  if (workType === WORK_TYPE.IMPLEMENT || workType === WORK_TYPE.IMPLEMENT_LARGE) {
+    return 'implement';
+  }
   if (workType === WORK_TYPE.REVIEW && !item?._pr && !item?.pr_id) {
     return 'work-item';
   }
