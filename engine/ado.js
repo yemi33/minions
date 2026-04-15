@@ -864,7 +864,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
     } catch (e) { log('warn', `fetchSinglePrBuildStatus error log for PR #${prNumber}: ${e.message}`); }
   }
 
-  const votes = (prData.reviewers || []).map(r => r.vote);
+  const votes = (prData.reviewers || []).map(r => r.vote).filter(v => v !== undefined);
   const prUrl = `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
 
   return {

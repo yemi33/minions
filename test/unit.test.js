@@ -16962,6 +16962,35 @@ async function testPrReviewFixFlows() {
       'Pre-dispatch live vote check should guard against downgrading approved');
   });
 
+  // ── Live review check crash guards (W-z7zlvxnt) ──
+
+  await test('ADO fetchSinglePrBuildStatus filters undefined votes', () => {
+    // ado.js line 867: votes array must filter undefined values like checkLiveReviewStatus does at line 797
+    const fetchFn = adoSrc.slice(adoSrc.indexOf('async function fetchSinglePrBuildStatus('), adoSrc.indexOf('\n// ─── ADO Throttle Queries'));
+    const voteLines = fetchFn.match(/\.map\(r => r\.vote\).*/g) || [];
+    assert.ok(voteLines.length > 0, 'fetchSinglePrBuildStatus must extract votes from reviewers');
+    assert.ok(voteLines.every(line => line.includes('.filter(')),
+      'All votes extraction in fetchSinglePrBuildStatus must filter undefined values');
+  });
+
+  await test('ADO checkLiveReviewStatus filters undefined votes', () => {
+    const checkFn = adoSrc.slice(adoSrc.indexOf('async function checkLiveReviewStatus('), adoSrc.indexOf('\nasync function fetchAdoPrMetadata'));
+    const voteLines = checkFn.match(/\.map\(r => r\.vote\).*/g) || [];
+    assert.ok(voteLines.length > 0, 'checkLiveReviewStatus must extract votes from reviewers');
+    assert.ok(voteLines.every(line => line.includes('.filter(')),
+      'All votes extraction in checkLiveReviewStatus must filter undefined values');
+  });
+
+  await test('GitHub checkLiveReviewStatus filters undefined state values from reviews', () => {
+    // Review objects from GitHub API may have undefined state — latestByUser.values() must not contain undefined
+    const checkFn = ghSrc.slice(ghSrc.indexOf('async function checkLiveReviewStatus('), ghSrc.indexOf('\nmodule.exports'));
+    // The states array (from Map values) must filter out undefined/null entries before .some() comparisons
+    // Either filter the values, or guard state assignment so undefined never enters the Map
+    assert.ok(
+      checkFn.includes('.filter(') || checkFn.includes('if (!r.state') || checkFn.includes('r.state &&'),
+      'GitHub checkLiveReviewStatus must guard against undefined state values entering the states array');
+  });
+
   // ── updatePrAfterReview passes resultSummary ──
 
   await test('updatePrAfterReview receives resultSummary for review note', () => {
