@@ -607,6 +607,65 @@ function parseCCActions(text) {
   return { text: displayText, actions };
 }
 
+// ── /loop → create-watch safety net ──────────────────────────────────────────
+// CC sometimes invokes the /loop skill instead of emitting a create-watch action.
+// This pure function detects /loop invocation in CC response text and synthesizes
+// a create-watch action as a fallback. Returns null if no conversion needed.
+
+function _detectLoopInvocation(text, actions) {
+  if (!text) return null;
+  // If a create-watch action was already emitted, no fallback needed
+  if (actions && actions.some(a => a.type === 'create-watch')) return null;
+
+  // Check for /loop invocation patterns in CC response
+  const loopPatterns = [
+    /\/loop\b/i,
+    /\bloop skill\b/i,
+    /\bSkill.*\bloop\b/i,
+    /\bstarted.*\bloop\b/i,
+    /\bmonitoring.*\bloop\b/i,
+    /\binvok(?:e|ed|ing).*\bloop\b/i,
+  ];
+  if (!loopPatterns.some(p => p.test(text))) return null;
+
+  // Extract target — PR number or work item ID
+  const prMatch = text.match(/\bPR[- #]?(\d+)\b/i) || text.match(/\bpull[- ]request[- #]?(\d+)/i);
+  const wiMatch = text.match(/\bW-([a-z0-9]+)\b/);
+
+  let target = null, targetType = 'pr';
+  if (prMatch) {
+    target = prMatch[1];
+    targetType = 'pr';
+  } else if (wiMatch) {
+    target = 'W-' + wiMatch[1];
+    targetType = 'work-item';
+  }
+  if (!target) return null; // Can't synthesize without a target
+
+  // Extract interval (e.g. "every 15 minutes", "every 5m")
+  const intervalMatch = text.match(/every\s+(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?)\b/i);
+  let interval = '5m';
+  if (intervalMatch) interval = intervalMatch[1] + intervalMatch[2][0];
+
+  // Infer condition from keywords
+  let condition = 'any';
+  if (/\bbuild\b/i.test(text) && /\b(?:pass(?:es|ing|ed)?|green|succeed(?:s|ed)?|success)\b/i.test(text)) condition = 'build-pass';
+  else if (/\bbuild\b/i.test(text) && /\b(?:fail(?:s|ing|ed)?|red|broken|broke)\b/i.test(text)) condition = 'build-fail';
+  else if (/\bmerge[d]?\b/i.test(text)) condition = 'merged';
+  else if (/\bcomplete[d]?\b/i.test(text)) condition = 'completed';
+
+  return {
+    type: 'create-watch',
+    target,
+    targetType,
+    condition,
+    interval,
+    owner: 'human',
+    description: 'Auto-converted from /loop invocation',
+    stopAfter: condition === 'any' ? 0 : 1,
+  };
+}
+
 // ── Server-side CC action execution ──────────────────────────────────────────
 // Actions are executed server-side so all clients (frontend, curl, Teams) get the same behavior.
 // The frontend still shows status toasts but no longer needs to fire the API calls.
@@ -3523,6 +3582,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
 
         const parsed = parseCCActions(result.text);
+        // Safety net: detect /loop invocation and convert to create-watch
+        const _loopWatch = _detectLoopInvocation(parsed.text, parsed.actions);
+        if (_loopWatch) {
+          parsed.actions.push(_loopWatch);
+          console.warn('[CC] /loop invocation detected — converted to create-watch');
+          try { shared.log('warn', '/loop invocation detected in CC response — auto-converted to create-watch'); } catch {}
+        }
         if (parsed.actions.length > 0) {
           parsed.actionResults = await executeCCActions(parsed.actions);
         }
@@ -3685,6 +3751,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         // Send final result with actions — execute server-side first
         const { text: displayText, actions } = parseCCActions(result.text);
+        // Safety net: detect /loop invocation and convert to create-watch
+        const _loopWatch = _detectLoopInvocation(displayText, actions);
+        if (_loopWatch) {
+          actions.push(_loopWatch);
+          console.warn('[CC] /loop invocation detected — converted to create-watch');
+          try { shared.log('warn', '/loop invocation detected in CC response — auto-converted to create-watch'); } catch {}
+        }
         let actionResults;
         if (actions.length > 0) {
           actionResults = await executeCCActions(actions);

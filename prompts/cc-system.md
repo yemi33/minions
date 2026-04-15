@@ -94,8 +94,11 @@ Additional actions (all take `id` or `file` as primary key):
 - Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment), reopen-work-item (id, project[, description] — reopen a done/failed item back to pending)
 - PRD ops: edit-prd-item, remove-prd-item, reopen-prd-item (id, file — re-dispatches on existing branch)
 - **create-watch**: target, targetType (pr/work-item), condition (merged/build-fail/build-pass/completed/failed/status-change/any/new-comments/vote-change), interval ("15m", "1h", "30s" — default "5m"), owner (agent id or "human"), description, project, stopAfter (0=run forever, 1=expire on first match, N=expire after N matches), onNotMet (null=do nothing, "notify"=write to inbox each poll while condition not met)
+  **NEVER use the /loop skill for monitoring tasks.** Always use the `create-watch` action — it persists across engine restarts and appears in the Watches page. /loop runs ephemerally in the session and leaves no trace.
+  Trigger phrases: user says "keep an eye on X", "watch X every N min", "monitor X", "check X periodically", "ping me when X" → always emit `create-watch`.
   Example: user says "check PR 1065 build every 15 min until green" → `{"type":"create-watch","target":"1065","targetType":"pr","condition":"build-pass","interval":"15m","stopAfter":1,"description":"Watch PR 1065 build until green"}`
   Example: user says "ping me every 15 min while build is still failing" → `{"type":"create-watch","target":"1065","targetType":"pr","condition":"build-pass","interval":"15m","stopAfter":1,"onNotMet":"notify","description":"Watch PR 1065 build — notify each poll"}`
+  Example: user says "keep an eye on PR 200 every 5 min" → `{"type":"create-watch","target":"200","targetType":"pr","condition":"any","interval":"5m","stopAfter":0,"description":"Monitor PR 200"}`
 - **delete-watch**: id — remove a watch permanently
   Example: user says "stop watching PR 1065" → `{"type":"delete-watch","id":"watch-abc123"}`
 - **pause-watch**: id — pause a watch without deleting it (can be resumed later)

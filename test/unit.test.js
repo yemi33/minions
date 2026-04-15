@@ -9647,6 +9647,9 @@ async function main() {
     await testWatchesModule();
     await testWatchesDashboard();
 
+    // W-mo0kr8tuldlr: /loop → create-watch interception
+    await testLoopToWatchInterception();
+
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
 
@@ -20283,6 +20286,218 @@ async function testWatchesDashboard() {
     const watchesBlock = engineSrc.slice(watchesBlockStart, watchesBlockEnd);
     assert.ok(!watchesBlock.includes('PROJECTS'),
       'checkWatches block must NOT reference PROJECTS (undefined variable — causes ReferenceError)');
+  });
+}
+
+// ── W-mo0kr8tuldlr: /loop → create-watch interception ────────────────────────
+async function testLoopToWatchInterception() {
+  console.log('\n── /loop → create-watch interception ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // Extract _detectLoopInvocation for behavioral testing
+  const fnBody = dashSrc.match(/function _detectLoopInvocation[\s\S]*?^}/m)[0];
+  const detectLoopInvocation = new Function(fnBody + '\nreturn _detectLoopInvocation;')();
+
+  // ── Behavioral tests — detection ──
+
+  await test('_detectLoopInvocation returns null for normal text', () => {
+    assert.strictEqual(detectLoopInvocation('I created a watch for PR 1065.', []), null);
+  });
+
+  await test('_detectLoopInvocation returns null when text is empty', () => {
+    assert.strictEqual(detectLoopInvocation('', []), null);
+    assert.strictEqual(detectLoopInvocation(null, []), null);
+  });
+
+  await test('_detectLoopInvocation returns null when create-watch already emitted', () => {
+    const text = 'I started a /loop to monitor PR 1065.';
+    const actions = [{ type: 'create-watch', target: '1065' }];
+    assert.strictEqual(detectLoopInvocation(text, actions), null,
+      'should skip when create-watch already in actions');
+  });
+
+  await test('_detectLoopInvocation detects /loop mention with PR target', () => {
+    const result = detectLoopInvocation('I\'ll start /loop to monitor PR 1065 build.', []);
+    assert.ok(result, 'should detect /loop invocation');
+    assert.strictEqual(result.type, 'create-watch');
+    assert.strictEqual(result.target, '1065');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation detects "loop skill" phrasing', () => {
+    const result = detectLoopInvocation('Using the loop skill to watch PR-200 every 15m.', []);
+    assert.ok(result, 'should detect loop skill mention');
+    assert.strictEqual(result.target, '200');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation detects "Skill.*loop" pattern', () => {
+    const result = detectLoopInvocation('I invoked Skill: loop to monitor PR-42.', []);
+    assert.ok(result, 'should detect Skill...loop mention');
+    assert.strictEqual(result.target, '42');
+  });
+
+  await test('_detectLoopInvocation detects "started.*loop" pattern', () => {
+    const result = detectLoopInvocation('I started a loop to keep an eye on PR 999.', []);
+    assert.ok(result, 'should detect started...loop');
+    assert.strictEqual(result.target, '999');
+  });
+
+  await test('_detectLoopInvocation detects "monitoring.*loop" pattern', () => {
+    const result = detectLoopInvocation('Monitoring via loop — PR 50 build status.', []);
+    assert.ok(result, 'should detect monitoring...loop');
+    assert.strictEqual(result.target, '50');
+  });
+
+  await test('_detectLoopInvocation detects "invoked.*loop" pattern', () => {
+    const result = detectLoopInvocation('I invoked the loop to watch PR 123.', []);
+    assert.ok(result, 'should detect invoked...loop');
+    assert.strictEqual(result.target, '123');
+  });
+
+  await test('_detectLoopInvocation returns null when no target found', () => {
+    const result = detectLoopInvocation('I started a /loop to monitor things.', []);
+    assert.strictEqual(result, null, 'should return null when no PR or WI target');
+  });
+
+  // ── Target extraction ──
+
+  await test('_detectLoopInvocation extracts work item ID target', () => {
+    const result = detectLoopInvocation('/loop checking on W-abc123def status.', []);
+    assert.ok(result, 'should detect /loop with work item target');
+    assert.strictEqual(result.target, 'W-abc123def');
+    assert.strictEqual(result.targetType, 'work-item');
+  });
+
+  await test('_detectLoopInvocation prefers PR target over work item', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 500 and W-xyz123.', []);
+    assert.ok(result);
+    assert.strictEqual(result.target, '500', 'PR target should take precedence');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  await test('_detectLoopInvocation extracts PR from "pull request 42" format', () => {
+    const result = detectLoopInvocation('/loop watching pull request 42.', []);
+    assert.ok(result);
+    assert.strictEqual(result.target, '42');
+    assert.strictEqual(result.targetType, 'pr');
+  });
+
+  // ── Interval extraction ──
+
+  await test('_detectLoopInvocation extracts interval from "every N min"', () => {
+    const result = detectLoopInvocation('/loop checking PR 100 every 15 minutes.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '15m');
+  });
+
+  await test('_detectLoopInvocation extracts interval from "every N h"', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 100 every 2 hours.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '2h');
+  });
+
+  await test('_detectLoopInvocation defaults interval to 5m', () => {
+    const result = detectLoopInvocation('/loop watching PR 100.', []);
+    assert.ok(result);
+    assert.strictEqual(result.interval, '5m');
+  });
+
+  // ── Condition inference ──
+
+  await test('_detectLoopInvocation infers build-pass condition', () => {
+    const result = detectLoopInvocation('/loop checking PR 100 build until green.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'build-pass');
+  });
+
+  await test('_detectLoopInvocation infers build-fail condition', () => {
+    const result = detectLoopInvocation('/loop monitoring PR 100 when build is failing.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'build-fail');
+  });
+
+  await test('_detectLoopInvocation infers merged condition', () => {
+    const result = detectLoopInvocation('/loop watching PR 100 until merged.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'merged');
+  });
+
+  await test('_detectLoopInvocation infers completed condition', () => {
+    const result = detectLoopInvocation('/loop monitoring W-abc123 until completed.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'completed');
+  });
+
+  await test('_detectLoopInvocation defaults condition to any', () => {
+    const result = detectLoopInvocation('/loop watching PR 100 status.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'any');
+  });
+
+  // ── Synthesized action shape ──
+
+  await test('_detectLoopInvocation synthesizes correct action shape', () => {
+    const result = detectLoopInvocation('/loop checking PR 200 build every 10 minutes until passing.', []);
+    assert.ok(result);
+    assert.strictEqual(result.type, 'create-watch');
+    assert.strictEqual(result.target, '200');
+    assert.strictEqual(result.targetType, 'pr');
+    assert.strictEqual(result.condition, 'build-pass');
+    assert.strictEqual(result.interval, '10m');
+    assert.strictEqual(result.owner, 'human');
+    assert.strictEqual(result.stopAfter, 1, 'non-any conditions should set stopAfter=1');
+    assert.ok(result.description.includes('/loop'), 'description should mention /loop conversion');
+  });
+
+  await test('_detectLoopInvocation sets stopAfter=0 for any condition', () => {
+    const result = detectLoopInvocation('/loop watching PR 300 status.', []);
+    assert.ok(result);
+    assert.strictEqual(result.condition, 'any');
+    assert.strictEqual(result.stopAfter, 0, 'any condition should run forever');
+  });
+
+  // ── Integration: source-level checks ──
+
+  await test('dashboard.js non-streaming path calls _detectLoopInvocation after parseCCActions', () => {
+    // handleCommandCenter should call _detectLoopInvocation after parsing actions
+    const handleCC = dashSrc.match(/async function handleCommandCenter[\s\S]*?^}/m);
+    assert.ok(handleCC, 'handleCommandCenter must exist');
+    const fnText = handleCC[0];
+    assert.ok(fnText.includes('_detectLoopInvocation'), 'non-streaming path must call _detectLoopInvocation');
+    // Ensure it's called after parseCCActions
+    const parseIdx = fnText.indexOf('parseCCActions');
+    const detectIdx = fnText.indexOf('_detectLoopInvocation');
+    assert.ok(parseIdx > -1 && detectIdx > parseIdx,
+      '_detectLoopInvocation must be called after parseCCActions in non-streaming path');
+  });
+
+  await test('dashboard.js streaming path calls _detectLoopInvocation after parseCCActions', () => {
+    const handleStream = dashSrc.match(/async function handleCommandCenterStream[\s\S]*?^}/m);
+    assert.ok(handleStream, 'handleCommandCenterStream must exist');
+    const fnText = handleStream[0];
+    assert.ok(fnText.includes('_detectLoopInvocation'), 'streaming path must call _detectLoopInvocation');
+    const parseIdx = fnText.indexOf('parseCCActions');
+    const detectIdx = fnText.indexOf('_detectLoopInvocation');
+    assert.ok(parseIdx > -1 && detectIdx > parseIdx,
+      '_detectLoopInvocation must be called after parseCCActions in streaming path');
+  });
+
+  await test('CC system prompt warns against /loop for monitoring', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(prompt.includes('NEVER use the /loop skill'),
+      'CC prompt must warn against using /loop');
+    assert.ok(prompt.includes('create-watch'),
+      'CC prompt must redirect to create-watch');
+  });
+
+  await test('CC system prompt has trigger phrase examples for create-watch', () => {
+    const prompt = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+    assert.ok(prompt.includes('keep an eye on'),
+      'CC prompt should include "keep an eye on" trigger phrase');
+    assert.ok(prompt.includes('monitor'),
+      'CC prompt should include "monitor" trigger phrase');
   });
 }
 
