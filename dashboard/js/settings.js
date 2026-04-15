@@ -51,6 +51,7 @@ async function openSettings() {
       settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
       settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Auto-dispatch fix agents when a PR build fails') +
       settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Auto-dispatch fix agents when a PR has merge conflicts') +
+      settingsToggle('Auto-complete PRs', 'set-autoCompletePrs', !!e.autoCompletePrs, 'Auto-merge PRs when builds pass and review is approved (opt-in)') +
       settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status and comments each tick (reconciliation always runs)') +
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
@@ -242,6 +243,7 @@ async function saveSettings() {
       autoArchive: document.getElementById('set-autoArchive').checked,
       autoFixBuilds: document.getElementById('set-autoFixBuilds').checked,
       autoFixConflicts: document.getElementById('set-autoFixConflicts').checked,
+      autoCompletePrs: document.getElementById('set-autoCompletePrs').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,
       adoPollStatusEvery: document.getElementById('set-adoPollStatusEvery').value,
