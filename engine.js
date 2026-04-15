@@ -1952,10 +1952,10 @@ async function discoverFromPrs(config, project) {
       log('warn', `PR ${pr.id}: review→fix escalated after ${evalCycles} cycles — suspending auto-dispatch`);
     }
 
-    // PRs needing review: pending review status and not already reviewed without new commits
-    const autoReview = config.engine?.autoReview !== false && pollEnabled;
+    // PRs needing review: evalLoop gates the entire review+fix cycle; pollEnabled ensures reviewStatus is fresh
+    const reviewEnabled = evalLoopEnabled && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
-    const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
+    const needsReview = reviewEnabled && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
@@ -1995,7 +1995,7 @@ async function discoverFromPrs(config, project) {
     // fallback — that caused infinite re-review loops on GitHub where self-approval is blocked)
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       pr.lastReviewedAt && pr.minionsReview.fixedAt > pr.lastReviewedAt);
-    const needsReReview = autoReview && evalLoopEnabled && reviewStatus === 'waiting' &&
+    const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !evalEscalated;
     if (needsReReview) {
       const key = `review-${project?.name || 'default'}-${pr.id}`;
@@ -2028,7 +2028,7 @@ async function discoverFromPrs(config, project) {
         pr_id: pr.id, pr_number: prNumber, pr_title: pr.title || '', pr_branch: pr.branch || '',
         pr_author: pr.agent || '', pr_url: pr.url || '',
       }, `Review ${pr.id}: ${pr.title}`, { dispatchKey: key, source: 'pr', pr, branch: pr.branch, project: projMeta });
-      if (item) { newWork.push(item); setCooldown(key); }
+      if (item) { newWork.push(item); }
     }
 
     // PRs with changes requested → route back to author for fix

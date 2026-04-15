@@ -4537,29 +4537,33 @@ async function testDiscoverFromPrs() {
       'needsReReview should use fixedAfterReview directly (fixedAt > lastReviewedAt)');
   });
 
-  // ─── Poll-gated review dispatch (W-mnzvsswlwk77) ─────────────────────────
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j) ─────────
 
-  await test('discoverFromPrs gates autoReview on pollEnabled', () => {
-    // When adoPollEnabled:false (ADO) or ghPollEnabled:false (GitHub), reviewStatus is stale
-    // (never updated because polling is off). autoReview must be gated on pollEnabled.
+  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
+    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
+    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
     const fnStart = src.indexOf('async function discoverFromPrs(');
     const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
     const fnBody = src.slice(fnStart, fnEnd);
     assert.ok(fnBody.includes('pollEnabled'),
       'discoverFromPrs must resolve pollEnabled per project');
-    assert.ok(fnBody.includes('autoReview') && fnBody.includes('pollEnabled'),
-      'autoReview must be gated on pollEnabled — stale reviewStatus is untrustworthy without poller');
+    assert.ok(fnBody.includes('reviewEnabled'),
+      'discoverFromPrs must use reviewEnabled as the single review gate');
+    assert.ok(!fnBody.includes('autoReview'),
+      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
+      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
   });
 
-  await test('discoverFromPrs gates needsReReview on evalLoopEnabled', () => {
-    // evalLoop:false should suppress re-review cycles
+  await test('discoverFromPrs gates needsReReview on reviewEnabled', () => {
+    // evalLoop:false should suppress re-review cycles; pollEnabled gates stale status
     const fnStart = src.indexOf('async function discoverFromPrs(');
     const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
     const fnBody = src.slice(fnStart, fnEnd);
     assert.ok(fnBody.includes('evalLoopEnabled'),
       'discoverFromPrs must read evalLoop config flag');
-    assert.ok(fnBody.includes('needsReReview') && fnBody.includes('evalLoopEnabled'),
-      'needsReReview must be gated on evalLoopEnabled — evalLoop:false suppresses re-review cycles');
+    assert.ok(fnBody.includes('needsReReview') && fnBody.includes('reviewEnabled'),
+      'needsReReview must be gated on reviewEnabled — evalLoop:false suppresses re-review cycles');
   });
 
   await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
@@ -9681,6 +9685,11 @@ async function testAutoApproveMode() {
   await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
       'autoArchive should default to false (opt-in, not automatic)');
+  });
+
+  await test('ENGINE_DEFAULTS does NOT include autoReview (consolidated into evalLoop)', () => {
+    assert.ok(!('autoReview' in shared.ENGINE_DEFAULTS),
+      'autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j) — must not exist in ENGINE_DEFAULTS');
   });
 
   await test('parseStreamJsonOutput extracts model from init message', () => {
@@ -16654,7 +16663,7 @@ async function testPrReviewFixFlows() {
 
   await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
     const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
     const escalBlock = engineSrc.slice(startIdx, endIdx);
     assert.ok(escalBlock.length > 10, 'Should find escalation block');
     assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
