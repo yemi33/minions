@@ -9989,6 +9989,13 @@ async function testReviewReDispatchLoop() {
       'updatePrAfterReview should set lastReviewedAt timestamp on PR record');
   });
 
+  await test('updatePrAfterReview preserves fixedAt from prior fix when writing minionsReview', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine', 'lifecycle.js'), 'utf8');
+    const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
+    assert.ok(reviewFn.includes('minionsReview?.fixedAt') && reviewFn.includes('fixedAt'),
+      'updatePrAfterReview must preserve fixedAt from prior fix — dropping it causes poller to overwrite reviewStatus back to changes-requested after a fix is pushed');
+  });
+
   await test('engine.js skips review re-dispatch when lastReviewedAt set and no new commits', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
     assert.ok(src.includes('alreadyReviewed') && src.includes('lastReviewedAt') && src.includes('lastPushedAt'),

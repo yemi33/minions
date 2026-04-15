@@ -908,7 +908,8 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
     target.minionsReview = {
       reviewer: reviewerName,
       reviewedAt: ts(),
-      note: resultSummary || completedEntry?.task || ''
+      note: resultSummary || completedEntry?.task || '',
+      ...(target.minionsReview?.fixedAt ? { fixedAt: target.minionsReview.fixedAt } : {}),
     };
     updatedTarget = { ...pr, ...target };
     return prs;
