@@ -707,15 +707,14 @@ function syncPrsFromOutput(output, agentId, meta, config) {
     const lines = output.split('\n');
     for (const line of lines) {
       try {
-        if (!line.includes('"type":"assistant"') && !line.includes('"type":"result"')) continue;
+        if (!line.includes('"type":"assistant"') && !line.includes('"type":"result"') && !line.includes('"type":"user"')) continue;
         const parsed = JSON.parse(line);
         const content = parsed.message?.content || [];
         for (const block of content) {
+          // Scan tool_result blocks in user messages for PR URLs (gh pr create output lands here)
           if (block.type === 'tool_result' && block.content) {
             const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-            if (text.includes('pullRequestId') || text.includes('create_pull_request')) {
-              while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
-            }
+            while ((match = urlPattern.exec(text)) !== null) prMatches.add(match[1] || match[2]);
           }
           // Also scan assistant text blocks for PR URLs and "PR created" patterns
           if (block.type === 'text' && block.text) {

@@ -11,7 +11,7 @@
 const path = require('path');
 const shared = require('./shared');
 const { safeJson, mutateJsonFileLocked, ts, uid, log, writeToInbox,
-  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION, WATCH_ABSOLUTE_CONDITIONS } = shared;
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION } = shared;
 
 // Dynamic path — respects MINIONS_TEST_DIR for test isolation
 function _watchesPath() { return path.join(shared.MINIONS_DIR, 'engine', 'watches.json'); }
@@ -237,7 +237,8 @@ function checkWatches(config, state) {
           }
           log('info', `Watch triggered: ${watch.id} — ${result.message}`);
 
-          // Expire when stopAfter limit is reached. stopAfter=0 means run forever (no limit).
+          // Expire when stopAfter > 0 and trigger count reaches the limit.
+          // stopAfter: 0 means "run forever" for all condition types.
           if (watch.stopAfter > 0 && watch.triggerCount >= watch.stopAfter) {
             watch.status = WATCH_STATUS.EXPIRED;
             log('info', `Watch expired (stopAfter limit reached): ${watch.id}`);

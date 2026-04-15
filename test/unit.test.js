@@ -9628,6 +9628,9 @@ async function main() {
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
 
+    // W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages
+    await testSyncPrsToolResultInUserMessages();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -20097,4 +20100,172 @@ async function testScheduledTaskNoteBackReference() {
   });
 }
 
+// ─── W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages ────────
+async function testSyncPrsToolResultInUserMessages() {
+  console.log('\n── W-mnzwn967gdnc: syncPrsFromOutput scans tool_result in user messages ──');
+
+  const lifecycle = require('../engine/lifecycle');
+  const shared = require('../engine/shared');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // ── Source-level: filter now includes "type":"user" ──
+
+  await test('syncPrsFromOutput line filter includes type:user messages', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // The filter line must allow "type":"user" messages through
+    assert.ok(fnBody.includes('"type":"user"'),
+      'syncPrsFromOutput must include "type":"user" in its message-type filter so tool_result blocks are scanned');
+  });
+
+  await test('syncPrsFromOutput tool_result URL scan is not gated on keywords', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Find the tool_result block handling — the URL regex should NOT be inside a keyword guard
+    const toolResultBlock = fnBody.slice(
+      fnBody.indexOf("block.type === 'tool_result'"),
+      fnBody.indexOf("block.type === 'text'")
+    );
+    // The old code gated URL scanning on pullRequestId/create_pull_request keywords
+    assert.ok(!toolResultBlock.includes("text.includes('pullRequestId') || text.includes('create_pull_request')"),
+      'tool_result URL scan should NOT be gated on pullRequestId/create_pull_request keywords — gh pr create output may not contain these');
+  });
+
+  // ── Functional: PR URL in type:user tool_result is detected ──
+
+  await test('syncPrsFromOutput detects GitHub PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Simulate JSONL where PR URL appears ONLY in a type:user tool_result block
+      // (this is how gh pr create output actually appears in Claude API JSONL)
+      const output = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"I will create a PR now."}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"https://github.com/org/repo/pull/555\\nCreating pull request for work/branch into master..."}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-100', title: 'Test PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-555'), 'PR-555 from type:user tool_result should be detected');
+      assert.ok(count >= 1, 'Should return count >= 1 for detected PR');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput detects ADO PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // ADO PR URL in a tool_result block
+      const output = [
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"Created PR: https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/777"}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-101', title: 'ADO PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-777'), 'PR-777 from ADO URL in type:user tool_result should be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  // ── Regression: existing assistant text-block and result-message paths still work ──
+
+  await test('syncPrsFromOutput still detects PR URL in assistant text blocks (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/888"}]}}';
+      const meta = { item: { id: 'W-102', title: 'Assistant text PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-888'), 'PR-888 from assistant text block should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput still detects PR URL in type:result messages (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-103', title: 'Result message PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-999'), 'PR-999 from type:result message should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+}
 main().catch(e => { console.error(e); process.exit(1); });
