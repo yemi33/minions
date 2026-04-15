@@ -10207,6 +10207,59 @@ async function testSettingsComprehensive() {
         `engine.js outputFormat fallback '${val}' must match DEFAULT_CLAUDE.outputFormat`);
     }
   });
+
+  // ── Per-project workSources toggles in settings modal ──
+
+  await test('handleSettingsRead includes projects with workSources in response', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsRead'), src.indexOf('function handleSettingsUpdate'));
+    assert.ok(handler.includes('projects'), 'handleSettingsRead should include projects in response');
+    assert.ok(handler.includes('workSources'), 'handleSettingsRead should include workSources in projects');
+    assert.ok(handler.includes('pullRequests'), 'handleSettingsRead should include pullRequests workSource');
+    assert.ok(handler.includes('workItems'), 'handleSettingsRead should include workItems workSource');
+  });
+
+  await test('handleSettingsUpdate processes projects workSources', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    assert.ok(handler.includes('body.projects'), 'handleSettingsUpdate should handle body.projects');
+    assert.ok(handler.includes('workSources'), 'handleSettingsUpdate should process workSources');
+    assert.ok(handler.includes('pullRequests'), 'handleSettingsUpdate should handle pullRequests toggle');
+    assert.ok(handler.includes('workItems'), 'handleSettingsUpdate should handle workItems toggle');
+  });
+
+  await test('settings UI renders per-project workSources toggles', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(src.includes('data.projects') || src.includes('projects'), 'settings.js should reference projects data');
+    assert.ok(src.includes('Discover from PRs'), 'settings.js should have Discover from PRs toggle label');
+    assert.ok(src.includes('Discover from Work Items'), 'settings.js should have Discover from Work Items toggle label');
+    assert.ok(src.includes('set-ws-prs-'), 'settings.js should use set-ws-prs- prefix for PR toggle IDs');
+    assert.ok(src.includes('set-ws-wi-'), 'settings.js should use set-ws-wi- prefix for WI toggle IDs');
+  });
+
+  await test('settings saveSettings collects per-project workSources', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'js', 'settings.js'), 'utf8');
+    const saveBlock = src.slice(src.indexOf('async function saveSettings'));
+    assert.ok(saveBlock.includes('projects'), 'saveSettings should collect projects data');
+    assert.ok(saveBlock.includes('workSources'), 'saveSettings should include workSources in payload');
+    assert.ok(saveBlock.includes('pullRequests'), 'saveSettings should include pullRequests toggle state');
+    assert.ok(saveBlock.includes('workItems'), 'saveSettings should include workItems toggle state');
+  });
+
+  await test('handleSettingsUpdate projects handler validates project name exists', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // Must skip unknown projects — find by name and continue if not found
+    assert.ok(handler.includes('continue'), 'handleSettingsUpdate projects loop should skip unknown projects');
+  });
+
+  await test('handleSettingsUpdate projects handler coerces booleans', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('function handleSettingsUpdate'), src.indexOf('function handleSettingsRouting'));
+    // Must coerce to boolean with !! to prevent truthy string injection
+    const projectsBlock = handler.slice(handler.indexOf('body.projects'));
+    assert.ok(projectsBlock.includes('!!'), 'handleSettingsUpdate should coerce workSources enabled to boolean with !!');
+  });
 }
 
 async function testCcActionTypes() {
