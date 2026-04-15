@@ -16944,6 +16944,34 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(ENGINE_DEFAULTS.autoFixConflicts, true, 'autoFixConflicts default must be true');
   });
 
+  await test('build failure fix gated by autoFixBuilds flag', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('autoFixBuilds'), 'Build fix dispatch must be gated by autoFixBuilds config flag');
+  });
+
+  await test('autoFixBuilds reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('DEFAULTS.autoFixBuilds'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
+    assert.ok(!buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+  });
+
+  await test('autoFixBuilds present in ENGINE_DEFAULTS with default true', () => {
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
+    assert.ok('autoFixBuilds' in ENGINE_DEFAULTS, 'ENGINE_DEFAULTS must define autoFixBuilds');
+    assert.strictEqual(ENGINE_DEFAULTS.autoFixBuilds, true, 'autoFixBuilds default must be true');
+  });
+
+  await test('settings.js renders autoFixBuilds toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoFixBuilds'), 'settings.js must render autoFixBuilds toggle');
+    assert.ok(settingsSrc.includes('autoFixBuilds !== false'), 'autoFixBuilds toggle must default to true (!== false pattern)');
+  });
+
+  await test('settings.js saves autoFixBuilds on save', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes("getElementById('set-autoFixBuilds').checked"), 'saveSettings must read autoFixBuilds checkbox');
+  });
+
   // ── Auto-complete ──
 
   console.log('\n── Auto-Complete ──');
