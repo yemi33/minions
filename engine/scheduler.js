@@ -116,7 +116,9 @@ function discoverScheduledWork(config) {
       if (!sched.id || !sched.cron || !sched.title) continue;
       if (!sched.enabled) continue; // truthy check — matches dashboard UI badge behavior
 
-      const lastRun = runs[sched.id] || null;
+      // Backward compat: runs[sched.id] can be a string (old format) or object (new format)
+      const runEntry = runs[sched.id] || null;
+      const lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || null);
       if (!shouldRunNow(sched, lastRun)) continue;
 
       work.push({
@@ -133,8 +135,9 @@ function discoverScheduledWork(config) {
         _scheduleId: sched.id,
       });
 
-      // Record run time inside the lock
-      runs[sched.id] = ts();
+      // Record run time inside the lock — preserve existing fields (lastWorkItemId, lastResult, etc.)
+      const existing = typeof runs[sched.id] === 'object' && runs[sched.id] ? runs[sched.id] : {};
+      runs[sched.id] = { ...existing, lastRun: ts() };
     }
   }, { defaultValue: {} });
 

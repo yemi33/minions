@@ -9522,6 +9522,9 @@ async function main() {
     // P-h2t6r1j8: Structured completion protocol
     await testStructuredCompletion();
 
+    // W-mnzuhp2dapvn: Scheduled task note back-reference
+    await testScheduledTaskNoteBackReference();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -19891,4 +19894,134 @@ async function testAzureauthTimeout() {
       'shared-rules.md should have explicit guidance about azureauth timeout');
   });
 }
+
+// ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
+
+async function testScheduledTaskNoteBackReference() {
+  console.log('\n── Scheduled task note back-reference ──');
+
+  // 1. writeToInbox accepts metadata parameter and injects into frontmatter
+  await test('writeToInbox injects metadata fields into frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-result', '# Scheduled result', inboxDir, {
+      sourceItem: 'sched-daily-test-123',
+      scheduleId: 'daily-test-suite'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: sched-daily-test-123'), 'Frontmatter should include sourceItem');
+    assert.ok(content.includes('scheduleId: daily-test-suite'), 'Frontmatter should include scheduleId');
+    assert.ok(content.includes('id: ' + noteId), 'Frontmatter should include note ID');
+    assert.ok(content.includes('# Scheduled result'), 'Should include original content');
+  });
+
+  await test('writeToInbox metadata works with existing frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-fm', '---\ntitle: Custom\n---\n\n# Body', inboxDir, {
+      sourceItem: 'WI-999'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: WI-999'), 'Should inject sourceItem into existing frontmatter');
+    assert.ok(content.includes('title: Custom'), 'Should preserve existing fields');
+  });
+
+  await test('writeToInbox without metadata still works (backward compat)', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'no-meta', '# No metadata', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem when no metadata');
+    assert.ok(!content.includes('scheduleId'), 'Should not include scheduleId when no metadata');
+  });
+
+  await test('writeToInbox ignores empty metadata object', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'empty-meta', '# Empty', inboxDir, {});
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem for empty metadata');
+  });
+
+  // 2. runPostCompletionHooks updates schedule-runs.json for scheduled tasks
+  await test('runPostCompletionHooks updates schedule-runs.json on scheduled task completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the runPostCompletionHooks function
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('_scheduleId'), 'runPostCompletionHooks must check for _scheduleId on work items');
+    assert.ok(fn.includes('schedule-runs'), 'runPostCompletionHooks must update schedule-runs.json');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'schedule-runs update must use mutateJsonFileLocked');
+  });
+
+  await test('runPostCompletionHooks writes completion note for scheduled tasks with back-reference', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('writeToInbox') && fn.includes('_scheduleId'),
+      'runPostCompletionHooks must write inbox note with schedule reference');
+    assert.ok(fn.includes('sourceItem') || fn.includes('scheduleId'),
+      'scheduled task inbox note must include sourceItem or scheduleId metadata');
+  });
+
+  // 3. Behavioral test: scheduled task completion updates schedule-runs with lastWorkItemId
+  await test('scheduled task completion records lastWorkItemId in schedule-runs.json', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sq = require('../engine/shared');
+
+      // Write schedule-runs.json with initial run timestamp
+      const schedRunsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'schedule-runs.json');
+      sq.safeWrite(schedRunsPath, { 'daily-test': '2026-04-15T00:00:00Z' });
+
+      // Create a central work-items.json with a scheduled task work item
+      const centralWiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      sq.safeWrite(centralWiPath, [
+        { id: 'sched-daily-test-12345', title: 'Daily Test', type: 'test', status: 'dispatched',
+          _scheduleId: 'daily-test', created: '2026-04-15T00:00:00Z' }
+      ]);
+
+      const dispatchItem = {
+        id: 'dispatch-1',
+        type: 'test',
+        meta: {
+          item: { id: 'sched-daily-test-12345', _scheduleId: 'daily-test' },
+          project: null
+        }
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, 'Test passed: 100/100', { agents: {} });
+
+      // Verify schedule-runs.json was updated with lastWorkItemId
+      const runs = sq.safeJson(schedRunsPath);
+      assert.ok(runs['daily-test'], 'Schedule run entry should exist');
+      if (typeof runs['daily-test'] === 'object') {
+        assert.strictEqual(runs['daily-test'].lastWorkItemId, 'sched-daily-test-12345',
+          'Should record lastWorkItemId');
+        assert.ok(runs['daily-test'].lastResult, 'Should record lastResult');
+        assert.ok(runs['daily-test'].lastCompletedAt, 'Should record lastCompletedAt');
+      }
+    } finally {
+      restore();
+    }
+  });
+}
+
 main().catch(e => { console.error(e); process.exit(1); });

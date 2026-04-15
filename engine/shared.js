@@ -295,18 +295,22 @@ function parseNoteId(content) {
   return m ? m[1] : null;
 }
 
-function writeToInbox(agentId, slug, content, _inboxDir) {
+function writeToInbox(agentId, slug, content, _inboxDir, metadata) {
   try {
     const inboxDir = _inboxDir || path.join(MINIONS_DIR, 'notes', 'inbox');
     const prefix = `${agentId}-${slug}-${dateStamp()}`;
     const existing = safeReadDir(inboxDir).find(f => f.startsWith(prefix));
     if (existing) return false;
     const noteId = `NOTE-${uid()}`;
+    // Build optional metadata lines for frontmatter injection
+    const metaLines = (metadata && typeof metadata === 'object')
+      ? Object.entries(metadata).filter(([, v]) => v != null).map(([k, v]) => `${k}: ${v}`).join('\n')
+      : '';
     // Inject structured ID as YAML frontmatter if content doesn't already have it
     const hasFrontmatter = /^\s*---[\r\n]/.test(content);
     const tagged = hasFrontmatter
-      ? content.replace(/^\s*---[\r\n]+/, `---\nid: ${noteId}\n`)
-      : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n---\n\n${content}`;
+      ? content.replace(/^\s*---[\r\n]+/, `---\nid: ${noteId}\n${metaLines ? metaLines + '\n' : ''}`)
+      : `---\nid: ${noteId}\nagent: ${agentId}\ndate: ${dateStamp()}\n${metaLines ? metaLines + '\n' : ''}---\n\n${content}`;
     const filePath = path.join(inboxDir, `${prefix}.md`);
     safeWrite(filePath, tagged);
     return noteId;
