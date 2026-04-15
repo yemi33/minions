@@ -10091,6 +10091,10 @@ async function main() {
     // W-mo0kxqenseo9: Cancel work item — endpoint, UI, CC action
     await testCancelWorkItem();
 
+    // W-mo0jwu9iwnm1: Duplicate PR prevention + cancel stale dispatches on PR close
+    await testDuplicatePrPrevention();
+    await testCancelDispatchesOnPrClose();
+
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
   } finally {
@@ -21453,6 +21457,238 @@ async function testCancelWorkItem() {
     const fnBody = dashSrc.slice(fnStart, fnEnd > -1 ? fnEnd : fnStart + 3000);
     assert.ok(fnBody.includes('DONE_STATUSES') || fnBody.includes('WI_STATUS.DONE') || fnBody.includes('already'),
       'cancel handler must reject already-done/cancelled items');
+  });
+}
+
+// ─── W-mo0jwu9iwnm1: Duplicate PR prevention ────────────────────────────────
+
+async function testDuplicatePrPrevention() {
+  console.log('\n── W-mo0jwu9iwnm1 — Duplicate PR Prevention ──');
+
+  // Behavioral: syncPrsFromOutput should not add a new PR when an active PR already exists on the same branch
+  await test('syncPrsFromOutput skips new PR when active PR already exists on same branch', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testLifecycle = require('../engine/lifecycle');
+
+      // Create project directory structure
+      const projectDir = path.join(testShared.MINIONS_DIR, 'projects', 'TestProject');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+
+      // Pre-existing active PR on branch work/W-8eobrosn
+      testShared.safeWrite(prFile, [{
+        id: 'PR-100', prNumber: 100, title: 'Original PR', agent: 'dallas',
+        branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'active',
+        created: '2026-04-15T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
+        prdItems: ['W-8eobrosn']
+      }]);
+
+      const mockProject = { name: 'TestProject', localPath: projectDir, mainBranch: 'main' };
+      const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
+
+      // Agent output contains a NEW PR (999) on the same branch
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-8eobrosn', title: 'Same branch work' }, project: mockProject, branch: 'work/W-8eobrosn' };
+
+      testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
+
+      const result = testShared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-100'), 'Original PR-100 should still be tracked');
+      assert.ok(!ids.includes('PR-999'), 'Duplicate PR-999 on same branch should NOT be added');
+      assert.strictEqual(result.length, 1, 'Should have exactly 1 PR (the original)');
+    } finally { restore(); }
+  });
+
+  // Behavioral: syncPrsFromOutput SHOULD add new PR if existing PR on same branch is abandoned (not active)
+  await test('syncPrsFromOutput adds new PR when existing PR on same branch is abandoned', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const testLifecycle = require('../engine/lifecycle');
+
+      // Create project directory structure
+      const projectDir = path.join(testShared.MINIONS_DIR, 'projects', 'TestProject');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const prFile = path.join(projectDir, 'pull-requests.json');
+
+      // Pre-existing ABANDONED PR on branch work/W-8eobrosn
+      testShared.safeWrite(prFile, [{
+        id: 'PR-100', prNumber: 100, title: 'Old abandoned PR', agent: 'dallas',
+        branch: 'work/W-8eobrosn', reviewStatus: 'pending', status: 'abandoned',
+        created: '2026-04-14T00:00:00.000Z', url: 'https://github.com/org/repo/pull/100',
+        prdItems: ['W-8eobrosn']
+      }]);
+
+      const mockProject = { name: 'TestProject', localPath: projectDir, mainBranch: 'main' };
+      const mockConfig = { projects: [mockProject], agents: { dallas: { name: 'Dallas' } } };
+
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-8eobrosn', title: 'Retry after abandon' }, project: mockProject, branch: 'work/W-8eobrosn' };
+
+      testLifecycle.syncPrsFromOutput(output, 'dallas', meta, mockConfig);
+
+      const result = testShared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-100'), 'Abandoned PR-100 should still be tracked');
+      assert.ok(ids.includes('PR-999'), 'New PR-999 should be added because existing PR is abandoned');
+      assert.strictEqual(result.length, 2, 'Should have 2 PRs');
+    } finally { restore(); }
+  });
+
+  // Source inspection: syncPrsFromOutput has branch-level dedup logic
+  await test('syncPrsFromOutput source contains branch-level duplicate check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    assert.ok(src.includes('branch') && src.includes('duplicate') || src.includes('Duplicate PR'),
+      'syncPrsFromOutput should log/detect duplicate PRs on same branch');
+  });
+
+  // Source inspection: cancelPendingDispatchesForPr exported from dispatch.js
+  await test('dispatch.js exports cancelPendingDispatchesForPr', () => {
+    const dispatch = require('../engine/dispatch');
+    assert.ok(typeof dispatch.cancelPendingDispatchesForPr === 'function',
+      'cancelPendingDispatchesForPr should be a function exported from dispatch.js');
+  });
+}
+
+// ─── W-mo0jwu9iwnm1: Cancel stale dispatches on PR close ────────────────────
+
+async function testCancelDispatchesOnPrClose() {
+  console.log('\n── W-mo0jwu9iwnm1 — Cancel Stale Dispatches on PR Close ──');
+
+  // Behavioral: cancelPendingDispatchesForPr removes pending entries referencing the PR
+  await test('cancelPendingDispatchesForPr removes pending review dispatch for closed PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      // Seed dispatch with pending review for PR-100
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'ralph-review-abc', type: 'review', agent: 'ralph',
+            meta: { dispatchKey: 'review-minions-PR-100', source: 'pr', pr: { id: 'PR-100' } } },
+          { id: 'dallas-impl-xyz', type: 'implement', agent: 'dallas',
+            meta: { dispatchKey: 'impl-minions-W-123', source: 'work-item', item: { id: 'W-123' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-100');
+      assert.strictEqual(cancelled, 1, 'Should cancel exactly 1 pending dispatch');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Should have 1 remaining pending entry');
+      assert.strictEqual(dispatch.pending[0].id, 'dallas-impl-xyz', 'Non-PR dispatch should remain');
+    } finally { restore(); }
+  });
+
+  // Behavioral: cancelPendingDispatchesForPr handles multiple pending dispatches for same PR
+  await test('cancelPendingDispatchesForPr removes multiple pending dispatches for same PR', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'ralph-review-1', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } },
+          { id: 'rebecca-review-2', type: 'review', agent: 'rebecca',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } },
+          { id: 'dallas-fix-3', type: 'fix', agent: 'dallas',
+            meta: { source: 'pr', pr: { id: 'PR-200' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-200');
+      assert.strictEqual(cancelled, 3, 'Should cancel all 3 pending dispatches for PR-200');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 0, 'All pending entries should be removed');
+    } finally { restore(); }
+  });
+
+  // Behavioral: does not touch dispatches for other PRs
+  await test('cancelPendingDispatchesForPr leaves dispatches for other PRs intact', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'review-pr100', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-100' } } },
+          { id: 'review-pr300', type: 'review', agent: 'rebecca',
+            meta: { source: 'pr', pr: { id: 'PR-300' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      testDispatch.cancelPendingDispatchesForPr('PR-100');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'PR-300 dispatch should remain');
+      assert.strictEqual(dispatch.pending[0].id, 'review-pr300', 'PR-300 dispatch unchanged');
+    } finally { restore(); }
+  });
+
+  // Behavioral: returns 0 when no matching dispatches
+  await test('cancelPendingDispatchesForPr returns 0 when no matching dispatches', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [
+          { id: 'review-pr999', type: 'review', agent: 'ralph',
+            meta: { source: 'pr', pr: { id: 'PR-999' } } }
+        ],
+        active: [],
+        completed: []
+      });
+
+      const cancelled = testDispatch.cancelPendingDispatchesForPr('PR-404');
+      assert.strictEqual(cancelled, 0, 'Should return 0 when no matching PR');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Pending queue unchanged');
+    } finally { restore(); }
+  });
+
+  // Source inspection: pollPrStatus calls cancelPendingDispatchesForPr on PR close
+  await test('github.js pollPrStatus cancels dispatches when PR transitions to abandoned/merged', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'github.js'), 'utf8');
+    assert.ok(src.includes('cancelPendingDispatchesForPr'),
+      'pollPrStatus should call cancelPendingDispatchesForPr when PR closes');
+  });
+
+  // Behavioral: cancelPendingDispatchesForPr handles null/empty input gracefully
+  await test('cancelPendingDispatchesForPr handles null/empty prId gracefully', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+
+      shared.safeWrite(testQueries.DISPATCH_PATH, {
+        pending: [{ id: 'review-1', type: 'review', agent: 'ralph', meta: { source: 'pr', pr: { id: 'PR-1' } } }],
+        active: [], completed: []
+      });
+
+      assert.strictEqual(testDispatch.cancelPendingDispatchesForPr(null), 0, 'null prId returns 0');
+      assert.strictEqual(testDispatch.cancelPendingDispatchesForPr(''), 0, 'empty prId returns 0');
+
+      const dispatch = shared.safeJson(testQueries.DISPATCH_PATH);
+      assert.strictEqual(dispatch.pending.length, 1, 'Queue unchanged for null/empty input');
+    } finally { restore(); }
   });
 }
 
