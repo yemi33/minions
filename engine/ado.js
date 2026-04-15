@@ -890,6 +890,29 @@ const isAdoThrottled = () => _adoThrottle.isThrottled();
 /** Returns a snapshot of the current throttle state. Calls isAdoThrottled() for a fresh value. */
 const getAdoThrottleState = () => _adoThrottle.getState();
 
+/**
+ * Query ADO for an open PR on a specific branch.
+ * Used as a last-resort fallback when an agent completes without logging a PR URL
+ * but a PR may already exist from a prior orphaned dispatch.
+ * @param {object} project — project config with adoOrg, adoProject, repositoryId, prUrlBase
+ * @param {string} branch — source branch name (without refs/heads/ prefix)
+ * @returns {{ prNumber: number, url: string }|null}
+ */
+async function findOpenPrOnBranch(project, branch) {
+  if (!project.adoOrg || !project.adoProject || !project.repositoryId || !branch) return null;
+  const token = await getAdoToken();
+  if (!token) return null;
+  const orgBase = shared.getAdoOrgBase(project);
+  const sourceRef = encodeURIComponent(`refs/heads/${branch}`);
+  const url = `${orgBase}/${project.adoProject}/_apis/git/repositories/${project.repositoryId}/pullrequests?searchCriteria.status=active&searchCriteria.sourceRefName=${sourceRef}&api-version=7.1`;
+  const data = await adoFetch(url, token);
+  const pr = (data.value || [])[0];
+  if (!pr) return null;
+  const prNumber = pr.pullRequestId;
+  const prUrl = project.prUrlBase ? `${project.prUrlBase}${prNumber}` : `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
+  return { prNumber, url: prUrl };
+}
+
 /** Reset throttle state — exported for testing only. */
 function _resetAdoThrottle() {
   _adoThrottle._reset();
@@ -913,6 +936,7 @@ module.exports = {
   getAdoThrottleState,
   fetchAdoPrMetadata,
   fetchSinglePrBuildStatus,
+  findOpenPrOnBranch,
   _resetAdoThrottle, // exported for testing
   _setAdoThrottleForTest, // exported for testing
 };

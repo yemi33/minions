@@ -1792,37 +1792,44 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         }
       }
     }
-    // Last resort: query GitHub directly for an open PR on this branch.
+    // Last resort: query the platform directly for an open PR on this branch.
     // Handles the case where a prior orphaned dispatch created a PR but the engine
-    // never processed its output — so the PR exists on GitHub but not in pull-requests.json.
+    // never processed its output — so the PR exists on the platform but not in pull-requests.json.
     if (!existingPrFound && meta?.branch) {
       const projectObj = shared.getProjects(config).find(p => p.name === meta?.project?.name);
-      const ghSlug = projectObj?.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
-      if (projectObj?.repoHost === 'github' && ghSlug) {
+      if (projectObj) {
         try {
-          const raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
-          const found = JSON.parse(raw || '[]');
-          if (found.length > 0 && found[0].state === 'OPEN') {
-            const prNum = found[0].number;
-            const fullId = `PR-${prNum}`;
+          let found = null;
+          if (projectObj.repoHost === 'github') {
+            const ghSlug = projectObj.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
+            if (ghSlug) {
+              const raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
+              const hits = JSON.parse(raw || '[]');
+              if (hits.length > 0 && hits[0].state === 'OPEN') found = { prNumber: hits[0].number, url: hits[0].url };
+            }
+          } else {
+            found = await require('./ado').findOpenPrOnBranch(projectObj, meta.branch);
+          }
+          if (found) {
+            const fullId = `PR-${found.prNumber}`;
             const prPath = shared.projectPrPath(projectObj);
             mutateJsonFileLocked(prPath, prs => {
               if (!Array.isArray(prs)) prs = [];
               if (prs.some(p => p.id === fullId)) return prs;
               prs.push({
-                id: fullId, prNumber: prNum, title: meta.item?.title || '',
+                id: fullId, prNumber: found.prNumber, title: meta.item?.title || '',
                 agent: agentId, branch: meta.branch, reviewStatus: 'pending',
-                status: PR_STATUS.ACTIVE, created: ts(), url: found[0].url,
+                status: PR_STATUS.ACTIVE, created: ts(), url: found.url,
                 prdItems: meta.item?.id ? [meta.item.id] : [],
                 sourcePlan: meta.item?.sourcePlan || '', itemType: meta.item?.itemType || '',
               });
               return prs;
             });
             if (meta.item?.id) addPrLink(fullId, meta.item.id);
-            log('info', `Auto-linked existing GH PR ${fullId} on branch ${meta.branch} for ${meta.item?.id}`);
+            log('info', `Auto-linked existing PR ${fullId} on branch ${meta.branch} for ${meta.item?.id}`);
             existingPrFound = true;
           }
-        } catch (e) { log('warn', `GH PR lookup for branch ${meta.branch}: ${e.message}`); }
+        } catch (e) { log('warn', `PR lookup for branch ${meta.branch}: ${e.message}`); }
       }
     }
     if (!existingPrFound) {
