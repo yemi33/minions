@@ -3188,11 +3188,12 @@ async function tickInner() {
   if (tickCount % 3 === 0) {
     safe('checkWatches', () => {
       const { checkWatches } = require('./engine/watches');
-      const pullRequests = PROJECTS.flatMap(p => {
+      const projects = getProjects(config);
+      const pullRequests = projects.flatMap(p => {
         const prPath = path.join(MINIONS_DIR, 'projects', p.name, 'pull-requests.json');
         return safeJson(prPath) || [];
       });
-      const workItems = PROJECTS.flatMap(p => {
+      const workItems = projects.flatMap(p => {
         const wiPath = path.join(MINIONS_DIR, 'projects', p.name, 'work-items.json');
         return safeJson(wiPath) || [];
       });

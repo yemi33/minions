@@ -709,6 +709,24 @@ async function executeCCActions(actions) {
           results.push({ type: 'create-watch', id: watch.id, ok: true });
           break;
         }
+        case 'delete-watch': {
+          const deleted = watchesMod.deleteWatch(action.id);
+          if (deleted) invalidateStatusCache();
+          results.push({ type: 'delete-watch', id: action.id, ok: deleted });
+          break;
+        }
+        case 'pause-watch': {
+          const paused = watchesMod.updateWatch(action.id, { status: shared.WATCH_STATUS.PAUSED });
+          if (paused) invalidateStatusCache();
+          results.push({ type: 'pause-watch', id: action.id, ok: !!paused });
+          break;
+        }
+        case 'resume-watch': {
+          const resumed = watchesMod.updateWatch(action.id, { status: shared.WATCH_STATUS.ACTIVE });
+          if (resumed) invalidateStatusCache();
+          results.push({ type: 'resume-watch', id: action.id, ok: !!resumed });
+          break;
+        }
         default:
           // Server didn't handle — frontend must execute
           results.push({ type: action.type });
