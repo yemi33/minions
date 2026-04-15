@@ -533,6 +533,7 @@ const ENGINE_DEFAULTS = {
   autoApprovePlans: false, // auto-approve PRDs without waiting for human approval
   autoArchive: false, // opt-in: auto-archive plans after verify completes (false = mark ready, user archives manually)
   autoFixConflicts: true, // auto-dispatch fix agents when a PR has merge conflicts
+  autoFixBuilds: true, // auto-dispatch fix agents when a PR build fails
   meetingRoundTimeout: 600000, // 10min per meeting round before auto-advance
   evalLoop: true, // enable review→fix loop after implementation completes
   evalMaxIterations: 3, // max review→fix cycles before escalating to human
@@ -611,6 +612,11 @@ const PRD_MATERIALIZABLE = new Set([PRD_ITEM_STATUS.MISSING, PRD_ITEM_STATUS.UPD
 const PR_STATUS = { ACTIVE: 'active', MERGED: 'merged', ABANDONED: 'abandoned', CLOSED: 'closed', LINKED: 'linked' };
 // PRs eligible for polling (status/build/comment checks) — excludes terminal statuses
 const PR_POLLABLE_STATUSES = new Set([PR_STATUS.ACTIVE, PR_STATUS.LINKED]);
+
+// Watch statuses — engine-level persistent watches that survive restarts
+const WATCH_STATUS = { ACTIVE: 'active', PAUSED: 'paused', TRIGGERED: 'triggered', EXPIRED: 'expired' };
+const WATCH_TARGET_TYPE = { PR: 'pr', WORK_ITEM: 'work-item' };
+const WATCH_CONDITION = { MERGED: 'merged', BUILD_FAIL: 'build-fail', BUILD_PASS: 'build-pass', COMPLETED: 'completed', FAILED: 'failed', STATUS_CHANGE: 'status-change', ANY: 'any' };
 
 /** Update per-agent review metrics (prsApproved/prsRejected). Only writes for configured agents. */
 function trackReviewMetric(pr, newReviewStatus, config) {
@@ -1137,6 +1143,7 @@ module.exports = {
   classifyInboxItem,
   ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, PLAN_TERMINAL_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, PR_POLLABLE_STATUSES, DISPATCH_RESULT, trackReviewMetric, queuePlanToPrd,
+  WATCH_STATUS, WATCH_TARGET_TYPE, WATCH_CONDITION,
   PIPELINE_STATUS, STAGE_TYPE, MEETING_STATUS, AGENT_STATUS,
   FAILURE_CLASS, ESCALATION_POLICY, COMPLETION_FIELDS,
   DEFAULT_AGENT_METRICS,

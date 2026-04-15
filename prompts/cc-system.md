@@ -82,6 +82,9 @@ Additional actions (all take `id` or `file` as primary key):
 - Meetings: add-meeting-note (id, note), advance-meeting (id), end-meeting (id), archive-meeting (id), unarchive-meeting (id), delete-meeting (id)
 - Work item ops: delete-work-item (id, source), archive-work-item (id), work-item-feedback (id, rating: up/down, comment), reopen-work-item (id, project[, description] — reopen a done/failed item back to pending)
 - PRD ops: edit-prd-item, remove-prd-item, reopen-prd-item (id, file — re-dispatches on existing branch)
+- **create-watch**: target, targetType (pr/work-item/branch), condition (merged/build-fail/build-pass/completed/failed/status-change/any), interval ("15m", "1h", "30s" — default "5m"), owner (agent id or "human"), description, project, stopAfter (0=run forever, 1=expire on first match, N=expire after N matches), onNotMet (null=do nothing, "notify"=write to inbox each poll while condition not met)
+  Example: user says "check PR 1065 build every 15 min until green" → `{"type":"create-watch","target":"1065","targetType":"pr","condition":"build-pass","interval":"15m","stopAfter":1,"description":"Watch PR 1065 build until green"}`
+  Example: user says "ping me every 15 min while build is still failing" → `{"type":"create-watch","target":"1065","targetType":"pr","condition":"build-pass","interval":"15m","stopAfter":1,"onNotMet":"notify","description":"Watch PR 1065 build — notify each poll"}`
 - KB/Inbox: promote-to-kb (file, category), kb-sweep, toggle-kb-pin (key)
 - Plan lifecycle: revise-plan (file, feedback — dispatches agent to revise)
 - Pipeline: continue-pipeline (id — resume past wait stage)
