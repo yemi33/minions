@@ -16879,6 +16879,45 @@ async function testIsolationVerification() {
     assert.ok(src.includes("temp-") && src.includes("agent1"), 'Should guard test IDs');
   });
 
+  await test('cleanup.js scrubs stale test agent keys from metrics.json', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    assert.ok(src.includes('metrics.json'), 'cleanup.js should reference metrics.json');
+    assert.ok(src.includes("temp-") || src.includes('temp-'), 'cleanup.js should scrub temp- agent keys');
+  });
+
+  await test('BEHAVIORAL: scrubStaleMetrics removes temp/test keys from metrics.json', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const testShared = require('../engine/shared');
+      const metricsPath = path.join(testShared.MINIONS_DIR, 'engine', 'metrics.json');
+      // Seed metrics with stale temp agent keys + legitimate agent + _engine/_daily
+      const seeded = {
+        'temp-mnyxw3eb0ap5': { tasksCompleted: 1 },
+        'temp-mnyxw31gumvd': { tasksCompleted: 2 },
+        'agent1': { tasksCompleted: 1 },
+        '_test-foo': { tasksCompleted: 1 },
+        'dallas': { tasksCompleted: 10, tasksErrored: 1 },
+        '_engine': { calls: 5 },
+        '_daily': { '2026-04-15': {} },
+      };
+      fs.writeFileSync(metricsPath, JSON.stringify(seeded));
+      const testCleanup = require('../engine/cleanup');
+      testCleanup.scrubStaleMetrics();
+      const after = JSON.parse(fs.readFileSync(metricsPath, 'utf8'));
+      // Stale keys removed
+      assert.strictEqual(after['temp-mnyxw3eb0ap5'], undefined, 'temp- key should be removed');
+      assert.strictEqual(after['temp-mnyxw31gumvd'], undefined, 'temp- key should be removed');
+      assert.strictEqual(after['agent1'], undefined, 'agent1 key should be removed');
+      assert.strictEqual(after['_test-foo'], undefined, '_test key should be removed');
+      // Legitimate keys preserved
+      assert.ok(after['dallas'], 'real agent should be preserved');
+      assert.ok(after['_engine'], '_engine should be preserved');
+      assert.ok(after['_daily'], '_daily should be preserved');
+    } finally {
+      restore();
+    }
+  });
+
   await test('shared.js uses MINIONS_TEST_DIR env override', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
     assert.ok(src.includes('MINIONS_TEST_DIR'), 'Should check env var');
