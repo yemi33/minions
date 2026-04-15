@@ -4681,6 +4681,7 @@ async function testDiscoverFromPrs() {
     assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
       'No pre-dispatch catch block should fall through without continue');
   });
+
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -10023,7 +10024,7 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    assert.ok(src.includes("const needsReReview = autoReview && reviewStatus === 'waiting'"),
+    assert.ok(src.includes("const needsReReview = reviewEnabled && reviewStatus === 'waiting'"),
       'Should define needsReReview for waiting PRs');
     assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
       src.includes('!pr.lastReviewedAt ||') &&
@@ -10033,7 +10034,7 @@ async function testReviewReDispatchLoop() {
 
   await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
-    const reReviewIdx = src.indexOf("const needsReReview = autoReview && reviewStatus === 'waiting'");
+    const reReviewIdx = src.indexOf("const needsReReview = reviewEnabled && reviewStatus === 'waiting'");
     assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
     const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
     const reReviewBlock = src.slice(reReviewIdx, fixIdx);

@@ -1995,7 +1995,7 @@ async function discoverFromPrs(config, project) {
     // or when no minions review has completed yet (e.g. human-feedback-only fix path).
     const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&
       (!pr.lastReviewedAt || pr.minionsReview.fixedAt > pr.lastReviewedAt));
-    const needsReReview = autoReview && reviewStatus === 'waiting' &&
+    const needsReReview = reviewEnabled && reviewStatus === 'waiting' &&
       fixedAfterReview && !evalEscalated;
     if (needsReReview) {
       const key = `rereview-${project?.name || 'default'}-${pr.id}`;
@@ -2020,7 +2020,7 @@ async function discoverFromPrs(config, project) {
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
