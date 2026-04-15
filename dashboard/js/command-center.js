@@ -860,6 +860,13 @@ async function ccExecuteAction(action, targetTabId) {
         status.style.color = 'var(--orange)';
         break;
       }
+      case 'cancel-work-item': {
+        await _ccFetch('/api/work-items/cancel', { id: action.id, source: action.source || '', reason: action.reason || 'cc' });
+        status.innerHTML = '&#10003; Cancelled work item: <strong>' + escHtml(action.id) + '</strong>';
+        status.style.color = 'var(--orange)';
+        wakeEngine();
+        break;
+      }
       case 'plan-edit': {
         // Read the plan, send instruction to doc-chat, show version actions
         var normalizedFile = normalizePlanFile(action.file);
