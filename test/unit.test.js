@@ -19341,6 +19341,62 @@ async function testWatchesModule() {
     assert.ok(result.message.includes('not found'));
   });
 
+  // evaluateWatch — new-comments condition
+  await test('evaluateWatch: PR new-comments triggers when comment date changes', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('new comment'));
+  });
+
+  await test('evaluateWatch: PR new-comments does not trigger when date unchanged', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-01T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR new-comments triggers on first comment (no prior state)', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: null } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  // evaluateWatch — vote-change condition
+  await test('evaluateWatch: PR vote-change triggers when reviewStatus changes', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('pending'));
+    assert.ok(result.message.includes('approved'));
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger when unchanged', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger without prior state', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
   // evaluateWatch — Work Item conditions
   await test('evaluateWatch: WI completed triggers when done', () => {
     const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
@@ -19470,6 +19526,21 @@ async function testWatchesModule() {
     assert.strictEqual(captured.status, 'active');
     assert.strictEqual(captured.buildStatus, 'passing');
     assert.strictEqual(captured.reviewStatus, 'waiting');
+  });
+
+  await test('_captureState captures PR lastCommentDate from humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-10T12:00:00Z' } }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, '2026-04-10T12:00:00Z');
+  });
+
+  await test('_captureState captures null lastCommentDate when no humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, null);
   });
 
   await test('_captureState captures WI state', () => {
@@ -19616,6 +19687,9 @@ async function testWatchesModule() {
   });
 
   await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+    // Use a non-absolute condition (new-comments) — absolute conditions (merged, build-fail, etc.)
+    // auto-expire when stopAfter is 0 via WATCH_ABSOLUTE_CONDITIONS (fire-once semantics).
+    // First check initializes baseline _lastState without triggering, so we need 3 checks for 2 triggers.
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19623,29 +19697,37 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 0,   // run forever
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,   // run forever (non-absolute conditions)
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
-      // Trigger multiple times by resetting last_checked between checks
-      testWatches.checkWatches({}, state);
-      // Force last_checked back so interval doesn't block next check
-      const watchesData = testWatches.getWatches();
-      const found = watchesData.find(x => x.id === w.id);
-      assert.strictEqual(found.triggerCount, 1);
-      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
-      // Manually reset last_checked to force another check
-      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      testWatches.checkWatches({}, state);
+
+      // Check 1 — initializes baseline _lastState (lastCommentDate = '2026-01-01'), no trigger
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      assert.strictEqual(testWatches.getWatches().find(x => x.id === w.id).triggerCount, 0, 'First check initializes baseline, no trigger');
+
+      // Check 2 — comment date changed → triggers (triggerCount = 1)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+
+      // Check 3 — another comment date change → triggers again (triggerCount = 2)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for non-absolute conditions');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
@@ -19747,6 +19829,8 @@ async function testWatchesModule() {
   });
 
   await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    // Use non-absolute condition (new-comments) so stopAfter: 0 means "run forever"
+    // First check initializes baseline; checks 2 and 3 trigger (new comment dates)
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19754,25 +19838,35 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
+        notify: 'inbox',
       });
-      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
-      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
-      testWatches.checkWatches({}, state);
-      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
-      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
-      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for second trigger
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Second trigger — key is `watch-${watch.id}-2`, different from first
-      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+
+      // Check 1 — baseline initialization, no trigger, no inbox file
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+
+      // Check 2 — first trigger (comment date changed)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+
+      // Check 3 — second trigger (another comment date change)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
@@ -19917,6 +20011,74 @@ async function testWatchesDashboard() {
       'engine.js must call checkWatches in tick cycle');
     assert.ok(engineSrc.includes("require('./engine/watches')"),
       'engine.js must import watches module');
+  });
+
+  // CC action tests — dashboard.js must support delete/pause/resume watches from CC
+  await test('dashboard.js has delete-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'delete-watch'") || dashSrc.includes('"delete-watch"'),
+      'dashboard.js must handle delete-watch CC action');
+    assert.ok(dashSrc.includes('deleteWatch'),
+      'delete-watch handler must call watchesMod.deleteWatch');
+  });
+
+  await test('dashboard.js has pause-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'pause-watch'") || dashSrc.includes('"pause-watch"'),
+      'dashboard.js must handle pause-watch CC action');
+  });
+
+  await test('dashboard.js has resume-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'resume-watch'") || dashSrc.includes('"resume-watch"'),
+      'dashboard.js must handle resume-watch CC action');
+  });
+
+  // CC preamble tests — watches count should be in the state preamble
+  await test('dashboard.js preamble includes watches count', () => {
+    assert.ok(dashSrc.includes('Watches:') || dashSrc.includes('watches:'),
+      'CC state preamble should include watches count');
+    assert.ok(dashSrc.includes('getWatches'),
+      'Preamble builder should call getWatches for the count');
+  });
+
+  // Condition labels in render-watches.js
+  const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+
+  await test('render-watches.js includes new-comments condition label', () => {
+    assert.ok(renderSrc.includes('new-comments'),
+      'render-watches.js must include new-comments condition');
+  });
+
+  await test('render-watches.js includes vote-change condition label', () => {
+    assert.ok(renderSrc.includes('vote-change'),
+      'render-watches.js must include vote-change condition');
+  });
+
+  // CC system prompt tests
+  const ccPromptSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  await test('CC system prompt documents delete-watch action', () => {
+    assert.ok(ccPromptSrc.includes('delete-watch'),
+      'CC system prompt must document delete-watch action');
+  });
+
+  await test('CC system prompt documents pause-watch action', () => {
+    assert.ok(ccPromptSrc.includes('pause-watch'),
+      'CC system prompt must document pause-watch action');
+  });
+
+  await test('CC system prompt documents resume-watch action', () => {
+    assert.ok(ccPromptSrc.includes('resume-watch'),
+      'CC system prompt must document resume-watch action');
+  });
+
+  // shared.js new conditions
+  await test('WATCH_CONDITION includes new-comments', () => {
+    assert.ok(shared.WATCH_CONDITION.NEW_COMMENTS === 'new-comments',
+      'WATCH_CONDITION must have NEW_COMMENTS constant');
+  });
+
+  await test('WATCH_CONDITION includes vote-change', () => {
+    assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
+      'WATCH_CONDITION must have VOTE_CHANGE constant');
   });
 }
 
