@@ -1898,6 +1898,13 @@ async function discoverFromPrs(config, project) {
 
   const projMeta = { name: project?.name, localPath: project?.localPath };
 
+  // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
+  const isAdoProject = project?.repoHost !== 'github';
+  const pollEnabled = isAdoProject
+    ? (config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled)
+    : (config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled);
+  const evalLoopEnabled = config.engine?.evalLoop !== false;
+
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
   const dispatch = getDispatch();
   const activePrIds = new Set(
@@ -1946,7 +1953,8 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs needing review: pending review status and not already reviewed without new commits
-    const autoReview = config.engine?.autoReview !== false;
+    // Gate on pollEnabled — reviewStatus is stale (never updated) when polling is disabled
+    const autoReview = config.engine?.autoReview !== false && pollEnabled;
     const alreadyReviewed = pr.lastReviewedAt && (!pr.lastPushedAt || pr.lastPushedAt <= pr.lastReviewedAt);
     const needsReview = autoReview && reviewStatus === 'pending' && !alreadyReviewed && !evalEscalated;
     if (needsReview) {
@@ -1972,7 +1980,7 @@ async function discoverFromPrs(config, project) {
           } catch {}
           continue;
         }
-      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message}`); }
+      } catch (e) { log('warn', `Pre-dispatch vote check for ${pr.id}: ${e.message} — skipping dispatch`); continue; }
 
       const agentId = resolveAgent('review', config);
       if (!agentId) continue;
@@ -1985,8 +1993,9 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with changes requested → route back to author for fix
+    // Gate on evalLoopEnabled — the review→fix cycle is the eval loop
     let fixDispatched = false;
-    if (reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
+    if (evalLoopEnabled && reviewStatus === 'changes-requested' && !awaitingReReview && !evalEscalated) {
       const key = `fix-${project?.name || 'default'}-${pr.id}`;
       if (isAlreadyDispatched(key) || isOnCooldown(key, cooldownMs)) continue;
       const agentId = resolveAgent('fix', config, pr.agent);

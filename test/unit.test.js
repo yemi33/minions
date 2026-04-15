@@ -4646,6 +4646,56 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+  // ─── Poll-gated review dispatch (W-mo0cw3ne8l2t) ─────────────────────────
+
+  await test('discoverFromPrs gates autoReview on pollEnabled', () => {
+    // When adoPollEnabled:false (ADO) or ghPollEnabled:false (GitHub), reviewStatus is stale
+    // (never updated because polling is off). autoReview must be gated on pollEnabled.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(') !== -1
+      ? src.indexOf('\nfunction discoverFromWorkItems(')
+      : src.indexOf('\nasync function discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('autoReview') && fnBody.includes('pollEnabled'),
+      'autoReview must be gated on pollEnabled — stale reviewStatus is untrustworthy without poller');
+  });
+
+  await test('discoverFromPrs gates changes-requested fix dispatch on evalLoopEnabled', () => {
+    // evalLoop:false should suppress the review→fix cycle (changes-requested → fix dispatch)
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(') !== -1
+      ? src.indexOf('\nfunction discoverFromWorkItems(')
+      : src.indexOf('\nasync function discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('evalLoopEnabled'),
+      'discoverFromPrs must read evalLoop config flag');
+    // The changes-requested fix block should check evalLoopEnabled
+    const changesIdx = fnBody.indexOf("changes-requested");
+    assert.ok(changesIdx !== -1, 'discoverFromPrs should handle changes-requested');
+    const changesBlock = fnBody.slice(Math.max(0, changesIdx - 200), changesIdx + 200);
+    assert.ok(changesBlock.includes('evalLoopEnabled'),
+      'changes-requested fix dispatch must be gated on evalLoopEnabled — evalLoop:false suppresses review→fix cycle');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch blocks skip dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(') !== -1
+      ? src.indexOf('\nfunction discoverFromWorkItems(')
+      : src.indexOf('\nasync function discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Pre-dispatch catch blocks should have 'continue' — skipping dispatch on error
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 1,
+      `Pre-dispatch vote check catch block must skip dispatch (continue) on error (found ${matches.length})`);
+    // Verify the catch block does NOT fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'Pre-dispatch catch block should not fall through without continue');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
