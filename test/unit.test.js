@@ -19739,6 +19739,46 @@ async function testWatchesModule() {
     } finally { restore(); }
   });
 
+  await test('stopAfter: 0 auto-expires absolute conditions (merged, build-pass, etc.) on first trigger', () => {
+    // Absolute conditions (merged, build-fail, build-pass, completed, failed) should fire-once
+    // when stopAfter=0, using WATCH_ABSOLUTE_CONDITIONS. This prevents "watch for PR merged"
+    // from firing forever after the PR merges.
+    const restore = createTestMinionsDir();
+    try {
+      delete require.cache[require.resolve('../engine/watches')];
+      const testWatches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
+      const w = testWatches.createWatch({
+        target: '650',
+        targetType: shared.WATCH_TARGET_TYPE.PR,
+        condition: shared.WATCH_CONDITION.MERGED,
+        stopAfter: 0,   // 0 on absolute condition = fire-once
+        owner: 'dallas',
+        interval: 60000,
+      });
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
+        const ww = data.find(x => x.id === w.id);
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
+        return data;
+      }, { defaultValue: [] });
+
+      // Check 1 — PR is merged → triggers (triggerCount = 1) and auto-expires
+      const state1 = { pullRequests: [{ prNumber: 650, status: 'merged' }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1, 'Should trigger on merged PR');
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.EXPIRED,
+        'Absolute condition with stopAfter=0 should auto-expire after first trigger');
+
+      // Check 2 — should NOT trigger again because watch is expired
+      resetLastChecked();
+      testWatches.checkWatches({}, state1);
+      const after2 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after2.triggerCount, 1, 'Should not trigger again after auto-expire');
+      assert.strictEqual(after2.status, shared.WATCH_STATUS.EXPIRED, 'Should remain expired');
+    } finally { restore(); }
+  });
+
   await test('create-watch CC action in executeCCActions creates a watch', () => {
     const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
     // Find executeCCActions function — create-watch case may be far into the switch
