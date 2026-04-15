@@ -297,6 +297,22 @@ Templates in `playbooks/` (`implement.md`, `review.md`, `fix.md`, `plan.md`, `pl
 
 Playbooks must be **platform-agnostic** — never hardcode build commands, languages, or frameworks. Agents should read project docs (CLAUDE.md, README, package.json, Makefile, etc.) to determine how to build/test/run.
 
+### Project-Local Playbook Overrides
+
+Projects can override global playbooks by placing files at `projects/<name>/playbooks/<playbook>.md`. At dispatch time, `resolvePlaybookPath(projectName, playbookType)` checks for a project-local override first and falls back to the global `playbooks/<playbook>.md`.
+
+```
+projects/
+  office-bohemia/
+    playbooks/
+      implement.md    ← used instead of playbooks/implement.md for office-bohemia tasks
+  minions/
+    playbooks/
+      review.md       ← used instead of playbooks/review.md for minions tasks
+```
+
+Project-local playbooks are tracked in git (`.gitignore` negates `projects/*/playbooks/*.md`). All other files under `projects/` remain gitignored (runtime state).
+
 ## Skills
 
 Markdown files with YAML frontmatter in `.claude/skills/<name>/SKILL.md`. Agents can auto-extract skills from their output using ` ```skill ` fenced blocks — the engine picks these up and writes them to the skills directory.

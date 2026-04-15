@@ -49,13 +49,15 @@ async function openSettings() {
       settingsToggle('Auto-decompose', 'set-autoDecompose', e.autoDecompose !== false, 'Large implement items are auto-split into sub-tasks') +
       settingsToggle('Allow Temp Agents', 'set-allowTempAgents', !!e.allowTempAgents, 'Spawn ephemeral agents when all permanent agents are busy') +
       settingsToggle('Auto-archive Plans', 'set-autoArchive', !!e.autoArchive, 'Automatically archive plans after verify completes (off = manual archive via dashboard)') +
+      settingsToggle('Auto-fix Builds', 'set-autoFixBuilds', e.autoFixBuilds !== false, 'Auto-dispatch fix agents when a PR build fails') +
       settingsToggle('Auto-fix Conflicts', 'set-autoFixConflicts', e.autoFixConflicts !== false, 'Auto-dispatch fix agents when a PR has merge conflicts') +
+      settingsToggle('Auto-complete PRs', 'set-autoCompletePrs', !!e.autoCompletePrs, 'Auto-merge PRs when builds pass and review is approved (opt-in)') +
       settingsToggle('ADO Polling', 'set-adoPollEnabled', e.adoPollEnabled !== false, 'Poll ADO PR status and comments each tick (reconciliation always runs)') +
       settingsToggle('GitHub Polling', 'set-ghPollEnabled', e.ghPollEnabled !== false, 'Poll GitHub PR status and comments each tick (reconciliation always runs)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
-      settingsField('ADO Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll ADO PR build/review/merge status every N ticks (~6 min at default tick rate)') +
-      settingsField('ADO Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll ADO PR human comments every N ticks (~12 min at default tick rate)') +
+      settingsField('PR Status Poll Frequency', 'set-adoPollStatusEvery', e.adoPollStatusEvery || 6, 'ticks', 'Poll PR build/review/merge status every N ticks for both ADO and GitHub (~6 min at default tick rate)') +
+      settingsField('PR Comments Poll Frequency', 'set-adoPollCommentsEvery', e.adoPollCommentsEvery || 12, 'ticks', 'Poll PR human comments every N ticks for both ADO and GitHub (~12 min at default tick rate)') +
     '</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">' +
       settingsField('Eval Max Iterations', 'set-evalMaxIterations', e.evalMaxIterations || 3, '', 'Max review→fix cycles before escalating (1-10)') +
@@ -239,7 +241,9 @@ async function saveSettings() {
       autoDecompose: document.getElementById('set-autoDecompose').checked,
       allowTempAgents: document.getElementById('set-allowTempAgents').checked,
       autoArchive: document.getElementById('set-autoArchive').checked,
+      autoFixBuilds: document.getElementById('set-autoFixBuilds').checked,
       autoFixConflicts: document.getElementById('set-autoFixConflicts').checked,
+      autoCompletePrs: document.getElementById('set-autoCompletePrs').checked,
       adoPollEnabled: document.getElementById('set-adoPollEnabled').checked,
       ghPollEnabled: document.getElementById('set-ghPollEnabled').checked,
       adoPollStatusEvery: document.getElementById('set-adoPollStatusEvery').value,

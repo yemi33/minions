@@ -90,6 +90,13 @@ function setCooldownFailure(key) {
   saveCooldowns();
 }
 
+function clearCooldown(key) {
+  if (!dispatchCooldowns.has(key)) return false;
+  dispatchCooldowns.delete(key);
+  saveCooldowns();
+  return true;
+}
+
 function isAlreadyDispatched(key) {
   const dispatch = queries.getDispatch();
   // Check pending and active
@@ -130,6 +137,7 @@ module.exports = {
   setCooldownWithContext,
   getCoalescedContexts,
   setCooldownFailure,
+  clearCooldown,
   isAlreadyDispatched,
   isBranchActive,
 };
