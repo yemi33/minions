@@ -66,6 +66,18 @@ async function openSettings() {
       settingsField('Ignored Comment Authors', 'set-ignoredCommentAuthors', (e.ignoredCommentAuthors || []).join(', '), '', 'Comma-separated usernames — comments auto-closed, never trigger fixes') +
     '</div>' +
 
+    '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Projects</h3>' +
+    '<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:16px">' +
+    (data.projects || []).map(function(p) {
+      return '<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px">' +
+        '<div style="font-size:12px;font-weight:600;margin-bottom:8px">' + escHtml(p.name) + '</div>' +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+        settingsToggle('Discover from PRs', 'set-ws-prs-' + escHtml(p.name), p.workSources.pullRequests.enabled, 'Auto-discover work from open pull requests') +
+        settingsToggle('Discover from Work Items', 'set-ws-wi-' + escHtml(p.name), p.workSources.workItems.enabled, 'Auto-discover work from ADO/GitHub work items') +
+        '</div></div>';
+    }).join('') +
+    '</div>' +
+
     '<h3 style="font-size:13px;color:var(--blue);margin-bottom:8px">Max Turns by Task Type</h3>' +
     '<div style="font-size:10px;color:var(--muted);margin-bottom:6px">How many tool-use turns each task type gets before forced stop. Blank = built-in default.</div>' +
     '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">' +
@@ -289,10 +301,20 @@ async function saveSettings() {
       agentsPayload[id][field] = el.value;
     });
 
+    const projectsPayload = (data.projects || []).map(function(p) {
+      return {
+        name: p.name,
+        workSources: {
+          pullRequests: { enabled: document.getElementById('set-ws-prs-' + p.name)?.checked ?? true },
+          workItems: { enabled: document.getElementById('set-ws-wi-' + p.name)?.checked ?? true }
+        }
+      };
+    });
+
     // Save config
     const res = await fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload, teams: teamsPayload })
+      body: JSON.stringify({ engine: enginePayload, claude: claudePayload, agents: agentsPayload, teams: teamsPayload, projects: projectsPayload })
     });
     const result = await res.json();
     if (!res.ok) throw new Error(result.error);

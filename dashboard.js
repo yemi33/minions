@@ -3761,6 +3761,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         claude: { ...shared.DEFAULT_CLAUDE, ...(config.claude || {}) },
         agents: config.agents || {},
         teams: { ...shared.ENGINE_DEFAULTS.teams, ...(config.teams || {}) },
+        projects: (config.projects || []).map(p => ({
+          name: p.name,
+          workSources: {
+            pullRequests: { enabled: p.workSources?.pullRequests?.enabled !== false, cooldownMinutes: p.workSources?.pullRequests?.cooldownMinutes ?? 30 },
+            workItems: { enabled: p.workSources?.workItems?.enabled !== false, cooldownMinutes: p.workSources?.workItems?.cooldownMinutes ?? 0 }
+          }
+        })),
         routing,
       });
     } catch (e) { return jsonReply(res, 500, { error: e.message }); }
@@ -3871,6 +3878,25 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         if (tm.ccMirror !== undefined) config.teams.ccMirror = !!tm.ccMirror;
         // Invalidate cached adapter so credential changes take effect
         teams._resetAdapter();
+      }
+
+      if (body.projects && Array.isArray(body.projects)) {
+        if (!config.projects) config.projects = [];
+        for (const update of body.projects) {
+          const proj = config.projects.find(p => p.name === update.name);
+          if (!proj) continue;
+          if (!proj.workSources) proj.workSources = {};
+          if (update.workSources?.pullRequests !== undefined) {
+            if (!proj.workSources.pullRequests) proj.workSources.pullRequests = { enabled: true, cooldownMinutes: 30 };
+            if (update.workSources.pullRequests.enabled !== undefined)
+              proj.workSources.pullRequests.enabled = !!update.workSources.pullRequests.enabled;
+          }
+          if (update.workSources?.workItems !== undefined) {
+            if (!proj.workSources.workItems) proj.workSources.workItems = { enabled: true, cooldownMinutes: 0 };
+            if (update.workSources.workItems.enabled !== undefined)
+              proj.workSources.workItems.enabled = !!update.workSources.workItems.enabled;
+          }
+        }
       }
 
       safeWrite(configPath, config);
@@ -4642,7 +4668,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
     // Settings
     { method: 'GET', path: '/api/settings', desc: 'Return current engine + claude + routing config', handler: handleSettingsRead },
-    { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent + teams config', params: 'engine?, claude?, agents?, teams?', handler: handleSettingsUpdate },
+    { method: 'POST', path: '/api/settings', desc: 'Update engine + claude + agent + teams + projects config', params: 'engine?, claude?, agents?, teams?, projects?', handler: handleSettingsUpdate },
     { method: 'POST', path: '/api/settings/routing', desc: 'Update routing.md', params: 'content', handler: handleSettingsRouting },
     { method: 'POST', path: '/api/settings/reset', desc: 'Reset engine + claude + agent settings to defaults', handler: handleSettingsReset },
 
