@@ -9937,6 +9937,22 @@ async function testRenderMdUnclosedFences() {
     assert.ok(html.includes('const y = 42'), 'code after template literal backticks must survive');
   });
 
+  await test('renderMd: ordered lists keep numbering across blank lines between items', () => {
+    const input = '1. first item\n\n2. second item\n\n3. third item';
+    const html = renderMd(input);
+    const olCount = (html.match(/<ol/g) || []).length;
+    const liCount = (html.match(/<li>/g) || []).length;
+    assert.strictEqual(olCount, 1, 'blank lines between ordered items should not restart the list');
+    assert.strictEqual(liCount, 3, 'all ordered items should stay in the same list');
+  });
+
+  await test('renderMd: blank line after list still closes list before following paragraph', () => {
+    const input = '1. first item\n\n2. second item\n\nFollowing paragraph';
+    const html = renderMd(input);
+    assert.ok(html.includes('</ol>'), 'ordered list should close before the following paragraph');
+    assert.ok(html.includes('Following paragraph'), 'paragraph after list should still render');
+  });
+
   await test('_normalizeCodeFences: even fence count is unchanged', () => {
     const normFn = new Function(normBody + '\nreturn _normalizeCodeFences;')();
     const even = '```js\ncode\n```';
