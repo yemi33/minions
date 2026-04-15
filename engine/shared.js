@@ -859,6 +859,17 @@ function parseSkillFrontmatter(content, filename) {
 // Stable single-writer file: maps PR IDs → PRD item IDs.
 // Never touched by polling loops — only written when a PR is first linked to a PRD item.
 
+function normalizePrLinkItems(value) {
+  const items = Array.isArray(value) ? value : [value];
+  return [...new Set(items.filter(Boolean))];
+}
+
+function mergePrLinkItems(links, prId, itemIds) {
+  if (!prId) return;
+  const merged = new Set([...(links[prId] || []), ...normalizePrLinkItems(itemIds)]);
+  if (merged.size > 0) links[prId] = [...merged];
+}
+
 function getPrLinks() {
   const links = {};
   // Primary source: derive from all projects/*/pull-requests.json prdItems
@@ -870,9 +881,7 @@ function getPrLinks() {
         const prs = JSON.parse(fs.readFileSync(path.join(projectsDir, d.name, 'pull-requests.json'), 'utf8'));
         for (const pr of prs) {
           if (!pr.id) continue;
-          for (const itemId of (pr.prdItems || [])) {
-            if (itemId) links[pr.id] = itemId;
-          }
+          mergePrLinkItems(links, pr.id, pr.prdItems || []);
         }
       } catch { /* missing or invalid */ }
     }
@@ -881,17 +890,35 @@ function getPrLinks() {
   try {
     const static_ = JSON.parse(fs.readFileSync(PR_LINKS_PATH, 'utf8'));
     for (const [k, v] of Object.entries(static_)) {
-      if (!links[k]) links[k] = v;
+      if (!links[k]) mergePrLinkItems(links, k, v);
     }
   } catch { /* missing */ }
   return links;
 }
 
+function backfillPrPrdItems(prs, prLinks) {
+  let backfilled = 0;
+  for (const pr of prs) {
+    const linkedItems = prLinks[pr.id] || [];
+    if (linkedItems.length > 0) {
+      pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
+      for (const linked of linkedItems) {
+        if (!pr.prdItems.includes(linked)) {
+          pr.prdItems.push(linked);
+          backfilled++;
+        }
+      }
+    }
+  }
+  return backfilled;
+}
+
 function addPrLink(prId, itemId) {
   if (!prId || !itemId) return;
-  const links = getPrLinks();
-  if (links[prId] === itemId) return; // already correct, no write needed
-  links[prId] = itemId;
+  const links = safeJson(PR_LINKS_PATH) || {};
+  const current = normalizePrLinkItems(links[prId]);
+  if (current.includes(itemId)) return; // already correct, no write needed
+  links[prId] = [...current, itemId];
   safeWrite(PR_LINKS_PATH, links);
 }
 
@@ -1184,5 +1211,5 @@ module.exports = {
   formatTranscriptEntry,
   _logBuffer, // exported for testing
   createThrottleTracker,
+  backfillPrPrdItems,
 };
-

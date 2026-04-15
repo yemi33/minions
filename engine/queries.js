@@ -949,13 +949,15 @@ function getPrdInfo(config) {
   for (const pr of allPrs) prById[pr.id] = pr;
 
   const prdToPr = {};
-  const prLinks = shared.getPrLinks(); // { "PR-xxxx": "P-xxxx" }
-  for (const [prId, itemId] of Object.entries(prLinks)) {
+  const prLinks = shared.getPrLinks(); // { "PR-xxxx": ["P-xxxx", "P-yyyy"] }
+  for (const [prId, itemIds] of Object.entries(prLinks)) {
     const pr = prById[prId];
     const project = projects.find(p => p.name === pr?._project) || projects[0] || null;
     const url = pr?.url || (project?.prUrlBase ? project.prUrlBase + prId.replace('PR-', '') : '');
-    if (!prdToPr[itemId]) prdToPr[itemId] = [];
-    prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
+    for (const itemId of (itemIds || [])) {
+      if (!prdToPr[itemId]) prdToPr[itemId] = [];
+      prdToPr[itemId].push({ id: prId, url, title: pr?.title || '', status: pr?.status || 'active', _project: pr?._project || '' });
+    }
   }
   // Fallback: work item _pr field for anything still missing
   for (const wi of Object.values(wiById)) {
@@ -1091,4 +1093,3 @@ module.exports = {
   // Work items & PRD
   getWorkItems, getPrdInfo,
 };
-

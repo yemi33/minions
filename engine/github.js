@@ -5,7 +5,7 @@
  */
 
 const shared = require('./shared');
-const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
+const { exec, execAsync, getProjects, projectPrPath, projectWorkItemsPath, safeJson, safeWrite, mutateJsonFileLocked, MINIONS_DIR, addPrLink, getPrLinks, backfillPrPrdItems, log, ts, dateStamp, PR_STATUS, PR_POLLABLE_STATUSES, createThrottleTracker } = shared;
 const { getPrs } = require('./queries');
 const path = require('path');
 
@@ -691,16 +691,7 @@ async function reconcilePrs(config) {
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
-    const prLinks = getPrLinks();
-    let backfilled = 0;
-    for (const pr of currentPrs) {
-      const linked = prLinks[pr.id];
-      if (linked && !(pr.prdItems || []).includes(linked)) {
-        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
-        pr.prdItems.push(linked);
-        backfilled++;
-      }
-    }
+    const backfilled = backfillPrPrdItems(currentPrs, getPrLinks());
 
     if (projectAdded > 0 || backfilled > 0) {
       mutateJsonFileLocked(prPath, (lockedPrs) => {
@@ -761,4 +752,3 @@ module.exports = {
   _ghPollBackoff,
   _ghThrottle, // exported for testing
 };
-

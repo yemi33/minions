@@ -643,13 +643,87 @@ async function testPrLinks() {
     const links = shared.getPrLinks();
     const existingId = Object.keys(links)[0];
     if (existingId) {
-      shared.addPrLink(existingId, links[existingId]); // should be a no-op
+      shared.addPrLink(existingId, links[existingId][0]); // should be a no-op
     }
   });
 
   await test('addPrLink rejects null inputs', () => {
     shared.addPrLink(null, 'item-1'); // should not crash
     shared.addPrLink('pr-1', null);   // should not crash
+  });
+
+  await test('getPrLinks preserves multiple prdItems per PR and only uses fallback links for uncovered PRs', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-100', prdItems: ['W-100', 'W-101'] },
+        { id: 'PR-200', prdItems: [] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, {
+        'PR-100': 'W-102',
+        'PR-200': ['W-200', 'W-201'],
+      });
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['PR-100'], ['W-100', 'W-101']);
+      assert.deepStrictEqual(links['PR-200'], ['W-200', 'W-201']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('getPrLinks ignores stale fallback entries when PR already has project prdItems', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-150', prdItems: ['W-150'] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-150': ['W-stale'] });
+      const links = freshShared.getPrLinks();
+      assert.deepStrictEqual(links['PR-150'], ['W-150']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink appends new items without dropping existing ones', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-300': ['W-300', 'W-301'] });
+      freshShared.addPrLink('PR-300', 'W-302');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored['PR-300'], ['W-300', 'W-301', 'W-302']);
+    } finally {
+      restore();
+    }
+  });
+
+  await test('addPrLink only mutates fallback pr-links.json, not merged project links', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshShared = require('../engine/shared');
+      const testDir = process.env.MINIONS_TEST_DIR;
+      const projectDir = path.join(testDir, 'projects', 'demo');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'pull-requests.json'), JSON.stringify([
+        { id: 'PR-400', prdItems: ['W-400'] },
+      ]));
+      freshShared.safeWrite(freshShared.PR_LINKS_PATH, { 'PR-500': 'W-500' });
+      freshShared.addPrLink('PR-500', 'W-501');
+      const stored = freshShared.safeJson(freshShared.PR_LINKS_PATH);
+      assert.deepStrictEqual(stored, { 'PR-500': ['W-500', 'W-501'] });
+      assert.ok(!('PR-400' in stored), 'project-derived links must not be copied into fallback pr-links.json');
+    } finally {
+      restore();
+    }
   });
 }
 
@@ -1438,15 +1512,28 @@ async function testReconciliation() {
   await test('reconcileItemsWithPrs falls back to pr-links when prdItems missing', () => {
     const items = [{ id: 'P001', status: 'pending' }];
     const prs = [{ id: 'PR-200', status: 'active' }]; // no prdItems linkage
-    const originalGetPrLinks = shared.getPrLinks;
-    shared.getPrLinks = () => ({ 'PR-200': 'P001' });
+    const enginePath = path.join(MINIONS_DIR, 'engine');
+    const sharedPath = path.join(MINIONS_DIR, 'engine', 'shared');
+    const engineCacheKey = require.resolve(enginePath);
+    const sharedCacheKey = require.resolve(sharedPath);
+    const originalEngineModule = require.cache[engineCacheKey];
+    const originalSharedModule = require.cache[sharedCacheKey];
+    delete require.cache[engineCacheKey];
+    delete require.cache[sharedCacheKey];
+    const sharedRuntime = require(sharedPath);
+    const originalGetPrLinks = sharedRuntime.getPrLinks;
+    sharedRuntime.getPrLinks = () => ({ 'PR-200': ['P001'] });
     try {
-      const count = reconcileItemsWithPrs(items, prs);
+      const count = require(enginePath).reconcileItemsWithPrs(items, prs);
       assert.strictEqual(count, 1);
       assert.strictEqual(items[0].status, 'done');
       assert.strictEqual(items[0]._pr, 'PR-200');
     } finally {
-      shared.getPrLinks = originalGetPrLinks;
+      sharedRuntime.getPrLinks = originalGetPrLinks;
+      delete require.cache[engineCacheKey];
+      delete require.cache[sharedCacheKey];
+      if (originalEngineModule) require.cache[engineCacheKey] = originalEngineModule;
+      if (originalSharedModule) require.cache[sharedCacheKey] = originalSharedModule;
     }
   });
 
@@ -4738,9 +4825,9 @@ async function testBuildFixRetryCap() {
       'Should skip fix dispatch (continue) when cap is reached and escalated');
   });
 
-  await test('engine.js uses DEFAULTS.maxBuildFixAttempts with config override', () => {
-    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
-      'Should reference DEFAULTS.maxBuildFixAttempts for the cap');
+  await test('engine.js uses ENGINE_DEFAULTS.maxBuildFixAttempts with config override', () => {
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
+      'Should reference ENGINE_DEFAULTS.maxBuildFixAttempts for the cap');
   });
 
   await test('ado.js resets buildFixAttempts when build passes', () => {
@@ -5086,11 +5173,12 @@ async function testCheckTimeouts() {
       'timeout.js must not reference DEFAULT_HEARTBEAT_TIMEOUTS — use ENGINE_DEFAULTS.heartbeatTimeouts instead');
   });
 
-  await test('timeout.js imports ENGINE_DEFAULTS directly (no DEFAULTS alias)', () => {
+  await test('timeout.js imports ENGINE_DEFAULTS directly without renaming', () => {
     assert.ok(src.includes('ENGINE_DEFAULTS,') || src.includes('ENGINE_DEFAULTS }'),
       'timeout.js should destructure ENGINE_DEFAULTS directly from shared');
-    assert.ok(!src.includes('ENGINE_DEFAULTS: DEFAULTS'),
-      'timeout.js must not alias ENGINE_DEFAULTS as DEFAULTS — use ENGINE_DEFAULTS directly like every other engine file');
+    const renamedImportPattern = /\bENGINE_DEFAULTS\s*:\s*[A-Z_]+\b/;
+    assert.ok(!renamedImportPattern.test(src),
+      'timeout.js must not rename ENGINE_DEFAULTS in destructuring — use it directly like every other engine file');
   });
 
   await test('checkTimeouts perTypeTimeouts construction does not throw (#721 regression)', () => {
@@ -5352,6 +5440,67 @@ async function testSyncPrsFromOutput() {
   await test('syncPrsFromOutput adds PR links', () => {
     assert.ok(src.includes('addPrLink'),
       'Should record PR-to-work-item links via addPrLink');
+  });
+
+  await test('syncPrsFromOutput orphaned PR fallback stores prdItems inline without addPrLink', () => {
+    const fallbackIdx = src.indexOf('Auto-linked existing PR ${fullId} on branch ${meta.branch}');
+    assert.ok(fallbackIdx > -1, 'Should have orphaned PR auto-link fallback logging');
+    const fallbackStart = src.lastIndexOf('if (found) {', fallbackIdx);
+    const fallbackBlock = src.slice(fallbackStart, fallbackIdx);
+    assert.ok(fallbackBlock.includes('const existingPr = prs.find'),
+      'Fallback should detect an already-tracked PR before creating a new entry');
+    assert.ok(fallbackBlock.includes('existingPr.prdItems'),
+      'Fallback should update prdItems on an existing tracked PR when the item link is missing');
+    assert.ok(fallbackBlock.includes('prdItems: meta.item?.id ? [meta.item.id] : []'),
+      'Fallback PR creation should persist prdItems directly on the PR record');
+    assert.ok(!fallbackBlock.includes('addPrLink('),
+      'Fallback PR creation should not redundantly call addPrLink after writing prdItems');
+  });
+
+  await test('syncPrsFromOutput only uses ADO branch lookup for ADO hosts', () => {
+    assert.ok(src.includes("const host = projectObj.repoHost || 'ado'"),
+      'Should normalize repoHost before branch lookup fallback');
+    assert.ok(src.includes("else if (host === 'ado')"),
+      'Should only call ADO branch lookup for explicit/defaulted ADO hosts');
+    assert.ok(src.includes('unsupported repo host'),
+      'Should log when branch lookup is skipped for an unsupported repo host');
+  });
+
+  await test('syncPrsFromOutput retries GitHub branch lookup when PR list is initially empty', () => {
+    assert.ok(src.includes('for (let attempt = 0; attempt < 3 && !found; attempt++)'),
+      'Should retry GitHub branch lookup up to 3 times for freshly created PRs');
+    assert.ok(src.includes("if (attempt > 0) await new Promise(r => setTimeout(r, 3000));"),
+      'Should wait briefly between retry attempts so GitHub indexing can catch up');
+  });
+
+  await test('syncPrsFromOutput warns when GitHub branch lookup stays empty after retries', () => {
+    assert.ok(src.includes('else if (attempt === 2)'),
+      'Should only warn after the final empty GitHub branch lookup attempt');
+    assert.ok(src.includes('Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts'),
+      'Should log a warning when GitHub branch lookup stays empty after all retries');
+    assert.ok(src.includes("(raw: ${(raw || '').slice(0, 200)})"),
+      'Should include raw CLI output in the warning to aid debugging empty fallback results');
+  });
+
+  await test('syncPrsFromOutput keeps retry loop alive when gh output is invalid JSON', () => {
+    const retryIdx = src.indexOf('for (let attempt = 0; attempt < 3 && !found; attempt++)');
+    assert.ok(retryIdx > -1, 'Should have a GitHub branch lookup retry loop');
+    const retryBlock = src.slice(retryIdx, src.indexOf("} else if (host === 'ado')", retryIdx));
+    assert.ok(retryBlock.includes("let raw = '';"),
+      'Retry loop should preserve raw gh output for final-attempt diagnostics');
+    assert.ok(retryBlock.includes('try {'),
+      'Retry loop should guard gh output parsing with a local try block');
+    assert.ok(retryBlock.includes('} catch (err) {'),
+      'Retry loop should catch gh CLI and JSON parse errors without aborting retries');
+    assert.ok(retryBlock.includes('Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}'),
+      'Should warn with the gh CLI error on the final failed retry');
+  });
+
+  await test('syncPrsFromOutput treats non-array gh JSON as an empty result', () => {
+    assert.ok(src.includes("const parsed = JSON.parse(raw || '[]');"),
+      'Should parse gh CLI JSON before normalizing its shape');
+    assert.ok(src.includes('const hits = Array.isArray(parsed) ? parsed : [];'),
+      'Should coerce non-array gh JSON responses to an empty hits array');
   });
 
   await test('PR dedup uses strict equality, not substring includes', () => {
@@ -15037,9 +15186,9 @@ async function testBuildFixEscalation() {
       'CSS should have a .pr-badge.build-escalated style for visual escalation indicator');
   });
 
-  await test('escalation uses configurable limit from DEFAULTS', () => {
-    assert.ok(engineSrc.includes('DEFAULTS.maxBuildFixAttempts'),
-      'engine.js should read maxBuildFixAttempts from DEFAULTS (not hardcoded)');
+  await test('escalation uses configurable limit from ENGINE_DEFAULTS', () => {
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.maxBuildFixAttempts'),
+      'engine.js should read maxBuildFixAttempts from ENGINE_DEFAULTS (not hardcoded)');
   });
 
   await test('escalation writes inbox alert for human visibility', () => {
@@ -16399,9 +16548,11 @@ async function testIsolationVerification() {
     assert.strictEqual(testFiles.length, 0, 'Found: ' + testFiles.join(', '));
   });
 
-  await test('no test agent IDs in metrics.json', () => {
+  await test('no known test-only agent IDs in metrics.json', () => {
     const metrics = shared.safeJson(path.join(shared.MINIONS_DIR, 'engine', 'metrics.json')) || {};
-    const bad = Object.keys(metrics).filter(k => k.startsWith('temp-') || k === 'agent1' || k.startsWith('_test'));
+    // temp-* is also the real runtime prefix for temporary agents, so only flag
+    // IDs that are unambiguously test-only in the shared metrics file.
+    const bad = Object.keys(metrics).filter(k => k === 'agent1' || k === 'reviewer' || k.startsWith('_test'));
     assert.strictEqual(bad.length, 0, 'Found: ' + bad.join(', '));
   });
 
@@ -16555,11 +16706,10 @@ async function testPipelineReconciliation() {
 
   await test('removeWorktree uses cmd /c rd /s /q on Windows for any error (not just EPERM)', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
     // Must use cmd /c rd /s /q (not plain rd /s /q)
-    assert.ok(fn.includes('cmd /c rd /s /q'), 'Should use cmd /c rd /s /q');
+    assert.ok(/function removeWorktree[\s\S]*?cmd \/c rd \/s \/q/.test(src), 'Should use cmd /c rd /s /q');
     // Must NOT restrict to EPERM only — should handle any Windows error
-    assert.ok(!fn.includes("rmErr.code === 'EPERM'"), 'Should not restrict rd /s /q to EPERM only');
+    assert.ok(!/function removeWorktree[\s\S]*?rmErr\.code === 'EPERM'/.test(src), 'Should not restrict rd /s /q to EPERM only');
   });
 
   await test('_WIN_RESERVED_NAMES includes NUL and other device names', () => {
@@ -16588,8 +16738,7 @@ async function testPipelineReconciliation() {
 
   await test('removeWorktree logs rd /s /q fallback failures', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
-    const fn = src.slice(src.indexOf('function removeWorktree('), src.indexOf('\n}\n', src.indexOf('function removeWorktree(') + 50) + 2);
-    assert.ok(fn.includes('rd /s /q fallback failed'), 'Should log rd /s /q failures instead of silently swallowing');
+    assert.ok(/function removeWorktree[\s\S]*?rd \/s \/q fallback failed/.test(src), 'Should log rd /s /q failures instead of silently swallowing');
   });
 }
 
@@ -17179,10 +17328,10 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('autoFixConflicts'), 'Conflict fix dispatch must be gated by autoFixConflicts config flag');
   });
 
-  await test('autoFixConflicts references ENGINE_DEFAULTS (directly or via alias)', () => {
+  await test('autoFixConflicts references ENGINE_DEFAULTS directly', () => {
     const conflictBlock = engineSrc.slice(engineSrc.indexOf('PRs with merge conflicts'), engineSrc.indexOf('Build & test now runs'));
-    assert.ok(conflictBlock.includes('DEFAULTS.autoFixConflicts') || conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'),
-      'Must reference autoFixConflicts via ENGINE_DEFAULTS (directly or via DEFAULTS alias)');
+    assert.ok(conflictBlock.includes('ENGINE_DEFAULTS.autoFixConflicts'),
+      'Must reference autoFixConflicts via ENGINE_DEFAULTS directly');
   });
 
   await test('autoFixConflicts present in ENGINE_DEFAULTS', () => {
@@ -17196,10 +17345,11 @@ async function testPrReviewFixFlows() {
     assert.ok(buildBlock.includes('autoFixBuilds'), 'Build fix dispatch must be gated by autoFixBuilds config flag');
   });
 
-  await test('autoFixBuilds reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+  await test('autoFixBuilds reads ENGINE_DEFAULTS directly', () => {
     const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
-    assert.ok(buildBlock.includes('DEFAULTS.autoFixBuilds'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
-    assert.ok(!buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+    assert.ok(buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must use ENGINE_DEFAULTS directly in engine.js');
+    const strippedBuildBlock = buildBlock.replace(/ENGINE_DEFAULTS\.autoFixBuilds/g, '');
+    assert.ok(!/\b[A-Z_]+\.autoFixBuilds\b/.test(strippedBuildBlock), 'Must not route autoFixBuilds through a renamed constant in engine.js');
   });
 
   await test('autoFixBuilds present in ENGINE_DEFAULTS with default true', () => {
@@ -17551,9 +17701,9 @@ async function testAdoTokenInjection() {
   });
 
   await test('SessionStart hook uses http type (not command with curl)', () => {
-    // The SessionStart hook should use type: http to avoid curl exit code propagation
-    // Skip on CI — the runner's settings.json is not managed by this project
-    if (process.env.CI) { skipped++; return; }
+    // Local ~/.claude/settings.json is user-owned state, not a repo artifact.
+    // Only run this as an explicit opt-in diagnostic.
+    if (process.env.MINIONS_VALIDATE_LOCAL_CLAUDE_SETTINGS !== '1') { skipped++; return; }
     const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
     if (!fs.existsSync(settingsPath)) { skipped++; return; }
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
@@ -17717,6 +17867,28 @@ async function testAdoThrottleDetection() {
 
   await test('ado.js exports getAdoThrottleState function', () => {
     assert.ok(typeof ado.getAdoThrottleState === 'function', 'getAdoThrottleState must be exported');
+  });
+
+  await test('ado.js derives browsable PR URLs from repoName instead of repositoryId GUID', () => {
+    assert.ok(adoSrc.includes('function getAdoPrUrl') || adoSrc.includes('const getAdoPrUrl'),
+      'ado.js should centralize browsable PR URL construction');
+    assert.ok(adoSrc.includes('project.repoName || project.repositoryId'),
+      'ADO browsable PR URL fallback should prefer repoName over repositoryId GUID');
+    const prUrlCalls = (adoSrc.match(/getAdoPrUrl\(project, prNumber\)/g) || []).length;
+    assert.ok(prUrlCalls >= 2,
+      'ADO browsable PR URL helper should be used in both live status and branch lookup paths');
+  });
+
+  await test('findOpenPrOnBranch skips lookup while ADO is throttled', () => {
+    const lookupFn = adoSrc.match(/async function findOpenPrOnBranch[\s\S]*?^}/m);
+    assert.ok(lookupFn, 'findOpenPrOnBranch function must exist');
+    const src = lookupFn[0];
+    assert.ok(src.includes('isAdoThrottled()'),
+      'findOpenPrOnBranch should check isAdoThrottled before calling ADO');
+    assert.ok(src.includes('return null'),
+      'findOpenPrOnBranch should return null when lookup is skipped');
+    assert.ok(src.includes('throttled'),
+      'findOpenPrOnBranch should log that lookup was skipped due to throttling');
   });
 
   // ── Behavioral: isAdoThrottled auto-clears after retryAfter ──
@@ -18095,15 +18267,15 @@ async function testAdoThrottleTickGuards() {
   // ── No changes to config values ──
 
   await test('adoPollStatusEvery and adoPollCommentsEvery are not modified', () => {
-    // These should still reference DEFAULTS, not hardcoded values
+    // These should still reference ENGINE_DEFAULTS, not hardcoded values
     assert.ok(engineSrc.includes('adoPollStatusEvery'),
       'adoPollStatusEvery must still be used');
     assert.ok(engineSrc.includes('adoPollCommentsEvery'),
       'adoPollCommentsEvery must still be used');
-    assert.ok(engineSrc.includes('DEFAULTS.adoPollStatusEvery'),
-      'adoPollStatusEvery must still reference DEFAULTS');
-    assert.ok(engineSrc.includes('DEFAULTS.adoPollCommentsEvery'),
-      'adoPollCommentsEvery must still reference DEFAULTS');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollStatusEvery'),
+      'adoPollStatusEvery must still reference ENGINE_DEFAULTS');
+    assert.ok(engineSrc.includes('ENGINE_DEFAULTS.adoPollCommentsEvery'),
+      'adoPollCommentsEvery must still reference ENGINE_DEFAULTS');
   });
 }
 
@@ -18742,10 +18914,12 @@ async function testRenderUtils() {
     assert.ok(dashSrc.includes('_lightToolInput'),
       'dashboard.js should have _lightToolInput helper for structured input');
     // All onToolUse handlers should use the helper
-    const toolEventMatches = dashSrc.match(/onToolUse:.*?\n/g);
-    assert.ok(toolEventMatches && toolEventMatches.length >= 2,
+    const toolEventMatches = [...dashSrc.matchAll(/onToolUse:\s*\(name,\s*input\)\s*=>\s*\{/g)];
+    assert.ok(toolEventMatches.length >= 2,
       'dashboard.js should have at least 2 onToolUse handlers (primary + retry)');
-    const allUseLightInput = toolEventMatches.every(m => m.includes('_lightToolInput') || dashSrc.slice(dashSrc.indexOf(m), dashSrc.indexOf(m) + 200).includes('_lightToolInput'));
+    const allUseLightInput = toolEventMatches.every(m => dashSrc.slice(m.index, m.index + 200).includes('_lightToolInput'));
+    assert.ok(allUseLightInput,
+      'Each onToolUse handler should send structured input via _lightToolInput');
     assert.ok(dashSrc.includes('Object.entries'),
       '_lightToolInput should use Object.entries to iterate input fields');
   });

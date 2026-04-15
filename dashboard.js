@@ -2533,7 +2533,7 @@ If nothing to do: { "duplicates": [], "reclassify": [], "remove": [] }`;
         const prLinks = shared.getPrLinks();
         const implContext = (plan.missing_features || []).map(f => {
           const wi = planWis.find(w => w.id === f.id);
-          const pr = allPrs.find(p => prLinks[p.id] === f.id || (p.prdItems || []).includes(f.id));
+          const pr = allPrs.find(p => (prLinks[p.id] || []).includes(f.id) || (p.prdItems || []).includes(f.id));
           return `- **${f.id}**: ${f.name} [status: ${wi?.status || f.status}]${pr ? ` (PR: ${pr.id}, branch: \`${pr.branch}\`)` : ''}`;
         }).join('\n');
 

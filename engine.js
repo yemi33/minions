@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const shared = require('./engine/shared');
-const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS: DEFAULTS,
+const { exec, execAsync, execSilent, runFile, ts, ENGINE_DEFAULTS,
   WI_STATUS, DONE_STATUSES, WORK_TYPE, PLAN_STATUS, PRD_ITEM_STATUS, PRD_MATERIALIZABLE, PR_STATUS, DISPATCH_RESULT, AGENT_STATUS,
   FAILURE_CLASS } = shared;
 const queries = require('./engine/queries');
@@ -241,8 +241,8 @@ function _maxTurnsForType(type, engineConfig) {
   // Priority: per-type config override → global config override → built-in per-type default → global default
   const perType = engineConfig.maxTurnsByType || {};
   if (perType[type]) return perType[type];
-  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
-  return globalOverride || _MAX_TURNS_BY_TYPE[type] || DEFAULTS.maxTurns;
+  const globalOverride = engineConfig.maxTurns && engineConfig.maxTurns !== ENGINE_DEFAULTS.maxTurns ? engineConfig.maxTurns : null;
+  return globalOverride || _MAX_TURNS_BY_TYPE[type] || ENGINE_DEFAULTS.maxTurns;
 }
 
 // Resolve dependency plan item IDs to their PR branches
@@ -373,8 +373,8 @@ async function spawnAgent(dispatchItem, config) {
   let cwd = rootDir;
   let worktreePath = null;
   let branchName = meta?.branch ? sanitizeBranch(meta.branch) : null;
-  const worktreeCreateTimeout = Math.max(60000, Number(engineConfig.worktreeCreateTimeout) || DEFAULTS.worktreeCreateTimeout);
-  const worktreeCreateRetries = Math.max(0, Math.min(3, Number(engineConfig.worktreeCreateRetries) || DEFAULTS.worktreeCreateRetries));
+  const worktreeCreateTimeout = Math.max(60000, Number(engineConfig.worktreeCreateTimeout) || ENGINE_DEFAULTS.worktreeCreateTimeout);
+  const worktreeCreateRetries = Math.max(0, Math.min(3, Number(engineConfig.worktreeCreateRetries) || ENGINE_DEFAULTS.worktreeCreateRetries));
   const _gitOpts = { stdio: 'pipe', timeout: 30000, windowsHide: true, env: shared.gitEnv() };
   const _worktreeGitOpts = { ..._gitOpts, timeout: worktreeCreateTimeout };
 
@@ -1021,7 +1021,7 @@ async function spawnAgent(dispatchItem, config) {
       // Build resume args
       const resumeArgs = [
         '--output-format', claudeConfig?.outputFormat || 'stream-json',
-        '--max-turns', String(engineConfig?.maxTurns || DEFAULTS.maxTurns),
+        '--max-turns', String(engineConfig?.maxTurns || ENGINE_DEFAULTS.maxTurns),
         '--verbose',
         '--permission-mode', claudeConfig?.permissionMode || 'bypassPermissions',
         '--resume', steerSessionId,
@@ -1427,7 +1427,7 @@ function reconcileItemsWithPrs(items, allPrs, { onlyIds } = {}) {
 
     let exactPr = allPrs.find(pr => (pr.prdItems || []).includes(wi.id));
     if (!exactPr) {
-      const linkedPrId = Object.keys(prLinks).find(prId => prLinks[prId] === wi.id);
+      const linkedPrId = Object.keys(prLinks).find(prId => (prLinks[prId] || []).includes(wi.id));
       if (linkedPrId) exactPr = allPrs.find(pr => pr.id === linkedPrId) || { id: linkedPrId };
     }
     // Branch-based matching: PR branch contains the work item ID (e.g. work/P-k7m2v9a1)
@@ -1901,8 +1901,8 @@ async function discoverFromPrs(config, project) {
   // Resolve poll-enabled per project — stale reviewStatus is untrustworthy without poller
   const isAdoProject = project?.repoHost !== 'github';
   const pollEnabled = isAdoProject
-    ? (config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled)
-    : (config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled);
+    ? (config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled)
+    : (config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled);
   const evalLoopEnabled = config.engine?.evalLoop !== false;
 
   // Collect active PR dispatches to prevent simultaneous review+fix on same PR
@@ -1935,7 +1935,7 @@ async function discoverFromPrs(config, project) {
     const awaitingReReview = reviewStatus === 'waiting' && !!pr.minionsReview?.fixedAt;
 
     // Review→fix cycle cap — stop review/fix dispatch after N iterations, but allow build fixes and conflict fixes
-    const evalMax = config.engine?.evalMaxIterations ?? DEFAULTS.evalMaxIterations;
+    const evalMax = config.engine?.evalMaxIterations ?? ENGINE_DEFAULTS.evalMaxIterations;
     const evalCycles = pr._reviewFixCycles || 0;
     const evalEscalated = evalCycles >= evalMax;
     if (evalEscalated && !pr._evalEscalated) {
@@ -2099,12 +2099,12 @@ async function discoverFromPrs(config, project) {
     // Grace period: after a build fix push, wait for CI to run before re-dispatching
     // Skip if build hasn't transitioned since last fix (still showing the old failure)
     if (pr._buildFixPushedAt && pr.buildStatus === 'failing') {
-      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
+      const gracePeriodMs = config.engine?.buildFixGracePeriod ?? ENGINE_DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
-    const autoFixBuilds = config.engine?.autoFixBuilds ?? DEFAULTS.autoFixBuilds;
+    const autoFixBuilds = config.engine?.autoFixBuilds ?? ENGINE_DEFAULTS.autoFixBuilds;
     if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
-      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
+      const maxBuildFix = config.engine?.maxBuildFixAttempts ?? ENGINE_DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
       if ((pr.buildFixAttempts || 0) >= maxBuildFix) {
@@ -2182,7 +2182,7 @@ async function discoverFromPrs(config, project) {
     }
 
     // PRs with merge conflicts — dispatch fix to resolve (gated by autoFixConflicts)
-    const autoFixConflicts = config.engine?.autoFixConflicts ?? DEFAULTS.autoFixConflicts;
+    const autoFixConflicts = config.engine?.autoFixConflicts ?? ENGINE_DEFAULTS.autoFixConflicts;
     if (autoFixConflicts && pr.status === PR_STATUS.ACTIVE && pr._mergeConflict && !fixDispatched) {
       const key = `conflict-fix-${project?.name || 'default'}-${pr.id}`;
       // Suppress re-dispatch for 10 min after last attempt — ADO/GitHub recomputes
@@ -2808,7 +2808,7 @@ function discoverCentralWorkItems(config) {
           meta: {
             dispatchKey: fanKey, source: 'central-work-item-fanout', item, parentKey: key,
             branch: fanBranch,
-            deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || DEFAULTS.agentTimeout)
+            deadline: item.timeout ? Date.now() + item.timeout : Date.now() + (config.engine?.fanOutTimeout || config.engine?.agentTimeout || ENGINE_DEFAULTS.agentTimeout)
           }
         });
       }
@@ -3088,7 +3088,7 @@ async function discoverWork(config) {
   );
   if (hasIncompleteImplements) {
     const activeCount = (getDispatch().active || []).length;
-    const maxConcurrent = config.engine?.maxConcurrent ?? DEFAULTS.maxConcurrent;
+    const maxConcurrent = config.engine?.maxConcurrent ?? ENGINE_DEFAULTS.maxConcurrent;
     const freeSlots = Math.max(0, maxConcurrent - activeCount);
     if (freeSlots === 0) {
       if (allReviews.length > 0) {
@@ -3210,10 +3210,10 @@ async function tickInner() {
     });
   }
 
-  const adoPollEnabled = config.engine?.adoPollEnabled ?? DEFAULTS.adoPollEnabled;
-  const ghPollEnabled = config.engine?.ghPollEnabled ?? DEFAULTS.ghPollEnabled;
-  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || DEFAULTS.adoPollStatusEvery);
-  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || DEFAULTS.adoPollCommentsEvery);
+  const adoPollEnabled = config.engine?.adoPollEnabled ?? ENGINE_DEFAULTS.adoPollEnabled;
+  const ghPollEnabled = config.engine?.ghPollEnabled ?? ENGINE_DEFAULTS.ghPollEnabled;
+  const adoPollStatusEvery = Math.max(1, Number(config.engine?.adoPollStatusEvery) || ENGINE_DEFAULTS.adoPollStatusEvery);
+  const adoPollCommentsEvery = Math.max(1, Number(config.engine?.adoPollCommentsEvery) || ENGINE_DEFAULTS.adoPollCommentsEvery);
 
   // 2.6. Poll PR status: build, review, merge (every adoPollStatusEvery ticks, default ~6 minutes)
   // Awaited so PR state is consistent before discoverWork reads it
@@ -3416,7 +3416,7 @@ async function tickInner() {
     if (busyAgents.has(item.agent)) {
       // Agent busy reassignment: if item has been waiting on a busy agent past the threshold,
       // try to find an alternative agent via routing. Skip explicitly assigned items.
-      const reassignMs = config.engine?.agentBusyReassignMs ?? DEFAULTS.agentBusyReassignMs;
+      const reassignMs = config.engine?.agentBusyReassignMs ?? ENGINE_DEFAULTS.agentBusyReassignMs;
       const isExplicitReassign = !!item.meta?.item?.agent;
       if (!isExplicitReassign && reassignMs > 0 && item._agentBusySince) {
         const busySinceMs = new Date(item._agentBusySince).getTime();

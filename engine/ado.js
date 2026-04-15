@@ -17,6 +17,11 @@ function engine() {
 }
 
 const stripRefsHeads = s => (s || '').replace('refs/heads/', '');
+const getAdoPrUrl = (project, prNumber) => {
+  if (project.prUrlBase) return `${project.prUrlBase}${prNumber}`;
+  const repoPath = encodeURIComponent(project.repoName || project.repositoryId || '');
+  return `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${repoPath}/pullrequest/${prNumber}`;
+};
 
 // ── Build/Review Status Helpers ───────────────────────────────────────────────
 
@@ -748,16 +753,7 @@ async function reconcilePrs(config) {
     }
 
     // Backfill prdItems from pr-links for any PR with empty array
-    const prLinks = shared.getPrLinks();
-    let backfilled = 0;
-    for (const pr of existingPrs) {
-      const linked = prLinks[pr.id];
-      if (linked && !(pr.prdItems || []).includes(linked)) {
-        pr.prdItems = Array.isArray(pr.prdItems) ? pr.prdItems : [];
-        pr.prdItems.push(linked);
-        backfilled++;
-      }
-    }
+    const backfilled = shared.backfillPrPrdItems(existingPrs, shared.getPrLinks());
 
     if (projectAdded > 0 || projectUpdated > 0 || backfilled > 0) {
       mutateJsonFileLocked(prPath, (currentPrs) => {
@@ -865,7 +861,7 @@ async function fetchSinglePrBuildStatus(project, prNumber) {
   }
 
   const votes = (prData.reviewers || []).map(r => r.vote);
-  const prUrl = `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
+  const prUrl = getAdoPrUrl(project, prNumber);
 
   return {
     prNumber,
@@ -900,6 +896,10 @@ const getAdoThrottleState = () => _adoThrottle.getState();
  */
 async function findOpenPrOnBranch(project, branch) {
   if (!project.adoOrg || !project.adoProject || !project.repositoryId || !branch) return null;
+  if (isAdoThrottled()) {
+    log('debug', `[ado] Skipping branch PR lookup for ${project.name || project.repoName || 'unknown project'}:${branch} — throttled`);
+    return null;
+  }
   const token = await getAdoToken();
   if (!token) return null;
   const orgBase = shared.getAdoOrgBase(project);
@@ -909,7 +909,7 @@ async function findOpenPrOnBranch(project, branch) {
   const pr = (data.value || [])[0];
   if (!pr) return null;
   const prNumber = pr.pullRequestId;
-  const prUrl = project.prUrlBase ? `${project.prUrlBase}${prNumber}` : `https://dev.azure.com/${project.adoOrg}/${project.adoProject}/_git/${project.repositoryId}/pullrequest/${prNumber}`;
+  const prUrl = getAdoPrUrl(project, prNumber);
   return { prNumber, url: prUrl };
 }
 
@@ -940,4 +940,3 @@ module.exports = {
   _resetAdoThrottle, // exported for testing
   _setAdoThrottleForTest, // exported for testing
 };
-

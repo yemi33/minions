@@ -111,8 +111,8 @@ function checkPlanCompletion(meta, config) {
       const prs = safeJson(prPath) || [];
       const prLinks = getPrLinks();
       for (const pr of prs) {
-        const linkedItemId = prLinks[pr.id];
-        if (linkedItemId && doneItems.find(w => w.id === linkedItemId)) {
+        const linkedItemIds = prLinks[pr.id] || [];
+        if (linkedItemIds.some(itemId => doneItems.find(w => w.id === itemId))) {
           prsCreated.push(pr);
         }
       }
@@ -199,8 +199,8 @@ function checkPlanCompletion(meta, config) {
       const prLinks = getPrLinks();
       const prs = (safeJson(shared.projectPrPath(p)) || [])
         .filter(pr => {
-          const linkedId = prLinks[pr.id];
-          return pr.status === PR_STATUS.ACTIVE && linkedId && doneItems.find(w => w.id === linkedId);
+          const linkedIds = prLinks[pr.id] || [];
+          return pr.status === PR_STATUS.ACTIVE && linkedIds.some(itemId => doneItems.find(w => w.id === itemId));
         });
       if (prs.length > 0) {
         projectPrs[p.name] = { project: p, prs, mainBranch: shared.resolveMainBranch(p.localPath, p.mainBranch) };
@@ -413,8 +413,8 @@ function cleanupPlanWorktrees(planFile, plan, projects, config) {
         const prs = safeJson(shared.projectPrPath(p)) || [];
         const prLinks = getPrLinks();
         for (const pr of prs) {
-          const linkedId = prLinks[pr.id];
-          if (linkedId && planItems.find(w => w.id === linkedId) && pr.branch) {
+          const linkedIds = prLinks[pr.id] || [];
+          if (linkedIds.some(itemId => planItems.find(w => w.id === itemId)) && pr.branch) {
             branchSlugs.add(shared.sanitizeBranch(pr.branch).toLowerCase());
           }
         }
@@ -1109,13 +1109,14 @@ async function handlePostMerge(pr, project, config, newStatus) {
   if (newStatus !== PR_STATUS.MERGED) return;
 
   // Resolve linked work item from pr-links or PR branch name
-  let mergedItemId = getPrLinks()[pr.id];
-  if (!mergedItemId && pr.branch) {
+  const mergedItemIds = [...(getPrLinks()[pr.id] || [])];
+  if (mergedItemIds.length === 0 && pr.branch) {
     const branchMatch = pr.branch.match(/(P-[a-z0-9]{6,})/i) || pr.branch.match(/(W-[a-z0-9]{6,})/i) || pr.branch.match(/(PL-[a-z0-9]{6,})/i);
-    if (branchMatch) mergedItemId = branchMatch[1];
+    if (branchMatch) mergedItemIds.push(branchMatch[1]);
   }
 
-  if (mergedItemId) {
+  if (mergedItemIds.length > 0) {
+    const mergedItemSet = new Set(mergedItemIds);
     // Mark PRD feature as implemented
     const prdDir = path.join(MINIONS_DIR, 'prd');
     try {
@@ -1124,49 +1125,62 @@ async function handlePostMerge(pr, project, config, newStatus) {
       for (const pf of planFiles) {
         const plan = safeJson(path.join(prdDir, pf));
         if (!plan?.missing_features) continue;
-        const feature = plan.missing_features.find(f => f.id === mergedItemId);
-        if (feature && feature.status !== WI_STATUS.DONE) {
-          feature.status = WI_STATUS.DONE;
+        let changed = false;
+        for (const feature of plan.missing_features) {
+          if (mergedItemSet.has(feature.id) && feature.status !== WI_STATUS.DONE) {
+            feature.status = WI_STATUS.DONE;
+            changed = true;
+            updated++;
+          }
+        }
+        if (changed) {
           shared.safeWrite(path.join(prdDir, pf), plan);
-          updated++;
         }
       }
-      if (updated > 0) log('info', `Post-merge: marked ${mergedItemId} as done for ${pr.id}`);
+      if (updated > 0) log('info', `Post-merge: marked ${mergedItemIds.join(', ')} as done for ${pr.id}`);
     } catch (err) { log('warn', `Post-merge PRD update: ${err.message}`); }
 
     // Mark work item as done
     const wiPaths = [path.join(MINIONS_DIR, 'work-items.json')];
     for (const p of shared.getProjects(config)) wiPaths.push(shared.projectWorkItemsPath(p));
+    const remainingMergedIds = new Set(mergedItemIds);
     for (const wiPath of wiPaths) {
       try {
-        let found = false;
         mutateWorkItems(wiPath, items => {
-          const item = items.find(i => i.id === mergedItemId);
-          if (item && item.status !== WI_STATUS.DONE) {
-            log('info', `Post-merge: marking work item ${mergedItemId} as done (was ${item.status}) for ${pr.id}`);
-            item.status = WI_STATUS.DONE;
-            item.completedAt = ts();
-            item._mergedVia = pr.id;
-            found = true;
+          for (const item of items) {
+            if (!remainingMergedIds.has(item.id)) continue;
+            if (item.status !== WI_STATUS.DONE) {
+              log('info', `Post-merge: marking work item ${item.id} as done (was ${item.status}) for ${pr.id}`);
+              item.status = WI_STATUS.DONE;
+              item.completedAt = ts();
+              item._mergedVia = pr.id;
+            }
+            remainingMergedIds.delete(item.id);
           }
         });
-        if (found) break;
+        if (remainingMergedIds.size === 0) break;
       } catch (err) { log('warn', `Post-merge work item update: ${err.message}`); }
     }
 
     // Rebase dependent PRs onto main now that this dependency is merged
     try {
-      const dependentPrs = findDependentActivePrs(mergedItemId, config);
-      for (const { pr: depPr, project: depProject } of dependentPrs) {
-        if (isBranchActive(depPr.branch)) {
-          queuePendingRebase(depPr, depProject, mergedItemId);
-          log('info', `Post-merge rebase deferred: ${depPr.branch} locked by active agent`);
-          continue;
-        }
-        const result = await rebaseBranchOntoMain(depPr, depProject, config);
-        if (!result.success) {
-          shared.writeToInbox('engine', `rebase-fail-${depPr.id}`,
-            `# Rebase Failed: ${depPr.id}\n\nBranch \`${depPr.branch}\` could not be rebased onto main after dependency ${mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+      const rebasedPrs = new Set();
+      for (const mergedItemId of mergedItemIds) {
+        const dependentPrs = findDependentActivePrs(mergedItemId, config);
+        for (const { pr: depPr, project: depProject } of dependentPrs) {
+          const rebaseKey = `${depProject.name}:${depPr.id}`;
+          if (rebasedPrs.has(rebaseKey)) continue;
+          rebasedPrs.add(rebaseKey);
+          if (isBranchActive(depPr.branch)) {
+            queuePendingRebase(depPr, depProject, mergedItemId);
+            log('info', `Post-merge rebase deferred: ${depPr.branch} locked by active agent`);
+            continue;
+          }
+          const result = await rebaseBranchOntoMain(depPr, depProject, config);
+          if (!result.success) {
+            shared.writeToInbox('engine', `rebase-fail-${depPr.id}`,
+              `# Rebase Failed: ${depPr.id}\n\nBranch \`${depPr.branch}\` could not be rebased onto main after dependency ${mergedItemId} merged.\n\nError: ${result.error}\n\nManual rebase may be needed.`);
+          }
         }
       }
     } catch (err) { log('warn', `Post-merge rebase phase error: ${err.message}`); }
@@ -1780,7 +1794,7 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
   // Detect implement tasks that completed without creating a PR
   if (effectiveSuccess && (type === WORK_TYPE.IMPLEMENT || type === WORK_TYPE.IMPLEMENT_LARGE || type === WORK_TYPE.FIX) && prsCreatedCount === 0 && meta?.item?.id && !meta?.item?.skipPr && meta?.project?.localPath) {
     // Check if a PR already exists linked to this work item (from a previous attempt)
-    let existingPrFound = Object.values(getPrLinks()).includes(meta.item.id);
+    let existingPrFound = Object.values(getPrLinks()).some(linkedIds => (linkedIds || []).includes(meta.item.id));
     // Also check pull-requests.json for PRs with matching prdItems or branch
     if (!existingPrFound) {
       const allProjects = shared.getProjects(config);
@@ -1800,22 +1814,49 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
       if (projectObj) {
         try {
           let found = null;
-          if (projectObj.repoHost === 'github') {
+          const host = projectObj.repoHost || 'ado';
+          if (host === 'github') {
             const ghSlug = projectObj.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
             if (ghSlug) {
-              const raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
-              const hits = JSON.parse(raw || '[]');
-              if (hits.length > 0 && hits[0].state === 'OPEN') found = { prNumber: hits[0].number, url: hits[0].url };
+              // Retry up to 3 times — newly created PRs can take a few seconds to appear in the API
+              for (let attempt = 0; attempt < 3 && !found; attempt++) {
+                if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+                let raw = '';
+                try {
+                  raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
+                  const parsed = JSON.parse(raw || '[]');
+                  const hits = Array.isArray(parsed) ? parsed : [];
+                  if (hits.length > 0 && hits[0].state === 'OPEN') {
+                    found = { prNumber: hits[0].number, url: hits[0].url };
+                  } else if (attempt === 2) {
+                    log('warn', `Auto-link fallback: no open PR found on branch ${meta.branch} after 3 attempts (raw: ${(raw || '').slice(0, 200)})`);
+                  }
+                } catch (err) {
+                  if (attempt === 2) {
+                    const rawSuffix = raw ? ` (raw: ${raw.slice(0, 200)})` : '';
+                    log('warn', `Auto-link fallback: gh pr list lookup failed on branch ${meta.branch} after 3 attempts: ${err.message}${rawSuffix}`);
+                  }
+                }
+              }
             }
-          } else {
+          } else if (host === 'ado') {
             found = await require('./ado').findOpenPrOnBranch(projectObj, meta.branch);
+          } else {
+            log('debug', `Skipping branch PR lookup for unsupported repo host "${host}" on ${projectObj.name}`);
           }
           if (found) {
             const fullId = `PR-${found.prNumber}`;
             const prPath = shared.projectPrPath(projectObj);
             mutateJsonFileLocked(prPath, prs => {
               if (!Array.isArray(prs)) prs = [];
-              if (prs.some(p => p.id === fullId)) return prs;
+              const existingPr = prs.find(p => p.id === fullId);
+              if (existingPr) {
+                if (meta.item?.id) {
+                  if (!Array.isArray(existingPr.prdItems)) existingPr.prdItems = [];
+                  if (!existingPr.prdItems.includes(meta.item.id)) existingPr.prdItems.push(meta.item.id);
+                }
+                return prs;
+              }
               prs.push({
                 id: fullId, prNumber: found.prNumber, title: meta.item?.title || '',
                 agent: agentId, branch: meta.branch, reviewStatus: 'pending',
@@ -1825,7 +1866,6 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
               });
               return prs;
             });
-            if (meta.item?.id) addPrLink(fullId, meta.item.id);
             log('info', `Auto-linked existing PR ${fullId} on branch ${meta.branch} for ${meta.item?.id}`);
             existingPrFound = true;
           }
@@ -2069,4 +2109,3 @@ module.exports = {
   processPendingRebases,
   findDependentActivePrs,
 };
-
