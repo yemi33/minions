@@ -2045,7 +2045,8 @@ async function discoverFromPrs(config, project) {
       const gracePeriodMs = config.engine?.buildFixGracePeriod ?? DEFAULTS.buildFixGracePeriod;
       if (Date.now() - new Date(pr._buildFixPushedAt).getTime() < gracePeriodMs) continue;
     }
-    if (pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
+    const autoFixBuilds = config.engine?.autoFixBuilds ?? DEFAULTS.autoFixBuilds;
+    if (autoFixBuilds && pr.status === PR_STATUS.ACTIVE && pr.buildStatus === 'failing') {
       const maxBuildFix = config.engine?.maxBuildFixAttempts ?? DEFAULTS.maxBuildFixAttempts;
 
       // Check if max retry cap reached — escalate to human instead of dispatching another fix
