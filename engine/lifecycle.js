@@ -1792,6 +1792,39 @@ async function runPostCompletionHooks(dispatchItem, agentId, code, stdout, confi
         }
       }
     }
+    // Last resort: query GitHub directly for an open PR on this branch.
+    // Handles the case where a prior orphaned dispatch created a PR but the engine
+    // never processed its output — so the PR exists on GitHub but not in pull-requests.json.
+    if (!existingPrFound && meta?.branch) {
+      const projectObj = shared.getProjects(config).find(p => p.name === meta?.project?.name);
+      const ghSlug = projectObj?.prUrlBase?.match(/github\.com\/([^/]+\/[^/]+)\/pull/)?.[1];
+      if (projectObj?.repoHost === 'github' && ghSlug) {
+        try {
+          const raw = await execAsync(`gh pr list --head "${meta.branch}" --repo ${ghSlug} --json number,url,state --limit 1`, { timeout: 15000, windowsHide: true });
+          const found = JSON.parse(raw || '[]');
+          if (found.length > 0 && found[0].state === 'OPEN') {
+            const prNum = found[0].number;
+            const fullId = `PR-${prNum}`;
+            const prPath = shared.projectPrPath(projectObj);
+            mutateJsonFileLocked(prPath, prs => {
+              if (!Array.isArray(prs)) prs = [];
+              if (prs.some(p => p.id === fullId)) return prs;
+              prs.push({
+                id: fullId, prNumber: prNum, title: meta.item?.title || '',
+                agent: agentId, branch: meta.branch, reviewStatus: 'pending',
+                status: PR_STATUS.ACTIVE, created: ts(), url: found[0].url,
+                prdItems: meta.item?.id ? [meta.item.id] : [],
+                sourcePlan: meta.item?.sourcePlan || '', itemType: meta.item?.itemType || '',
+              });
+              return prs;
+            });
+            if (meta.item?.id) addPrLink(fullId, meta.item.id);
+            log('info', `Auto-linked existing GH PR ${fullId} on branch ${meta.branch} for ${meta.item?.id}`);
+            existingPrFound = true;
+          }
+        } catch (e) { log('warn', `GH PR lookup for branch ${meta.branch}: ${e.message}`); }
+      }
+    }
     if (!existingPrFound) {
       const noPrWiPath = resolveWorkItemPath(meta);
       if (noPrWiPath) {
