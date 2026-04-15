@@ -909,7 +909,9 @@ async function updatePrAfterReview(agentId, pr, project, config, resultSummary) 
       reviewer: reviewerName,
       reviewedAt: ts(),
       note: resultSummary || completedEntry?.task || '',
-      ...(target.minionsReview?.fixedAt ? { fixedAt: target.minionsReview.fixedAt } : {}),
+      // Preserve fixedAt across re-reviews so the poller guard knows a fix was pushed.
+      // Drop it when reviewer requests changes again — that starts a new fix cycle.
+      ...(target.minionsReview?.fixedAt && postReviewStatus !== 'changes-requested' ? { fixedAt: target.minionsReview.fixedAt } : {}),
     };
     updatedTarget = { ...pr, ...target };
     return prs;

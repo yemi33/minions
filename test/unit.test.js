@@ -9994,6 +9994,8 @@ async function testReviewReDispatchLoop() {
     const reviewFn = src.slice(src.indexOf('function updatePrAfterReview('), src.indexOf('\nfunction ', src.indexOf('function updatePrAfterReview(') + 1));
     assert.ok(reviewFn.includes('minionsReview?.fixedAt') && reviewFn.includes('fixedAt'),
       'updatePrAfterReview must preserve fixedAt from prior fix — dropping it causes poller to overwrite reviewStatus back to changes-requested after a fix is pushed');
+    assert.ok(reviewFn.includes("postReviewStatus !== 'changes-requested'"),
+      'updatePrAfterReview must drop fixedAt when reviewer requests changes again — old fixedAt is stale in a new fix cycle');
   });
 
   await test('engine.js skips review re-dispatch when lastReviewedAt set and no new commits', () => {
