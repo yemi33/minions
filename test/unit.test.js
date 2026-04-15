@@ -4646,6 +4646,41 @@ async function testDiscoverFromPrs() {
     assert.ok(src.includes('isOnCooldown') || src.includes('cooldown'),
       'Should check cooldown before creating new PR work');
   });
+
+
+  // ─── Poll-gated review dispatch (W-mnzvsswlwk77, W-mnzw3cxk6a2j) ─────────
+
+  await test('discoverFromPrs uses reviewEnabled (evalLoop + pollEnabled), no autoReview', () => {
+    // autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j).
+    // reviewEnabled = evalLoopEnabled && pollEnabled is the single gate.
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    assert.ok(fnBody.includes('pollEnabled'),
+      'discoverFromPrs must resolve pollEnabled per project');
+    assert.ok(fnBody.includes('reviewEnabled'),
+      'discoverFromPrs must use reviewEnabled as the single review gate');
+    assert.ok(!fnBody.includes('autoReview'),
+      'autoReview must be removed — evalLoop is the sole gate (consolidated in W-mnzw3cxk6a2j)');
+    assert.ok(fnBody.includes('evalLoopEnabled') && fnBody.includes('pollEnabled'),
+      'reviewEnabled must combine evalLoopEnabled and pollEnabled');
+  });
+
+  await test('discoverFromPrs pre-dispatch live check catch block skips dispatch on error', () => {
+    // When pre-dispatch live ADO/GitHub check fails, must skip dispatch (continue) not fall through
+    const fnStart = src.indexOf('async function discoverFromPrs(');
+    const fnEnd = src.indexOf('\nfunction discoverFromWorkItems(');
+    const fnBody = src.slice(fnStart, fnEnd);
+    // Pre-dispatch catch block should have 'continue' — skipping dispatch on error
+    // Pattern: "skipping dispatch`); continue;" inside catch block after live vote check
+    const skipPattern = /skipping dispatch.*continue/g;
+    const matches = fnBody.match(skipPattern) || [];
+    assert.ok(matches.length >= 1,
+      `Pre-dispatch vote check catch block must skip dispatch (continue) on error (found ${matches.length})`);
+    // Also verify no catch blocks fall through without continue
+    assert.ok(!fnBody.includes("Pre-dispatch vote check for ${pr.id}: ${e.message}`); }"),
+      'No pre-dispatch catch block should fall through without continue');
+  });
 }
 
 // ─── Build Fix Retry Cap Tests ──────────────────────────────────────────────
@@ -6639,6 +6674,11 @@ async function testWakeupCoalescing() {
   await test('getCoalescedContexts function exists', () => {
     assert.ok(src.includes('getCoalescedContexts'),
       'Should have function to retrieve coalesced contexts');
+  });
+
+  await test('cooldown.js exports clearCooldown helper', () => {
+    assert.ok(cooldownSrc.includes('function clearCooldown(') && cooldownSrc.includes('clearCooldown'),
+      'Should provide clearCooldown helper for stale cooldown recovery');
   });
 
   await test('discoverFromPrs coalesces on cooldown skip', () => {
@@ -9517,6 +9557,9 @@ async function main() {
     // P-h2t6r1j8: Structured completion protocol
     await testStructuredCompletion();
 
+    // W-mnzuhp2dapvn: Scheduled task note back-reference
+    await testScheduledTaskNoteBackReference();
+
     // Auto-recovery & atomicity
     await testAutoRecoveryAndAtomicity();
 
@@ -9584,6 +9627,9 @@ async function main() {
 
     // #1049: azureauth --timeout enforcement
     await testAzureauthTimeout();
+
+    // W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages
+    await testSyncPrsToolResultInUserMessages();
 
     // Test isolation verification (must be LAST — checks no pollution from earlier tests)
     await testIsolationVerification();
@@ -9723,6 +9769,11 @@ async function testAutoApproveMode() {
   await test('ENGINE_DEFAULTS includes autoArchive: false', () => {
     assert.strictEqual(shared.ENGINE_DEFAULTS.autoArchive, false,
       'autoArchive should default to false (opt-in, not automatic)');
+  });
+
+  await test('ENGINE_DEFAULTS does NOT include autoReview (consolidated into evalLoop)', () => {
+    assert.ok(!('autoReview' in shared.ENGINE_DEFAULTS),
+      'autoReview was consolidated into evalLoop (W-mnzw3cxk6a2j) — must not exist in ENGINE_DEFAULTS');
   });
 
   await test('parseStreamJsonOutput extracts model from init message', () => {
@@ -9952,6 +10003,32 @@ async function testReviewReDispatchLoop() {
     // When lastPushedAt > lastReviewedAt, alreadyReviewed is false, allowing re-dispatch
     assert.ok(src.includes("pr.lastPushedAt <= pr.lastReviewedAt"),
       'alreadyReviewed should compare lastPushedAt <= lastReviewedAt so new pushes allow re-review');
+  });
+
+  await test('engine.js triggers re-review for waiting PRs when fixed after review or before any minions review', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    assert.ok(src.includes("const needsReReview = autoReview && reviewStatus === 'waiting'"),
+      'Should define needsReReview for waiting PRs');
+    assert.ok(src.includes('const fixedAfterReview = !!(pr.minionsReview?.fixedAt &&') &&
+      src.includes('!pr.lastReviewedAt ||') &&
+      src.includes('pr.minionsReview.fixedAt > pr.lastReviewedAt'),
+      'needsReReview should allow no prior minions review and otherwise require fixedAt after lastReviewedAt');
+  });
+
+  await test('engine.js re-review path uses a dedicated cooldown key and checks live waiting status', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'engine.js'), 'utf8');
+    const reReviewIdx = src.indexOf("const needsReReview = autoReview && reviewStatus === 'waiting'");
+    assert.ok(reReviewIdx > -1, 'Should have a needsReReview block');
+    const fixIdx = src.indexOf("// PRs with changes requested → route back to author for fix", reReviewIdx);
+    const reReviewBlock = src.slice(reReviewIdx, fixIdx);
+    assert.ok(!reReviewBlock.includes('isAlreadyDispatched(key)'),
+      'needsReReview should not be blocked by completed dispatch history');
+    assert.ok(reReviewBlock.includes("const key = `rereview-${project?.name || 'default'}-${pr.id}`"),
+      'needsReReview should use a dedicated re-review dispatch key');
+    assert.ok(reReviewBlock.includes('isOnCooldown(key, cooldownMs)'),
+      'needsReReview should still respect cooldown');
+    assert.ok(reReviewBlock.includes("cached was waiting") && reReviewBlock.includes("liveStatus !== 'waiting'"),
+      'needsReReview should pre-check live status before dispatching');
   });
 }
 
@@ -16704,11 +16781,25 @@ async function testPrReviewFixFlows() {
     assert.ok(humanBlock.includes('fixDispatched = true'), 'Human feedback should set fixDispatched');
   });
 
+  await test('human feedback fix clears stale cooldowns with no dispatch history', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(humanBlock.includes('blockedByCooldown && !alreadyDispatched') && humanBlock.includes('clearCooldown(key)'),
+      'Human feedback should clear stale cooldowns when no dispatch history exists');
+    assert.ok(humanBlock.includes('Cleared stale cooldown'),
+      'Human feedback should log stale cooldown recovery');
+  });
+
+  await test('human feedback fix does not set cooldown before post-gating dispatch', () => {
+    const humanBlock = engineSrc.slice(engineSrc.indexOf('PRs with pending human feedback'), engineSrc.indexOf('PRs with build failures'));
+    assert.ok(!humanBlock.includes('newWork.push(item); setCooldown(key);'),
+      'Human feedback should not stamp cooldown before discoverWork gating');
+  });
+
   // ── Eval escalation ──
 
   await test('eval escalation does NOT use continue (allows build/conflict fixes)', () => {
     const startIdx = engineSrc.indexOf('cycle cap');
-    const endIdx = engineSrc.indexOf('autoReview', startIdx);
+    const endIdx = engineSrc.indexOf('PRs needing review', startIdx);
     const escalBlock = engineSrc.slice(startIdx, endIdx);
     assert.ok(escalBlock.length > 10, 'Should find escalation block');
     assert.ok(!escalBlock.includes('continue;'), 'Escalation should NOT use continue — would block build fixes');
@@ -16934,6 +17025,11 @@ async function testPrReviewFixFlows() {
     assert.ok(conflictBlock.includes('!fixDispatched'), 'Conflict fix should be gated by fixDispatched');
   });
 
+  await test('build fix sets fixDispatched to prevent same-tick conflict fix', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('fixDispatched = true'), 'Build fix must set fixDispatched so conflict fix cannot also go out in the same tick');
+  });
+
   await test('_mergeConflict cleared when conflict resolves', () => {
     assert.ok(ghSrc.includes("delete pr._mergeConflict"), 'GitHub should clear flag');
     assert.ok(adoSrc.includes("delete pr._mergeConflict"), 'ADO should clear flag');
@@ -16956,6 +17052,34 @@ async function testPrReviewFixFlows() {
     assert.strictEqual(ENGINE_DEFAULTS.autoFixConflicts, true, 'autoFixConflicts default must be true');
   });
 
+  await test('build failure fix gated by autoFixBuilds flag', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('autoFixBuilds'), 'Build fix dispatch must be gated by autoFixBuilds config flag');
+  });
+
+  await test('autoFixBuilds reads DEFAULTS alias not ENGINE_DEFAULTS', () => {
+    const buildBlock = engineSrc.slice(engineSrc.indexOf('PRs with build failures'), engineSrc.indexOf('PRs with merge conflicts'));
+    assert.ok(buildBlock.includes('DEFAULTS.autoFixBuilds'), 'Must use DEFAULTS alias — ENGINE_DEFAULTS is not in scope in engine.js');
+    assert.ok(!buildBlock.includes('ENGINE_DEFAULTS.autoFixBuilds'), 'Must not reference ENGINE_DEFAULTS directly — it is not defined in engine.js scope');
+  });
+
+  await test('autoFixBuilds present in ENGINE_DEFAULTS with default true', () => {
+    const { ENGINE_DEFAULTS } = require('../engine/shared');
+    assert.ok('autoFixBuilds' in ENGINE_DEFAULTS, 'ENGINE_DEFAULTS must define autoFixBuilds');
+    assert.strictEqual(ENGINE_DEFAULTS.autoFixBuilds, true, 'autoFixBuilds default must be true');
+  });
+
+  await test('settings.js renders autoFixBuilds toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoFixBuilds'), 'settings.js must render autoFixBuilds toggle');
+    assert.ok(settingsSrc.includes('autoFixBuilds !== false'), 'autoFixBuilds toggle must default to true (!== false pattern)');
+  });
+
+  await test('settings.js saves autoFixBuilds on save', () => {
+    const settingsSrc = fs.readFileSync(path.join(__dirname, '../dashboard/js/settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes("getElementById('set-autoFixBuilds').checked"), 'saveSettings must read autoFixBuilds checkbox');
+  });
+
   // ── Auto-complete ──
 
   console.log('\n── Auto-Complete ──');
@@ -16968,6 +17092,27 @@ async function testPrReviewFixFlows() {
   await test('auto-complete requires both approved and passing', () => {
     assert.ok(ghSrc.includes("reviewStatus === 'approved'") && ghSrc.includes("buildStatus === 'passing'") && ghSrc.includes('_autoCompleted'),
       'GitHub should require both conditions');
+  });
+
+  await test('settings UI has Auto-complete PRs toggle', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('set-autoCompletePrs'),
+      'Settings UI should have an autoCompletePrs toggle with id set-autoCompletePrs');
+    assert.ok(settingsSrc.includes('Auto-complete PRs') || settingsSrc.includes('Auto-complete'),
+      'Settings UI should label the toggle as Auto-complete PRs');
+  });
+
+  await test('settings UI sends autoCompletePrs to backend', () => {
+    const settingsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'settings.js'), 'utf8');
+    assert.ok(settingsSrc.includes('autoCompletePrs:') && settingsSrc.includes('set-autoCompletePrs'),
+      'settings.js must include autoCompletePrs in enginePayload and reference set-autoCompletePrs element');
+  });
+
+  await test('ENGINE_DEFAULTS defines autoCompletePrs as boolean', () => {
+    assert.strictEqual(typeof shared.ENGINE_DEFAULTS.autoCompletePrs, 'boolean',
+      'ENGINE_DEFAULTS.autoCompletePrs must be a boolean so dynamic boolean derivation includes it');
+    assert.strictEqual(shared.ENGINE_DEFAULTS.autoCompletePrs, false,
+      'autoCompletePrs default must be false (opt-in)');
   });
 
   await test('GitHub merge method validated against whitelist', () => {
@@ -19196,6 +19341,62 @@ async function testWatchesModule() {
     assert.ok(result.message.includes('not found'));
   });
 
+  // evaluateWatch — new-comments condition
+  await test('evaluateWatch: PR new-comments triggers when comment date changes', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('new comment'));
+  });
+
+  await test('evaluateWatch: PR new-comments does not trigger when date unchanged', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: '2026-04-01T00:00:00Z' } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-01T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR new-comments triggers on first comment (no prior state)', () => {
+    const watch = { target: '400', targetType: 'pr', condition: 'new-comments',
+      _lastState: { lastCommentDate: null } };
+    const state = { pullRequests: [{ prNumber: 400, status: 'active',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-02T00:00:00Z' } }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+  });
+
+  // evaluateWatch — vote-change condition
+  await test('evaluateWatch: PR vote-change triggers when reviewStatus changes', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, true);
+    assert.ok(result.message.includes('pending'));
+    assert.ok(result.message.includes('approved'));
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger when unchanged', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: { reviewStatus: 'pending' } };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'pending' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
+  await test('evaluateWatch: PR vote-change does not trigger without prior state', () => {
+    const watch = { target: '500', targetType: 'pr', condition: 'vote-change',
+      _lastState: {} };
+    const state = { pullRequests: [{ prNumber: 500, status: 'active', reviewStatus: 'approved' }] };
+    const result = watches.evaluateWatch(watch, state);
+    assert.strictEqual(result.triggered, false);
+  });
+
   // evaluateWatch — Work Item conditions
   await test('evaluateWatch: WI completed triggers when done', () => {
     const watch = { target: 'W-abc', targetType: 'work-item', condition: 'completed', _lastState: {} };
@@ -19325,6 +19526,21 @@ async function testWatchesModule() {
     assert.strictEqual(captured.status, 'active');
     assert.strictEqual(captured.buildStatus, 'passing');
     assert.strictEqual(captured.reviewStatus, 'waiting');
+  });
+
+  await test('_captureState captures PR lastCommentDate from humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active', buildStatus: 'passing', reviewStatus: 'waiting',
+      humanFeedback: { lastProcessedCommentDate: '2026-04-10T12:00:00Z' } }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, '2026-04-10T12:00:00Z');
+  });
+
+  await test('_captureState captures null lastCommentDate when no humanFeedback', () => {
+    const watch = { target: '100', targetType: 'pr' };
+    const state = { pullRequests: [{ prNumber: 100, status: 'active' }] };
+    const captured = watches._captureState(watch, state);
+    assert.strictEqual(captured.lastCommentDate, null);
   });
 
   await test('_captureState captures WI state', () => {
@@ -19471,6 +19687,9 @@ async function testWatchesModule() {
   });
 
   await test('stopAfter: 0 never expires the watch (runs forever)', () => {
+    // Use a non-absolute condition (new-comments) — absolute conditions (merged, build-fail, etc.)
+    // auto-expire when stopAfter is 0 via WATCH_ABSOLUTE_CONDITIONS (fire-once semantics).
+    // First check initializes baseline _lastState without triggering, so we need 3 checks for 2 triggers.
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19478,29 +19697,37 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '600',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
-        stopAfter: 0,   // run forever
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
+        stopAfter: 0,   // run forever (non-absolute conditions)
         owner: 'dallas',
         interval: 60000,
       });
-      const state = { pullRequests: [{ prNumber: 600, status: 'merged' }], workItems: [] };
-      // Trigger multiple times by resetting last_checked between checks
-      testWatches.checkWatches({}, state);
-      // Force last_checked back so interval doesn't block next check
-      const watchesData = testWatches.getWatches();
-      const found = watchesData.find(x => x.id === w.id);
-      assert.strictEqual(found.triggerCount, 1);
-      assert.strictEqual(found.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
-      // Manually reset last_checked to force another check
-      testWatches.updateWatch(w.id, {}); // no-op but resets nothing — we need to use mutateJsonFileLocked
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
-        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z'; // force old timestamp
+        if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      testWatches.checkWatches({}, state);
+
+      // Check 1 — initializes baseline _lastState (lastCommentDate = '2026-01-01'), no trigger
+      const state1 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+      assert.strictEqual(testWatches.getWatches().find(x => x.id === w.id).triggerCount, 0, 'First check initializes baseline, no trigger');
+
+      // Check 2 — comment date changed → triggers (triggerCount = 1)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const after1 = testWatches.getWatches().find(x => x.id === w.id);
+      assert.strictEqual(after1.triggerCount, 1);
+      assert.strictEqual(after1.status, shared.WATCH_STATUS.ACTIVE, 'stopAfter=0 should keep watch active after trigger');
+
+      // Check 3 — another comment date change → triggers again (triggerCount = 2)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 600, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const after2 = testWatches.getWatches().find(x => x.id === w.id);
-      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever');
+      assert.strictEqual(after2.triggerCount, 2, 'Should trigger again — stopAfter=0 runs forever for non-absolute conditions');
       assert.strictEqual(after2.status, shared.WATCH_STATUS.ACTIVE, 'Still active after multiple triggers');
     } finally { restore(); }
   });
@@ -19602,6 +19829,8 @@ async function testWatchesModule() {
   });
 
   await test('unique notification keys per trigger — two triggers produce different inbox files', () => {
+    // Use non-absolute condition (new-comments) so stopAfter: 0 means "run forever"
+    // First check initializes baseline; checks 2 and 3 trigger (new comment dates)
     const restore = createTestMinionsDir();
     try {
       delete require.cache[require.resolve('../engine/watches')];
@@ -19609,25 +19838,35 @@ async function testWatchesModule() {
       const w = testWatches.createWatch({
         target: '900',
         targetType: shared.WATCH_TARGET_TYPE.PR,
-        condition: shared.WATCH_CONDITION.MERGED,
+        condition: shared.WATCH_CONDITION.NEW_COMMENTS,
         stopAfter: 0,
         owner: 'dallas',
         interval: 60000,
+        notify: 'inbox',
       });
-      const state = { pullRequests: [{ prNumber: 900, status: 'merged' }], workItems: [] };
-      // First trigger — key is `watch-${watch.id}-1`, so inbox file starts with `dallas-watch-${watch.id}-1-`
-      testWatches.checkWatches({}, state);
-      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
-      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
-      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
-      // Force last_checked back for second trigger
-      shared.mutateJsonFileLocked(path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json'), (data) => {
+      const watchesJsonPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'watches.json');
+      const resetLastChecked = () => shared.mutateJsonFileLocked(watchesJsonPath, (data) => {
         const ww = data.find(x => x.id === w.id);
         if (ww) ww.last_checked = '2020-01-01T00:00:00.000Z';
         return data;
       }, { defaultValue: [] });
-      // Second trigger — key is `watch-${watch.id}-2`, different from first
-      testWatches.checkWatches({}, state);
+      const inboxDir = path.join(process.env.MINIONS_TEST_DIR, 'notes', 'inbox');
+
+      // Check 1 — baseline initialization, no trigger, no inbox file
+      const state1 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-01' } }], workItems: [] };
+      testWatches.checkWatches({}, state1);
+
+      // Check 2 — first trigger (comment date changed)
+      resetLastChecked();
+      const state2 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-02' } }], workItems: [] };
+      testWatches.checkWatches({}, state2);
+      const filesAfterFirst = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
+      assert.strictEqual(filesAfterFirst.length, 1, 'First trigger should create exactly one inbox file');
+
+      // Check 3 — second trigger (another comment date change)
+      resetLastChecked();
+      const state3 = { pullRequests: [{ prNumber: 900, status: 'active', humanFeedback: { lastProcessedCommentDate: '2026-01-03' } }], workItems: [] };
+      testWatches.checkWatches({}, state3);
       const filesAfterSecond = fs.readdirSync(inboxDir).filter(f => f.includes(w.id));
       assert.strictEqual(filesAfterSecond.length, 2,
         'Second trigger should create a SECOND inbox file (unique key per trigger count), not overwrite the first. Got ' +
@@ -19653,7 +19892,7 @@ async function testWatchesModule() {
   });
 
   await test('WATCHES_PATH points to engine/watches.json', () => {
-    assert.ok(watches.WATCHES_PATH.endsWith(path.join('engine', 'watches.json')));
+    assert.ok(watches._watchesPath().endsWith(path.join('engine', 'watches.json')));
   });
 
   await test('DEFAULT_WATCH_INTERVAL is 5 minutes', () => {
@@ -19773,6 +20012,74 @@ async function testWatchesDashboard() {
     assert.ok(engineSrc.includes("require('./engine/watches')"),
       'engine.js must import watches module');
   });
+
+  // CC action tests — dashboard.js must support delete/pause/resume watches from CC
+  await test('dashboard.js has delete-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'delete-watch'") || dashSrc.includes('"delete-watch"'),
+      'dashboard.js must handle delete-watch CC action');
+    assert.ok(dashSrc.includes('deleteWatch'),
+      'delete-watch handler must call watchesMod.deleteWatch');
+  });
+
+  await test('dashboard.js has pause-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'pause-watch'") || dashSrc.includes('"pause-watch"'),
+      'dashboard.js must handle pause-watch CC action');
+  });
+
+  await test('dashboard.js has resume-watch CC action handler', () => {
+    assert.ok(dashSrc.includes("'resume-watch'") || dashSrc.includes('"resume-watch"'),
+      'dashboard.js must handle resume-watch CC action');
+  });
+
+  // CC preamble tests — watches count should be in the state preamble
+  await test('dashboard.js preamble includes watches count', () => {
+    assert.ok(dashSrc.includes('Watches:') || dashSrc.includes('watches:'),
+      'CC state preamble should include watches count');
+    assert.ok(dashSrc.includes('getWatches'),
+      'Preamble builder should call getWatches for the count');
+  });
+
+  // Condition labels in render-watches.js
+  const renderSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-watches.js'), 'utf8');
+
+  await test('render-watches.js includes new-comments condition label', () => {
+    assert.ok(renderSrc.includes('new-comments'),
+      'render-watches.js must include new-comments condition');
+  });
+
+  await test('render-watches.js includes vote-change condition label', () => {
+    assert.ok(renderSrc.includes('vote-change'),
+      'render-watches.js must include vote-change condition');
+  });
+
+  // CC system prompt tests
+  const ccPromptSrc = fs.readFileSync(path.join(MINIONS_DIR, 'prompts', 'cc-system.md'), 'utf8');
+
+  await test('CC system prompt documents delete-watch action', () => {
+    assert.ok(ccPromptSrc.includes('delete-watch'),
+      'CC system prompt must document delete-watch action');
+  });
+
+  await test('CC system prompt documents pause-watch action', () => {
+    assert.ok(ccPromptSrc.includes('pause-watch'),
+      'CC system prompt must document pause-watch action');
+  });
+
+  await test('CC system prompt documents resume-watch action', () => {
+    assert.ok(ccPromptSrc.includes('resume-watch'),
+      'CC system prompt must document resume-watch action');
+  });
+
+  // shared.js new conditions
+  await test('WATCH_CONDITION includes new-comments', () => {
+    assert.ok(shared.WATCH_CONDITION.NEW_COMMENTS === 'new-comments',
+      'WATCH_CONDITION must have NEW_COMMENTS constant');
+  });
+
+  await test('WATCH_CONDITION includes vote-change', () => {
+    assert.ok(shared.WATCH_CONDITION.VOTE_CHANGE === 'vote-change',
+      'WATCH_CONDITION must have VOTE_CHANGE constant');
+  });
 }
 
 // ── #1049: azureauth calls must include --timeout to prevent hanging ──────────
@@ -19823,6 +20130,304 @@ async function testAzureauthTimeout() {
     assert.ok(src.includes('--timeout'), 'shared-rules.md should mention --timeout for azureauth');
     assert.ok(src.includes('azureauth') && src.includes('timeout'),
       'shared-rules.md should have explicit guidance about azureauth timeout');
+  });
+}
+
+// ─── W-mnzuhp2dapvn: Scheduled task note back-reference ──────────────────────
+
+async function testScheduledTaskNoteBackReference() {
+  console.log('\n── Scheduled task note back-reference ──');
+
+  // 1. writeToInbox accepts metadata parameter and injects into frontmatter
+  await test('writeToInbox injects metadata fields into frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-result', '# Scheduled result', inboxDir, {
+      sourceItem: 'sched-daily-test-123',
+      scheduleId: 'daily-test-suite'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: sched-daily-test-123'), 'Frontmatter should include sourceItem');
+    assert.ok(content.includes('scheduleId: daily-test-suite'), 'Frontmatter should include scheduleId');
+    assert.ok(content.includes('id: ' + noteId), 'Frontmatter should include note ID');
+    assert.ok(content.includes('# Scheduled result'), 'Should include original content');
+  });
+
+  await test('writeToInbox metadata works with existing frontmatter', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'sched-fm', '---\ntitle: Custom\n---\n\n# Body', inboxDir, {
+      sourceItem: 'WI-999'
+    });
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(content.includes('sourceItem: WI-999'), 'Should inject sourceItem into existing frontmatter');
+    assert.ok(content.includes('title: Custom'), 'Should preserve existing fields');
+  });
+
+  await test('writeToInbox without metadata still works (backward compat)', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'no-meta', '# No metadata', inboxDir);
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem when no metadata');
+    assert.ok(!content.includes('scheduleId'), 'Should not include scheduleId when no metadata');
+  });
+
+  await test('writeToInbox ignores empty metadata object', () => {
+    const dir = createTmpDir();
+    const inboxDir = path.join(dir, 'inbox');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const noteId = shared.writeToInbox('engine', 'empty-meta', '# Empty', inboxDir, {});
+    assert.ok(noteId && noteId.startsWith('NOTE-'), 'Should return note ID');
+    const files = fs.readdirSync(inboxDir);
+    const content = fs.readFileSync(path.join(inboxDir, files[0]), 'utf8');
+    assert.ok(!content.includes('sourceItem'), 'Should not include sourceItem for empty metadata');
+  });
+
+  // 2. runPostCompletionHooks updates schedule-runs.json for scheduled tasks
+  await test('runPostCompletionHooks updates schedule-runs.json on scheduled task completion', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    // Find the runPostCompletionHooks function
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('_scheduleId'), 'runPostCompletionHooks must check for _scheduleId on work items');
+    assert.ok(fn.includes('schedule-runs'), 'runPostCompletionHooks must update schedule-runs.json');
+    assert.ok(fn.includes('mutateJsonFileLocked'), 'schedule-runs update must use mutateJsonFileLocked');
+  });
+
+  await test('runPostCompletionHooks writes completion note for scheduled tasks with back-reference', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+    const fn = src.slice(
+      src.indexOf('function runPostCompletionHooks('),
+      src.indexOf('\nfunction', src.indexOf('function runPostCompletionHooks(') + 1)
+    );
+    assert.ok(fn.includes('writeToInbox') && fn.includes('_scheduleId'),
+      'runPostCompletionHooks must write inbox note with schedule reference');
+    assert.ok(fn.includes('sourceItem') || fn.includes('scheduleId'),
+      'scheduled task inbox note must include sourceItem or scheduleId metadata');
+  });
+
+  // 3. Behavioral test: scheduled task completion updates schedule-runs with lastWorkItemId
+  await test('scheduled task completion records lastWorkItemId in schedule-runs.json', async () => {
+    const restore = createTestMinionsDir();
+    try {
+      const lifecycle = require('../engine/lifecycle');
+      const sq = require('../engine/shared');
+
+      // Write schedule-runs.json with initial run timestamp
+      const schedRunsPath = path.join(process.env.MINIONS_TEST_DIR, 'engine', 'schedule-runs.json');
+      sq.safeWrite(schedRunsPath, { 'daily-test': '2026-04-15T00:00:00Z' });
+
+      // Create a central work-items.json with a scheduled task work item
+      const centralWiPath = path.join(process.env.MINIONS_TEST_DIR, 'work-items.json');
+      sq.safeWrite(centralWiPath, [
+        { id: 'sched-daily-test-12345', title: 'Daily Test', type: 'test', status: 'dispatched',
+          _scheduleId: 'daily-test', created: '2026-04-15T00:00:00Z' }
+      ]);
+
+      const dispatchItem = {
+        id: 'dispatch-1',
+        type: 'test',
+        meta: {
+          item: { id: 'sched-daily-test-12345', _scheduleId: 'daily-test' },
+          project: null
+        }
+      };
+
+      await lifecycle.runPostCompletionHooks(dispatchItem, 'agent1', 0, 'Test passed: 100/100', { agents: {} });
+
+      // Verify schedule-runs.json was updated with lastWorkItemId
+      const runs = sq.safeJson(schedRunsPath);
+      assert.ok(runs['daily-test'], 'Schedule run entry should exist');
+      if (typeof runs['daily-test'] === 'object') {
+        assert.strictEqual(runs['daily-test'].lastWorkItemId, 'sched-daily-test-12345',
+          'Should record lastWorkItemId');
+        assert.ok(runs['daily-test'].lastResult, 'Should record lastResult');
+        assert.ok(runs['daily-test'].lastCompletedAt, 'Should record lastCompletedAt');
+      }
+    } finally {
+      restore();
+    }
+  });
+}
+
+// ─── W-mnzwn967gdnc: syncPrsFromOutput tool_result in user messages ────────
+async function testSyncPrsToolResultInUserMessages() {
+  console.log('\n── W-mnzwn967gdnc: syncPrsFromOutput scans tool_result in user messages ──');
+
+  const lifecycle = require('../engine/lifecycle');
+  const shared = require('../engine/shared');
+  const lifecycleSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'lifecycle.js'), 'utf8');
+
+  // ── Source-level: filter now includes "type":"user" ──
+
+  await test('syncPrsFromOutput line filter includes type:user messages', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // The filter line must allow "type":"user" messages through
+    assert.ok(fnBody.includes('"type":"user"'),
+      'syncPrsFromOutput must include "type":"user" in its message-type filter so tool_result blocks are scanned');
+  });
+
+  await test('syncPrsFromOutput tool_result URL scan is not gated on keywords', () => {
+    const fnBody = lifecycleSrc.slice(
+      lifecycleSrc.indexOf('function syncPrsFromOutput'),
+      lifecycleSrc.indexOf('function updatePrAfterReview')
+    );
+    // Find the tool_result block handling — the URL regex should NOT be inside a keyword guard
+    const toolResultBlock = fnBody.slice(
+      fnBody.indexOf("block.type === 'tool_result'"),
+      fnBody.indexOf("block.type === 'text'")
+    );
+    // The old code gated URL scanning on pullRequestId/create_pull_request keywords
+    assert.ok(!toolResultBlock.includes("text.includes('pullRequestId') || text.includes('create_pull_request')"),
+      'tool_result URL scan should NOT be gated on pullRequestId/create_pull_request keywords — gh pr create output may not contain these');
+  });
+
+  // ── Functional: PR URL in type:user tool_result is detected ──
+
+  await test('syncPrsFromOutput detects GitHub PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // Simulate JSONL where PR URL appears ONLY in a type:user tool_result block
+      // (this is how gh pr create output actually appears in Claude API JSONL)
+      const output = [
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"I will create a PR now."}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_1","content":"https://github.com/org/repo/pull/555\\nCreating pull request for work/branch into master..."}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-100', title: 'Test PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-555'), 'PR-555 from type:user tool_result should be detected');
+      assert.ok(count >= 1, 'Should return count >= 1 for detected PR');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput detects ADO PR URL in type:user tool_result block', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      // ADO PR URL in a tool_result block
+      const output = [
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_2","content":"Created PR: https://dev.azure.com/myorg/myproject/_git/myrepo/pullrequest/777"}]}}'
+      ].join('\n');
+      const meta = { item: { id: 'W-101', title: 'ADO PR in tool_result' }, project: mockProject };
+
+      const count = lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-777'), 'PR-777 from ADO URL in type:user tool_result should be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  // ── Regression: existing assistant text-block and result-message paths still work ──
+
+  await test('syncPrsFromOutput still detects PR URL in assistant text blocks (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"assistant","message":{"content":[{"type":"text","text":"PR created: https://github.com/org/repo/pull/888"}]}}';
+      const meta = { item: { id: 'W-102', title: 'Assistant text PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-888'), 'PR-888 from assistant text block should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
+  });
+
+  await test('syncPrsFromOutput still detects PR URL in type:result messages (regression)', () => {
+    const tmpDir = createTmpDir();
+    const prFile = path.join(tmpDir, 'pull-requests.json');
+    shared.safeWrite(prFile, []);
+
+    const mockProject = { name: 'TestProject', localPath: tmpDir, mainBranch: 'main' };
+    const mockConfig = {
+      projects: [mockProject],
+      agents: { agent1: { name: 'Agent1' } }
+    };
+
+    const origProjectPrPath = shared.projectPrPath;
+    shared.projectPrPath = () => prFile;
+    const origGetProjects = shared.getProjects;
+    shared.getProjects = () => [mockProject];
+
+    try {
+      const output = '{"type":"result","result":"Created PR https://github.com/org/repo/pull/999 — Feature done"}';
+      const meta = { item: { id: 'W-103', title: 'Result message PR' }, project: mockProject };
+
+      lifecycle.syncPrsFromOutput(output, 'agent1', meta, mockConfig);
+      const result = shared.safeJson(prFile) || [];
+      const ids = result.map(p => p.id);
+      assert.ok(ids.includes('PR-999'), 'PR-999 from type:result message should still be detected');
+    } finally {
+      shared.projectPrPath = origProjectPrPath;
+      shared.getProjects = origGetProjects;
+    }
   });
 }
 main().catch(e => { console.error(e); process.exit(1); });
