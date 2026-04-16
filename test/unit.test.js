@@ -14746,6 +14746,56 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(resolveFn.includes('getTime') || resolveFn.includes('Date.now'), 'Should convert to numeric time for comparison');
   });
 
+  // ── Skip disk re-read when client content is fresh (P-f7b3c5e1) ────────────
+  await test('handleDocChat uses contentHash to skip disk re-read when fresh', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    assert.ok(handler.includes('contentHash'), 'handleDocChat should check contentHash from request body');
+    assert.ok(handler.includes('body.document'), 'handleDocChat should use body.document when hash matches');
+  });
+
+  await test('contentHash comparison uses lightweight fingerprint (not MD5)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // Server computes fingerprint from disk content using the same scheme as client
+    assert.ok(handler.includes('contentFingerprint') || handler.includes('charCodeAt'), 'Should use lightweight fingerprint function');
+  });
+
+  await test('contentHash is optional — omitting it falls back to disk read', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // When contentHash is missing, existing behavior is preserved: disk content wins
+    assert.ok(handler.includes('body.contentHash'), 'Should reference body.contentHash');
+    // Disk read still happens (safeRead) — but content is used from client when hash matches
+    assert.ok(handler.includes('safeRead'), 'Should still call safeRead for disk content');
+  });
+
+  await test('contentFingerprint helper computes length:firstChar:lastChar', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function contentFingerprint'), 'Should define contentFingerprint helper');
+    const fn = src.slice(src.indexOf('function contentFingerprint'), src.indexOf('function contentFingerprint') + 300);
+    assert.ok(fn.includes('.length'), 'Fingerprint should include content length');
+    assert.ok(fn.includes('charCodeAt'), 'Fingerprint should include charCodeAt');
+  });
+
+  await test('frontend _processQaMessage sends contentHash in request body', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat'"), src.indexOf("fetch('/api/doc-chat'") + 500);
+    assert.ok(fetchBlock.includes('contentHash'), 'Frontend should send contentHash in doc-chat request');
+  });
+
+  await test('frontend contentHash uses same fingerprint scheme as server', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes('charCodeAt'), 'Frontend should use charCodeAt for fingerprint');
+    assert.ok(src.includes('.length'), 'Frontend should include length in fingerprint');
+  });
+
+  await test('route table documents contentHash as optional param', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const routeLine = src.match(/doc-chat.*params:.*contentHash/);
+    assert.ok(routeLine, 'Route table should list contentHash as a param');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');

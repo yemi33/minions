@@ -992,6 +992,12 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
   return result;
 }
 
+// Lightweight content fingerprint — same algorithm used browser-side (no crypto needed)
+function contentFingerprint(str) {
+  if (!str) return '';
+  return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(str.length - 1);
+}
+
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
 async function ccDocCall({ message, document, title, filePath, selection, canEdit, isJson, model, freshSession, onAbortReady }) {
   const sessionKey = filePath || title;
@@ -3206,7 +3212,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         try { shared.sanitizePath(body.filePath, MINIONS_DIR); } catch { return jsonReply(res, 400, { error: 'path must be under minions directory' }); }
         fullPath = path.resolve(MINIONS_DIR, body.filePath);
         const diskContent = safeRead(fullPath);
-        if (diskContent !== null) currentContent = diskContent;
+        if (diskContent !== null) {
+          // If client sent a contentHash and it matches disk, skip replacement — client copy is fresh
+          if (body.contentHash && contentFingerprint(diskContent) === body.contentHash) {
+            // body.document is already current — no override needed
+          } else {
+            currentContent = diskContent;
+          }
+        }
       }
 
       const { answer, content, actions } = await ccDocCall({
@@ -4726,7 +4739,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat
-    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?', handler: handleDocChat },
+    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
 
     // Inbox
     { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },
