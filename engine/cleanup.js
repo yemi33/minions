@@ -9,7 +9,7 @@ const shared = require('./shared');
 const queries = require('./queries');
 
 const { exec, execSilent, log, ts, ENGINE_DEFAULTS } = shared;
-const { safeJson, safeWrite, safeReadDir, mutateWorkItems, getProjects, projectWorkItemsPath, projectPrPath,
+const { safeJson, safeWrite, safeReadDir, mutateWorkItems, mutateJsonFileLocked, getProjects, projectWorkItemsPath, projectPrPath,
   sanitizeBranch, KB_CATEGORIES } = shared;
 const { getDispatch, getAgentStatus } = queries;
 
@@ -667,6 +667,9 @@ function runCleanup(config, verbose = false) {
     }
   } catch { /* optional — file may not exist */ }
 
+  // 14. Scrub stale temp agent keys from metrics.json
+  try { scrubStaleMetrics(); } catch { /* best-effort cleanup */ }
+
   if (cleaned.ccSessions + cleaned.docSessions + cleaned.cooldowns + cleaned.pidFiles + cleaned.pendingContextsTrimmed > 0) {
     log('info', `Cleanup (resources): ${cleaned.ccSessions} cc-sessions, ${cleaned.docSessions} doc-sessions, ${cleaned.cooldowns} cooldowns, ${cleaned.pendingContextsTrimmed} pendingCtx trimmed, ${cleaned.pidFiles} PID files`);
   }
@@ -674,9 +677,27 @@ function runCleanup(config, verbose = false) {
   return cleaned;
 }
 
+// ─── Metrics Scrub ──────────────────────────────────────────────────────────
+
+/** Remove stale temp-*, agent1, and _test-* keys from metrics.json.
+ *  Mirrors the guard in lifecycle.js updateMetrics() — cleans up keys
+ *  that were written before that guard existed. */
+function scrubStaleMetrics() {
+  const metricsPath = path.join(ENGINE_DIR, 'metrics.json');
+  if (!fs.existsSync(metricsPath)) return;
+  mutateJsonFileLocked(metricsPath, metrics => {
+    for (const key of Object.keys(metrics)) {
+      if (key.startsWith('temp-') || key === 'agent1' || key.startsWith('_test')) {
+        delete metrics[key];
+      }
+    }
+  });
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
   runCleanup,
+  scrubStaleMetrics,
   worktreeDirMatchesBranch,  // exported for testing
 };
