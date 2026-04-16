@@ -117,7 +117,7 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" || {
             BRANCH="chore/publish-$NEXT"
             git checkout -b "$BRANCH"
-            git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
+            git commit -m "chore: publish $NEXT — changelog updated"
             git push origin "$BRANCH"
             gh pr create --title "chore: publish $NEXT" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
 
@@ -126,11 +126,10 @@ jobs:
               gh pr close "$pr" --delete-branch 2>/dev/null || true
             done
 
-            # Auto-merge once CI passes. Uses --squash so the resulting commit message
-            # contains [skip ci] from the branch commit, preventing a publish re-trigger.
-            # PR title no longer has [skip ci] so PR Tests workflow runs and satisfies
-            # the branch protection required check.
-            gh pr merge "$BRANCH" --auto --squash --delete-branch
+            # Auto-merge once CI passes. Squash merge with explicit [skip ci] in the
+            # commit message so the landed commit won't re-trigger the publish workflow.
+            # The branch commit does NOT have [skip ci] so PR Tests runs on the PR.
+            gh pr merge "$BRANCH" --auto --squash --delete-branch --subject "chore: publish $NEXT [skip ci]"
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
