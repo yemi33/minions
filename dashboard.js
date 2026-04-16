@@ -811,16 +811,18 @@ async function executeCCActions(actions) {
 // Session store for doc modals — keyed by filePath or title, persisted to disk
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
+const DOC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 604800000 — 7 days
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
 // Load persisted doc sessions on startup
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
+    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      if (s.turnCount < CC_SESSION_MAX_TURNS) {
-        docSessions.set(key, s);
-      }
+      if (s.turnCount >= CC_SESSION_MAX_TURNS) continue;
+      if (s.lastActiveAt && now - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) continue;
+      docSessions.set(key, s);
     }
   }
 } catch { /* optional */ }
@@ -859,6 +861,11 @@ function resolveSession(store, key) {
   const s = docSessions.get(key);
   if (!s) return null;
   if (s.turnCount >= CC_SESSION_MAX_TURNS) {
+    docSessions.delete(key);
+    persistDocSessions();
+    return null;
+  }
+  if (s.lastActiveAt && Date.now() - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;

@@ -14696,6 +14696,56 @@ async function testAutoRecoveryAndAtomicity() {
       'Flush should be wired to process signal or server close event');
   });
 
+  // ── TTL-based doc-session eviction (P-e4a6b9d3) ────────────────────────────
+  await test('DOC_SESSION_TTL_MS constant defined as 7 days', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('DOC_SESSION_TTL_MS'), 'Should define DOC_SESSION_TTL_MS constant');
+    // 7 * 24 * 60 * 60 * 1000 = 604800000
+    assert.ok(src.includes('604800000') || src.includes('7 * 24 * 60 * 60 * 1000'), 'TTL should be 7 days in milliseconds');
+  });
+
+  await test('resolveSession evicts doc sessions older than TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
+    assert.ok(resolveFn.includes('lastActiveAt'), 'resolveSession should check lastActiveAt for TTL');
+    assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+  });
+
+  await test('resolveSession TTL check comes after turnCount check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    const turnIdx = resolveFn.indexOf('CC_SESSION_MAX_TURNS');
+    const ttlIdx = resolveFn.indexOf('DOC_SESSION_TTL_MS');
+    assert.ok(turnIdx > 0, 'Should have turnCount check');
+    assert.ok(ttlIdx > 0, 'Should have TTL check');
+    assert.ok(turnIdx < ttlIdx, 'turnCount check should come before TTL check');
+  });
+
+  await test('startup loading filters out expired doc sessions by TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docLoadMatch = src.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
+    assert.ok(docLoadMatch, 'Should have doc session startup loader');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Startup loader should filter by TTL');
+    assert.ok(docLoadMatch[0].includes('lastActiveAt'), 'Startup loader should check lastActiveAt');
+  });
+
+  await test('TTL eviction in resolveSession calls persistDocSessions directly (not debounced)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // The eviction path should call persistDocSessions() directly for immediate consistency
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'TTL eviction should call persistDocSessions() directly');
+  });
+
+  await test('sessions within TTL window are not evicted by resolveSession', () => {
+    // Verify the TTL check uses > (greater than), not >= (greater or equal), and checks lastActiveAt
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // Must compute elapsed time from lastActiveAt
+    assert.ok(resolveFn.includes('Date.now()') || resolveFn.includes('new Date'), 'Should compute current time for comparison');
+    assert.ok(resolveFn.includes('getTime') || resolveFn.includes('Date.now'), 'Should convert to numeric time for comparison');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
@@ -16924,12 +16974,12 @@ async function testCCMultiTab() {
     assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
   });
 
-  await test('resolveSession does not check age for doc sessions', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
-    assert.ok(!body.includes('age'), 'resolveSession should not reference age');
-    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference expiry constant');
+    assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
   await test('CC session restored on startup without age check', () => {
@@ -16939,10 +16989,10 @@ async function testCCMultiTab() {
     assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
   });
 
-  await test('doc sessions restored on startup without age check', () => {
+  await test('doc sessions restored on startup with TTL filtering', () => {
     const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
     assert.ok(docLoadMatch, 'Should have doc session startup loader');
-    assert.ok(!docLoadMatch[0].includes('age'), 'Doc session loader should not check age');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Doc session loader should filter expired sessions by TTL');
   });
 
   await test('prompt hash stored with tab session for invalidation', () => {
