@@ -955,5 +955,6 @@ module.exports = {
   getPipelineRuns, getActiveRun, startRun, updateRunStage, completeRun,
   discoverPipelineWork,
   evaluateCondition, // exported for testing
+  executeTaskStage, isStageComplete, resolveTemplate, // exported for testing
   _findMeetingsInRun, _findExistingPlanForMeeting, _findExistingPrdForPlan, // exported for testing
 };
