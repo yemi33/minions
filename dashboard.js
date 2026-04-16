@@ -32,6 +32,24 @@ const { getAgents, getAgentDetail, getPrdInfo, getWorkItems, getDispatchQueue,
   getEngineLog, getMetrics, getKnowledgeBaseEntries, timeSince,
   MINIONS_DIR, AGENTS_DIR, ENGINE_DIR, INBOX_DIR, DISPATCH_PATH, PRD_DIR } = queries;
 
+// Startup size guard (#1167): fail fast with a clear error when dispatch.json /
+// cooldowns.json have ballooned past ENGINE_DEFAULTS.maxStateFileBytes. Without
+// this, V8 silently OOMs on JSON.parse(~1 GB) and the operator has no hint as to
+// which file is bloated. The thrown error names the file and directs to
+// engine/contexts/ where sidecars live.
+(() => {
+  const stateFiles = [
+    DISPATCH_PATH,
+    path.join(ENGINE_DIR, 'cooldowns.json'),
+  ];
+  for (const fp of stateFiles) {
+    try { shared.assertStateFileSize(fp); } catch (e) {
+      console.error('\n[dashboard] STARTUP ABORTED — ' + e.message + '\n');
+      process.exit(78); // 78 = configuration error; consistent with spawn-agent.js
+    }
+  }
+})();
+
 const PORT = parseInt(process.env.PORT || process.argv[2]) || 7331;
 let CONFIG = queries.getConfig();
 let PROJECTS = _getProjects(CONFIG);
@@ -171,7 +189,14 @@ function getVerifyGuides() {
 function getArchivedPrds() { return []; }
 function getEngineState() { return queries.getControl(); }
 
+let _worktreeCountCache = 0;
+let _worktreeCountCacheTs = 0;
+
 function _countWorktrees() {
+  const now = Date.now();
+  if (_worktreeCountCacheTs && (now - _worktreeCountCacheTs) < shared.ENGINE_DEFAULTS.worktreeCountCacheTtl) {
+    return _worktreeCountCache;
+  }
   try {
     const config = queries.getConfig();
     const projects = shared.getProjects(config);
@@ -199,6 +224,8 @@ function _countWorktrees() {
         }
       } catch {}
     }
+    _worktreeCountCache = count;
+    _worktreeCountCacheTs = now;
     return count;
   } catch { return 0; }
 }
@@ -302,13 +329,20 @@ function parsePinnedEntries(content) {
   return entries;
 }
 
+// Two-tier status cache: fast state (10s) for frequently-changing data, slow state (60s) for rarely-changing data.
+// Combined into _statusCache for API/SSE consumers — no API contract change.
+let _fastState = null;
+let _fastStateTs = 0;
+const FAST_STATE_TTL = 10000; // 10s — dispatch, agents, metrics, work items, etc.
+let _slowState = null;
+let _slowStateTs = 0;
+const SLOW_STATE_TTL = 60000; // 60s — skills, PRDs, pinned, version, projects, etc.
 let _statusCache = null;
 let _statusCacheJson = null; // cached JSON.stringify(_statusCache) — avoids double-serialization for SSE
-let _statusCacheTs = 0;
-const STATUS_CACHE_TTL = 10000; // 10s — reduces expensive aggregation frequency; mutations call invalidateStatusCache()
+let _statusCacheGzip = null; // pre-computed gzip of _statusCacheJson — avoids per-request gzipSync
 const _statusStreamClients = new Set();
 let _statusPushTimer = null;
-let _lastStatusHash = '';
+let _lastStatusPushRef = null; // last JSON string reference pushed to SSE — O(1) change detection
 
 // mtime-based cache invalidation — skip full rebuild if no tracked files changed
 const _mtimeTrackedFiles = () => {
@@ -348,8 +382,12 @@ function _mtimesChanged(prev, curr) {
 }
 
 function invalidateStatusCache() {
+  _fastState = null;
+  _fastStateTs = 0;
+  // Slow state continues on its own TTL — not invalidated by mutations
   _statusCache = null;
   _statusCacheJson = null;
+  _statusCacheGzip = null;
   // Push to SSE clients (debounced 500ms to avoid flooding during batch mutations)
   if (_statusPushTimer) return;
   _statusPushTimer = setTimeout(() => {
@@ -364,89 +402,110 @@ function invalidateStatusCache() {
 
 function getStatus() {
   const now = Date.now();
-  if (_statusCache && (now - _statusCacheTs) < STATUS_CACHE_TTL) {
-    // Within TTL — check mtimes for early return (skip full rebuild if nothing changed)
+
+  // Fast state: 10s TTL with mtime-based validation for early exit
+  let fastStale = !_fastState || (now - _fastStateTs) >= FAST_STATE_TTL;
+  if (!fastStale) {
+    // Within TTL — check mtimes for early return (skip rebuild if no tracked files changed)
     const currMtimes = _getMtimes();
-    if (!_mtimesChanged(_lastMtimes, currMtimes)) return _statusCache;
+    if (_mtimesChanged(_lastMtimes, currMtimes)) fastStale = true;
   }
 
-  // Reload config on each cache miss — picks up external changes (minions init, minions add)
-  reloadConfig();
+  // Slow state: 60s TTL, pure TTL (no mtime check — these files change rarely)
+  const slowStale = !_slowState || (now - _slowStateTs) >= SLOW_STATE_TTL;
 
-  const prdInfo = getPrdInfo();
-  _statusCache = {
-    agents: getAgents(),
-    prdProgress: prdInfo.progress,
-    inbox: getInbox(),
-    notes: getNotesWithMeta(),
-    prd: prdInfo.status,
-    pullRequests: getPullRequests(),
-    verifyGuides: getVerifyGuides(),
-    archivedPrds: getArchivedPrds(),
-    engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
-    adoThrottle: ado.getAdoThrottleState(),
-    ghThrottle: gh.getGhThrottleState(),
-    dispatch: getDispatchQueue(),
-    engineLog: getEngineLog(),
-    metrics: getMetrics(),
-    workItems: getWorkItems(),
-    skills: getSkills(),
-    mcpServers: getMcpServers(),
-    schedules: (() => {
-      const scheds = CONFIG.schedules || [];
-      const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
-      return scheds.map(s => {
-        const runEntry = runs[s.id];
-        // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
-        const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
-        const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
-        return { ...s, _lastRun, ...extra };
-      });
-    })(),
-    watches: watchesMod.getWatches(),
-    meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
-    pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
-    pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
-    projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
-    autoMode: {
-      approvePlans: !!CONFIG.engine?.autoApprovePlans,
-      decompose: CONFIG.engine?.autoDecompose !== false,
-      tempAgents: !!CONFIG.engine?.allowTempAgents,
-      inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
-      ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
-      ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
-    },
-    initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
-    installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
-    version: (() => {
-      const engine = getEngineState();
-      const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
-      const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
-                          !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
-      const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
-                             !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
-      return {
-        running: engine.codeVersion || null,
-        runningCommit: engine.codeCommit || null,
-        dashboardRunning: _dashboardVersion.codeVersion,
-        dashboardRunningCommit: _dashboardVersion.codeCommit,
-        dashboardStartedAt: _dashboardVersion.startedAt,
-        disk: diskVersion,
-        diskCommit,
-        engineStale,
-        dashboardStale,
-        stale: engineStale || dashboardStale,
-        latest: _npmVersionCache?.latest || null,
-        // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
-        updateAvailable: !isGitRepo && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
-        _npmCheckError: _npmVersionCache?.error || null,
-      };
-    })(),
-    timestamp: new Date().toISOString(),
-  };
-  _statusCacheTs = now;
+  // If nothing stale, return cached merged result
+  if (!fastStale && !slowStale && _statusCache) return _statusCache;
+
+  // Rebuild fast state (frequently-changing data: ~12-15 reads)
+  if (fastStale) {
+    // Reload config on fast-state miss — picks up external changes (minions init, minions add)
+    reloadConfig();
+    _fastState = {
+      agents: getAgents(),
+      inbox: getInbox(),
+      notes: getNotesWithMeta(),
+      pullRequests: getPullRequests(),
+      engine: { ...getEngineState(), worktreeCount: _countWorktrees() },
+      adoThrottle: ado.getAdoThrottleState(),
+      ghThrottle: gh.getGhThrottleState(),
+      dispatch: getDispatchQueue(),
+      engineLog: getEngineLog(),
+      metrics: getMetrics(),
+      workItems: getWorkItems(),
+      watches: watchesMod.getWatches(),
+      meetings: (() => { try { return require('./engine/meeting').getMeetings(); } catch { return []; } })(),
+    };
+    _fastStateTs = now;
+    _lastMtimes = _getMtimes();
+  }
+
+  // Rebuild slow state (rarely-changing data: ~8-15 reads, 60s TTL)
+  if (slowStale) {
+    const prdInfo = getPrdInfo();
+    _slowState = {
+      prdProgress: prdInfo.progress,
+      prd: prdInfo.status,
+      verifyGuides: getVerifyGuides(),
+      archivedPrds: getArchivedPrds(),
+      skills: getSkills(),
+      mcpServers: getMcpServers(),
+      schedules: (() => {
+        const scheds = CONFIG.schedules || [];
+        const runs = shared.safeJson(path.join(MINIONS_DIR, 'engine', 'schedule-runs.json')) || {};
+        return scheds.map(s => {
+          const runEntry = runs[s.id];
+          // Backward compat: runEntry can be a string (old format) or object (new format with back-references)
+          const _lastRun = typeof runEntry === 'string' ? runEntry : (runEntry?.lastRun || runEntry?.lastCompletedAt || null);
+          const extra = typeof runEntry === 'object' && runEntry ? { _lastWorkItemId: runEntry.lastWorkItemId, _lastResult: runEntry.lastResult, _lastCompletedAt: runEntry.lastCompletedAt } : {};
+          return { ...s, _lastRun, ...extra };
+        });
+      })(),
+      pipelines: (() => { try { const pl = require('./engine/pipeline'); return pl.getPipelines().map(p => ({ ...p, runs: (pl.getPipelineRuns()[p.id] || []).slice(-5) })); } catch { return []; } })(),
+      pinned: (() => { try { return parsePinnedEntries(safeRead(path.join(MINIONS_DIR, 'pinned.md'))); } catch { return []; } })(),
+      projects: PROJECTS.map(p => ({ name: p.name, path: p.localPath, description: p.description || '' })),
+      autoMode: {
+        approvePlans: !!CONFIG.engine?.autoApprovePlans,
+        decompose: CONFIG.engine?.autoDecompose !== false,
+        tempAgents: !!CONFIG.engine?.allowTempAgents,
+        inboxThreshold: CONFIG.engine?.inboxConsolidateThreshold || shared.ENGINE_DEFAULTS.inboxConsolidateThreshold,
+        ccModel: CONFIG.engine?.ccModel || shared.ENGINE_DEFAULTS.ccModel,
+        ccEffort: CONFIG.engine?.ccEffort || shared.ENGINE_DEFAULTS.ccEffort,
+      },
+      initialized: !!(CONFIG.agents && Object.keys(CONFIG.agents).length > 0),
+      installId: safeRead(path.join(MINIONS_DIR, '.install-id')).trim() || null,
+      version: (() => {
+        const engine = getEngineState();
+        const { diskVersion, diskCommit, isGitRepo } = getDiskVersion();
+        const engineStale = !!(engine.codeVersion && diskVersion && engine.codeVersion !== diskVersion) ||
+                            !!(engine.codeCommit && diskCommit && engine.codeCommit !== diskCommit);
+        const dashboardStale = !!(diskVersion && _dashboardVersion.codeVersion && diskVersion !== _dashboardVersion.codeVersion) ||
+                               !!(diskCommit && _dashboardVersion.codeCommit && diskCommit !== _dashboardVersion.codeCommit);
+        return {
+          running: engine.codeVersion || null,
+          runningCommit: engine.codeCommit || null,
+          dashboardRunning: _dashboardVersion.codeVersion,
+          dashboardRunningCommit: _dashboardVersion.codeCommit,
+          dashboardStartedAt: _dashboardVersion.startedAt,
+          disk: diskVersion,
+          diskCommit,
+          engineStale,
+          dashboardStale,
+          stale: engineStale || dashboardStale,
+          latest: _npmVersionCache?.latest || null,
+          // Only show "update available" for npm installs (no git repo) — repo users manage their own updates
+          updateAvailable: !isGitRepo && !!(diskVersion && _npmVersionCache?.latest && _npmVersionCache.latest !== diskVersion && _compareVersions(_npmVersionCache.latest, diskVersion) > 0),
+          _npmCheckError: _npmVersionCache?.error || null,
+        };
+      })(),
+    };
+    _slowStateTs = now;
+  }
+
+  // Merge both tiers — no API contract change
+  _statusCache = { ..._fastState, ..._slowState, timestamp: new Date().toISOString() };
   _statusCacheJson = null; // invalidate cached JSON — will be lazily rebuilt by getStatusJson()
-  _lastMtimes = _getMtimes();
+  _statusCacheGzip = null;
   return _statusCache;
 }
 
@@ -455,6 +514,7 @@ function getStatusJson() {
   getStatus(); // ensure _statusCache is fresh
   if (!_statusCacheJson) {
     _statusCacheJson = JSON.stringify(_statusCache);
+    _statusCacheGzip = zlib.gzipSync(_statusCacheJson); // pre-compute gzip once per cache rebuild
   }
   return _statusCacheJson;
 }
@@ -463,9 +523,8 @@ function getStatusJson() {
 setInterval(() => {
   if (_statusStreamClients.size === 0) return;
   const data = getStatusJson();
-  const hash = require('crypto').createHash('md5').update(data).digest('hex');
-  if (hash === _lastStatusHash) return;
-  _lastStatusHash = hash;
+  if (data === _lastStatusPushRef) return; // O(1) reference comparison — new string ref means content changed
+  _lastStatusPushRef = data;
   for (const res of _statusStreamClients) {
     try { res.write('data: ' + data + '\n\n'); } catch { _statusStreamClients.delete(res); }
   }
@@ -482,6 +541,7 @@ const ccInFlightTabs = new Map(); // tabId → timestamp — per-tab in-flight t
 const ccInFlightAborts = new Map(); // tabId → abortFn — lets a new request kill the stale LLM
 const CC_INFLIGHT_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes — auto-release if request hangs
 const CC_LOCK_WAIT_MS = 200; // grace period for previous handler's finally to release lock
+const CC_STREAM_HEARTBEAT_MS = 15000; // keep streaming responses alive across proxies/restart races
 function _releaseCCTab(tabId) { ccInFlightTabs.delete(tabId); ccInFlightAborts.delete(tabId); }
 function _ccTabIsInFlight(tabId) {
   if (!ccInFlightTabs.has(tabId)) return false;
@@ -811,16 +871,18 @@ async function executeCCActions(actions) {
 // Session store for doc modals — keyed by filePath or title, persisted to disk
 const CC_SESSIONS_PATH = path.join(ENGINE_DIR, 'cc-sessions.json');
 const DOC_SESSIONS_PATH = path.join(ENGINE_DIR, 'doc-sessions.json');
+const DOC_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 604800000 — 7 days
 const docSessions = new Map(); // key → { sessionId, lastActiveAt, turnCount }
 
 // Load persisted doc sessions on startup
 try {
   const saved = safeJson(DOC_SESSIONS_PATH);
   if (saved && typeof saved === 'object') {
+    const now = Date.now();
     for (const [key, s] of Object.entries(saved)) {
-      if (s.turnCount < CC_SESSION_MAX_TURNS) {
-        docSessions.set(key, s);
-      }
+      if (s.turnCount >= CC_SESSION_MAX_TURNS) continue;
+      if (s.lastActiveAt && now - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) continue;
+      docSessions.set(key, s);
     }
   }
 } catch { /* optional */ }
@@ -829,6 +891,25 @@ function persistDocSessions() {
   const obj = {};
   for (const [key, s] of docSessions) obj[key] = s;
   safeWrite(DOC_SESSIONS_PATH, obj);
+}
+
+// Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
+let _persistDocSessionsTimer = null;
+function schedulePersistDocSessions() {
+  if (_persistDocSessionsTimer) clearTimeout(_persistDocSessionsTimer);
+  _persistDocSessionsTimer = setTimeout(() => {
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }, 5000); // 5s debounce — rapid turns produce one write per burst
+}
+
+/** Flush any pending debounced write immediately (call on shutdown). */
+function flushPendingDocSessions() {
+  if (_persistDocSessionsTimer) {
+    clearTimeout(_persistDocSessionsTimer);
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }
 }
 
 // Resolve session from any store (CC global or doc-specific)
@@ -840,6 +921,11 @@ function resolveSession(store, key) {
   const s = docSessions.get(key);
   if (!s) return null;
   if (s.turnCount >= CC_SESSION_MAX_TURNS) {
+    docSessions.delete(key);
+    persistDocSessions();
+    return null;
+  }
+  if (s.lastActiveAt && Date.now() - new Date(s.lastActiveAt).getTime() > DOC_SESSION_TTL_MS) {
     docSessions.delete(key);
     persistDocSessions();
     return null;
@@ -868,7 +954,7 @@ function updateSession(store, key, sessionId, existing) {
       turnCount: (existing && prev ? prev.turnCount : 0) + 1,
       _docHash: prev?._docHash || null,
     });
-    persistDocSessions();
+    schedulePersistDocSessions();
   }
 }
 
@@ -931,7 +1017,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
       safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     } else if (sessionKey) {
       docSessions.delete(sessionKey);
-      persistDocSessions();
+      schedulePersistDocSessions();
     }
   }
 
@@ -964,6 +1050,12 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
     updateSession(store, sessionKey, result.sessionId, false);
   }
   return result;
+}
+
+// Lightweight content fingerprint — same algorithm used browser-side (no crypto needed)
+function contentFingerprint(str) {
+  if (!str) return '';
+  return str.length + ':' + str.charCodeAt(0) + ':' + str.charCodeAt(str.length - 1);
 }
 
 // Doc-specific wrapper — adds document context, parses ---DOCUMENT---
@@ -1006,7 +1098,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // One-shot call — discard the session ccCall just stored so it cannot
     // bleed into future interactions under the same key.
     docSessions.delete(sessionKey);
-    persistDocSessions();
+    schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
@@ -3180,7 +3272,14 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         try { shared.sanitizePath(body.filePath, MINIONS_DIR); } catch { return jsonReply(res, 400, { error: 'path must be under minions directory' }); }
         fullPath = path.resolve(MINIONS_DIR, body.filePath);
         const diskContent = safeRead(fullPath);
-        if (diskContent !== null) currentContent = diskContent;
+        if (diskContent !== null) {
+          // If client sent a contentHash and it matches disk, skip replacement — client copy is fresh
+          if (body.contentHash && contentFingerprint(diskContent) === body.contentHash) {
+            // body.document is already current — no override needed
+          } else {
+            currentContent = diskContent;
+          }
+        }
       }
 
       const { answer, content, actions } = await ccDocCall({
@@ -3693,6 +3792,23 @@ What would you like to discuss or change? When you're happy, say "approve" and I
   async function handleCommandCenterStream(req, res) {
     if (checkRateLimit('command-center', 10)) { res.statusCode = 429; res.end('Rate limited'); return; }
     let tabId;
+    let _ccStreamAbort = null;
+    let _ccStreamEnded = false;
+    let _ccHeartbeatTimer = null;
+    const writeCcEvent = (payload) => {
+      try {
+        res.write('data: ' + JSON.stringify(payload) + '\n\n');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const stopCcHeartbeat = () => {
+      if (_ccHeartbeatTimer) {
+        clearInterval(_ccHeartbeatTimer);
+        _ccHeartbeatTimer = null;
+      }
+    };
     try {
       const body = await readBody(req);
       if (!body.message) { res.statusCode = 400; res.end('message required'); return; }
@@ -3709,13 +3825,20 @@ What would you like to discuss or change? When you're happy, say "approve" and I
       ccInFlightTabs.set(tabId, Date.now());
 
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
-      let _ccStreamAbort = null;
-      let _ccStreamEnded = false;
+      writeCcEvent({ type: 'heartbeat' }); // flush headers quickly and keep intermediaries from idling out
+      _ccHeartbeatTimer = setInterval(() => {
+        if (_ccStreamEnded) {
+          stopCcHeartbeat();
+          return;
+        }
+        if (!writeCcEvent({ type: 'heartbeat' })) stopCcHeartbeat();
+      }, CC_STREAM_HEARTBEAT_MS);
       // Kill LLM process immediately if client disconnects mid-stream.
       // Guard with !_ccStreamEnded: when the stream ends normally, finally already released the lock;
       // without the guard, this close event (which fires after res.end) could wipe a new request's lock.
       req.on('close', () => {
         if (!_ccStreamEnded) {
+          stopCcHeartbeat();
           _releaseCCTab(tabId);
           if (_ccStreamAbort) {
             console.log(`[CC-stream] Client disconnected for tab ${tabId} — aborting LLM`);
@@ -3753,10 +3876,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           onChunk: (text) => {
             const actIdx = findCCActionsDelimiter(text);
             const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-            try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
+            writeCcEvent({ type: 'chunk', text: display });
           },
           onToolUse: (name, input) => {
-            try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
+            writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
           }
         });
         _ccStreamAbort = llmPromise.abort;
@@ -3777,10 +3900,10 @@ What would you like to discuss or change? When you're happy, say "approve" and I
             onChunk: (text) => {
               const actIdx = findCCActionsDelimiter(text);
               const display = actIdx >= 0 ? text.slice(0, actIdx).trim() : text;
-              try { res.write('data: ' + JSON.stringify({ type: 'chunk', text: display }) + '\n\n'); } catch {}
+              writeCcEvent({ type: 'chunk', text: display });
             },
             onToolUse: (name, input) => {
-              try { res.write('data: ' + JSON.stringify({ type: 'tool', name, input: _lightToolInput(input) }) + '\n\n'); } catch {}
+              writeCcEvent({ type: 'tool', name, input: _lightToolInput(input) });
             }
           });
           _ccStreamAbort = retryPromise.abort;
@@ -3798,7 +3921,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
           const stderrTail = (result.stderr || '').trim().split('\n').filter(Boolean).slice(-3).join(' | ');
           console.error(`[CC-stream] Failed: code=${result.code}, stderr=${(result.stderr || '').slice(0, 500)}, stdout_tail=${(result.raw || '').slice(-500)}`);
           const retryHint = 'Send your message again to retry.';
-          res.write('data: ' + JSON.stringify({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null }) + '\n\n');
+          writeCcEvent({ type: 'done', text: `I had trouble processing that ${debugInfo}. ${stderrTail ? 'Detail: ' + stderrTail : ''}\n\n${retryHint}`, actions: [], sessionId: null });
           _ccStreamEnded = true; res.end();
           return;
         }
@@ -3841,7 +3964,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
         }
         const donePayload = { type: 'done', text: displayText, actions, actionResults, sessionId: responseSessionId, newSession: !wasResume };
         if (sessionReset) donePayload.sessionReset = true;
-        res.write('data: ' + JSON.stringify(donePayload) + '\n\n');
+        writeCcEvent(donePayload);
 
         // Mirror CC response to Teams (non-blocking, skip Teams-originated)
         const _streamTabId = body.tabId || 'default';
@@ -3851,11 +3974,13 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
         _ccStreamEnded = true; res.end();
       } finally {
+        stopCcHeartbeat();
         _releaseCCTab(tabId);
       }
     } catch (e) {
+      stopCcHeartbeat();
       _releaseCCTab(tabId);
-      try { res.write('data: ' + JSON.stringify({ type: 'error', error: e.message }) + '\n\n'); } catch {}
+      writeCcEvent({ type: 'error', error: e.message });
       _ccStreamEnded = true; try { res.end(); } catch {}
     }
   }
@@ -4222,15 +4347,15 @@ What would you like to discuss or change? When you're happy, say "approve" and I
 
   async function handleStatus(req, res) {
     try {
-      // Use pre-serialized JSON to avoid double-stringify in jsonReply
+      // Use pre-serialized JSON and pre-computed gzip buffer — zero per-request compression
       const json = getStatusJson();
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.statusCode = 200;
       const ae = req && req.headers && req.headers['accept-encoding'] || '';
-      if (ae.includes('gzip') && json.length > 1024) {
+      if (ae.includes('gzip') && _statusCacheGzip) {
         res.setHeader('Content-Encoding', 'gzip');
-        res.end(zlib.gzipSync(json));
+        res.end(_statusCacheGzip);
       } else {
         res.end(json);
       }
@@ -4700,7 +4825,7 @@ What would you like to discuss or change? When you're happy, say "approve" and I
     { method: 'GET', path: /^\/api\/knowledge\/([^/]+)\/([^?]+)/, desc: 'Read a specific knowledge base entry', handler: handleKnowledgeRead },
 
     // Doc chat
-    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?', handler: handleDocChat },
+    { method: 'POST', path: '/api/doc-chat', desc: 'Minions-aware doc Q&A + editing via CC session', params: 'message, document, title?, filePath?, selection?, contentHash?', handler: handleDocChat },
 
     // Inbox
     { method: 'POST', path: '/api/inbox/persist', desc: 'Promote an inbox item to team notes', params: 'name', handler: handleInboxPersist },
@@ -5061,3 +5186,8 @@ server.on('error', e => {
   }
   process.exit(1);
 });
+
+// ── Graceful shutdown: flush debounced writes ──────────────────────────────
+server.on('close', () => flushPendingDocSessions());
+process.on('SIGTERM', () => { flushPendingDocSessions(); process.exit(0); });
+process.on('SIGINT', () => { flushPendingDocSessions(); process.exit(0); });

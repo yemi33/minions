@@ -33,11 +33,11 @@ git log --oneline {{main_branch}}..HEAD
 
 Do ALL work in the worktree.
 
-**Do NOT:**
+**Shared branch workflow — do NOT:**
 - Create a new branch — use `{{branch_name}}`
-- Create a PR — one will be created automatically when all plan items complete
-- Remove the worktree — the next plan item needs it
 - Create a new worktree — one already exists at `{{worktree_path}}`
+- Remove the worktree — the engine cleans it up after all plan items complete
+- Create a PR — one will be created automatically when all plan items complete
 
 ## Health Check
 

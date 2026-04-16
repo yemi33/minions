@@ -355,7 +355,11 @@ async function recoverPartialWorktree(rootDir, worktreePath, branchName, gitOpts
 }
 
 async function spawnAgent(dispatchItem, config) {
-  const { id, agent: agentId, prompt: taskPrompt, type, meta } = dispatchItem;
+  const { id, agent: agentId, type, meta } = dispatchItem;
+  // Resolve prompt — prefers sidecar file when dispatchItem._promptFile is set
+  // (large prompts are written to engine/contexts/<id>.md to keep dispatch.json
+  // small — see shared.sidecarDispatchPrompt / #1167).
+  const taskPrompt = shared.resolveDispatchPrompt(dispatchItem);
   const claudeConfig = config.claude || {};
   const engineConfig = config.engine || {};
   const startedAt = ts();
@@ -3229,16 +3233,19 @@ async function tickInner() {
   // Awaited so PR state is consistent before discoverWork reads it
   // Also re-polls early if previous tick had ADO auth failures (stale build status recovery)
   if (tickCount % adoPollStatusEvery === 0 || needsAdoPollRetry()) {
+    // Build promise array — enabled+unthrottled polls run concurrently via Promise.allSettled
+    const statusPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
-      try { await pollPrStatus(config); } catch (err) { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+      statusPolls.push(pollPrStatus(config).catch(err => { log('warn', `ADO PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
     } else if (adoPollEnabled && isAdoThrottled()) {
       log('info', '[ado] PR status poll skipped — throttled');
     }
     if (ghPollEnabled && !isGhThrottled()) {
-      try { await ghPollPrStatus(config); } catch (err) { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+      statusPolls.push(ghPollPrStatus(config).catch(err => { log('warn', `GitHub PR status poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
     } else if (ghPollEnabled && isGhThrottled()) {
       log('info', '[gh] PR status poll skipped — throttled');
     }
+    if (statusPolls.length) await Promise.allSettled(statusPolls);
     try { await processPendingRebases(config); } catch (err) { log('warn', `Pending rebase processing error: ${err?.message || err}`); }
     // Sync PR status back to PRD items (missing → done when active PR exists)
     try { syncPrdFromPrs(config); } catch (err) { log('warn', `PRD sync error: ${err?.message || err}`); }
@@ -3260,19 +3267,25 @@ async function tickInner() {
 
   // 2.7. Poll PR threads for human comments (every adoPollCommentsEvery ticks, default ~12 minutes)
   if (tickCount % adoPollCommentsEvery === 0) {
+    // Build promise array — enabled+unthrottled comment polls run concurrently via Promise.allSettled
+    const commentPolls = [];
     if (adoPollEnabled && !isAdoThrottled()) {
-      try { await pollPrHumanComments(config); } catch (err) { log('warn', `ADO PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+      commentPolls.push(pollPrHumanComments(config).catch(err => { log('warn', `ADO PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
     } else if (adoPollEnabled && isAdoThrottled()) {
       log('info', '[ado] PR comment poll skipped — throttled');
     }
     if (ghPollEnabled && !isGhThrottled()) {
-      try { await ghPollPrHumanComments(config); } catch (err) { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+      commentPolls.push(ghPollPrHumanComments(config).catch(err => { log('warn', `GitHub PR comment poll error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
     } else if (ghPollEnabled && isGhThrottled()) {
       log('info', '[gh] PR comment poll skipped — throttled');
     }
+    if (commentPolls.length) await Promise.allSettled(commentPolls);
     // Reconciliation runs regardless of poll flags — it's a recovery sweep, not a convenience poll
-    try { await reconcilePrs(config); } catch (err) { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
-    try { await ghReconcilePrs(config); } catch (err) { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }
+    // Reconciliation also parallelized — ADO and GitHub reconciliation are independent
+    const reconcilePolls = [];
+    reconcilePolls.push(reconcilePrs(config).catch(err => { log('warn', `ADO PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
+    reconcilePolls.push(ghReconcilePrs(config).catch(err => { log('warn', `GitHub PR reconciliation error: ${err?.message || err}${err?.stack ? ' | ' + err.stack.split('\n')[1]?.trim() : ''}`); }));
+    await Promise.allSettled(reconcilePolls);
   }
 
   // 2.9. Stalled dispatch detection — auto-retry failed items blocking the graph (every 20 ticks = ~10 min)

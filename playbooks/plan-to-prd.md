@@ -16,7 +16,7 @@ A user has provided a plan. Analyze it against the codebase and produce a struct
 1. **Read the plan carefully** — understand the goals, scope, and requirements
 2. **Check for an existing PRD** — if the engine provides `existing_prd_json` below, a PRD already exists for this plan. See "Reusing an Existing PRD" section for how to preserve item IDs and done statuses. If no existing PRD is provided, this is a fresh run — all items start as `"missing"`.
 3. **Explore the codebase** at `{{project_path}}` — understand the existing structure to write accurate descriptions and acceptance criteria. Do NOT use observations about existing PRs or partial work to set item statuses — status is determined only by existing PRD items (step 2), not codebase state
-4. **Break the plan into discrete, implementable items** — each should be a single PR's worth of work
+4. **Break the plan into discrete, implementable items** — each should be a single PR's worth of work, with enough detail for another agent to implement it directly
 5. **Estimate complexity** — `small` (< 1 file), `medium` (2-5 files), `large` (6+ files or cross-cutting)
 6. **Order by dependency** — items that others depend on come first
 7. **Use unique item IDs** — generate a short uuid for each item (e.g. `P-a3f9b2c1`). Do not use sequential `P001`/`P002` — IDs must be globally unique across all PRDs to avoid collisions. **If reusing an existing PRD, keep all existing IDs — only generate new UUIDs for genuinely new items.**
@@ -88,7 +88,7 @@ Rules for items:
 - **Do NOT include a "verify" or "test" or "integration test" item** — the engine automatically creates a verify task when all PRD items are done. Adding one manually creates a duplicate that blocks plan completion.
 - **`project` field is REQUIRED** — set it to the project name where the code changes go (e.g., `"OfficeAgent"`, `"office-bohemia"`). Cross-repo plans must route each item to the correct project. The engine materializes items into that project's work queue.
 - `depends_on` lists IDs of items that must be done first
-- Keep descriptions actionable — an implementing agent should know exactly what to build
+- Keep descriptions actionable — name the files, functions, patterns, or integration points the implementing agent should touch whenever the plan makes them clear
 - Include `acceptance_criteria` so reviewers know when it's done
 - Aim for 5-25 items depending on plan scope. If more than 25, group related work
 

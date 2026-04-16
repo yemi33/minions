@@ -40,6 +40,7 @@ function _renderQaUserMessage(thread, message, selection) {
   _showThreadWrap();
 }
 const _qaSessions = new Map(); // persist conversations across modal open/close {key → {history, threadHtml}}
+const _qaRuntime = new Map(); // key → {history, processing, abortController, queue}
 // Restore from localStorage
 try {
   const saved = JSON.parse(localStorage.getItem('qa-sessions') || '{}');
@@ -53,6 +54,175 @@ function _saveQaSessions() {
     for (const [k, v] of entries) obj[k] = { ...v, threadHtml: (v.threadHtml || '').slice(0, 50000) };
     localStorage.setItem('qa-sessions', JSON.stringify(obj));
   } catch { /* localStorage might be full */ }
+}
+
+function _qaCloneQueue(queue) {
+  return Array.isArray(queue) ? queue.map(item => ({ ...item })) : [];
+}
+
+function _qaGetRuntime(key) {
+  if (!key) return null;
+  let runtime = _qaRuntime.get(key);
+  if (!runtime) {
+    const prior = _qaSessions.get(key);
+    runtime = {
+      history: Array.isArray(prior?.history) ? prior.history.slice() : [],
+      processing: false,
+      abortController: null,
+      queue: _qaCloneQueue(prior?.queue),
+    };
+    _qaRuntime.set(key, runtime);
+  }
+  return runtime;
+}
+
+function _qaThreadEl() {
+  return document.getElementById('modal-qa-thread');
+}
+
+function _qaThreadHtml() {
+  return (_qaThreadEl() || {}).innerHTML || '';
+}
+
+function _qaIsActiveSession(key) {
+  return !!key && _qaSessionKey === key && document.getElementById('modal')?.classList?.contains('open');
+}
+
+function _qaSyncActiveRuntime() {
+  if (!_qaSessionKey) return;
+  const runtime = _qaGetRuntime(_qaSessionKey);
+  if (!runtime) return;
+  runtime.history = _qaHistory.slice();
+  runtime.processing = _qaProcessing;
+  runtime.abortController = _qaAbortController || null;
+  runtime.queue = _qaCloneQueue(_qaQueue);
+}
+
+function _qaPersistSession(key, { threadHtml, docContext, filePath, history, queue } = {}) {
+  if (!key) return;
+  const runtime = _qaGetRuntime(key);
+  const prior = _qaSessions.get(key) || {};
+  const persistedHistory = Array.isArray(history)
+    ? history.slice()
+    : Array.isArray(runtime?.history)
+      ? runtime.history.slice()
+      : Array.isArray(prior.history)
+        ? prior.history.slice()
+        : [];
+  _qaSessions.set(key, {
+    history: persistedHistory,
+    threadHtml: threadHtml != null ? threadHtml : (prior.threadHtml || ''),
+    docContext: docContext ? { ...docContext } : (prior.docContext ? { ...prior.docContext } : { title: '', content: '', selection: '' }),
+    filePath: filePath !== undefined ? filePath : prior.filePath,
+    queue: Array.isArray(queue) ? _qaCloneQueue(queue) : _qaCloneQueue(runtime?.queue),
+  });
+  _saveQaSessions();
+}
+
+function _qaSaveActiveSessionState() {
+  if (!_qaSessionKey) return;
+  _qaSyncActiveRuntime();
+  _qaPersistSession(_qaSessionKey, {
+    threadHtml: _qaThreadHtml(),
+    docContext: { ..._modalDocContext },
+    filePath: _modalFilePath,
+    history: _qaHistory,
+    queue: _qaQueue,
+  });
+}
+
+function _qaLoadSessionState(key) {
+  const prior = _qaSessions.get(key);
+  const runtime = _qaGetRuntime(key);
+  _qaHistory = Array.isArray(runtime?.history) && runtime.history.length
+    ? runtime.history.slice()
+    : Array.isArray(prior?.history)
+      ? prior.history.slice()
+      : [];
+  _qaProcessing = !!runtime?.processing;
+  _qaAbortController = runtime?.abortController || null;
+  _qaQueue = _qaCloneQueue(runtime?.queue);
+  const thread = _qaThreadEl();
+  if (thread) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = prior?.threadHtml || '';
+    if (!_qaProcessing) tmp.querySelectorAll('.modal-qa-loading').forEach(el => el.remove());
+    thread.innerHTML = tmp.innerHTML;
+  }
+}
+
+function _qaResetActiveState() {
+  _qaHistory = [];
+  _qaProcessing = false;
+  _qaAbortController = null;
+  _qaQueue = [];
+  _qaSessionKey = '';
+}
+
+function _qaBuildUserMessageHtml(message, selection) {
+  let qHtml = '<div class="modal-qa-q">' + escHtml(message);
+  if (selection) {
+    qHtml += '<span class="selection-ref">Re: "' + escHtml(selection.slice(0, 100)) + ((selection.length > 100) ? '...' : '') + '"</span>';
+  }
+  qHtml += '</div>';
+  return qHtml;
+}
+
+function _qaBuildQueuedHtml(message) {
+  const preview = escHtml(message.length > 60 ? message.slice(0, 57) + '...' : message);
+  return '<div class="qa-queued-item" style="color:var(--muted);font-size:10px;padding:4px 8px">Queued: "' + preview + '"</div>';
+}
+
+function _qaBuildLoadingHtml(loadingId, queueCount) {
+  const qaQueueBadge = queueCount > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + queueCount + ' queued</span>' : '';
+  return '<div class="modal-qa-loading" id="' + loadingId + '">' +
+    '<div class="dot-pulse"><span></span><span></span><span></span></div> ' +
+    '<span id="' + loadingId + '-text">Thinking...</span> ' +
+    '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)"></span>' +
+    ' <button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
+    qaQueueBadge + '</div>';
+}
+
+function _qaBuildAssistantHtml(text, opts) {
+  const body = opts?.isError ? escHtml(text) : renderMd(text);
+  const style = opts?.isError
+    ? 'color:' + (opts?.color || 'var(--red)')
+    : 'border-left-color:' + (opts?.borderColor || 'var(--blue)');
+  const pad = opts?.isError ? '' : 'padding-right:24px;';
+  return '<div class="modal-qa-a" style="' + style + '">' +
+    (opts?.isError ? '' : llmCopyBtn()) +
+    body +
+    '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;' + pad + '">' + opts.elapsed + 's</div>' +
+    '</div>';
+}
+
+function _qaMutateThreadHtml(key, mutate) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = _qaIsActiveSession(key) ? _qaThreadHtml() : ((_qaSessions.get(key) || {}).threadHtml || '');
+  mutate(tmp);
+  const html = tmp.innerHTML;
+  if (_qaIsActiveSession(key)) {
+    const thread = _qaThreadEl();
+    if (thread) {
+      thread.innerHTML = html;
+      thread.scrollTop = thread.scrollHeight;
+    }
+    _showThreadWrap();
+  }
+  return html;
+}
+
+function _qaResumeQueuedMessages() {
+  if (!_qaSessionKey || _qaProcessing || _qaQueue.length === 0) return;
+  const next = _qaQueue.shift();
+  const thread = _qaThreadEl();
+  if (thread) {
+    const queuedEl = thread.querySelector('.qa-queued-item');
+    if (queuedEl) queuedEl.remove();
+    _renderQaUserMessage(thread, next.message, next.selection);
+  }
+  _qaSaveActiveSessionState();
+  _processQaMessage(next.message, next.selection);
 }
 
 function modalAskAboutSelection() {
@@ -91,16 +261,14 @@ function clearQaSelection() {
 function _initQaSession() {
   var key = _modalFilePath || _modalDocContext.title || '';
   if (!key || _qaSessionKey === key) return;
+  if (_qaSessionKey && _qaSessionKey !== key) _qaSaveActiveSessionState();
   _qaSessionKey = key;
-  // Clear notification badge on the source card when reopening
   const card = findCardForFile(_modalFilePath);
   if (card) clearNotifBadge(card);
   var prior = _qaSessions.get(key);
+  _qaLoadSessionState(key);
   if (prior) {
-    _qaHistory = prior.history;
-    document.getElementById('modal-qa-thread').innerHTML = prior.threadHtml;
     if (prior.docContext) {
-      // Preserve freshly-fetched content and title — prior session may have stale/empty content
       const freshContent = _modalDocContext.content;
       const freshTitle = _modalDocContext.title;
       _modalDocContext = Object.assign({}, prior.docContext, {
@@ -111,11 +279,13 @@ function _initQaSession() {
     }
     if (prior.filePath) _modalFilePath = prior.filePath;
     _showThreadWrap();
-    // Defer scroll — container just transitioned from display:none, layout not yet computed
     requestAnimationFrame(function() {
       var thread = document.getElementById('modal-qa-thread');
       if (thread) thread.scrollTop = thread.scrollHeight;
     });
+    if (_qaQueue.length > 0 && !_qaProcessing) {
+      setTimeout(_qaResumeQueuedMessages, 0);
+    }
   } else {
     _qaHistory = [];
     document.getElementById('modal-qa-thread').innerHTML = '';
@@ -127,9 +297,13 @@ function _initQaSession() {
 }
 
 function clearQaConversation() {
+  const runtime = _qaGetRuntime(_qaSessionKey);
+  if (_qaAbortController) _qaAbortController.abort();
+  if (runtime?.abortController && runtime.abortController !== _qaAbortController) runtime.abortController.abort();
   _qaHistory = [];
   _qaQueue = [];
   _qaProcessing = false;
+  _qaAbortController = null;
   document.getElementById('modal-qa-thread').innerHTML = '';
   var wrap = document.getElementById('modal-qa-thread-wrap');
   var expandBar = document.getElementById('qa-expand-bar');
@@ -137,6 +311,7 @@ function clearQaConversation() {
   if (expandBar) expandBar.style.display = 'none';
   if (_qaSessionKey) {
     _qaSessions.delete(_qaSessionKey);
+    _qaRuntime.set(_qaSessionKey, { history: [], processing: false, abortController: null, queue: [] });
     _saveQaSessions();
   }
 }
@@ -164,7 +339,6 @@ function modalSend() {
   var thread = document.getElementById('modal-qa-thread');
   const selection = _modalDocContext.selection || '';
 
-  // Clear input immediately so user can type next message
   input.value = '';
   _modalDocContext.selection = '';
   document.getElementById('modal-qa-pill').style.display = 'none';
@@ -174,63 +348,79 @@ function modalSend() {
       showToast('cmd-toast', 'Queue full — wait for current response', false);
       return;
     }
-    // Queue the message — show only grey queued indicator (blue bubble shows when processing starts)
     _qaQueue.push({ message, selection });
-    const preview = escHtml(message.length > 60 ? message.slice(0, 57) + '...' : message);
-    thread.insertAdjacentHTML('beforeend', '<div class="qa-queued-item" style="color:var(--muted);font-size:10px;padding:4px 8px">Queued: "' + preview + '"</div>');
+    thread.insertAdjacentHTML('beforeend', _qaBuildQueuedHtml(message));
     thread.scrollTop = thread.scrollHeight;
     _showThreadWrap();
+    _qaSaveActiveSessionState();
     return;
   }
 
-  // Show message in thread when processing starts (not when queued)
   _renderQaUserMessage(thread, message, selection);
-
+  _qaSaveActiveSessionState();
   _processQaMessage(message, selection);
 }
 
-async function _processQaMessage(message, selection) {
-  const thread = document.getElementById('modal-qa-thread');
-  const btn = document.getElementById('modal-send-btn');
-  _qaProcessing = true;
+async function _processQaMessage(message, selection, opts) {
+  const sessionKey = opts?.sessionKey || _qaSessionKey;
+  if (!sessionKey) return;
+  const runtime = _qaGetRuntime(sessionKey);
+  if (!runtime) return;
 
-  // Capture state now — closeModal may null these while we're awaiting
-  const capturedFilePath = _modalFilePath;
-  const capturedDocContext = { ..._modalDocContext };
+  const prior = _qaSessions.get(sessionKey);
+  const capturedFilePath = opts?.filePath !== undefined ? opts.filePath : (prior?.filePath || _modalFilePath);
+  const capturedDocContext = Object.assign({}, prior?.docContext || {}, opts?.docContext || (_qaIsActiveSession(sessionKey) ? _modalDocContext : {}));
+  const isActiveSession = _qaIsActiveSession(sessionKey);
 
-  // Show processing badge on the source card
+  runtime.processing = true;
+  const abortController = new AbortController();
+  runtime.abortController = abortController;
+  if (isActiveSession) {
+    _qaProcessing = true;
+    _qaAbortController = abortController;
+  }
+
   const sourceCard = findCardForFile(capturedFilePath);
   if (sourceCard) showNotifBadge(sourceCard, 'processing');
 
   const loadingId = 'chat-loading-' + Date.now();
-  const qaQueueBadge = _qaQueue.length > 0 ? ' <span style="font-size:9px;color:var(--muted);background:var(--surface);padding:1px 5px;border-radius:8px;border:1px solid var(--border)">+' + _qaQueue.length + ' queued</span>' : '';
-  _qaAbortController = new AbortController();
-  thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-loading" id="' + loadingId + '">' +
-    '<div class="dot-pulse"><span></span><span></span><span></span></div> ' +
-    '<span id="' + loadingId + '-text">Thinking...</span> ' +
-    '<span id="' + loadingId + '-time" style="font-size:10px;color:var(--muted)"></span>' +
-    ' <button onclick="qaAbort()" style="font-size:9px;padding:2px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--red);cursor:pointer">Stop</button>' +
-    qaQueueBadge + '</div>');
-  thread.scrollTop = thread.scrollHeight;
+  const loadingHtml = _qaBuildLoadingHtml(loadingId, runtime.queue.length);
+  const startThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+    tmp.insertAdjacentHTML('beforeend', loadingHtml);
+  });
+  _qaPersistSession(sessionKey, {
+    threadHtml: startThreadHtml,
+    docContext: capturedDocContext,
+    filePath: capturedFilePath,
+    history: runtime.history,
+    queue: runtime.queue,
+  });
 
-  const isPlanEdit = _modalFilePath && _modalFilePath.match(/^plans\/.*\.md$/);
+  const isPlanEdit = capturedFilePath && capturedFilePath.match(/^plans\/.*\.md$/);
   const qaStartTime = Date.now();
   const qaPhases = isPlanEdit
     ? [[0,'Reading plan...'],[3000,'Analyzing structure...'],[8000,'Researching context...'],[15000,'Drafting revisions...'],[30000,'Writing updated plan...'],[60000,'Still working (large document)...'],[120000,'Deep edit in progress...'],[300000,'Almost there...']]
     : [[0,'Thinking...'],[3000,'Reading document...'],[8000,'Analyzing...'],[20000,'Still working...'],[60000,'Taking a while...']];
   const qaTimer = setInterval(() => {
     const elapsed = Date.now() - qaStartTime;
-    const timeEl = document.getElementById(loadingId + '-time');
-    const textEl = document.getElementById(loadingId + '-text');
+    const timeEl = _qaIsActiveSession(sessionKey) ? document.getElementById(loadingId + '-time') : null;
+    const textEl = _qaIsActiveSession(sessionKey) ? document.getElementById(loadingId + '-text') : null;
     if (timeEl) timeEl.textContent = Math.floor(elapsed / 1000) + 's';
-    if (textEl) { for (let i = qaPhases.length - 1; i >= 0; i--) { if (elapsed >= qaPhases[i][0]) { textEl.textContent = qaPhases[i][1]; break; } } }
+    if (textEl) {
+      for (let i = qaPhases.length - 1; i >= 0; i--) {
+        if (elapsed >= qaPhases[i][0]) {
+          textEl.textContent = qaPhases[i][1];
+          break;
+        }
+      }
+    }
   }, 500);
 
   try {
     const res = await fetch('/api/doc-chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: _qaAbortController ? _qaAbortController.signal : undefined,
+      signal: abortController.signal,
       body: JSON.stringify({
         message,
         document: capturedDocContext.content,
@@ -238,113 +428,146 @@ async function _processQaMessage(message, selection) {
         selection: selection,
         filePath: capturedFilePath || null,
         model: window._lastStatus?.autoMode?.ccModel || undefined,
+        contentHash: capturedDocContext.content ? capturedDocContext.content.length + ':' + capturedDocContext.content.charCodeAt(0) + ':' + capturedDocContext.content.charCodeAt(capturedDocContext.content.length - 1) : undefined,
       }),
     });
     const data = await res.json();
     clearInterval(qaTimer);
-    const loadingEl = document.getElementById(loadingId);
-    if (loadingEl) loadingEl.remove();
+    const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
+    let sessionDocContext = { ...capturedDocContext };
 
     if (data.ok) {
       const borderColor = data.edited ? 'var(--green)' : 'var(--blue)';
       const suffix = data.edited ? '\n\n\u2713 Document saved.' : '';
-      const qaElapsed = Math.round((Date.now() - qaStartTime) / 1000);
-      const qaTimeLabel = '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right;padding-right:24px">' + qaElapsed + 's</div>';
-      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="border-left-color:' + borderColor + '">' + llmCopyBtn() + renderMd(data.answer + suffix) + qaTimeLabel + '</div>');
+      const answerHtml = _qaBuildAssistantHtml(data.answer + suffix, { borderColor, elapsed: qaElapsed });
+      const updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+        const loadingEl = tmp.querySelector('#' + loadingId);
+        if (loadingEl) loadingEl.remove();
+        tmp.insertAdjacentHTML('beforeend', answerHtml);
+      });
 
-      // Track conversation history
-      _qaHistory.push({ role: 'user', text: message });
-      _qaHistory.push({ role: 'assistant', text: data.answer });
+      runtime.history.push({ role: 'user', text: message });
+      runtime.history.push({ role: 'assistant', text: data.answer });
+      if (_qaIsActiveSession(sessionKey)) _qaHistory = runtime.history.slice();
 
-      // Notify sidebar page link
       _qaNotifySidebar(capturedFilePath);
-
-      // Execute any CC actions (dispatch, note, etc.)
       if (data.actions && data.actions.length > 0) {
-        for (const action of data.actions) { await ccExecuteAction(action); }
+        for (const action of data.actions) await ccExecuteAction(action);
       }
 
-      // Refresh modal body if document was edited
       if (data.edited && data.content) {
         const display = data.content.replace(/^---[\s\S]*?---\n*/m, '');
         const isJson = capturedFilePath && capturedFilePath.endsWith('.json');
-        const body = document.getElementById('modal-body');
-        if (isJson) {
-          body.textContent = display;
-        } else {
-          body.innerHTML = renderMd(display);
-          body.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
-          body.style.whiteSpace = 'normal';
+        sessionDocContext.content = display;
+        sessionDocContext.selection = '';
+        if (_qaIsActiveSession(sessionKey)) {
+          const body = document.getElementById('modal-body');
+          if (isJson) {
+            body.textContent = display;
+          } else {
+            body.innerHTML = renderMd(display);
+            body.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+            body.style.whiteSpace = 'normal';
+          }
+          _modalDocContext.content = display;
         }
-        _modalDocContext.content = display;
       }
+
+      _qaPersistSession(sessionKey, {
+        threadHtml: updatedThreadHtml,
+        docContext: sessionDocContext,
+        filePath: capturedFilePath,
+        history: runtime.history,
+        queue: runtime.queue,
+      });
     } else {
-      const qaElapsedErr = Math.round((Date.now() - qaStartTime) / 1000);
-      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(data.error || 'Failed') + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedErr + 's</div></div>');
+      const errorHtml = _qaBuildAssistantHtml('Error: ' + (data.error || 'Failed'), { color: 'var(--red)', isError: true, elapsed: qaElapsed });
+      const updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+        const loadingEl = tmp.querySelector('#' + loadingId);
+        if (loadingEl) loadingEl.remove();
+        tmp.insertAdjacentHTML('beforeend', errorHtml);
+      });
+      _qaPersistSession(sessionKey, {
+        threadHtml: updatedThreadHtml,
+        docContext: sessionDocContext,
+        filePath: capturedFilePath,
+        history: runtime.history,
+        queue: runtime.queue,
+      });
     }
   } catch (e) {
     clearInterval(qaTimer);
-    const loadingEl = document.getElementById(loadingId);
-    if (loadingEl) loadingEl.remove();
     const qaElapsedExc = Math.round((Date.now() - qaStartTime) / 1000);
-    if (e.name === 'AbortError') {
-      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--muted)">Stopped<div style="font-size:9px;margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>');
-    } else {
-      thread.insertAdjacentHTML('beforeend', '<div class="modal-qa-a" style="color:var(--red)">Error: ' + escHtml(e.message) + '<div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">' + qaElapsedExc + 's</div></div>');
-    }
-  }
-
-  _qaProcessing = false;
-  _qaAbortController = null;
-  thread.scrollTop = thread.scrollHeight;
-
-  // Clear processing badge on source card (unless more messages queued)
-  if (_qaQueue.length === 0) {
-    const doneCard = findCardForFile(capturedFilePath);
-    if (doneCard) clearNotifBadge(doneCard);
-  }
-
-  // Save session (persists even if modal was closed during processing)
-  const modalIsOpen = document.getElementById('modal').classList.contains('open');
-  if (_qaSessionKey) {
-    // Use captured values if closeModal nulled the globals during processing
-    const sessionFilePath = _modalFilePath || capturedFilePath;
-    const sessionDocContext = _modalDocContext.title ? { ..._modalDocContext } : { ...capturedDocContext, ..._modalDocContext, title: capturedDocContext.title };
-    _qaSessions.set(_qaSessionKey, {
-      history: _qaHistory,
-      threadHtml: thread.innerHTML,
-      docContext: sessionDocContext,
-      filePath: sessionFilePath,
+    const messageHtml = e.name === 'AbortError'
+      ? _qaBuildAssistantHtml('Stopped', { color: 'var(--muted)', isError: true, elapsed: qaElapsedExc })
+      : _qaBuildAssistantHtml('Error: ' + e.message, { color: 'var(--red)', isError: true, elapsed: qaElapsedExc });
+    const updatedThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+      const loadingEl = tmp.querySelector('#' + loadingId);
+      if (loadingEl) loadingEl.remove();
+      tmp.insertAdjacentHTML('beforeend', messageHtml);
     });
-    _saveQaSessions();
-    // Show notification badge on source card when modal was closed during processing
-    if (!modalIsOpen) {
-      const card = findCardForFile(sessionFilePath);
-      if (card) showNotifBadge(card, _qaQueue.length > 0 ? 'processing' : 'done');
-      _qaSessionKey = '';
-    }
+    _qaPersistSession(sessionKey, {
+      threadHtml: updatedThreadHtml,
+      docContext: capturedDocContext,
+      filePath: capturedFilePath,
+      history: runtime.history,
+      queue: runtime.queue,
+    });
   }
 
-  // Process next queued message
-  if (_qaQueue.length > 0) {
-    const next = _qaQueue.shift();
-    // Remove the queued indicator and show the blue user bubble now that it's processing
-    const queuedEl = thread.querySelector('.qa-queued-item');
-    if (queuedEl) queuedEl.remove();
-    _renderQaUserMessage(thread, next.message, next.selection);
-    _processQaMessage(next.message, next.selection);
-  } else if (modalIsOpen) {
+  runtime.processing = false;
+  runtime.abortController = null;
+  if (_qaIsActiveSession(sessionKey)) {
+    _qaProcessing = false;
+    _qaAbortController = null;
+  }
+
+  if (runtime.queue.length === 0) {
+    const doneCard = findCardForFile(capturedFilePath);
+    if (_qaIsActiveSession(sessionKey)) {
+      if (doneCard) clearNotifBadge(doneCard);
+    } else if (doneCard) {
+      showNotifBadge(doneCard, 'done');
+    }
+  } else {
+    const pendingCard = findCardForFile(capturedFilePath);
+    if (pendingCard) showNotifBadge(pendingCard, 'processing');
+  }
+
+  if (runtime.queue.length > 0) {
+    const next = runtime.queue.shift();
+    const nextThreadHtml = _qaMutateThreadHtml(sessionKey, tmp => {
+      const queuedEl = tmp.querySelector('.qa-queued-item');
+      if (queuedEl) queuedEl.remove();
+      tmp.insertAdjacentHTML('beforeend', _qaBuildUserMessageHtml(next.message, next.selection));
+    });
+    _qaPersistSession(sessionKey, {
+      threadHtml: nextThreadHtml,
+      docContext: (_qaSessions.get(sessionKey) || {}).docContext || capturedDocContext,
+      filePath: capturedFilePath,
+      history: runtime.history,
+      queue: runtime.queue,
+    });
+    if (_qaIsActiveSession(sessionKey)) _qaQueue = _qaCloneQueue(runtime.queue);
+    _processQaMessage(next.message, next.selection, {
+      sessionKey,
+      filePath: capturedFilePath,
+      docContext: (_qaSessions.get(sessionKey) || {}).docContext || capturedDocContext,
+    });
+  } else if (_qaIsActiveSession(sessionKey)) {
+    _qaQueue = [];
     document.getElementById('modal-qa-input')?.focus();
   }
 }
 
 function qaAbort() {
-  if (_qaAbortController) {
-    _qaAbortController.abort();
-    _qaAbortController = null;
+  const runtime = _qaGetRuntime(_qaSessionKey);
+  if (runtime?.abortController) {
+    runtime.abortController.abort();
+    runtime.abortController = null;
   }
-  // Don't reset _qaProcessing here — the catch block in _processQaMessage handles it,
-  // avoiding a double-drain race on _qaQueue from a microtask gap.
+  if (_qaAbortController) _qaAbortController = null;
+  // Don't reset _qaProcessing here — the catch block in _processQaMessage handles it.
   // Don't clear _qaQueue — queued messages auto-process after abort.
 }
 

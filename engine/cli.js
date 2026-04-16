@@ -51,6 +51,18 @@ function handleCommand(cmd, args) {
 
 const commands = {
   start() {
+    // Startup state-file size guard (#1167): dispatch.json / cooldowns.json
+    // bloated past 100 MB silently OOMed V8 on JSON.parse at startup. Fail fast
+    // with an actionable message instead.
+    try {
+      for (const fp of [DISPATCH_PATH, path.join(ENGINE_DIR, 'cooldowns.json')]) {
+        shared.assertStateFileSize(fp);
+      }
+    } catch (stateErr) {
+      console.error('\n[engine] STARTUP ABORTED — ' + stateErr.message + '\n');
+      process.exit(78); // 78 = configuration error
+    }
+
     // Run preflight checks (warn but don't block — engine may still be useful)
     try {
       const { runPreflight, printPreflight } = require('./preflight');

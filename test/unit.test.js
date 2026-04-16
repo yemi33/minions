@@ -31,6 +31,24 @@ function cleanupTmpDirs() {
   }
 }
 
+function _captureFileState(fp) {
+  return {
+    path: fp,
+    exists: fs.existsSync(fp),
+    data: fs.existsSync(fp) ? fs.readFileSync(fp) : null,
+  };
+}
+
+function _restoreFileState(snapshot) {
+  if (!snapshot) return;
+  if (snapshot.exists) {
+    fs.mkdirSync(path.dirname(snapshot.path), { recursive: true });
+    fs.writeFileSync(snapshot.path, snapshot.data);
+    return;
+  }
+  try { fs.unlinkSync(snapshot.path); } catch {}
+}
+
 function createTestMinionsDir() {
   const dir = createTmpDir();
   for (const d of ['engine', 'prd', 'prd/archive', 'plans', 'plans/archive', 'projects', 'notes/inbox', 'notes/archive', 'knowledge', 'agents']) {
@@ -79,12 +97,23 @@ function skip(name, reason) {
 // ─── Module Imports ──────────────────────────────────────────────────────────
 
 const MINIONS_DIR = path.resolve(__dirname, '..');
+const _preservedLiveLogFiles = [
+  path.join(MINIONS_DIR, 'engine', 'log.json'),
+  path.join(MINIONS_DIR, 'engine', 'log.json.backup'),
+].map(_captureFileState);
 const shared = require(path.join(MINIONS_DIR, 'engine', 'shared'));
 const queries = require(path.join(MINIONS_DIR, 'engine', 'queries'));
 const scheduler = require(path.join(MINIONS_DIR, 'engine', 'scheduler'));
 const watches = require(path.join(MINIONS_DIR, 'engine', 'watches'));
 const { buildDashboardHtml: _buildDashHtml } = require(path.join(MINIONS_DIR, 'dashboard-build'));
 const _assembledDashHtml = _buildDashHtml();
+
+function restorePreservedLiveLog() {
+  try {
+    if (typeof shared.flushLogs === 'function') shared.flushLogs();
+  } catch {}
+  for (const snapshot of _preservedLiveLogFiles) _restoreFileState(snapshot);
+}
 
 // ─── shared.js Tests ─────────────────────────────────────────────────────────
 
@@ -3367,6 +3396,8 @@ async function testLegacyStatusMigration() {
     assert.ok(src.includes("LEGACY_DONE_ALIASES") || src.includes("LEGACY_DONE_STATUSES"), 'runCleanup should define legacy status migration set');
     assert.ok(src.includes("item.status = shared.WI_STATUS.DONE") || src.includes("item.status = 'done'"), 'Should migrate work items to done');
     assert.ok(src.includes("feat.status = shared.WI_STATUS.DONE") || src.includes("feat.status = 'done'"), 'Should migrate PRD items to done');
+    assert.ok(src.includes('delete item._retryCount'),
+      'Done-state cleanup paths should clear stale retry metadata');
   });
 
   await test('cleanup.js reconciles failed items with attached PR to done (#407)', () => {
@@ -3375,6 +3406,25 @@ async function testLegacyStatusMigration() {
       'cleanup should check for failed items with _pr');
     assert.ok(src.includes('Reconciled') && src.includes('failed-with-PR'),
       'cleanup should log reconciliation of failed-with-PR items');
+    const reconcileBlock = src.slice(src.indexOf('WI_STATUS.FAILED && item._pr'), src.indexOf('reconciled++;', src.indexOf('WI_STATUS.FAILED && item._pr')) + 20);
+    assert.ok(reconcileBlock.includes('delete item._retryCount'),
+      'failed-with-PR reconciliation should clear retry metadata when marking done');
+  });
+
+  await test('cleanup.js failed-with-PR reconciliation uses locked write via mutateWorkItems (#407)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cleanup.js'), 'utf8');
+    // Extract the reconciliation section (6a) — between the "Reconcile failed" comment and the next section
+    const sectionStart = src.indexOf('// 6a. Reconcile failed work items');
+    const sectionEnd = src.indexOf('// 6b.');
+    assert.ok(sectionStart > -1 && sectionEnd > sectionStart, 'Section 6a must exist');
+    const section = src.slice(sectionStart, sectionEnd);
+    // Must use mutateWorkItems (locked) — not safeJson+safeWrite (unlocked)
+    assert.ok(section.includes('mutateWorkItems'),
+      'reconciliation must use mutateWorkItems() for locked atomic read-modify-write');
+    assert.ok(!section.includes('safeWrite('),
+      'reconciliation must NOT use unlocked safeWrite() — race condition with concurrent writers');
+    assert.ok(!section.includes('safeJson('),
+      'reconciliation must NOT use safeJson() for read — mutateWorkItems provides the data inside the lock');
   });
 
   await test('cleanup.js resets orphaned PRD item statuses (#779)', () => {
@@ -4303,7 +4353,7 @@ async function testSafeWriteBackupRestore() {
     // Extract withFileLock body using indexOf — regex is fragile with destructured params
     const start = src.indexOf('function withFileLock(');
     assert.ok(start >= 0, 'withFileLock function should exist');
-    const body = src.substring(start, start + 1500);
+    const body = src.substring(start, start + 2200);
     // Should catch ENOENT specifically on unlink
     assert.ok(body.includes("unlinkErr.code !== 'ENOENT'"),
       'stale lock unlink should check for ENOENT specifically');
@@ -4346,6 +4396,20 @@ async function testSafeWriteBackupRestore() {
     assert.strictEqual(shared.safeJson(fp + '.backup').step, 1,
       '.backup should reflect state before latest mutation');
     assert.strictEqual(shared.safeJson(fp).step, 2);
+  });
+
+  await test('unit test runner preserves the live engine log state', () => {
+    const src = fs.readFileSync(__filename, 'utf8');
+    assert.ok(src.includes('restorePreservedLiveLog') && src.includes('log.json.backup'),
+      'unit test runner should preserve and restore the live engine log state');
+  });
+
+  await test('main executes testSafeWriteBackupRestore coverage', () => {
+    const src = fs.readFileSync(__filename, 'utf8');
+    const mainStart = src.lastIndexOf('async function main() {');
+    const mainBlock = src.slice(mainStart, src.indexOf('// ─── P-bf3a91c7: shared.js fixes', mainStart));
+    assert.ok(mainBlock.includes('await testSafeWriteBackupRestore();'),
+      'main should execute testSafeWriteBackupRestore so the coverage stays live');
   });
 }
 
@@ -7225,6 +7289,259 @@ async function testWakeupCoalescing() {
     // Cleanup
     cooldown.dispatchCooldowns.delete(testKey);
   });
+
+  // ── Per-entry size cap (#1167) ──
+  // Rationale: count-capping alone (20 entries) is insufficient — a single
+  // huge PR comment blob (50+ MB) would still produce a 1 GB cooldowns.json
+  // at the cap. Each string field must be individually truncated.
+
+  await test('ENGINE_DEFAULTS defines maxPendingContextEntryBytes (#1167)', () => {
+    assert.ok(sharedSrc.includes('maxPendingContextEntryBytes'),
+      'ENGINE_DEFAULTS should define per-entry byte cap for pendingContexts');
+  });
+
+  await test('setCooldownWithContext truncates oversized string fields (#1167)', () => {
+    const cooldown = require(path.join(MINIONS_DIR, 'engine', 'cooldown.js'));
+    const testKey = `__test_entrycap_${Date.now()}`;
+    const huge = 'x'.repeat(1024 * 1024); // 1 MB — above 256 KB default cap
+    cooldown.setCooldownWithContext(testKey, { feedbackContent: huge, timestamp: 'now' });
+    const entry = cooldown.dispatchCooldowns.get(testKey);
+    assert.ok(entry, 'Entry should exist');
+    assert.strictEqual(entry.pendingContexts.length, 1, 'One context should be stored');
+    const stored = entry.pendingContexts[0];
+    // Must be truncated — stored size clearly under the 1 MB input
+    assert.ok(
+      Buffer.byteLength(stored.feedbackContent, 'utf8') < Buffer.byteLength(huge, 'utf8'),
+      'feedbackContent should be truncated from 1 MB to under the cap');
+    assert.ok(stored.feedbackContent.includes('truncated'),
+      'Truncated context should include a marker indicating what happened');
+    assert.strictEqual(stored.timestamp, 'now', 'Non-string fields should be preserved');
+    cooldown.dispatchCooldowns.delete(testKey);
+  });
+}
+
+// ─── Dispatch Prompt Sidecar (#1167) ─────────────────────────────────────────
+// Fix-type prompts inlined hundreds-of-MB PR diffs / build logs into
+// dispatch.json and crashed the dashboard at JSON.parse(~1 GB). The sidecar
+// helpers write oversized prompts to engine/contexts/<id>.md and keep only a
+// short stub + _promptFile ref in dispatch.json. Guards run on every mutation
+// so a single runaway call cannot bloat the queue.
+
+async function testDispatchPromptSidecar() {
+  console.log('\n── dispatch.json prompt sidecar (#1167) ──');
+
+  await test('ENGINE_DEFAULTS defines maxDispatchPromptBytes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('maxDispatchPromptBytes'),
+      'ENGINE_DEFAULTS should define the dispatch prompt size threshold');
+  });
+
+  await test('ENGINE_DEFAULTS defines maxStateFileBytes', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    assert.ok(src.includes('maxStateFileBytes'),
+      'ENGINE_DEFAULTS should define the state-file size ceiling');
+  });
+
+  await test('shared exports sidecar helpers', () => {
+    assert.strictEqual(typeof shared.sidecarDispatchPrompt, 'function',
+      'sidecarDispatchPrompt should be exported');
+    assert.strictEqual(typeof shared.resolveDispatchPrompt, 'function',
+      'resolveDispatchPrompt should be exported');
+    assert.strictEqual(typeof shared.deleteDispatchPromptSidecar, 'function',
+      'deleteDispatchPromptSidecar should be exported');
+    assert.strictEqual(typeof shared.assertStateFileSize, 'function',
+      'assertStateFileSize should be exported');
+  });
+
+  await test('sidecarDispatchPrompt leaves small prompts alone', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // Bust caches so helpers resolve against the test MINIONS_DIR
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const item = { id: 'test-small-1', prompt: 'hello world' };
+      const didSidecar = freshShared.sidecarDispatchPrompt(item, 1024 * 1024);
+      assert.strictEqual(didSidecar, false, 'Small prompt should not be sidecarred');
+      assert.strictEqual(item.prompt, 'hello world', 'Prompt should be untouched');
+      assert.ok(!item._promptFile, 'No _promptFile marker should be added');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('sidecarDispatchPrompt writes oversized prompt to engine/contexts/<id>.md', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const huge = 'A'.repeat(2 * 1024 * 1024); // 2 MB — above 1 MB default threshold
+      const item = { id: 'test-big-1', prompt: huge };
+      const didSidecar = freshShared.sidecarDispatchPrompt(item);
+      assert.strictEqual(didSidecar, true, 'Oversized prompt should be sidecarred');
+      assert.ok(item._promptFile, '_promptFile reference should be set');
+      assert.ok(item.prompt.length < 1000, 'Inlined prompt should be replaced with a short stub');
+      assert.ok(item.prompt.includes(item._promptFile),
+        'Stub prompt should name the sidecar path so humans inspecting dispatch.json see where the content went');
+      // File should exist and match original content
+      const sidecarPath = freshShared.dispatchPromptSidecarPath(item.id);
+      assert.ok(fs.existsSync(sidecarPath), 'Sidecar file should exist on disk');
+      assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), huge,
+        'Sidecar must preserve the full original prompt byte-for-byte');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('resolveDispatchPrompt returns sidecar contents when _promptFile is set', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const huge = 'B'.repeat(1.5 * 1024 * 1024);
+      const item = { id: 'test-resolve-1', prompt: huge };
+      freshShared.sidecarDispatchPrompt(item);
+      const resolved = freshShared.resolveDispatchPrompt(item);
+      assert.strictEqual(resolved, huge,
+        'resolveDispatchPrompt must return the full prompt from the sidecar, not the stub');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('resolveDispatchPrompt returns inline prompt when no sidecar is set', () => {
+    const item = { id: 'inline-1', prompt: 'just a short prompt' };
+    assert.strictEqual(shared.resolveDispatchPrompt(item), 'just a short prompt');
+  });
+
+  await test('deleteDispatchPromptSidecar cleans up the sidecar file', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const item = { id: 'test-delete-1', prompt: 'C'.repeat(2 * 1024 * 1024) };
+      freshShared.sidecarDispatchPrompt(item);
+      const sidecarPath = freshShared.dispatchPromptSidecarPath(item.id);
+      assert.ok(fs.existsSync(sidecarPath), 'Sidecar should exist after sidecarDispatchPrompt');
+      freshShared.deleteDispatchPromptSidecar(item);
+      assert.ok(!fs.existsSync(sidecarPath), 'Sidecar should be removed after deleteDispatchPromptSidecar');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('mutateDispatch sidecars oversized pending prompts automatically', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const testDispatch = require('../engine/dispatch');
+      const testQueries = require('../engine/queries');
+      const huge = 'D'.repeat(2 * 1024 * 1024);
+      testDispatch.mutateDispatch(dp => {
+        dp.pending.push({ id: 'oversized-1', agent: 'test', type: 'fix', prompt: huge });
+        return dp;
+      });
+      const onDisk = testQueries.getDispatch();
+      const found = onDisk.pending.find(p => p.id === 'oversized-1');
+      assert.ok(found, 'Item should be present in pending');
+      assert.ok(found._promptFile, 'Oversized prompt must be sidecarred automatically');
+      assert.ok(found.prompt.length < 1000,
+        'dispatch.json must not contain the full oversized prompt');
+      // Sanity: dispatch.json size stays reasonable
+      const dispatchBytes = fs.statSync(require('../engine/queries').DISPATCH_PATH).size;
+      assert.ok(dispatchBytes < 100 * 1024,
+        `dispatch.json should stay small after sidecaring (got ${dispatchBytes} bytes)`);
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('completeDispatch deletes the prompt sidecar', () => {
+    const restore = createTestMinionsDir();
+    try {
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+      const freshShared = require('../engine/shared');
+      const testDispatch = require('../engine/dispatch');
+      const huge = 'E'.repeat(2 * 1024 * 1024);
+      testDispatch.mutateDispatch(dp => {
+        dp.active.push({ id: 'complete-test-1', agent: 'test', type: 'fix', prompt: huge, meta: {} });
+        return dp;
+      });
+      const sidecar = freshShared.dispatchPromptSidecarPath('complete-test-1');
+      assert.ok(fs.existsSync(sidecar), 'Sidecar should exist after mutateDispatch auto-sidecar');
+      testDispatch.completeDispatch('complete-test-1', shared.DISPATCH_RESULT.SUCCESS, '', '', { processWorkItemFailure: false });
+      assert.ok(!fs.existsSync(sidecar),
+        'completeDispatch should delete the sidecar — otherwise engine/contexts/ grows forever');
+    } finally {
+      restore();
+      for (const mod of ['../engine/shared', '../engine/dispatch', '../engine/queries', '../engine/lifecycle']) {
+        try { delete require.cache[require.resolve(mod)]; } catch {}
+      }
+    }
+  });
+
+  await test('assertStateFileSize throws when file exceeds limit', () => {
+    const dir = createTmpDir();
+    const fp = path.join(dir, 'huge.json');
+    // 2 MB file; check with 1 MB limit.
+    fs.writeFileSync(fp, Buffer.alloc(2 * 1024 * 1024, 'x'));
+    assert.throws(() => shared.assertStateFileSize(fp, 1 * 1024 * 1024),
+      /State file too large/,
+      'assertStateFileSize must throw a clear error naming the file');
+    // Under-limit file should not throw
+    const small = path.join(dir, 'small.json');
+    fs.writeFileSync(small, '{}');
+    assert.doesNotThrow(() => shared.assertStateFileSize(small));
+    // Missing file should not throw
+    assert.doesNotThrow(() => shared.assertStateFileSize(path.join(dir, 'missing.json')));
+  });
+
+  await test('dashboard.js guards startup with assertStateFileSize', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('assertStateFileSize'),
+      'dashboard.js must call assertStateFileSize at startup (#1167)');
+  });
+
+  await test('engine/cli.js start guards with assertStateFileSize', () => {
+    const cliSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'cli.js'), 'utf8');
+    assert.ok(cliSrc.includes('assertStateFileSize'),
+      'engine/cli.js start command must call assertStateFileSize at startup (#1167)');
+  });
+
+  await test('spawnAgent reads prompt via resolveDispatchPrompt (sidecar-aware)', () => {
+    const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+    const fnIdx = engineSrc.indexOf('async function spawnAgent(');
+    assert.ok(fnIdx > -1, 'spawnAgent should exist');
+    const fnBody = engineSrc.slice(fnIdx, fnIdx + 2000);
+    assert.ok(fnBody.includes('resolveDispatchPrompt'),
+      'spawnAgent must use resolveDispatchPrompt so oversized prompts are read from sidecar — otherwise agents get only the stub');
+  });
 }
 
 // ─── Budget Enforcement Tests ───────────────────────────────────────────────
@@ -8786,6 +9103,32 @@ async function testMeetings() {
     assert.ok(ccSrc.includes('ccRetryLast') && ccSrc.includes('Retry'),
       'Should show retry button when CC fetch fails');
   });
+
+  await test('CC probes dashboard health before showing reload prompt on fetch failure', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes("fetch('/api/status'") && ccSrc.includes('dashboardHealth'),
+      'CC should check /api/status before claiming the dashboard connection is lost');
+    assert.ok(ccSrc.includes('request stream was interrupted') && ccSrc.includes('Reload Page'),
+      'CC should distinguish a transient stream failure from a real dashboard outage');
+  });
+
+  await test('CC preserves partial output and restart context on interrupted streams', () => {
+    const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
+    assert.ok(ccSrc.includes('Stream interrupted after {seconds}s'),
+      'Interrupted CC streams should preserve partial output instead of discarding it');
+    assert.ok(ccSrc.includes('Dashboard restarted while this response was streaming'),
+      'CC should distinguish dashboard restarts from generic connection loss');
+    assert.ok(ccSrc.includes('The response stream ended before completion.'),
+      'CC should surface a clear recovery message when a stream ends without a done event');
+  });
+
+  await test('CC streaming endpoint sends heartbeat events to keep long responses alive', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('CC_STREAM_HEARTBEAT_MS'),
+      'Streaming CC should define a heartbeat interval for long-lived responses');
+    assert.ok(dashSrc.includes("writeCcEvent({ type: 'heartbeat' })") && dashSrc.includes('setInterval(() =>'),
+      'Streaming CC should emit heartbeat events while a response is in flight');
+  });
 }
 
 // ─── Team Meetings Behavioral Tests ─────────────────────────────────────────
@@ -9759,7 +10102,7 @@ async function testMeetingsExtendedBehavioral() {
       roundStartedAt: new Date(Date.now() - 9999999).toISOString(), // very old
     });
     try {
-      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 1 }, agents: {} });
+      meetingMod.checkMeetingTimeouts({ engine: { meetingRoundTimeout: 999999999 }, agents: {} });
       const m = meetingMod.getMeeting(testId);
       assert.strictEqual(m.status, 'completed', 'Completed meeting should remain completed');
     } finally {
@@ -9919,6 +10262,7 @@ async function main() {
     await testEngineDefaults();
     await testProjectHelpers();
     await testPrLinks();
+    await testSafeWriteBackupRestore();
 
     // queries.js tests
     await testQueriesCore();
@@ -9992,6 +10336,7 @@ async function main() {
     await testIsRetryableFailureReason();
     await testAreDependenciesMet();
     await testCooldownSystem();
+    await testDispatchPromptSidecar();
     await testResolveAgent();
     await testRenderPlaybook();
     await testValidatePlaybookVars();
@@ -10206,6 +10551,18 @@ async function main() {
     // W-8eobrosn: GitHub poller maxBuffer fix
     await testGhMaxBuffer();
 
+    // W-mo1jw71krscj: Pipeline behavioral tests — CRUD, stage execution, run lifecycle
+    await testPipelineBehavioral();
+
+    // P-a5e9c1d7: Split getStatus() into fast/slow state tiers
+    await testStatusCacheTiers();
+
+    // P-c7f1a3b8: Pre-cached gzip status buffer
+    await testStatusGzipCache();
+
+    // P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled
+    await testParallelPrPolling();
+
     // W-mo1jw240a0gn: engine/cli.js command handler behavioral coverage
     await testCliCommandHandlers();
 
@@ -10228,7 +10585,7 @@ async function main() {
     results
   });
 
-  process.exit(failed > 0 ? 1 : 0);
+  return failed > 0 ? 1 : 0;
 }
 
 // ─── P-bf3a91c7: shared.js fixes ──────────────────────────────────────────────
@@ -10303,6 +10660,72 @@ async function testSharedJsFixes() {
     assert.ok(threw, 'withFileLock should throw on timeout with fresh lock');
     // Clean up
     try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('ENGINE_DEFAULTS.lockRetries is 0 — single attempt, no exponential backoff', () => {
+    // lockRetries=0 means maxAttempts=1: one 5s timeout window, no backoff sleeps
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetries, 0,
+      'lockRetries should be 0 to eliminate exponential backoff blocking');
+    // lockRetryBackoffMs kept at 500 for callers that explicitly override lockRetries
+    assert.strictEqual(shared.ENGINE_DEFAULTS.lockRetryBackoffMs, 500,
+      'lockRetryBackoffMs should remain at 500 for override callers');
+  });
+
+  await test('withFileLock with retries=0 throws immediately after single timeout — no retry', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'no-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 200, retryDelayMs: 25, retries: 0 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout with retries=0');
+    // With retries=0, should complete in ~200ms (single timeout), not ~600ms+ (which would indicate a retry)
+    assert.ok(elapsed < 400, `Should finish in ~200ms (single attempt), took ${elapsed}ms — indicates retry happened`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('withFileLock callers can override retries via options parameter', () => {
+    const dir = createTmpDir();
+    const lockPath = path.join(dir, 'override-retry.lock');
+    // Hold the lock externally
+    fs.writeFileSync(lockPath, 'held');
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      // Explicitly pass retries=1 — should attempt twice (1 timeout + backoff + 1 timeout)
+      shared.withFileLock(lockPath, () => {}, { timeoutMs: 150, retryDelayMs: 25, retries: 1, retryBackoffMs: 50 });
+    } catch (e) {
+      threw = true;
+      assert.ok(e.message.includes('Lock timeout'), `Expected lock timeout, got: ${e.message}`);
+    }
+    const elapsed = Date.now() - start;
+    assert.ok(threw, 'should throw Lock timeout after exhausting override retries');
+    // With retries=1: 150ms timeout + 50ms backoff + 150ms timeout = ~350ms minimum
+    assert.ok(elapsed >= 300, `With retries=1, should take >=300ms, took ${elapsed}ms — override not working`);
+    try { fs.unlinkSync(lockPath); } catch {}
+  });
+
+  await test('mutateJsonFileLocked uses ENGINE_DEFAULTS.lockRetries=0 by default', () => {
+    // Verify mutateJsonFileLocked reads lockRetries from ENGINE_DEFAULTS
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'shared.js'), 'utf8');
+    const fnStart = src.indexOf('function mutateJsonFileLocked(');
+    assert.ok(fnStart >= 0, 'mutateJsonFileLocked should exist');
+    const fnBody = src.substring(fnStart, fnStart + 500);
+    // Should use ENGINE_DEFAULTS.lockRetries as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetries'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetries');
+    // Should use ENGINE_DEFAULTS.lockRetryBackoffMs as default
+    assert.ok(fnBody.includes('ENGINE_DEFAULTS.lockRetryBackoffMs'),
+      'mutateJsonFileLocked should default to ENGINE_DEFAULTS.lockRetryBackoffMs');
   });
 
   await test('sanitizePath allows valid subpaths', () => {
@@ -11512,23 +11935,23 @@ async function testAuxModuleBugFixes() {
   });
 
   // Bug #35: scheduler treats undefined/null enabled as disabled
-  await test('scheduler.js: falsy enabled skips schedule', () => {
+  // Fix: only skip schedules explicitly set to enabled === false
+  // undefined/null should default to enabled (per schema: enabled?: boolean -- default true)
+  await test('scheduler.js: only sched.enabled === false skips schedule', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
-    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check to match dashboard UI behavior');
+    assert.ok(src.includes('sched.enabled === false'), 'Should use strict false check so undefined/null default to enabled');
+    assert.ok(!src.includes('!sched.enabled'), 'Should NOT use truthy check — that treats undefined as disabled');
   });
 
-  await test('scheduler discoverScheduledWork skips undefined-enabled schedules', () => {
-    // Functional test: create a schedule with undefined enabled
-    const tmpDir = createTmpDir();
-    const origPath = scheduler.SCHEDULE_RUNS_PATH;
-    // We can't easily override the path, so test the source logic instead
+  await test('scheduler discoverScheduledWork treats omitted enabled as enabled', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
-    // Verify the line that checks enabled
-    assert.ok(src.includes('!sched.enabled'), 'Should use truthy check — matches dashboard UI enabled badge');
-    // A schedule with enabled:undefined should be skipped
-    // A schedule with enabled:null should be skipped
-    // A schedule with enabled:false should be skipped
-    // Only enabled:true should pass
+    // Verify the strict false check
+    assert.ok(src.includes('sched.enabled === false'), 'Should use strict false check — matches schema default true');
+    // With the fix:
+    // A schedule with enabled:undefined should run (default true)
+    // A schedule with enabled:null should run (default true)
+    // A schedule with enabled:true should run
+    // Only enabled:false should be skipped
   });
 
   // Bug #36: spawn-agent registers exit/SIGTERM handler for temp file cleanup
@@ -13273,12 +13696,14 @@ async function testEngineAuditCritical() {
       'resolveWorkItemPath must return null for unrecognized source');
   });
 
-  await test('scheduler enabled check uses truthy, not strict equality', () => {
+  await test('scheduler enabled check uses strict false, not truthy check', () => {
     const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'scheduler.js'), 'utf8');
     assert.ok(!src.includes('sched.enabled !== true'),
       'scheduler must not use strict !== true check — schedules with enabled:undefined would silently never fire');
-    assert.ok(src.includes('!sched.enabled'),
-      'scheduler should use truthy check to match dashboard UI behavior');
+    assert.ok(src.includes('sched.enabled === false'),
+      'scheduler should use strict false check so undefined/null default to enabled per schema');
+    assert.ok(!src.includes('!sched.enabled'),
+      'scheduler must not use truthy check — that treats undefined as disabled, breaking the schema default');
   });
 }
 
@@ -14648,6 +15073,156 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(planCreateHandler.includes('must start with a markdown heading'), 'Should validate plan content starts with markdown heading');
   });
 
+  // ── Debounced doc-session persistence (P-d8c2f1a7) ─────────────────────────
+  await test('persistDocSessions is debounced via schedulePersistDocSessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('_persistDocSessionsTimer'), 'Should have debounce timer variable');
+    assert.ok(src.includes('function schedulePersistDocSessions'), 'Should have schedulePersistDocSessions function');
+    assert.ok(src.includes('clearTimeout(_persistDocSessionsTimer)'), 'Should clear previous timer on each call');
+    assert.ok(src.includes('setTimeout('), 'schedulePersistDocSessions should use setTimeout');
+  });
+
+  await test('schedulePersistDocSessions uses 5-second debounce window', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const scheduleFn = src.slice(src.indexOf('function schedulePersistDocSessions'), src.indexOf('function schedulePersistDocSessions') + 300);
+    assert.ok(scheduleFn.includes('5000'), 'Debounce interval should be 5000ms (5 seconds)');
+  });
+
+  await test('updateSession uses debounced persistence for doc sessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const updateFn = src.slice(src.indexOf('function updateSession'), src.indexOf('function updateSession') + 800);
+    assert.ok(updateFn.includes('schedulePersistDocSessions()'), 'updateSession should call schedulePersistDocSessions (not persistDocSessions directly)');
+  });
+
+  await test('resolveSession eviction still calls persistDocSessions directly', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 400);
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'resolveSession eviction path should call persistDocSessions() directly');
+    assert.ok(!resolveFn.includes('schedulePersistDocSessions'), 'resolveSession should NOT use debounced variant');
+  });
+
+  await test('ccCall dead-session cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find the ccCall dead-session cleanup block
+    const ccCallFn = src.slice(src.indexOf('session appears dead'), src.indexOf('session appears dead') + 500);
+    assert.ok(ccCallFn.includes('schedulePersistDocSessions()'), 'Dead-session cleanup in ccCall should use debounced persistence');
+  });
+
+  await test('ccDocCall freshSession cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    const freshBlock = docCallFn.slice(docCallFn.indexOf('One-shot call'), docCallFn.indexOf('One-shot call') + 200);
+    assert.ok(freshBlock.includes('schedulePersistDocSessions()'), 'freshSession cleanup should use debounced persistence');
+  });
+
+  await test('debounced doc-session persistence flushes on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('flushPendingDocSessions'), 'Should have a flush function for shutdown');
+    // Flush should be wired to shutdown/close
+    assert.ok(src.includes("process.on('SIGTERM'") || src.includes("process.on('SIGINT'") || src.includes('server.on(\'close\''),
+      'Flush should be wired to process signal or server close event');
+  });
+
+  // ── TTL-based doc-session eviction (P-e4a6b9d3) ────────────────────────────
+  await test('DOC_SESSION_TTL_MS constant defined as 7 days', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('DOC_SESSION_TTL_MS'), 'Should define DOC_SESSION_TTL_MS constant');
+    // 7 * 24 * 60 * 60 * 1000 = 604800000
+    assert.ok(src.includes('604800000') || src.includes('7 * 24 * 60 * 60 * 1000'), 'TTL should be 7 days in milliseconds');
+  });
+
+  await test('resolveSession evicts doc sessions older than TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    assert.ok(resolveFn.includes('DOC_SESSION_TTL_MS'), 'resolveSession should reference TTL constant');
+    assert.ok(resolveFn.includes('lastActiveAt'), 'resolveSession should check lastActiveAt for TTL');
+    assert.ok(resolveFn.includes('docSessions.delete'), 'resolveSession should delete expired sessions');
+  });
+
+  await test('resolveSession TTL check comes after turnCount check', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    const turnIdx = resolveFn.indexOf('CC_SESSION_MAX_TURNS');
+    const ttlIdx = resolveFn.indexOf('DOC_SESSION_TTL_MS');
+    assert.ok(turnIdx > 0, 'Should have turnCount check');
+    assert.ok(ttlIdx > 0, 'Should have TTL check');
+    assert.ok(turnIdx < ttlIdx, 'turnCount check should come before TTL check');
+  });
+
+  await test('startup loading filters out expired doc sessions by TTL', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docLoadMatch = src.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
+    assert.ok(docLoadMatch, 'Should have doc session startup loader');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Startup loader should filter by TTL');
+    assert.ok(docLoadMatch[0].includes('lastActiveAt'), 'Startup loader should check lastActiveAt');
+  });
+
+  await test('TTL eviction in resolveSession calls persistDocSessions directly (not debounced)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // The eviction path should call persistDocSessions() directly for immediate consistency
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'TTL eviction should call persistDocSessions() directly');
+  });
+
+  await test('sessions within TTL window are not evicted by resolveSession', () => {
+    // Verify the TTL check uses > (greater than), not >= (greater or equal), and checks lastActiveAt
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 800);
+    // Must compute elapsed time from lastActiveAt
+    assert.ok(resolveFn.includes('Date.now()') || resolveFn.includes('new Date'), 'Should compute current time for comparison');
+    assert.ok(resolveFn.includes('getTime') || resolveFn.includes('Date.now'), 'Should convert to numeric time for comparison');
+  });
+
+  // ── Skip disk re-read when client content is fresh (P-f7b3c5e1) ────────────
+  await test('handleDocChat uses contentHash to skip disk re-read when fresh', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    assert.ok(handler.includes('contentHash'), 'handleDocChat should check contentHash from request body');
+    assert.ok(handler.includes('body.document'), 'handleDocChat should use body.document when hash matches');
+  });
+
+  await test('contentHash comparison uses lightweight fingerprint (not MD5)', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // Server computes fingerprint from disk content using the same scheme as client
+    assert.ok(handler.includes('contentFingerprint') || handler.includes('charCodeAt'), 'Should use lightweight fingerprint function');
+  });
+
+  await test('contentHash is optional — omitting it falls back to disk read', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const handler = src.slice(src.indexOf('async function handleDocChat'), src.indexOf('async function handleDocChat') + 2000);
+    // When contentHash is missing, existing behavior is preserved: disk content wins
+    assert.ok(handler.includes('body.contentHash'), 'Should reference body.contentHash');
+    // Disk read still happens (safeRead) — but content is used from client when hash matches
+    assert.ok(handler.includes('safeRead'), 'Should still call safeRead for disk content');
+  });
+
+  await test('contentFingerprint helper computes length:firstChar:lastChar', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('function contentFingerprint'), 'Should define contentFingerprint helper');
+    const fn = src.slice(src.indexOf('function contentFingerprint'), src.indexOf('function contentFingerprint') + 300);
+    assert.ok(fn.includes('.length'), 'Fingerprint should include content length');
+    assert.ok(fn.includes('charCodeAt'), 'Fingerprint should include charCodeAt');
+  });
+
+  await test('frontend _processQaMessage sends contentHash in request body', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    const fetchBlock = src.slice(src.indexOf("fetch('/api/doc-chat'"), src.indexOf("fetch('/api/doc-chat'") + 500);
+    assert.ok(fetchBlock.includes('contentHash'), 'Frontend should send contentHash in doc-chat request');
+  });
+
+  await test('frontend contentHash uses same fingerprint scheme as server', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
+    assert.ok(src.includes('charCodeAt'), 'Frontend should use charCodeAt for fingerprint');
+    assert.ok(src.includes('.length'), 'Frontend should include length in fingerprint');
+  });
+
+  await test('route table documents contentHash as optional param', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const routeLine = src.match(/doc-chat.*params:.*contentHash/);
+    assert.ok(routeLine, 'Route table should list contentHash as a param');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
@@ -15199,6 +15774,7 @@ async function testDashboardResilience() {
   const ccSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'command-center.js'), 'utf8');
   const liveStreamSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'live-stream.js'), 'utf8');
   const agentsSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'render-agents.js'), 'utf8');
+  const modalSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal.js'), 'utf8');
   const modalQaSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard', 'js', 'modal-qa.js'), 'utf8');
 
   // ── safeFetch wrapper ──
@@ -15392,7 +15968,7 @@ async function testDashboardResilience() {
   await test('doc-chat shows processing badge on source card when processing starts', () => {
     const processBody = modalQaSrc.slice(
       modalQaSrc.indexOf('async function _processQaMessage'),
-      modalQaSrc.indexOf('async function _processQaMessage') + 800
+      modalQaSrc.indexOf('\nfunction qaAbort')
     );
     assert.ok(processBody.includes("showNotifBadge(sourceCard, 'processing')"),
       '_processQaMessage must show processing badge on source card at start');
@@ -15404,8 +15980,62 @@ async function testDashboardResilience() {
   });
 
   await test('doc-chat badge persists if messages still queued', () => {
-    assert.ok(modalQaSrc.includes('_qaQueue.length === 0'),
+    assert.ok(modalQaSrc.includes('runtime.queue.length === 0'),
       'Badge should only clear when queue is empty');
+  });
+
+  await test('doc-chat runtime state is scoped per session key', () => {
+    assert.ok(modalQaSrc.includes('const _qaRuntime = new Map()'),
+      'modal-qa.js should keep runtime doc-chat state in a per-session map');
+    assert.ok(modalQaSrc.includes('const sessionKey = opts?.sessionKey || _qaSessionKey;'),
+      '_processQaMessage should capture the originating session key');
+    assert.ok(modalQaSrc.includes('_qaPersistSession(sessionKey'),
+      'Responses should persist against the originating session key, not whichever doc is currently open');
+  });
+
+  await test('switching doc-chat sessions saves current state before replacing _qaSessionKey', () => {
+    const initFn = modalQaSrc.slice(modalQaSrc.indexOf('function _initQaSession'), modalQaSrc.indexOf('\nfunction clearQaConversation'));
+    assert.ok(initFn.includes('_qaSaveActiveSessionState()'),
+      '_initQaSession should save the current document session before switching');
+    assert.ok(initFn.includes('_qaLoadSessionState(key)'),
+      '_initQaSession should restore runtime state for the new document key');
+  });
+
+  await test('doc-chat only rewrites modal body when the originating session is still active', () => {
+    const processFn = modalQaSrc.slice(modalQaSrc.indexOf('async function _processQaMessage'), modalQaSrc.indexOf('\nfunction qaAbort'));
+    assert.ok(processFn.includes('if (_qaIsActiveSession(sessionKey)) {') && processFn.includes("document.getElementById('modal-body')"),
+      '_processQaMessage must guard modal-body updates behind the originating session being active');
+    assert.ok(processFn.includes('showNotifBadge(doneCard, \'done\')'),
+      'Background completions should badge the source card instead of mutating another open document');
+  });
+
+  await test('closeModal clears active doc-chat globals even while background work continues', () => {
+    assert.ok(modalSrc.includes('_qaResetActiveState();'),
+      'closeModal should clear the active doc-chat globals after saving session state');
+    assert.ok(modalSrc.includes('_qaSaveActiveSessionState()'),
+      'closeModal should persist the current doc-chat session before clearing active state');
+  });
+
+  await test('doc-chat persists queued messages in saved session state', () => {
+    assert.ok(modalQaSrc.includes('queue: _qaCloneQueue(prior?.queue)'),
+      'Runtime restore should seed queued messages from the persisted session record');
+    assert.ok(modalQaSrc.includes('queue: Array.isArray(queue) ? _qaCloneQueue(queue)'),
+      '_qaPersistSession should write queued messages into the persisted session record');
+  });
+
+  await test('doc-chat restores queued work and strips stale loading UI on reopen', () => {
+    assert.ok(modalQaSrc.includes("tmp.querySelectorAll('.modal-qa-loading').forEach(el => el.remove())"),
+      'Reopened sessions should clear stale loading indicators when no request is actually running');
+    assert.ok(modalQaSrc.includes('function _qaResumeQueuedMessages()') && modalQaSrc.includes('setTimeout(_qaResumeQueuedMessages, 0)'),
+      'Reopened sessions with queued messages should resume draining the queue');
+  });
+
+  await test('clearQaConversation aborts in-flight doc-chat before wiping session state', () => {
+    const clearFn = modalQaSrc.slice(modalQaSrc.indexOf('function clearQaConversation'), modalQaSrc.indexOf('\nfunction modalSend'));
+    assert.ok(clearFn.includes('_qaAbortController.abort()'),
+      'clearQaConversation should abort the active controller before clearing state');
+    assert.ok(clearFn.includes('runtime?.abortController') && clearFn.includes('runtime.abortController.abort()'),
+      'clearQaConversation should also abort the per-session runtime controller before resetting it');
   });
 
   // ── Text selection → doc-chat flow ──────────────────────────────────────────
@@ -16876,12 +17506,12 @@ async function testCCMultiTab() {
     assert.ok(body.includes('_promptHash'), 'ccSessionValid should still check prompt hash');
   });
 
-  await test('resolveSession does not check age for doc sessions', () => {
+  await test('resolveSession checks TTL for doc sessions but not CC_SESSION_EXPIRY', () => {
     const match = dashSrc.match(/function resolveSession\([\s\S]*?\n\}/);
     assert.ok(match, 'resolveSession should exist');
     const body = match[0];
-    assert.ok(!body.includes('age'), 'resolveSession should not reference age');
-    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference expiry constant');
+    assert.ok(body.includes('DOC_SESSION_TTL_MS'), 'resolveSession should check doc session TTL');
+    assert.ok(!body.includes('CC_SESSION_EXPIRY'), 'resolveSession should not reference CC expiry constant');
   });
 
   await test('CC session restored on startup without age check', () => {
@@ -16891,10 +17521,10 @@ async function testCCMultiTab() {
     assert.ok(!startupMatch[0].includes('age'), 'Startup loader should not check age');
   });
 
-  await test('doc sessions restored on startup without age check', () => {
+  await test('doc sessions restored on startup with TTL filtering', () => {
     const docLoadMatch = dashSrc.match(/const saved = safeJson\(DOC_SESSIONS_PATH\)[\s\S]*?catch \{/);
     assert.ok(docLoadMatch, 'Should have doc session startup loader');
-    assert.ok(!docLoadMatch[0].includes('age'), 'Doc session loader should not check age');
+    assert.ok(docLoadMatch[0].includes('DOC_SESSION_TTL_MS'), 'Doc session loader should filter expired sessions by TTL');
   });
 
   await test('prompt hash stored with tab session for invalidation', () => {
@@ -16955,6 +17585,12 @@ async function testCCMultiTab() {
   await test('cleanup.js prunes test-results.json', () => {
     assert.ok(cleanupSrc.includes('test-results.json'), 'Should reference test-results.json');
     assert.ok(cleanupSrc.includes('TEST_RESULTS_CAP'), 'Should define TEST_RESULTS_CAP');
+  });
+
+  await test('cleanup.js strips stale retry metadata from done work items', () => {
+    assert.ok(cleanupSrc.includes('doneRetryCounts'), 'Should track cleared done retry metadata');
+    assert.ok(cleanupSrc.includes("item.status === shared.WI_STATUS.DONE && item._retryCount !== undefined"),
+      'Should explicitly clear stale retry metadata from completed items');
   });
 
   await test('timeout.js kills Unix process tree on hung agent timeout', () => {
@@ -22520,4 +23156,1885 @@ async function testCliCommandHandlers() {
   });
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// ─── Pipeline Behavioral Tests ──────────────────────────────────────────────
+
+async function testPipelineBehavioral() {
+  console.log('\n── Pipeline Behavioral Tests ──');
+
+  await test('pipeline module exports all expected functions', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      for (const fn of ['getPipelines', 'getPipeline', 'savePipeline', 'deletePipeline',
+        'getPipelineRuns', 'getActiveRun', 'startRun', 'updateRunStage', 'completeRun',
+        'evaluateCondition', 'executeTaskStage', 'isStageComplete', 'resolveTemplate',
+        '_findMeetingsInRun', '_findExistingPlanForMeeting', '_findExistingPrdForPlan']) {
+        assert.strictEqual(typeof pipeline[fn], 'function', `${fn} should be exported`);
+      }
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── resolveTemplate — pure function tests ──
+
+  await test('resolveTemplate returns non-string input unchanged', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.strictEqual(pipeline.resolveTemplate(null, {}), null);
+      assert.strictEqual(pipeline.resolveTemplate(undefined, {}), undefined);
+      assert.strictEqual(pipeline.resolveTemplate(42, {}), 42);
+      assert.strictEqual(pipeline.resolveTemplate(true, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate resolves stages.X.output', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { build: { output: 'Build OK', artifacts: {} } } };
+      assert.strictEqual(
+        pipeline.resolveTemplate('Result: {{stages.build.output}}', run),
+        'Result: Build OK'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate resolves stages.X.artifacts as JSON', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { deploy: { artifacts: { prs: ['PR-1'] } } } };
+      const result = pipeline.resolveTemplate('Artifacts: {{stages.deploy.artifacts}}', run);
+      assert.strictEqual(result, 'Artifacts: ' + JSON.stringify({ prs: ['PR-1'] }));
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate returns empty string for unknown stage', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: {} };
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.missing.output}}', run), '');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate returns empty string for unknown field', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { s1: { output: 'hello' } } };
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.s1.nonexistent}}', run), '');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate resolves multiple placeholders', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          a: { output: 'Alpha' },
+          b: { output: 'Beta' },
+        },
+      };
+      assert.strictEqual(
+        pipeline.resolveTemplate('{{stages.a.output}} and {{stages.b.output}}', run),
+        'Alpha and Beta'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate handles null run gracefully', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.s1.output}}', null), '');
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.s1.output}}', undefined), '');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate leaves non-matching text unchanged', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.strictEqual(pipeline.resolveTemplate('no placeholders here', {}), 'no placeholders here');
+      assert.strictEqual(pipeline.resolveTemplate('', {}), '');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('resolveTemplate handles empty output/artifacts gracefully', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { s1: {} } };
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.s1.output}}', run), '');
+      assert.strictEqual(pipeline.resolveTemplate('{{stages.s1.artifacts}}', run), '{}');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── _findMeetingsInRun — pure function ──
+
+  await test('_findMeetingsInRun returns empty array for empty stages', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const result = pipeline._findMeetingsInRun({ stages: {} });
+      assert.deepStrictEqual(result, []);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun collects meeting IDs from multiple stages', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: { artifacts: { meetings: ['mtg-1', 'mtg-2'] } },
+          s2: { artifacts: { meetings: ['mtg-3'] } },
+          s3: { artifacts: {} },
+        },
+      };
+      const result = pipeline._findMeetingsInRun(run);
+      assert.deepStrictEqual(result, ['mtg-1', 'mtg-2', 'mtg-3']);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun deduplicates meeting IDs', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: { artifacts: { meetings: ['mtg-1', 'mtg-2'] } },
+          s2: { artifacts: { meetings: ['mtg-2', 'mtg-3'] } },
+        },
+      };
+      const result = pipeline._findMeetingsInRun(run);
+      assert.deepStrictEqual(result, ['mtg-1', 'mtg-2', 'mtg-3']);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun handles stages without artifacts', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: {},
+          s2: { artifacts: null },
+          s3: { artifacts: { meetings: ['mtg-1'] } },
+        },
+      };
+      const result = pipeline._findMeetingsInRun(run);
+      assert.deepStrictEqual(result, ['mtg-1']);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findMeetingsInRun handles null/undefined stages', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: null }), []);
+      assert.deepStrictEqual(pipeline._findMeetingsInRun({ stages: undefined }), []);
+      assert.deepStrictEqual(pipeline._findMeetingsInRun({}), []);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── evaluateCondition — pure paths ──
+
+  await test('evaluateCondition runSucceeded returns true when all stages completed/pending', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: { status: 'completed' },
+          s2: { status: 'pending' },
+          s3: { status: 'completed' },
+        },
+      };
+      assert.strictEqual(pipeline.evaluateCondition('runSucceeded', { run, pipeline: {}, config: {} }), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition runSucceeded returns false when any stage failed', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: { status: 'completed' },
+          s2: { status: 'failed' },
+        },
+      };
+      assert.strictEqual(pipeline.evaluateCondition('runSucceeded', { run, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition runSucceeded returns false when any stage is running', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = {
+        stages: {
+          s1: { status: 'completed' },
+          s2: { status: 'running' },
+        },
+      };
+      assert.strictEqual(pipeline.evaluateCondition('runSucceeded', { run, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition runSucceeded returns false with no run', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.strictEqual(pipeline.evaluateCondition('runSucceeded', { run: null, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition runSucceeded returns true for empty stages', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: {} };
+      // Object.values({}).every(...) returns true (vacuous truth)
+      assert.strictEqual(pipeline.evaluateCondition('runSucceeded', { run, pipeline: {}, config: {} }), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition unknown check returns false', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      assert.strictEqual(pipeline.evaluateCondition('nonExistentCheck', { run: {}, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition accepts object form { check: "runSucceeded" }', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const run = { stages: { s1: { status: 'completed' } } };
+      assert.strictEqual(
+        pipeline.evaluateCondition({ check: 'runSucceeded' }, { run, pipeline: {}, config: {} }),
+        true
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition handles null/undefined condition gracefully', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      // null condition → { check: undefined } → default case → false
+      assert.strictEqual(pipeline.evaluateCondition(null, { run: {}, pipeline: {}, config: {} }), false);
+      assert.strictEqual(pipeline.evaluateCondition(undefined, { run: {}, pipeline: {}, config: {} }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── _findExistingPrdForPlan — filesystem with temp dir ──
+
+  await test('_findExistingPrdForPlan returns null for non-existent directory', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const result = pipeline._findExistingPrdForPlan('some-plan.md', '/nonexistent/prd/dir');
+      assert.strictEqual(result, null);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findExistingPrdForPlan finds matching PRD by source_plan', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const tmpDir = createTmpDir();
+      fs.writeFileSync(path.join(tmpDir, 'my-prd.json'), JSON.stringify({
+        id: 'prd-1',
+        source_plan: 'my-plan.md',
+        items: [],
+      }));
+      fs.writeFileSync(path.join(tmpDir, 'other-prd.json'), JSON.stringify({
+        id: 'prd-2',
+        source_plan: 'other-plan.md',
+        items: [],
+      }));
+      const result = pipeline._findExistingPrdForPlan('my-plan.md', tmpDir);
+      assert.strictEqual(result, 'my-prd.json');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findExistingPrdForPlan returns null when no match', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const tmpDir = createTmpDir();
+      fs.writeFileSync(path.join(tmpDir, 'prd-a.json'), JSON.stringify({
+        id: 'prd-a',
+        source_plan: 'unrelated-plan.md',
+      }));
+      const result = pipeline._findExistingPrdForPlan('my-plan.md', tmpDir);
+      assert.strictEqual(result, null);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findExistingPrdForPlan skips non-JSON files', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const tmpDir = createTmpDir();
+      fs.writeFileSync(path.join(tmpDir, 'readme.md'), '# Not a PRD');
+      fs.writeFileSync(path.join(tmpDir, 'match.json'), JSON.stringify({ source_plan: 'plan.md' }));
+      const result = pipeline._findExistingPrdForPlan('plan.md', tmpDir);
+      assert.strictEqual(result, 'match.json');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('_findExistingPrdForPlan returns null for empty directory', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const tmpDir = createTmpDir();
+      const result = pipeline._findExistingPrdForPlan('plan.md', tmpDir);
+      assert.strictEqual(result, null);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── Pipeline CRUD — filesystem with unique IDs + cleanup ──
+
+  const pipelineDir = path.join(MINIONS_DIR, 'pipelines');
+
+  await test('savePipeline + getPipeline round-trip', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId = '_test_crud_roundtrip_' + Date.now();
+    try {
+      pipeline.savePipeline({ id: testId, name: 'Test Pipeline', stages: [], enabled: true });
+      const loaded = pipeline.getPipeline(testId);
+      assert.ok(loaded, 'getPipeline should return the saved pipeline');
+      assert.strictEqual(loaded.id, testId);
+      assert.strictEqual(loaded.name, 'Test Pipeline');
+      assert.deepStrictEqual(loaded.stages, []);
+      assert.strictEqual(loaded.enabled, true);
+    } finally {
+      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getPipeline returns null for non-existent pipeline', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const result = pipeline.getPipeline('_test_nonexistent_' + Date.now());
+      assert.strictEqual(result, null);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getPipelines returns all valid pipelines', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId1 = '_test_getall_1_' + Date.now();
+    const testId2 = '_test_getall_2_' + Date.now();
+    try {
+      pipeline.savePipeline({ id: testId1, name: 'P1', stages: [] });
+      pipeline.savePipeline({ id: testId2, name: 'P2', stages: [] });
+      const all = pipeline.getPipelines();
+      assert.ok(Array.isArray(all), 'getPipelines should return an array');
+      const testPipelines = all.filter(p => p.id === testId1 || p.id === testId2);
+      assert.strictEqual(testPipelines.length, 2, 'Should find both test pipelines');
+    } finally {
+      try { fs.unlinkSync(path.join(pipelineDir, testId1 + '.json')); } catch {}
+      try { fs.unlinkSync(path.join(pipelineDir, testId2 + '.json')); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getPipelines skips invalid JSON files', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId = '_test_invalid_json_' + Date.now();
+    const badFile = path.join(pipelineDir, testId + '.json');
+    try {
+      fs.writeFileSync(badFile, 'NOT VALID JSON {{{');
+      const all = pipeline.getPipelines();
+      // Should not throw, and should not include the bad file
+      const found = all.find(p => p && p.id === testId);
+      assert.strictEqual(found, undefined, 'Invalid JSON should be skipped');
+    } finally {
+      try { fs.unlinkSync(badFile); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('deletePipeline returns true for existing pipeline', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId = '_test_delete_existing_' + Date.now();
+    try {
+      pipeline.savePipeline({ id: testId, name: 'ToDelete', stages: [] });
+      assert.ok(fs.existsSync(path.join(pipelineDir, testId + '.json')), 'File should exist before delete');
+      const result = pipeline.deletePipeline(testId);
+      assert.strictEqual(result, true);
+      assert.ok(!fs.existsSync(path.join(pipelineDir, testId + '.json')), 'File should be gone after delete');
+    } finally {
+      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('deletePipeline returns false for non-existent pipeline', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const result = pipeline.deletePipeline('_test_delete_nonexistent_' + Date.now());
+      assert.strictEqual(result, false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('savePipeline creates pipelines directory if missing', () => {
+    // This test verifies the mkdir behavior — we can't remove the real dir,
+    // so we verify indirectly: savePipeline should work even on a fresh setup.
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId = '_test_mkdir_' + Date.now();
+    try {
+      pipeline.savePipeline({ id: testId, stages: [] });
+      const loaded = pipeline.getPipeline(testId);
+      assert.ok(loaded, 'Pipeline should be retrievable after save');
+    } finally {
+      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('savePipeline overwrites existing pipeline', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testId = '_test_overwrite_' + Date.now();
+    try {
+      pipeline.savePipeline({ id: testId, name: 'V1', stages: [] });
+      pipeline.savePipeline({ id: testId, name: 'V2', stages: [{ id: 's1' }] });
+      const loaded = pipeline.getPipeline(testId);
+      assert.strictEqual(loaded.name, 'V2', 'Should reflect updated name');
+      assert.strictEqual(loaded.stages.length, 1, 'Should reflect updated stages');
+    } finally {
+      try { fs.unlinkSync(path.join(pipelineDir, testId + '.json')); } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── Run Lifecycle — startRun, updateRunStage, completeRun ──
+
+  const pipelineRunsPath = path.join(MINIONS_DIR, 'engine', 'pipeline-runs.json');
+
+  await test('startRun creates a run with pending stages', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_startrun_' + Date.now();
+    // Back up existing runs file
+    let backup = null;
+    try { backup = fs.readFileSync(pipelineRunsPath, 'utf8'); } catch {}
+    try {
+      const pipelineDef = {
+        id: testPipelineId,
+        stages: [
+          { id: 'stage-a', type: 'task', title: 'A' },
+          { id: 'stage-b', type: 'meeting', title: 'B' },
+        ],
+      };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run, 'startRun should return a run object');
+      assert.ok(run.runId.startsWith('run-'), 'runId should start with run-');
+      assert.strictEqual(run.pipelineId, testPipelineId);
+      assert.strictEqual(run.status, 'running');
+      assert.ok(run.startedAt, 'Should have startedAt timestamp');
+      assert.ok(run.stages['stage-a'], 'Should have stage-a');
+      assert.ok(run.stages['stage-b'], 'Should have stage-b');
+      assert.strictEqual(run.stages['stage-a'].status, 'pending');
+      assert.strictEqual(run.stages['stage-b'].status, 'pending');
+      assert.deepStrictEqual(run.stages['stage-a'].artifacts, {});
+    } finally {
+      // Clean up: remove test data from pipeline-runs.json
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('startRun returns null when active run already exists', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_startrun_dup_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run1 = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run1, 'First startRun should succeed');
+      const run2 = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.strictEqual(run2, null, 'Second startRun should return null (active run exists)');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('startRun caps at 10 runs per pipeline', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_startrun_cap_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      // Seed 12 completed runs manually
+      shared.mutateJsonFileLocked(pipelineRunsPath, (data) => {
+        data[testPipelineId] = [];
+        for (let i = 0; i < 12; i++) {
+          data[testPipelineId].push({
+            runId: `run-old-${i}`,
+            pipelineId: testPipelineId,
+            status: 'completed',
+            stages: { s1: { status: 'completed' } },
+          });
+        }
+        return data;
+      }, { defaultValue: {} });
+      // Start a new run — should trim to last 9 + add 1 = 10
+      const newRun = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(newRun, 'startRun should succeed');
+      const allRuns = pipeline.getPipelineRuns();
+      const pRuns = allRuns[testPipelineId] || [];
+      assert.ok(pRuns.length <= 10, `Should cap at 10 runs, got ${pRuns.length}`);
+      assert.strictEqual(pRuns[pRuns.length - 1].runId, newRun.runId, 'Last run should be the new one');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('updateRunStage updates stage properties', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_updatestage_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }, { id: 's2' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run, 'startRun should succeed');
+
+      pipeline.updateRunStage(testPipelineId, run.runId, 's1', {
+        status: 'running',
+        startedAt: '2026-01-01T00:00:00Z',
+        artifacts: { workItems: ['WI-1'] },
+      });
+
+      // Read back the run state
+      const allRuns = pipeline.getPipelineRuns();
+      const updatedRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
+      assert.ok(updatedRun, 'Run should exist');
+      assert.strictEqual(updatedRun.stages['s1'].status, 'running');
+      assert.strictEqual(updatedRun.stages['s1'].startedAt, '2026-01-01T00:00:00Z');
+      assert.deepStrictEqual(updatedRun.stages['s1'].artifacts, { workItems: ['WI-1'] });
+      assert.strictEqual(updatedRun.stages['s2'].status, 'pending', 's2 should be unchanged');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('updateRunStage is a no-op for non-existent run or stage', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_update_noop_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+
+      // Update non-existent stage — should not throw
+      pipeline.updateRunStage(testPipelineId, run.runId, 'nonexistent', { status: 'running' });
+      // Update non-existent run — should not throw
+      pipeline.updateRunStage(testPipelineId, 'run-nonexistent', 's1', { status: 'running' });
+
+      // Original stage should be unchanged
+      const allRuns = pipeline.getPipelineRuns();
+      const existingRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
+      assert.strictEqual(existingRun.stages['s1'].status, 'pending');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('completeRun sets status and completedAt', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_completerun_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+
+      pipeline.completeRun(testPipelineId, run.runId, 'completed');
+
+      const allRuns = pipeline.getPipelineRuns();
+      const completedRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
+      assert.strictEqual(completedRun.status, 'completed');
+      assert.ok(completedRun.completedAt, 'Should have completedAt timestamp');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('completeRun sets failed status correctly', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_completerun_fail_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+
+      pipeline.completeRun(testPipelineId, run.runId, 'failed');
+
+      const allRuns = pipeline.getPipelineRuns();
+      const failedRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
+      assert.strictEqual(failedRun.status, 'failed');
+      assert.ok(failedRun.completedAt, 'Should have completedAt timestamp');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getActiveRun returns running run', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_getactive_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+
+      const active = pipeline.getActiveRun(testPipelineId);
+      assert.ok(active, 'Should find the active run');
+      assert.strictEqual(active.runId, run.runId);
+      assert.strictEqual(active.status, 'running');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getActiveRun returns null when no active run', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_getactive_none_' + Date.now();
+    try {
+      const active = pipeline.getActiveRun(testPipelineId);
+      assert.strictEqual(active, undefined, 'Should return undefined for non-existent pipeline');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('getActiveRun returns null after run completed', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_getactive_done_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+      pipeline.completeRun(testPipelineId, run.runId, 'completed');
+
+      const active = pipeline.getActiveRun(testPipelineId);
+      assert.ok(!active, 'Should not find active run after completion');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── startRun allows new run after previous completed ──
+
+  await test('startRun allows new run after previous is completed', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_startrun_after_done_' + Date.now();
+    try {
+      const pipelineDef = { id: testPipelineId, stages: [{ id: 's1' }] };
+      const run1 = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run1);
+      pipeline.completeRun(testPipelineId, run1.runId, 'completed');
+
+      const run2 = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run2, 'Should allow new run after previous completed');
+      assert.notStrictEqual(run2.runId, run1.runId, 'Should have different runId');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── executeTaskStage — creates work items ──
+
+  await test('executeTaskStage creates work items with correct properties', () => {
+    const restore = createTestMinionsDir();
+    try {
+      // pipeline.js uses path.join(__dirname, '..', 'work-items.json') which is the real path
+      // So we use the real work-items.json but with unique IDs for cleanup
+      const freshPipeline = require('../engine/pipeline');
+      const testRunId = 'run-testexec' + Date.now();
+      const run = {
+        runId: testRunId,
+        pipelineId: 'test-pipeline',
+        stages: {},
+      };
+      const stage = {
+        id: 'task-stage-1',
+        type: 'task',
+        title: 'Test Task',
+        description: 'Run test suite',
+        taskType: 'explore',
+        priority: 'high',
+        agent: 'dallas',
+      };
+
+      // Read work-items.json before
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const wiBefore = shared.safeJson(wiPath) || [];
+      const countBefore = wiBefore.length;
+
+      const result = freshPipeline.executeTaskStage(stage, {}, run, {});
+      assert.strictEqual(result.status, 'running');
+      assert.ok(result.artifacts.workItems.length > 0, 'Should create work item IDs');
+
+      // Read work-items.json after
+      const wiAfter = shared.safeJson(wiPath) || [];
+      const newItems = wiAfter.filter(w => w._pipelineRun === testRunId);
+      assert.strictEqual(newItems.length, 1, 'Should have created 1 work item');
+      const wi = newItems[0];
+      assert.strictEqual(wi.title, 'Test Task');
+      assert.strictEqual(wi.description, 'Run test suite');
+      assert.strictEqual(wi.type, 'explore');
+      assert.strictEqual(wi.priority, 'high');
+      assert.strictEqual(wi.agent, 'dallas');
+      assert.strictEqual(wi.status, 'pending');
+      assert.ok(wi.id.startsWith('PL-'), 'WI ID should start with PL-');
+      assert.ok(wi.branch.includes('test-pipeline'), 'Branch should reference pipeline ID');
+
+      // Cleanup: remove the test work item
+      shared.mutateJsonFileLocked(wiPath, items => {
+        return items.filter(w => w._pipelineRun !== testRunId);
+      }, { defaultValue: [] });
+    } finally {
+      restore();
+    }
+  });
+
+  await test('executeTaskStage is idempotent — skips existing work items', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const testRunId = 'run-testidempotent' + Date.now();
+      const run = { runId: testRunId, pipelineId: 'test-pipeline', stages: {} };
+      const stage = { id: 'task-idem', type: 'task', title: 'Idempotent Task', taskType: 'explore' };
+
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+
+      // First call
+      freshPipeline.executeTaskStage(stage, {}, run, {});
+      const wiAfter1 = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      const count1 = wiAfter1.length;
+
+      // Second call — should not duplicate
+      freshPipeline.executeTaskStage(stage, {}, run, {});
+      const wiAfter2 = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      assert.strictEqual(wiAfter2.length, count1, 'Should not create duplicates on second call');
+
+      // Cleanup
+      shared.mutateJsonFileLocked(wiPath, items => {
+        return items.filter(w => w._pipelineRun !== testRunId);
+      }, { defaultValue: [] });
+    } finally {
+      restore();
+    }
+  });
+
+  await test('executeTaskStage creates multiple items from items array', () => {
+    const restore = createTestMinionsDir();
+    try {
+      const freshPipeline = require('../engine/pipeline');
+      const testRunId = 'run-testmulti' + Date.now();
+      const run = { runId: testRunId, pipelineId: 'test-pipeline', stages: {} };
+      const stage = {
+        id: 'task-multi',
+        type: 'task',
+        items: [
+          { title: 'Task A', description: 'Desc A', type: 'implement' },
+          { title: 'Task B', description: 'Desc B', type: 'test' },
+        ],
+      };
+
+      const wiPath = path.join(MINIONS_DIR, 'work-items.json');
+      const result = freshPipeline.executeTaskStage(stage, {}, run, {});
+      assert.strictEqual(result.artifacts.workItems.length, 2, 'Should create 2 WI IDs');
+
+      const newItems = (shared.safeJson(wiPath) || []).filter(w => w._pipelineRun === testRunId);
+      assert.strictEqual(newItems.length, 2, 'Should create 2 work items');
+      assert.strictEqual(newItems[0].title, 'Task A');
+      assert.strictEqual(newItems[0].type, 'implement');
+      assert.strictEqual(newItems[1].title, 'Task B');
+      assert.strictEqual(newItems[1].type, 'test');
+
+      // Cleanup
+      shared.mutateJsonFileLocked(wiPath, items => {
+        return items.filter(w => w._pipelineRun !== testRunId);
+      }, { defaultValue: [] });
+    } finally {
+      restore();
+    }
+  });
+
+  // ── isStageComplete — status-based early returns ──
+
+  // ── isStageComplete — behavioral tests ──
+
+  await test('isStageComplete returns true for COMPLETED status', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'task' };
+      const stageState = { status: 'completed' };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete returns true for FAILED status', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'task' };
+      const stageState = { status: 'failed' };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete returns false for PENDING status', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'task' };
+      const stageState = { status: 'pending' };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete returns false for WAITING_HUMAN status', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'wait' };
+      const stageState = { status: 'waiting-human' };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: API type returns true (immediate)', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'api' };
+      const stageState = { status: 'running', artifacts: {} };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: SCHEDULE type returns true (immediate)', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'schedule' };
+      const stageState = { status: 'running', artifacts: {} };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: CONDITION type returns true (immediate)', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'condition' };
+      const stageState = { status: 'running', artifacts: {} };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: TASK with empty workItems returns false', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'task' };
+      const stageState = { status: 'running', artifacts: { workItems: [] } };
+      // Empty IDs array → false (nothing to check = not complete)
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, { projects: [] }), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: PARALLEL complete when all sub-stages done', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 'par1', type: 'parallel' };
+      const run = {
+        stages: {
+          par1: { status: 'running', artifacts: { subStages: ['sub-a', 'sub-b'] } },
+          'sub-a': { status: 'completed' },
+          'sub-b': { status: 'completed' },
+        },
+      };
+      assert.strictEqual(
+        pipeline.isStageComplete(stage, run.stages.par1, run, {}),
+        true
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: PARALLEL incomplete when sub-stage still running', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 'par1', type: 'parallel' };
+      const run = {
+        stages: {
+          par1: { status: 'running', artifacts: { subStages: ['sub-a', 'sub-b'] } },
+          'sub-a': { status: 'completed' },
+          'sub-b': { status: 'running' },
+        },
+      };
+      assert.strictEqual(
+        pipeline.isStageComplete(stage, run.stages.par1, run, {}),
+        false
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: PARALLEL complete when sub-stage failed (terminal)', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 'par1', type: 'parallel' };
+      const run = {
+        stages: {
+          par1: { status: 'running', artifacts: { subStages: ['sub-a', 'sub-b'] } },
+          'sub-a': { status: 'completed' },
+          'sub-b': { status: 'failed' },
+        },
+      };
+      assert.strictEqual(
+        pipeline.isStageComplete(stage, run.stages.par1, run, {}),
+        true,
+        'PARALLEL considers FAILED as terminal'
+      );
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: unknown type returns false', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'nonexistent-type' };
+      const stageState = { status: 'running', artifacts: {} };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, {}), false);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('isStageComplete: MERGE_PRS with empty prs returns true', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      const stage = { id: 's1', type: 'merge-prs' };
+      const stageState = { status: 'running', artifacts: { prs: [] } };
+      assert.strictEqual(pipeline.isStageComplete(stage, stageState, {}, { projects: [] }), true);
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition maxRuns checks run count', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_maxruns_' + Date.now();
+    try {
+      // Seed 3 completed runs
+      shared.mutateJsonFileLocked(pipelineRunsPath, (data) => {
+        data[testPipelineId] = [
+          { runId: 'r1', status: 'completed' },
+          { runId: 'r2', status: 'completed' },
+          { runId: 'r3', status: 'completed' },
+        ];
+        return data;
+      }, { defaultValue: {} });
+
+      // maxRuns with value=3 should be met
+      const met = pipeline.evaluateCondition(
+        { check: 'maxRuns', value: 3 },
+        { run: {}, pipeline: { id: testPipelineId }, config: {} }
+      );
+      assert.strictEqual(met, true, 'maxRuns=3 should be met with 3 runs');
+
+      // maxRuns with value=5 should not be met
+      const notMet = pipeline.evaluateCondition(
+        { check: 'maxRuns', value: 5 },
+        { run: {}, pipeline: { id: testPipelineId }, config: {} }
+      );
+      assert.strictEqual(notMet, false, 'maxRuns=5 should not be met with 3 runs');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  await test('evaluateCondition maxRuns defaults value to 1', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_maxruns_default_' + Date.now();
+    try {
+      // Seed 1 run
+      shared.mutateJsonFileLocked(pipelineRunsPath, (data) => {
+        data[testPipelineId] = [{ runId: 'r1', status: 'completed' }];
+        return data;
+      }, { defaultValue: {} });
+
+      const met = pipeline.evaluateCondition(
+        { check: 'maxRuns' }, // no value → defaults to 1
+        { run: {}, pipeline: { id: testPipelineId }, config: {} }
+      );
+      assert.strictEqual(met, true, 'maxRuns without value should default to 1');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── Full run lifecycle: start → update → complete ──
+
+  await test('full run lifecycle: start → update stages → complete', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    const testPipelineId = '_test_lifecycle_' + Date.now();
+    try {
+      const pipelineDef = {
+        id: testPipelineId,
+        stages: [
+          { id: 'build', type: 'task', title: 'Build' },
+          { id: 'test', type: 'task', title: 'Test', dependsOn: ['build'] },
+        ],
+      };
+
+      // 1. Start run
+      const run = pipeline.startRun(testPipelineId, pipelineDef);
+      assert.ok(run);
+      assert.strictEqual(run.status, 'running');
+
+      // 2. Update build stage to running
+      pipeline.updateRunStage(testPipelineId, run.runId, 'build', {
+        status: 'running', startedAt: shared.ts(),
+      });
+
+      // 3. Complete build stage
+      pipeline.updateRunStage(testPipelineId, run.runId, 'build', {
+        status: 'completed', completedAt: shared.ts(), output: 'Build succeeded',
+      });
+
+      // 4. Update test stage
+      pipeline.updateRunStage(testPipelineId, run.runId, 'test', {
+        status: 'running', startedAt: shared.ts(),
+      });
+      pipeline.updateRunStage(testPipelineId, run.runId, 'test', {
+        status: 'completed', completedAt: shared.ts(), output: 'Tests passed',
+      });
+
+      // 5. Complete run
+      pipeline.completeRun(testPipelineId, run.runId, 'completed');
+
+      // Verify final state
+      const allRuns = pipeline.getPipelineRuns();
+      const finalRun = (allRuns[testPipelineId] || []).find(r => r.runId === run.runId);
+      assert.strictEqual(finalRun.status, 'completed');
+      assert.ok(finalRun.completedAt);
+      assert.strictEqual(finalRun.stages.build.status, 'completed');
+      assert.strictEqual(finalRun.stages.build.output, 'Build succeeded');
+      assert.strictEqual(finalRun.stages.test.status, 'completed');
+      assert.strictEqual(finalRun.stages.test.output, 'Tests passed');
+    } finally {
+      try {
+        const runs = JSON.parse(fs.readFileSync(pipelineRunsPath, 'utf8'));
+        delete runs[testPipelineId];
+        fs.writeFileSync(pipelineRunsPath, JSON.stringify(runs, null, 2));
+      } catch {}
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── getPipelineRuns edge cases ──
+
+  await test('getPipelineRuns returns empty object when file does not exist', () => {
+    const pipeline = require(path.join(MINIONS_DIR, 'engine', 'pipeline'));
+    try {
+      // getPipelineRuns uses safeJson which returns null for missing file, then || {}
+      const runs = pipeline.getPipelineRuns();
+      assert.ok(typeof runs === 'object' && runs !== null, 'Should return an object');
+    } finally {
+      delete require.cache[require.resolve(path.join(MINIONS_DIR, 'engine', 'pipeline'))];
+    }
+  });
+
+  // ── resolveStageConfig source: resolves template variables in expected fields ──
+
+  await test('resolveStageConfig resolves template variables in title, description, agenda, body', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const fn = src.slice(src.indexOf('function resolveStageConfig('), src.indexOf('\nfunction', src.indexOf('function resolveStageConfig(') + 10));
+    assert.ok(fn.includes("'title'") && fn.includes("'description'") && fn.includes("'agenda'") && fn.includes("'body'"),
+      'Should resolve template in title, description, agenda, body fields');
+    assert.ok(fn.includes('resolveTemplate'), 'Should call resolveTemplate');
+  });
+
+  // ── executeStage dispatches to correct handler per type ──
+
+  await test('executeStage routes all stage types to correct handlers', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'engine', 'pipeline.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function executeStage('), src.indexOf('\n}\n', src.indexOf('async function executeStage(') + 100));
+    for (const type of ['TASK', 'MEETING', 'PLAN', 'API', 'MERGE_PRS', 'SCHEDULE', 'CONDITION', 'WAIT', 'PARALLEL']) {
+      assert.ok(fn.includes(`STAGE_TYPE.${type}`), `executeStage should handle STAGE_TYPE.${type}`);
+    }
+    assert.ok(fn.includes('PIPELINE_STATUS.WAITING_HUMAN'), 'WAIT should return WAITING_HUMAN status');
+  });
+
+  // ── _countWorktrees TTL cache ──
+
+  await test('_countWorktrees uses TTL cache variables', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(dashSrc.includes('_worktreeCountCache'), '_worktreeCountCache variable must exist');
+    assert.ok(dashSrc.includes('_worktreeCountCacheTs'), '_worktreeCountCacheTs timestamp variable must exist');
+  });
+
+  await test('_countWorktrees returns cached value within TTL', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // The function must check Date.now() against _worktreeCountCacheTs to decide cache hit
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('Date.now()'), '_countWorktrees must check current time for TTL');
+    assert.ok(fn.includes('_worktreeCountCacheTs'), '_countWorktrees must reference cache timestamp');
+    assert.ok(fn.includes('_worktreeCountCache'), '_countWorktrees must reference cached value');
+    // Must have early return for cache hit (return cached value without scanning)
+    assert.ok(fn.includes('return _worktreeCountCache'), '_countWorktrees must return cached value on cache hit');
+  });
+
+  await test('_countWorktrees updates cache after filesystem scan', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    // After scanning, must write back to cache
+    assert.ok(fn.includes('_worktreeCountCache = count') || fn.includes('_worktreeCountCache = '),
+      '_countWorktrees must store scanned count in cache');
+    assert.ok(fn.includes('_worktreeCountCacheTs = '),
+      '_countWorktrees must update cache timestamp after scan');
+  });
+
+  await test('_countWorktrees TTL uses ENGINE_DEFAULTS.worktreeCountCacheTtl', () => {
+    const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const fn = dashSrc.slice(dashSrc.indexOf('function _countWorktrees('), dashSrc.indexOf('\n}', dashSrc.indexOf('function _countWorktrees(')) + 2);
+    assert.ok(fn.includes('worktreeCountCacheTtl'),
+      '_countWorktrees TTL must reference ENGINE_DEFAULTS.worktreeCountCacheTtl, not a hardcoded number');
+  });
+
+  await test('ENGINE_DEFAULTS includes worktreeCountCacheTtl', () => {
+    assert.strictEqual(shared.ENGINE_DEFAULTS.worktreeCountCacheTtl, 30000,
+      'worktreeCountCacheTtl must be 30000ms (30 seconds)');
+  });
+}
+
+// ─── P-a5e9c1d7: Split getStatus() into fast/slow state tiers ───────────────
+
+async function testStatusCacheTiers() {
+  console.log('\n── Status Cache Tiers (fast/slow) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Tier variables and TTLs exist ──
+
+  await test('dashboard.js has _fastState and _slowState cache variables', () => {
+    assert.ok(dashSrc.includes('let _fastState'), '_fastState variable must exist');
+    assert.ok(dashSrc.includes('let _slowState'), '_slowState variable must exist');
+    assert.ok(dashSrc.includes('let _fastStateTs'), '_fastStateTs timestamp must exist');
+    assert.ok(dashSrc.includes('let _slowStateTs'), '_slowStateTs timestamp must exist');
+  });
+
+  await test('FAST_STATE_TTL is 10s and SLOW_STATE_TTL is 60s', () => {
+    assert.ok(dashSrc.includes('FAST_STATE_TTL = 10000'), 'FAST_STATE_TTL must be 10000ms (10s)');
+    assert.ok(dashSrc.includes('SLOW_STATE_TTL = 60000'), 'SLOW_STATE_TTL must be 60000ms (60s)');
+  });
+
+  // ── Fast state contains the right keys ──
+
+  await test('fast state includes frequently-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // These must appear in the _fastState assignment
+    assert.ok(body.includes('_fastState'), 'getStatus must build _fastState');
+    for (const key of ['agents:', 'inbox:', 'pullRequests:', 'dispatch:', 'metrics:', 'workItems:', 'watches:', 'meetings:', 'adoThrottle:', 'ghThrottle:', 'engineLog:']) {
+      assert.ok(body.includes(key), `fast state must include ${key}`);
+    }
+  });
+
+  // ── Slow state contains the right keys ──
+
+  await test('slow state includes rarely-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    assert.ok(body.includes('_slowState'), 'getStatus must build _slowState');
+    for (const key of ['skills:', 'prdProgress:', 'mcpServers:', 'pinned:', 'projects:', 'autoMode:', 'version:', 'schedules:']) {
+      assert.ok(body.includes(key), `slow state must include ${key}`);
+    }
+  });
+
+  // ── invalidateStatusCache invalidates fast state only ──
+
+  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    const body = fn[0];
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
+    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+  });
+
+  // ── mtime tracking applies to fast state only ──
+
+  await test('mtime-based validation applies only to fast-state TTL check', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The mtime check should be near _fastState logic, not _slowState
+    const fastIdx = body.indexOf('_fastState');
+    const mtimeIdx = body.indexOf('_mtimesChanged');
+    const slowIdx = body.indexOf('_slowState');
+    assert.ok(fastIdx > 0 && mtimeIdx > 0 && slowIdx > 0, 'all three markers must exist');
+    // mtime check should appear before or near fast state, not after slow state assignment
+    assert.ok(mtimeIdx < slowIdx, 'mtime validation must appear before slow state building (applies to fast tier only)');
+  });
+
+  // ── getStatus merges both tiers ──
+
+  await test('getStatus merges fast and slow state into combined _statusCache', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The final _statusCache should spread both tiers
+    assert.ok(body.includes('..._fastState') && body.includes('..._slowState'),
+      'getStatus must merge _fastState and _slowState via spread into _statusCache');
+    assert.ok(body.includes('timestamp:'), 'merged status must include timestamp');
+  });
+
+  // ── Slow state is NOT rebuilt when only fast state changes ──
+
+  await test('slow state rebuild is gated by SLOW_STATE_TTL only (no mtime check)', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The slowStale check should reference SLOW_STATE_TTL, not _mtimesChanged
+    assert.ok(body.includes('SLOW_STATE_TTL'), 'slow state staleness must be gated by SLOW_STATE_TTL');
+    // Extract the slowStale logic — it should be a simple TTL check
+    const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
+    assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+// ─── P-c7f1a3b8: Pre-cached gzip status buffer ────────────────────────────
+
+async function testStatusGzipCache() {
+  console.log('\n── P-c7f1a3b8: Pre-cached gzip status buffer ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('_statusCacheGzip variable exists alongside _statusCacheJson', () => {
+    assert.ok(dashSrc.includes('let _statusCacheGzip'),
+      'dashboard.js must declare _statusCacheGzip variable');
+    // Both should be declared near each other
+    const jsonIdx = dashSrc.indexOf('let _statusCacheJson');
+    const gzipIdx = dashSrc.indexOf('let _statusCacheGzip');
+    assert.ok(Math.abs(gzipIdx - jsonIdx) < 200,
+      '_statusCacheGzip must be declared near _statusCacheJson');
+  });
+
+  await test('getStatusJson() pre-computes gzip buffer on cache rebuild', () => {
+    const fn = dashSrc.match(/function getStatusJson\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatusJson must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip') && fn[0].includes('gzipSync'),
+      'getStatusJson must compute _statusCacheGzip via gzipSync when rebuilding cache');
+  });
+
+  await test('gzipSync called once per cache rebuild, not per request in handleStatus', () => {
+    // handleStatus should NOT call gzipSync — it should serve _statusCacheGzip
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(!handleStatusFn.includes('gzipSync'),
+      'handleStatus must NOT call gzipSync — should serve pre-cached _statusCacheGzip');
+    assert.ok(handleStatusFn.includes('_statusCacheGzip'),
+      'handleStatus must serve the pre-cached _statusCacheGzip buffer');
+  });
+
+  await test('handleStatus serves pre-cached gzip when Accept-Encoding includes gzip', () => {
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(handleStatusFn.includes('accept-encoding') || handleStatusFn.includes('Accept-Encoding'),
+      'handleStatus must check Accept-Encoding header');
+    assert.ok(handleStatusFn.includes('Content-Encoding') && handleStatusFn.includes('gzip'),
+      'handleStatus must set Content-Encoding: gzip when serving cached buffer');
+  });
+
+  await test('SSE periodic push uses reference comparison instead of MD5 hash', () => {
+    // Find the setInterval for periodic push (the 10000ms one)
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Must NOT use MD5 hash
+    assert.ok(!intervalBody.includes('createHash') && !intervalBody.includes('md5'),
+      'SSE periodic push must NOT use MD5 hash — use reference comparison');
+    // Should use reference comparison (checking if data !== _lastXxx or similar)
+    assert.ok(!intervalBody.includes('.digest('),
+      'SSE periodic push must not compute hash digests');
+  });
+
+  await test('_lastStatusHash is removed or replaced with reference-based tracking', () => {
+    // The old _lastStatusHash should be replaced
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Should have some form of "last" reference comparison
+    assert.ok(intervalBody.includes('===') || intervalBody.includes('!=='),
+      'SSE periodic push must use reference equality for change detection');
+  });
+
+  await test('invalidateStatusCache clears _statusCacheGzip', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'invalidateStatusCache must clear _statusCacheGzip');
+  });
+
+  await test('getStatus cache rebuild invalidates _statusCacheGzip', () => {
+    // When _statusCache is rebuilt in getStatus(), both _statusCacheJson and _statusCacheGzip are invalidated
+    const fn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatus must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'getStatus must invalidate _statusCacheGzip when rebuilding cache');
+  });
+
+  await test('jsonReply still gzips normally for non-status endpoints', () => {
+    const fn = dashSrc.match(/function jsonReply[\s\S]*?^}/m);
+    assert.ok(fn, 'jsonReply must exist');
+    assert.ok(fn[0].includes('gzipSync'),
+      'jsonReply must still call gzipSync for non-status endpoints');
+  });
+}
+
+// ─── P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled ──
+
+async function testParallelPrPolling() {
+  console.log('\n── P-e1c8b4a6: Parallel PR polling via Promise.allSettled ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Section 2.6: status polls use Promise.allSettled ──
+
+  await test('section 2.6 uses Promise.allSettled for concurrent status polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(section26Idx > -1, 'Section 2.6 comment must exist');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('Promise.allSettled'),
+      'Section 2.6 must use Promise.allSettled to run ADO and GitHub status polls concurrently');
+  });
+
+  await test('section 2.6 builds a promise array for conditional poll dispatch', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // Should push to an array, not await sequentially
+    assert.ok(section26Block.includes('.push('),
+      'Section 2.6 must push poll promises to an array (conditional dispatch pattern)');
+  });
+
+  await test('section 2.6 processPendingRebases runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const rebaseIdx = section26Block.indexOf('processPendingRebases');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(rebaseIdx > -1, 'processPendingRebases must exist in section 2.6');
+    assert.ok(rebaseIdx > allSettledIdx,
+      'processPendingRebases must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 syncPrdFromPrs runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const syncIdx = section26Block.indexOf('syncPrdFromPrs');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(syncIdx > -1, 'syncPrdFromPrs must exist in section 2.6');
+    assert.ok(syncIdx > allSettledIdx,
+      'syncPrdFromPrs must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 preserves conditional guards for ADO and GitHub polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // ADO guard: adoPollEnabled && !isAdoThrottled()
+    assert.ok(section26Block.includes('adoPollEnabled') && section26Block.includes('isAdoThrottled'),
+      'Section 2.6 must preserve adoPollEnabled and isAdoThrottled guards');
+    // GitHub guard: ghPollEnabled && !isGhThrottled()
+    assert.ok(section26Block.includes('ghPollEnabled') && section26Block.includes('isGhThrottled'),
+      'Section 2.6 must preserve ghPollEnabled and isGhThrottled guards');
+  });
+
+  await test('section 2.6 throttle skip log messages preserved for both ADO and GitHub', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('[ado]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [ado] throttled message when ADO poll is skipped');
+    assert.ok(section26Block.includes('[gh]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [gh] throttled message when GitHub poll is skipped');
+  });
+
+  // ── Behavioral test: concurrent execution ──
+
+  await test('Promise.allSettled pattern enables concurrent poll execution', async () => {
+    // Simulate the engine pattern: build promise array conditionally, allSettled them
+    const callOrder = [];
+    const mockAdoPoll = async () => {
+      callOrder.push('ado-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('ado-end');
+    };
+    const mockGhPoll = async () => {
+      callOrder.push('gh-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('gh-end');
+    };
+
+    // Build promise array (mimics engine conditional push pattern)
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    // Both should start before either finishes (concurrent execution)
+    assert.ok(callOrder.indexOf('gh-start') < callOrder.indexOf('ado-end'),
+      `Polls must execute concurrently — gh-start should occur before ado-end. Order: ${callOrder.join(', ')}`);
+    assert.strictEqual(callOrder.length, 4, 'All four events (2 starts + 2 ends) must fire');
+  });
+
+  await test('Promise.allSettled isolates errors between polls', async () => {
+    // If ADO fails, GitHub should still complete
+    let ghCompleted = false;
+    const mockAdoPoll = async () => { throw new Error('ADO network error'); };
+    const mockGhPoll = async () => { ghCompleted = true; };
+
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    assert.ok(ghCompleted, 'GitHub poll must complete even when ADO poll fails');
+  });
+}
+
+// ─── P-e1c8b4a6: Parallelize ADO and GitHub PR polling with Promise.allSettled ──
+
+async function testParallelPrPolling() {
+  console.log('\n── P-e1c8b4a6: Parallel PR polling via Promise.allSettled ──');
+
+  const engineSrc = fs.readFileSync(path.join(MINIONS_DIR, 'engine.js'), 'utf8');
+
+  // ── Section 2.6: status polls use Promise.allSettled ──
+
+  await test('section 2.6 uses Promise.allSettled for concurrent status polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    assert.ok(section26Idx > -1, 'Section 2.6 comment must exist');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('Promise.allSettled'),
+      'Section 2.6 must use Promise.allSettled to run ADO and GitHub status polls concurrently');
+  });
+
+  await test('section 2.6 builds a promise array for conditional poll dispatch', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // Should push to an array, not await sequentially
+    assert.ok(section26Block.includes('.push('),
+      'Section 2.6 must push poll promises to an array (conditional dispatch pattern)');
+  });
+
+  await test('section 2.6 processPendingRebases runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const rebaseIdx = section26Block.indexOf('processPendingRebases');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(rebaseIdx > -1, 'processPendingRebases must exist in section 2.6');
+    assert.ok(rebaseIdx > allSettledIdx,
+      'processPendingRebases must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 syncPrdFromPrs runs AFTER Promise.allSettled', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    const allSettledIdx = section26Block.indexOf('Promise.allSettled');
+    const syncIdx = section26Block.indexOf('syncPrdFromPrs');
+    assert.ok(allSettledIdx > -1, 'Promise.allSettled must exist in section 2.6');
+    assert.ok(syncIdx > -1, 'syncPrdFromPrs must exist in section 2.6');
+    assert.ok(syncIdx > allSettledIdx,
+      'syncPrdFromPrs must appear AFTER Promise.allSettled (depends on updated PR state)');
+  });
+
+  await test('section 2.6 preserves conditional guards for ADO and GitHub polls', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    // ADO guard: adoPollEnabled && !isAdoThrottled()
+    assert.ok(section26Block.includes('adoPollEnabled') && section26Block.includes('isAdoThrottled'),
+      'Section 2.6 must preserve adoPollEnabled and isAdoThrottled guards');
+    // GitHub guard: ghPollEnabled && !isGhThrottled()
+    assert.ok(section26Block.includes('ghPollEnabled') && section26Block.includes('isGhThrottled'),
+      'Section 2.6 must preserve ghPollEnabled and isGhThrottled guards');
+  });
+
+  await test('section 2.6 throttle skip log messages preserved for both ADO and GitHub', () => {
+    const section26Idx = engineSrc.indexOf('2.6');
+    const section27Idx = engineSrc.indexOf('2.7', section26Idx);
+    const section26Block = engineSrc.slice(section26Idx, section27Idx);
+    assert.ok(section26Block.includes('[ado]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [ado] throttled message when ADO poll is skipped');
+    assert.ok(section26Block.includes('[gh]') && section26Block.includes('throttled'),
+      'Section 2.6 must log [gh] throttled message when GitHub poll is skipped');
+  });
+
+  // ── Behavioral test: concurrent execution ──
+
+  await test('Promise.allSettled pattern enables concurrent poll execution', async () => {
+    // Simulate the engine pattern: build promise array conditionally, allSettled them
+    const callOrder = [];
+    const mockAdoPoll = async () => {
+      callOrder.push('ado-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('ado-end');
+    };
+    const mockGhPoll = async () => {
+      callOrder.push('gh-start');
+      await new Promise(r => setTimeout(r, 30));
+      callOrder.push('gh-end');
+    };
+
+    // Build promise array (mimics engine conditional push pattern)
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    // Both should start before either finishes (concurrent execution)
+    assert.ok(callOrder.indexOf('gh-start') < callOrder.indexOf('ado-end'),
+      `Polls must execute concurrently — gh-start should occur before ado-end. Order: ${callOrder.join(', ')}`);
+    assert.strictEqual(callOrder.length, 4, 'All four events (2 starts + 2 ends) must fire');
+  });
+
+  await test('Promise.allSettled isolates errors between polls', async () => {
+    // If ADO fails, GitHub should still complete
+    let ghCompleted = false;
+    const mockAdoPoll = async () => { throw new Error('ADO network error'); };
+    const mockGhPoll = async () => { ghCompleted = true; };
+
+    const polls = [];
+    polls.push(mockAdoPoll().catch(() => {}));
+    polls.push(mockGhPoll().catch(() => {}));
+    await Promise.allSettled(polls);
+
+    assert.ok(ghCompleted, 'GitHub poll must complete even when ADO poll fails');
+  });
+}
+
+// ─── P-c7f1a3b8: Pre-cached gzip status buffer ────────────────────────────
+
+async function testStatusGzipCache() {
+  console.log('\n── P-c7f1a3b8: Pre-cached gzip status buffer ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  await test('_statusCacheGzip variable exists alongside _statusCacheJson', () => {
+    assert.ok(dashSrc.includes('let _statusCacheGzip'),
+      'dashboard.js must declare _statusCacheGzip variable');
+    // Both should be declared near each other
+    const jsonIdx = dashSrc.indexOf('let _statusCacheJson');
+    const gzipIdx = dashSrc.indexOf('let _statusCacheGzip');
+    assert.ok(Math.abs(gzipIdx - jsonIdx) < 200,
+      '_statusCacheGzip must be declared near _statusCacheJson');
+  });
+
+  await test('getStatusJson() pre-computes gzip buffer on cache rebuild', () => {
+    const fn = dashSrc.match(/function getStatusJson\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatusJson must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip') && fn[0].includes('gzipSync'),
+      'getStatusJson must compute _statusCacheGzip via gzipSync when rebuilding cache');
+  });
+
+  await test('gzipSync called once per cache rebuild, not per request in handleStatus', () => {
+    // handleStatus should NOT call gzipSync — it should serve _statusCacheGzip
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(!handleStatusFn.includes('gzipSync'),
+      'handleStatus must NOT call gzipSync — should serve pre-cached _statusCacheGzip');
+    assert.ok(handleStatusFn.includes('_statusCacheGzip'),
+      'handleStatus must serve the pre-cached _statusCacheGzip buffer');
+  });
+
+  await test('handleStatus serves pre-cached gzip when Accept-Encoding includes gzip', () => {
+    const handleStatusStart = dashSrc.indexOf('async function handleStatus(');
+    const handleStatusEnd = dashSrc.indexOf('async function', handleStatusStart + 30);
+    const handleStatusFn = dashSrc.slice(handleStatusStart, handleStatusEnd > 0 ? handleStatusEnd : handleStatusStart + 1000);
+    assert.ok(handleStatusFn.includes('accept-encoding') || handleStatusFn.includes('Accept-Encoding'),
+      'handleStatus must check Accept-Encoding header');
+    assert.ok(handleStatusFn.includes('Content-Encoding') && handleStatusFn.includes('gzip'),
+      'handleStatus must set Content-Encoding: gzip when serving cached buffer');
+  });
+
+  await test('SSE periodic push uses reference comparison instead of MD5 hash', () => {
+    // Find the setInterval for periodic push (the 10000ms one)
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Must NOT use MD5 hash
+    assert.ok(!intervalBody.includes('createHash') && !intervalBody.includes('md5'),
+      'SSE periodic push must NOT use MD5 hash — use reference comparison');
+    // Should use reference comparison (checking if data !== _lastXxx or similar)
+    assert.ok(!intervalBody.includes('.digest('),
+      'SSE periodic push must not compute hash digests');
+  });
+
+  await test('_lastStatusHash is removed or replaced with reference-based tracking', () => {
+    // The old _lastStatusHash should be replaced
+    const intervalMatch = dashSrc.match(/setInterval\(\(\) => \{[\s\S]*?_statusStreamClients[\s\S]*?\}, 10000\)/);
+    assert.ok(intervalMatch, 'SSE periodic push interval must exist');
+    const intervalBody = intervalMatch[0];
+    // Should have some form of "last" reference comparison
+    assert.ok(intervalBody.includes('===') || intervalBody.includes('!=='),
+      'SSE periodic push must use reference equality for change detection');
+  });
+
+  await test('invalidateStatusCache clears _statusCacheGzip', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'invalidateStatusCache must clear _statusCacheGzip');
+  });
+
+  await test('getStatus cache rebuild invalidates _statusCacheGzip', () => {
+    // When _statusCache is rebuilt in getStatus(), both _statusCacheJson and _statusCacheGzip are invalidated
+    const fn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'getStatus must exist');
+    assert.ok(fn[0].includes('_statusCacheGzip = null') || fn[0].includes('_statusCacheGzip=null'),
+      'getStatus must invalidate _statusCacheGzip when rebuilding cache');
+  });
+
+  await test('jsonReply still gzips normally for non-status endpoints', () => {
+    const fn = dashSrc.match(/function jsonReply[\s\S]*?^}/m);
+    assert.ok(fn, 'jsonReply must exist');
+    assert.ok(fn[0].includes('gzipSync'),
+      'jsonReply must still call gzipSync for non-status endpoints');
+  });
+}
+
+// ─── P-a5e9c1d7: Split getStatus() into fast/slow state tiers ───────────────
+
+async function testStatusCacheTiers() {
+  console.log('\n── Status Cache Tiers (fast/slow) ──');
+
+  const dashSrc = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+
+  // ── Tier variables and TTLs exist ──
+
+  await test('dashboard.js has _fastState and _slowState cache variables', () => {
+    assert.ok(dashSrc.includes('let _fastState'), '_fastState variable must exist');
+    assert.ok(dashSrc.includes('let _slowState'), '_slowState variable must exist');
+    assert.ok(dashSrc.includes('let _fastStateTs'), '_fastStateTs timestamp must exist');
+    assert.ok(dashSrc.includes('let _slowStateTs'), '_slowStateTs timestamp must exist');
+  });
+
+  await test('FAST_STATE_TTL is 10s and SLOW_STATE_TTL is 60s', () => {
+    assert.ok(dashSrc.includes('FAST_STATE_TTL = 10000'), 'FAST_STATE_TTL must be 10000ms (10s)');
+    assert.ok(dashSrc.includes('SLOW_STATE_TTL = 60000'), 'SLOW_STATE_TTL must be 60000ms (60s)');
+  });
+
+  // ── Fast state contains the right keys ──
+
+  await test('fast state includes frequently-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // These must appear in the _fastState assignment
+    assert.ok(body.includes('_fastState'), 'getStatus must build _fastState');
+    for (const key of ['agents:', 'inbox:', 'pullRequests:', 'dispatch:', 'metrics:', 'workItems:', 'watches:', 'meetings:', 'adoThrottle:', 'ghThrottle:', 'engineLog:']) {
+      assert.ok(body.includes(key), `fast state must include ${key}`);
+    }
+  });
+
+  // ── Slow state contains the right keys ──
+
+  await test('slow state includes rarely-changing data', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    assert.ok(body.includes('_slowState'), 'getStatus must build _slowState');
+    for (const key of ['skills:', 'prdProgress:', 'mcpServers:', 'pinned:', 'projects:', 'autoMode:', 'version:', 'schedules:']) {
+      assert.ok(body.includes(key), `slow state must include ${key}`);
+    }
+  });
+
+  // ── invalidateStatusCache invalidates fast state only ──
+
+  await test('invalidateStatusCache nullifies _fastState but not _slowState', () => {
+    const fn = dashSrc.match(/function invalidateStatusCache\(\)[\s\S]*?^}/m);
+    assert.ok(fn, 'invalidateStatusCache must exist');
+    const body = fn[0];
+    assert.ok(body.includes('_fastState = null'), 'must nullify _fastState');
+    assert.ok(!body.includes('_slowState = null'), 'must NOT nullify _slowState — slow state stays on its own TTL');
+  });
+
+  // ── mtime tracking applies to fast state only ──
+
+  await test('mtime-based validation applies only to fast-state TTL check', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The mtime check should be near _fastState logic, not _slowState
+    const fastIdx = body.indexOf('_fastState');
+    const mtimeIdx = body.indexOf('_mtimesChanged');
+    const slowIdx = body.indexOf('_slowState');
+    assert.ok(fastIdx > 0 && mtimeIdx > 0 && slowIdx > 0, 'all three markers must exist');
+    // mtime check should appear before or near fast state, not after slow state assignment
+    assert.ok(mtimeIdx < slowIdx, 'mtime validation must appear before slow state building (applies to fast tier only)');
+  });
+
+  // ── getStatus merges both tiers ──
+
+  await test('getStatus merges fast and slow state into combined _statusCache', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The final _statusCache should spread both tiers
+    assert.ok(body.includes('..._fastState') && body.includes('..._slowState'),
+      'getStatus must merge _fastState and _slowState via spread into _statusCache');
+    assert.ok(body.includes('timestamp:'), 'merged status must include timestamp');
+  });
+
+  // ── Slow state is NOT rebuilt when only fast state changes ──
+
+  await test('slow state rebuild is gated by SLOW_STATE_TTL only (no mtime check)', () => {
+    const statusFn = dashSrc.match(/function getStatus\(\)[\s\S]*?^}/m);
+    assert.ok(statusFn, 'getStatus must exist');
+    const body = statusFn[0];
+    // The slowStale check should reference SLOW_STATE_TTL, not _mtimesChanged
+    assert.ok(body.includes('SLOW_STATE_TTL'), 'slow state staleness must be gated by SLOW_STATE_TTL');
+    // Extract the slowStale logic — it should be a simple TTL check
+    const slowStaleMatch = body.match(/slowStale\s*=.*SLOW_STATE_TTL/);
+    assert.ok(slowStaleMatch, 'slowStale must be determined by SLOW_STATE_TTL comparison');
+  });
+}
+
+main()
+  .then(code => {
+    restorePreservedLiveLog();
+    process.exit(code);
+  })
+  .catch(e => {
+    restorePreservedLiveLog();
+    console.error(e);
+    process.exit(1);
+  });

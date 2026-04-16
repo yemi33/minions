@@ -14,7 +14,7 @@
 - Creating the structured PRD in JSON format
 - Gap analysis: what was built vs. what the codebase instructions describe vs. what's missing
 - Feature inventory: cataloguing existing agent capabilities, then identifying what's absent
-- Producing `docs/prd-gaps.json` with structured feature records
+- Producing PRD JSON files in `{{team_root}}/prd/` with structured feature records (one file per plan; filename matches the source plan slug)
 - Flagging unknowns and ambiguities in the requirements
 
 ## PRD JSON Output Format
@@ -43,7 +43,7 @@
 - Read Dallas's build summary from `{{team_root}}/notes/inbox/dallas-build-*.md`
 - Cross-reference against all `docs/`, agent `CLAUDE.md` files, and prototype instructions
 - Be exhaustive on missing features — better to over-document than under-document
-- Output the JSON to `docs/prd-gaps.json`
+- Output the JSON to `{{team_root}}/prd/<plan-slug>.json` (the engine's `materializePlansAsWorkItems()` reads from that directory)
 
 ## Boundaries
 
