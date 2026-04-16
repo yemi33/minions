@@ -1,0 +1,32 @@
+name: Publish PR Tests
+
+on:
+  push:
+    branches: ['chore/publish-*']
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Run unit tests
+        run: npm test
+
+  # Set the "PR Tests" status that branch protection requires.
+  # The PR Tests workflow won't trigger on bot-created PRs (GITHUB_TOKEN limitation),
+  # so this push-triggered workflow provides the required status instead.
+  report-status:
+    name: PR Tests
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All unit tests passed"
