@@ -831,6 +831,25 @@ function persistDocSessions() {
   safeWrite(DOC_SESSIONS_PATH, obj);
 }
 
+// Debounced variant — coalesces rapid writes (e.g. back-to-back doc-chat turns)
+let _persistDocSessionsTimer = null;
+function schedulePersistDocSessions() {
+  if (_persistDocSessionsTimer) clearTimeout(_persistDocSessionsTimer);
+  _persistDocSessionsTimer = setTimeout(() => {
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }, 5000); // 5s debounce — rapid turns produce one write per burst
+}
+
+/** Flush any pending debounced write immediately (call on shutdown). */
+function flushPendingDocSessions() {
+  if (_persistDocSessionsTimer) {
+    clearTimeout(_persistDocSessionsTimer);
+    _persistDocSessionsTimer = null;
+    persistDocSessions();
+  }
+}
+
 // Resolve session from any store (CC global or doc-specific)
 function resolveSession(store, key) {
   if (store === 'cc') {
@@ -868,7 +887,7 @@ function updateSession(store, key, sessionId, existing) {
       turnCount: (existing && prev ? prev.turnCount : 0) + 1,
       _docHash: prev?._docHash || null,
     });
-    persistDocSessions();
+    schedulePersistDocSessions();
   }
 }
 
@@ -931,7 +950,7 @@ async function ccCall(message, { store = 'cc', sessionKey, extraContext, label =
       safeWrite(path.join(ENGINE_DIR, 'cc-session.json'), ccSession);
     } else if (sessionKey) {
       docSessions.delete(sessionKey);
-      persistDocSessions();
+      schedulePersistDocSessions();
     }
   }
 
@@ -1006,7 +1025,7 @@ async function ccDocCall({ message, document, title, filePath, selection, canEdi
     // One-shot call — discard the session ccCall just stored so it cannot
     // bleed into future interactions under the same key.
     docSessions.delete(sessionKey);
-    persistDocSessions();
+    schedulePersistDocSessions();
   } else if (result.code === 0 && result.sessionId) {
     // Store doc hash for next call's unchanged check
     const session = resolveSession('doc', sessionKey);
@@ -5061,3 +5080,8 @@ server.on('error', e => {
   }
   process.exit(1);
 });
+
+// ── Graceful shutdown: flush debounced writes ──────────────────────────────
+server.on('close', () => flushPendingDocSessions());
+process.on('SIGTERM', () => { flushPendingDocSessions(); process.exit(0); });
+process.on('SIGINT', () => { flushPendingDocSessions(); process.exit(0); });

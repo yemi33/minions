@@ -14646,6 +14646,56 @@ async function testAutoRecoveryAndAtomicity() {
     assert.ok(planCreateHandler.includes('must start with a markdown heading'), 'Should validate plan content starts with markdown heading');
   });
 
+  // ── Debounced doc-session persistence (P-d8c2f1a7) ─────────────────────────
+  await test('persistDocSessions is debounced via schedulePersistDocSessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('_persistDocSessionsTimer'), 'Should have debounce timer variable');
+    assert.ok(src.includes('function schedulePersistDocSessions'), 'Should have schedulePersistDocSessions function');
+    assert.ok(src.includes('clearTimeout(_persistDocSessionsTimer)'), 'Should clear previous timer on each call');
+    assert.ok(src.includes('setTimeout('), 'schedulePersistDocSessions should use setTimeout');
+  });
+
+  await test('schedulePersistDocSessions uses 5-second debounce window', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const scheduleFn = src.slice(src.indexOf('function schedulePersistDocSessions'), src.indexOf('function schedulePersistDocSessions') + 300);
+    assert.ok(scheduleFn.includes('5000'), 'Debounce interval should be 5000ms (5 seconds)');
+  });
+
+  await test('updateSession uses debounced persistence for doc sessions', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const updateFn = src.slice(src.indexOf('function updateSession'), src.indexOf('function updateSession') + 800);
+    assert.ok(updateFn.includes('schedulePersistDocSessions()'), 'updateSession should call schedulePersistDocSessions (not persistDocSessions directly)');
+  });
+
+  await test('resolveSession eviction still calls persistDocSessions directly', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const resolveFn = src.slice(src.indexOf('function resolveSession'), src.indexOf('function resolveSession') + 400);
+    assert.ok(resolveFn.includes('persistDocSessions()'), 'resolveSession eviction path should call persistDocSessions() directly');
+    assert.ok(!resolveFn.includes('schedulePersistDocSessions'), 'resolveSession should NOT use debounced variant');
+  });
+
+  await test('ccCall dead-session cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    // Find the ccCall dead-session cleanup block
+    const ccCallFn = src.slice(src.indexOf('session appears dead'), src.indexOf('session appears dead') + 500);
+    assert.ok(ccCallFn.includes('schedulePersistDocSessions()'), 'Dead-session cleanup in ccCall should use debounced persistence');
+  });
+
+  await test('ccDocCall freshSession cleanup uses debounced persistence', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    const docCallFn = src.slice(src.indexOf('async function ccDocCall('));
+    const freshBlock = docCallFn.slice(docCallFn.indexOf('One-shot call'), docCallFn.indexOf('One-shot call') + 200);
+    assert.ok(freshBlock.includes('schedulePersistDocSessions()'), 'freshSession cleanup should use debounced persistence');
+  });
+
+  await test('debounced doc-session persistence flushes on shutdown', () => {
+    const src = fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
+    assert.ok(src.includes('flushPendingDocSessions'), 'Should have a flush function for shutdown');
+    // Flush should be wired to shutdown/close
+    assert.ok(src.includes("process.on('SIGTERM'") || src.includes("process.on('SIGINT'") || src.includes('server.on(\'close\''),
+      'Flush should be wired to process signal or server close event');
+  });
+
   await test('CC system prompt discourages excessive tool use', () => {
     const promptPath = path.join(MINIONS_DIR, 'prompts', 'cc-system.md');
     const src = fs.existsSync(promptPath) ? fs.readFileSync(promptPath, 'utf8') : fs.readFileSync(path.join(MINIONS_DIR, 'dashboard.js'), 'utf8');
