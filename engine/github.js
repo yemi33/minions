@@ -83,7 +83,10 @@ const isGhThrottled = () => _ghThrottle.isThrottled();
 /** Returns a snapshot of the current GitHub throttle state. */
 const getGhThrottleState = () => _ghThrottle.getState();
 
-/** Run a `gh api` call and parse JSON result. Returns null on failure. */
+/** Sentinel returned by ghApi when the resource does not exist (HTTP 404). */
+const GH_NOT_FOUND = Object.freeze({ _notFound: true });
+
+/** Run a `gh api` call and parse JSON result. Returns null on failure, GH_NOT_FOUND on 404. */
 async function ghApi(endpoint, slug) {
   try {
     const cmd = `gh api "repos/${slug}${endpoint}"`;
@@ -99,6 +102,10 @@ async function ghApi(endpoint, slug) {
       const secMatch = msg.match(/(\d+)\s*seconds?/i);
       const retryAfterMs = secMatch ? parseInt(secMatch[1], 10) * 1000 : 0;
       _ghThrottle.recordThrottle(retryAfterMs);
+    }
+    if (/HTTP 404|Not Found/i.test(msg)) {
+      log('warn', `GitHub API error (${endpoint}): ${e.message}`);
+      return GH_NOT_FOUND;
     }
     log('warn', `GitHub API error (${endpoint}): ${e.message}`);
     return null;
@@ -295,6 +302,15 @@ async function pollPrStatus(config) {
   const totalUpdated = await forEachActiveGhPr(config, async (project, pr, prNum, slug) => {
     const prData = await ghApi(`/pulls/${prNum}`, slug);
     if (!prData) return false;
+    if (prData === GH_NOT_FOUND) {
+      // PR no longer exists — mark abandoned so it stops being polled
+      if (pr.status !== PR_STATUS.ABANDONED) {
+        pr.status = PR_STATUS.ABANDONED;
+        log('info', `PR ${pr.id} returned 404 — marking abandoned`);
+        return true;
+      }
+      return false;
+    }
 
     let updated = false;
 
