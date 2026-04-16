@@ -21539,6 +21539,13 @@ async function testWatchesDashboard() {
       'refresh.js must check watches in _changed');
   });
 
+  await test('refresh.js tracks watches page for sidebar activity badges', () => {
+    assert.ok(refreshSrc.includes('watches:') && refreshSrc.includes('d.watches || []'),
+      'refresh.js must include watches in _pageCounters so the watches page can get a red dot on changes');
+    assert.ok(refreshSrc.includes('w.triggerCount') && refreshSrc.includes('w.last_triggered'),
+      'Watches sidebar activity should react to meaningful watch changes like triggers and expirations');
+  });
+
   // Dashboard assembly includes render-watches.js
   await test('dashboard assembly includes render-watches.js', () => {
     assert.ok(dashSrc.includes('render-watches'),

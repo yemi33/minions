@@ -8,6 +8,7 @@ const _pageCounters = {
   plans:     function(d) { return (d.prdProgress?.complete || 0) + '|' + (d.plans || []).length + '|' + (d.plans || []).map(function(p) { return p.status || ''; }).join(','); },
   prs:       function(d) { return (d.pullRequests || []).length + '|' + (d.pullRequests || []).filter(function(p) { return p.status === 'merged'; }).length; },
   inbox:     function(d) { return (d.inbox || []).length + '|' + (d.notes?.content || '').length; },
+  watches:   function(d) { return (d.watches || []).length + '|' + (d.watches || []).map(function(w) { return [w.id || '', w.status || '', w.triggerCount || 0, w.last_triggered || ''].join(':'); }).join(','); },
   meetings:  function(d) { return (d.meetings || []).length + '|' + (d.meetings || []).reduce(function(s, m) { return s + (m.round || 0); }, 0); },
   pipelines: function(d) { return (d.pipelines || []).length + '|' + (d.pipelines || []).reduce(function(s, p) { return s + (p.runs || []).length; }, 0); },
   schedule:  function(d) { return (d.schedules || []).length; },
