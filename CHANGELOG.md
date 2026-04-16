@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1015 (2026-04-16)
+
+### Fixes
+-  revert to PR merge now that stale status check is removed
+- guard live review check against undefined vote/state values (#1132)
+
+### Other
+- chore: test publish after removing stale status check
+- chore: trigger publish test
+
 ## 0.1.1008 (2026-04-16)
 
 ### Features

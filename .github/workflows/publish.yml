@@ -110,27 +110,24 @@ jobs:
           # Publish
           npm publish --access public
 
-          # Commit version bump + changelog via PR
+          # Commit version bump + changelog via PR.
+          # Direct push is blocked by the ruleset's pull_request rule.
+          # No required status checks, so the PR can merge immediately.
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json CHANGELOG.md
           git diff --cached --quiet && echo "No changes to commit" || {
             BRANCH="chore/publish-$NEXT"
             git checkout -b "$BRANCH"
-            git commit -m "chore: publish $NEXT — changelog updated [skip ci]"
+            git commit -m "chore: publish $NEXT [skip ci]"
             git push origin "$BRANCH"
-            gh pr create --title "chore: publish $NEXT" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
+            gh pr create --title "chore: publish $NEXT [skip ci]" --body "Auto-generated version bump and changelog update." --base master --head "$BRANCH"
+            gh pr merge "$BRANCH" --merge --delete-branch
 
-            # Close any stale publish PRs left over from previous runs (before merge so cleanup runs even if merge fails)
-            gh pr list --state open --json number,title --jq ".[] | select(.title | startswith(\"chore: publish\")) | select(.number != $(gh pr view "$BRANCH" --json number --jq .number)) | .number" | while read pr; do
+            # Close any stale publish PRs left over from previous runs
+            gh pr list --state open --json number,title --jq '.[] | select(.title | startswith("chore: publish")) | .number' | while read pr; do
               gh pr close "$pr" --delete-branch 2>/dev/null || true
             done
-
-            # Auto-merge once CI passes. Uses --squash so the resulting commit message
-            # contains [skip ci] from the branch commit, preventing a publish re-trigger.
-            # PR title no longer has [skip ci] so PR Tests workflow runs and satisfies
-            # the branch protection required check.
-            gh pr merge "$BRANCH" --auto --squash --delete-branch
           }
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -733,7 +733,7 @@ async function checkLiveReviewStatus(pr, project) {
     if (!reviews || !Array.isArray(reviews)) return null;
     const latestByUser = new Map();
     for (const r of reviews) {
-      if (r.state === 'COMMENTED') continue;
+      if (!r.state || r.state === 'COMMENTED') continue;
       latestByUser.set(r.user?.login || '', r.state);
     }
     const states = [...latestByUser.values()];
